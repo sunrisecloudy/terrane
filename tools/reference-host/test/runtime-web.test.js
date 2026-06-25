@@ -458,6 +458,167 @@ test("runtime uses host app index with content ratings when available", async ()
   }
 });
 
+test("runtime shows static Premium Apps fallback without a configured catalog", async () => {
+  const harness = createRuntimeHarness();
+  try {
+    await loadRuntime(harness);
+
+    assert.equal(harness.fetchState.premiumCatalogRequests.length, 0);
+    assert.equal(harness.document.getElementById("premium-marketplace-status").textContent, "Static fallback");
+    const premiumAppsList = harness.document.getElementById("premium-apps-list");
+    assert.equal(premiumAppsList.children.length, 1);
+    const text = elementText(premiumAppsList);
+    assert.match(text, /Premium Todo/);
+    assert.match(text, /Terrane Premium/);
+    assert.match(text, /4\.8 \(24\)/);
+    assert.match(text, /storage\.write/);
+    assert.match(text, /Hosted sync optional/);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime loads configured Premium catalog and renders metadata as text", async () => {
+  const manifestsById = new Map([
+    [
+      "notes-lite",
+      {
+        ...defaultRuntimeManifest(),
+        id: "notes-lite",
+        name: "Notes Lite",
+        description: "Bundled app.",
+        storagePrefix: "notes-lite:",
+      },
+    ],
+  ]);
+  const appIndex = {
+    source: "test",
+    marketplace: { premiumCatalogUrl: "/premium/catalog.json" },
+    apps: [
+      { id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Bundled app." },
+    ],
+  };
+  const premiumCatalog = {
+    source: "premium-test",
+    apps: [
+      {
+        id: "premium-todo",
+        name: "<img src=x onerror=alert(1)> Premium Todo",
+        subtitle: "Hosted sync",
+        summary: "Encrypted tasks, sync, and backups.",
+        benefits: ["Sync across Mac devices", "Encrypted backup"],
+        requiredPlan: "Individual Premium or Team",
+        entitlementFeatures: ["sync", "backups"],
+        serverRequired: true,
+        publisher: "Terrane Premium",
+        category: "Productivity",
+        version: "0.2.0",
+        rating: { value: 4.9, count: 42 },
+        contentRating: { label: "4+" },
+        compatibility: "Terrane Runtime 0.1+",
+        updatedAt: "2026-06-25",
+        permissions: ["storage.read", "storage.write", "<script>alert(1)</script>"],
+        privacy: ["Local-first", "No ad tracking"],
+      },
+    ],
+  };
+  const harness = createRuntimeHarness({ appIndex, manifestsById, premiumCatalog });
+  try {
+    await loadRuntime(harness);
+
+    assert.deepEqual(harness.fetchState.premiumCatalogRequests, ["/premium/catalog.json"]);
+    assert.equal(harness.document.getElementById("premium-marketplace-status").textContent, "Premium catalog");
+    const premiumAppsList = harness.document.getElementById("premium-apps-list");
+    assert.equal(premiumAppsList.children.length, 1);
+    assert.equal(elementHasHtml(premiumAppsList, "<img"), false);
+    assert.equal(elementHasHtml(premiumAppsList, "<script>"), false);
+    const text = elementText(premiumAppsList);
+    assert.match(text, /<img src=x onerror=alert\(1\)> Premium Todo/);
+    assert.match(text, /4\.9 \(42\)/);
+    assert.match(text, /No ad tracking/);
+    assert.match(text, /Sync across Mac devices/);
+    assert.match(text, /Individual Premium or Team/);
+    assert.match(text, /Premium server required/);
+
+    const premiumApps = JSON.parse(JSON.stringify(vm.runInContext("window.TerraneRuntimeHost.premiumApps()", harness.parentContext)));
+    assert.deepEqual(premiumApps, [
+      {
+        id: "premium-todo",
+        name: "<img src=x onerror=alert(1)> Premium Todo",
+        publisher: "Terrane Premium",
+        version: "0.2.0",
+        category: "Productivity",
+        price: "Individual Premium or Team",
+        summary: "Encrypted tasks, sync, and backups.",
+      },
+    ]);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime accepts localhost Premium server catalog URLs for local development", async () => {
+  const appIndex = {
+    source: "test",
+    marketplace: { premiumCatalogUrl: "http://127.0.0.1:4180/marketplace/premium-apps" },
+    apps: [
+      { id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Bundled app." },
+    ],
+  };
+  const premiumCatalog = {
+    source: "terrane-premium",
+    apps: [
+      {
+        id: "premium-todo",
+        name: "Premium Todo",
+        subtitle: "Private tasks with hosted sync and encrypted backup.",
+        summary: "A local-first todo app that becomes cross-device when a Terrane Premium account has sync and backup entitlements.",
+        benefits: ["Local task editing keeps working", "Premium sync moves encrypted todo records"],
+        requiredPlan: "Individual Premium or Team",
+        entitlementFeatures: ["sync", "backups"],
+        contentRating: "4+",
+        privacy: "Generated-app data stays encrypted.",
+        serverRequired: true,
+        publisher: "Terrane Premium",
+        category: "Productivity",
+      },
+    ],
+  };
+  const harness = createRuntimeHarness({ appIndex, premiumCatalog });
+  try {
+    await loadRuntime(harness);
+
+    assert.deepEqual(harness.fetchState.premiumCatalogRequests, ["http://127.0.0.1:4180/marketplace/premium-apps"]);
+    const text = elementText(harness.document.getElementById("premium-apps-list"));
+    assert.match(text, /Premium Todo/);
+    assert.match(text, /Individual Premium or Team/);
+    assert.match(text, /Generated-app data stays encrypted/);
+    assert.match(text, /Premium server required/);
+  } finally {
+    harness.close();
+  }
+});
+
+test("runtime ignores unsafe Premium catalog endpoints and keeps the static fallback", async () => {
+  const appIndex = {
+    source: "test",
+    marketplace: { premiumCatalogUrl: "javascript:alert(1)" },
+    apps: [
+      { id: "notes-lite", name: "Notes Lite", version: "0.1.0", description: "Bundled app." },
+    ],
+  };
+  const harness = createRuntimeHarness({ appIndex });
+  try {
+    await loadRuntime(harness);
+
+    assert.equal(harness.fetchState.premiumCatalogRequests.length, 0);
+    assert.equal(harness.document.getElementById("premium-marketplace-status").textContent, "Static fallback");
+    assert.match(elementText(harness.document.getElementById("premium-apps-list")), /Premium Todo/);
+  } finally {
+    harness.close();
+  }
+});
+
 test("runtime exposes native host mode for AppKit sidebar mounting", async () => {
   const manifestsById = new Map([
     [
@@ -831,6 +992,8 @@ function createRuntimeHarness(options = {}) {
     bridgeRequests: [],
     manifest: options.manifest ?? defaultRuntimeManifest(),
     manifestsById: options.manifestsById ?? null,
+    premiumCatalog: options.premiumCatalog ?? null,
+    premiumCatalogRequests: [],
   };
   const parentContext = vm.createContext({
     MessageChannel: HarnessMessageChannel,
@@ -925,6 +1088,9 @@ function createDocument(createFrameWindow) {
     "app-list",
     "bridge-log",
     "clear-debug",
+    "premium-apps-list",
+    "premium-marketplace-status",
+    "refresh-premium-catalog",
     "refresh-apps",
     "reload-app",
     "runtime-status",
@@ -1050,6 +1216,11 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
     if (state.appIndex) return jsonResponse(state.appIndex);
     return notFoundResponse();
   }
+  if (url === "/premium/catalog.json" || url === "http://127.0.0.1:4180/marketplace/premium-apps") {
+    state.premiumCatalogRequests.push(url);
+    if (state.premiumCatalog) return jsonResponse(state.premiumCatalog);
+    return notFoundResponse();
+  }
   const manifestMatch = url.match(/^\/webapps\/examples\/([^/]+)\/manifest\.json$/);
   if (manifestMatch) {
     const manifest = state.manifestsById?.get(manifestMatch[1]) ?? state.manifest ?? defaultRuntimeManifest();
@@ -1071,6 +1242,20 @@ async function fakeFetch(url, options = {}, state = { bridgeRequests: [] }) {
     });
   }
   throw new Error(`Unexpected fetch URL in runtime harness: ${url}`);
+}
+
+function elementText(element) {
+  if (!element) return "";
+  return [
+    element.textContent || "",
+    ...Array.from(element.children || [], elementText),
+  ].filter(Boolean).join(" ");
+}
+
+function elementHasHtml(element, needle) {
+  if (!element) return false;
+  if ((element.innerHTML || "").includes(needle)) return true;
+  return Array.from(element.children || []).some((child) => elementHasHtml(child, needle));
 }
 
 function defaultRuntimeManifest() {

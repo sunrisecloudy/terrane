@@ -124,6 +124,176 @@ button:disabled {
   padding: 16px;
 }
 
+.marketplace-panel {
+  border-top: 1px solid #d7dce8;
+  background: #f8fafc;
+  padding: 16px 18px;
+}
+
+.marketplace-header,
+.marketplace-actions,
+.premium-app-card,
+.premium-app-meta,
+.premium-app-pills {
+  display: flex;
+  gap: 12px;
+}
+
+.marketplace-header {
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.marketplace-header h2 {
+  margin: 0;
+}
+
+.marketplace-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.marketplace-status {
+  border: 1px solid #c9d2e2;
+  border-radius: 999px;
+  color: #475467;
+  font-size: 13px;
+  padding: 6px 10px;
+}
+
+.premium-apps-list {
+  display: grid;
+  gap: 10px;
+}
+
+.premium-app-card {
+  align-items: stretch;
+  background: #ffffff;
+  border: 1px solid #d7dce8;
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.premium-app-icon {
+  align-items: center;
+  background: #0f766e;
+  border-radius: 8px;
+  color: #ffffff;
+  display: flex;
+  flex: 0 0 58px;
+  font-size: 19px;
+  font-weight: 700;
+  height: 58px;
+  justify-content: center;
+}
+
+.premium-app-body {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 10px;
+  min-width: 0;
+}
+
+.premium-app-topline {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.premium-app-title {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.premium-app-title h3,
+.premium-app-title p,
+.premium-app-summary {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.premium-app-title p,
+.premium-app-summary,
+.premium-app-meta dd,
+.premium-app-pill {
+  color: #536071;
+  font-size: 13px;
+}
+
+.premium-app-summary {
+  max-width: 760px;
+}
+
+.premium-app-benefits {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.premium-app-benefits li {
+  color: #344054;
+  font-size: 13px;
+}
+
+.premium-app-meta {
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.premium-app-meta div {
+  border-right: 1px solid #d7dce8;
+  display: grid;
+  gap: 2px;
+  min-width: 96px;
+  padding-right: 12px;
+}
+
+.premium-app-meta div:last-child {
+  border-right: 0;
+}
+
+.premium-app-meta dt,
+.premium-app-meta dd {
+  margin: 0;
+}
+
+.premium-app-meta dt {
+  color: #667085;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.premium-app-meta dd {
+  color: #18202f;
+  font-weight: 700;
+}
+
+.premium-app-pills {
+  flex-wrap: wrap;
+}
+
+.premium-app-pill {
+  background: #eef2f7;
+  border: 1px solid #dbe2ee;
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.premium-app-price {
+  align-self: flex-start;
+  border: 1px solid #0f766e;
+  border-radius: 999px;
+  border-color: #0f766e;
+  color: #0f766e;
+  font-weight: 700;
+  padding: 6px 10px;
+}
+
 .workspace-toolbar {
   margin-bottom: 12px;
 }
@@ -220,8 +390,14 @@ button:disabled {
   }
 
   .topbar,
-  .workspace-toolbar {
+  .workspace-toolbar,
+  .marketplace-header,
+  .premium-app-topline {
     align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .premium-app-card {
     flex-direction: column;
   }
 }
@@ -237,6 +413,7 @@ button:disabled {
   }
 
   .sidebar,
+  .marketplace-panel,
   .frame-wrap,
   button {
     background: #182033;
@@ -244,10 +421,29 @@ button:disabled {
     border-color: #334155;
   }
 
+  .premium-app-card {
+    background: #111827;
+    border-color: #334155;
+  }
+
   .workspace-toolbar p,
   .app-button span,
+  .marketplace-status,
+  .premium-app-title p,
+  .premium-app-summary,
+  .premium-app-benefits li,
+  .premium-app-pill,
   .empty-state {
     color: #aab4c5;
+  }
+
+  .premium-app-meta dd {
+    color: #e5e7eb;
+  }
+
+  .premium-app-pill {
+    background: #1f2937;
+    border-color: #334155;
   }
 
   .app-button.active {

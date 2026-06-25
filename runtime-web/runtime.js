@@ -7,6 +7,9 @@
   const activeDescription = document.getElementById("active-description");
   const reloadButton = document.getElementById("reload-app");
   const refreshButton = document.getElementById("refresh-apps");
+  const refreshPremiumButton = document.getElementById("refresh-premium-catalog");
+  const premiumAppsList = document.getElementById("premium-apps-list");
+  const premiumMarketplaceStatus = document.getElementById("premium-marketplace-status");
   const clearDebugButton = document.getElementById("clear-debug");
   const bridgeLog = document.getElementById("bridge-log");
   const METHOD_PERMISSION = new Map([
@@ -36,6 +39,8 @@
   let activeApp = null;
   let activeFrame = null;
   let activeMount = null;
+  let premiumCatalog = null;
+  let lastPremiumCatalogEndpoint = null;
   const mountsByFrame = new WeakMap();
   const mountsByPort = new WeakMap();
   const portsByMountToken = new Map();
@@ -53,6 +58,11 @@
   const minuteMs = 60 * 1000;
 
   refreshButton.addEventListener("click", loadApps);
+  if (refreshPremiumButton) {
+    refreshPremiumButton.addEventListener("click", function () {
+      loadPremiumCatalog();
+    });
+  }
   reloadButton.addEventListener("click", function () {
     if (activeApp) mountApp(activeApp);
   });
@@ -93,6 +103,7 @@
   async function loadApps() {
     setStatus("Loading apps");
     const appIndex = await fetchAppIndex();
+    loadPremiumCatalog(appIndex);
     const appIndexRecords = new Map((appIndex?.apps || []).map((record) => [record.id, record]));
     const appIds = appIndex ? appIndex.apps.map((record) => record.id) : FALLBACK_EXAMPLE_IDS;
     const loaded = [];
@@ -118,6 +129,19 @@
             name: app.name,
             version: app.version,
             description: app.description,
+          };
+        });
+      },
+      premiumApps() {
+        return (premiumCatalog?.apps || []).map(function (app) {
+          return {
+            id: app.id,
+            name: app.name,
+            publisher: app.publisher,
+            version: app.version,
+            category: app.category,
+            price: app.price,
+            summary: app.summary,
           };
         });
       },
@@ -157,6 +181,282 @@
       return { ...appIndex, apps: apps };
     } catch (_) {
       return null;
+    }
+  }
+
+  async function loadPremiumCatalog(appIndex) {
+    if (!premiumAppsList) return null;
+    setPremiumStatus("Loading");
+    const endpoint = resolvePremiumCatalogEndpoint(appIndex);
+    if (endpoint) {
+      lastPremiumCatalogEndpoint = endpoint;
+      try {
+        const rawCatalog = await fetchJson(endpoint, { credentials: "omit", cache: "no-store" });
+        const catalog = normalizePremiumCatalog(rawCatalog, "premium-server", "Premium catalog");
+        premiumCatalog = catalog.apps.length ? catalog : fallbackPremiumCatalog();
+        renderPremiumCatalog(premiumCatalog, premiumCatalog === catalog ? "Premium catalog" : "Static fallback");
+        return premiumCatalog;
+      } catch (_) {
+        premiumCatalog = fallbackPremiumCatalog();
+        renderPremiumCatalog(premiumCatalog, "Static fallback");
+        return premiumCatalog;
+      }
+    }
+    premiumCatalog = fallbackPremiumCatalog();
+    renderPremiumCatalog(premiumCatalog, "Static fallback");
+    return premiumCatalog;
+  }
+
+  function resolvePremiumCatalogEndpoint(appIndex) {
+    const candidates = [
+      window.__TERRANE_PREMIUM_CATALOG_URL__,
+      appIndex?.premiumCatalogUrl,
+      appIndex?.premiumCatalog?.url,
+      appIndex?.marketplace?.premiumCatalogUrl,
+      appIndex?.marketplace?.catalogUrl,
+      appIndex?.premium?.catalogUrl,
+      lastPremiumCatalogEndpoint,
+    ];
+    for (const candidate of candidates) {
+      const endpoint = normalizeCatalogEndpoint(candidate);
+      if (endpoint) return endpoint;
+    }
+    return null;
+  }
+
+  function normalizeCatalogEndpoint(value) {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 2048 || /[\u0000-\u001f\u007f]/.test(trimmed)) return null;
+    let url;
+    let base;
+    try {
+      base = new URL(runtimeBaseUrl());
+      url = new URL(trimmed, base.href);
+    } catch (_) {
+      return null;
+    }
+    if (url.username || url.password) return null;
+    if (url.origin === base.origin) {
+      return `${url.pathname}${url.search}`;
+    }
+    if (url.protocol === "https:" || (url.protocol === "http:" && /^(?:127\.0\.0\.1|localhost)$/.test(url.hostname))) {
+      return `${url.origin}${url.pathname}${url.search}`;
+    }
+    return null;
+  }
+
+  function runtimeBaseUrl() {
+    const location = window.location || {};
+    const protocol = location.protocol === "http:" || location.protocol === "https:" ? location.protocol : "https:";
+    const hostname = typeof location.hostname === "string" && location.hostname ? location.hostname : "runtime.local.platform";
+    const port = typeof location.port === "string" && location.port ? `:${location.port}` : "";
+    const pathname = typeof location.pathname === "string" && location.pathname ? location.pathname : "/runtime/index.html";
+    return `${protocol}//${hostname}${port}${pathname}`;
+  }
+
+  function fallbackPremiumCatalog() {
+    return normalizePremiumCatalog({
+      source: "static-fallback",
+      apps: [
+        {
+          id: "premium-todo",
+          name: "Premium Todo",
+          subtitle: "Local-first tasks with hosted sync",
+          summary: "A Terrane Premium todo app with encrypted local storage, optional hosted sync, and backup entitlement support.",
+          publisher: "Terrane Premium",
+          category: "Productivity",
+          version: "0.1.0",
+          price: "Included",
+          contentRating: { label: "4+" },
+          rating: { value: 4.8, count: 24 },
+          compatibility: "Terrane Runtime 0.1+",
+          updatedAt: "2026-06-16",
+          permissions: ["storage.read", "storage.write", "notification.toast"],
+          privacy: ["Local-first data", "Hosted sync optional"],
+        },
+      ],
+    }, "static-fallback", "Static fallback");
+  }
+
+  function normalizePremiumCatalog(rawCatalog, source, sourceLabel) {
+    const envelope = rawCatalog && typeof rawCatalog === "object" && !Array.isArray(rawCatalog) ? rawCatalog : {};
+    const raw = envelope.ok === true && envelope.result && typeof envelope.result === "object" && !Array.isArray(envelope.result)
+      ? envelope.result
+      : envelope;
+    const records = Array.isArray(raw.apps) ? raw.apps : Array.isArray(raw.packages) ? raw.packages : [];
+    const apps = records.map(normalizePremiumApp).filter(Boolean).slice(0, 8);
+    return {
+      source: source,
+      sourceLabel: safeText(raw.sourceLabel || raw.source || sourceLabel, sourceLabel, 48),
+      apps: apps,
+    };
+  }
+
+  function normalizePremiumApp(record) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+    const id = safeText(record.id || record.appId || record.manifestId, "", 64);
+    const name = safeText(record.name || record.title, "", 80);
+    if (!id || !name) return null;
+    const summary = safeText(record.summary || record.description || record.subtitle, "Premium app for Terrane workspaces.", 220);
+    const rating = normalizeRating(record.rating);
+    const contentRating = record.contentRating && typeof record.contentRating === "object"
+      ? safeText(record.contentRating.label, "4+", 16)
+      : safeText(record.contentRating || record.ageRating, "4+", 16);
+    return {
+      id: id,
+      name: name,
+      subtitle: safeText(record.subtitle || record.tagline || record.category, "Premium app", 96),
+      summary: summary,
+      publisher: safeText(record.publisher || record.author || record.authorId, "Terrane Premium", 80),
+      category: safeText(record.category, "Productivity", 48),
+      version: safeText(record.version, "0.1.0", 32),
+      price: safeText(record.price || record.requiredPlan || record.entitlement || record.plan, "Premium", 48),
+      contentRating: contentRating,
+      ratingValue: rating.value,
+      ratingCount: rating.count,
+      compatibility: safeText(record.compatibility || record.runtimeCompatibility || record.minimumRuntimeVersion || (record.serverRequired ? "Terrane Premium server" : null), "Terrane Runtime", 80),
+      updatedAt: safeText(record.updatedAt || record.releaseDate, "Current", 32),
+      permissions: safeTextList(record.permissions || record.entitlementFeatures, 4, 40),
+      privacy: safeTextList(record.privacy || record.privacyLabels, 3, 48),
+      benefits: safeTextList(record.benefits, 3, 96),
+      serverRequired: record.serverRequired === true,
+    };
+  }
+
+  function normalizeRating(value) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return { value: clampRating(value), count: null };
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const ratingValue = Number(value.value ?? value.average ?? value.score);
+      const count = Number(value.count ?? value.ratings ?? value.reviews);
+      return {
+        value: Number.isFinite(ratingValue) ? clampRating(ratingValue) : null,
+        count: Number.isFinite(count) && count >= 0 ? Math.floor(count) : null,
+      };
+    }
+    return { value: null, count: null };
+  }
+
+  function clampRating(value) {
+    return Math.max(0, Math.min(5, value));
+  }
+
+  function safeTextList(value, maxItems, maxLength) {
+    if (typeof value === "string") return [safeText(value, "", maxLength)].filter(Boolean);
+    if (!Array.isArray(value)) return [];
+    return value
+      .map(function (item) {
+        return safeText(item, "", maxLength);
+      })
+      .filter(Boolean)
+      .slice(0, maxItems);
+  }
+
+  function safeText(value, fallback, maxLength) {
+    const text = value == null ? "" : String(value);
+    const cleaned = text.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+    if (!cleaned) return fallback || "";
+    return cleaned.slice(0, maxLength);
+  }
+
+  function renderPremiumCatalog(catalog, statusLabel) {
+    premiumAppsList.textContent = "";
+    const apps = catalog && Array.isArray(catalog.apps) ? catalog.apps : [];
+    if (!apps.length) {
+      premiumAppsList.appendChild(element("div", "empty-state", "No Premium apps available."));
+      setPremiumStatus(statusLabel || "Static fallback");
+      return;
+    }
+    for (const app of apps) {
+      premiumAppsList.appendChild(renderPremiumAppCard(app));
+    }
+    setPremiumStatus(statusLabel || catalog.sourceLabel || "Premium catalog");
+  }
+
+  function renderPremiumAppCard(app) {
+    const card = element("article", "premium-app-card");
+    card.setAttribute("data-testid", `premium-app-${app.id}`);
+
+    const icon = element("div", "premium-app-icon", appInitials(app.name));
+    card.appendChild(icon);
+
+    const body = element("div", "premium-app-body");
+    const topline = element("div", "premium-app-topline");
+    const title = element("div", "premium-app-title");
+    title.appendChild(element("h3", "", app.name));
+    title.appendChild(element("p", "", `${app.subtitle} - ${app.publisher}`));
+    topline.appendChild(title);
+    const price = element("span", "premium-app-price", app.price);
+    price.setAttribute("aria-label", `${app.name} availability`);
+    topline.appendChild(price);
+    body.appendChild(topline);
+
+    body.appendChild(element("p", "premium-app-summary", app.summary));
+    if (app.benefits.length) body.appendChild(renderPremiumBenefits(app));
+    body.appendChild(renderPremiumMeta(app));
+    body.appendChild(renderPremiumPills(app));
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderPremiumBenefits(app) {
+    const list = element("ul", "premium-app-benefits");
+    for (const benefit of app.benefits) {
+      list.appendChild(element("li", "", benefit));
+    }
+    return list;
+  }
+
+  function renderPremiumMeta(app) {
+    const meta = element("dl", "premium-app-meta");
+    addPremiumMeta(meta, "Rating", formatPremiumRating(app));
+    addPremiumMeta(meta, "Age", app.contentRating);
+    addPremiumMeta(meta, "Version", app.version);
+    addPremiumMeta(meta, "Updated", app.updatedAt);
+    addPremiumMeta(meta, "Works With", app.compatibility);
+    return meta;
+  }
+
+  function addPremiumMeta(meta, label, value) {
+    const group = element("div", "");
+    group.appendChild(element("dt", "", label));
+    group.appendChild(element("dd", "", value));
+    meta.appendChild(group);
+  }
+
+  function renderPremiumPills(app) {
+    const pills = element("div", "premium-app-pills");
+    for (const item of [app.category, app.serverRequired ? "Premium server required" : null].concat(app.permissions, app.privacy)) {
+      if (item) pills.appendChild(element("span", "premium-app-pill", item));
+    }
+    return pills;
+  }
+
+  function formatPremiumRating(app) {
+    if (typeof app.ratingValue !== "number") return "New";
+    const count = typeof app.ratingCount === "number" ? ` (${app.ratingCount})` : "";
+    return `${app.ratingValue.toFixed(1)}${count}`;
+  }
+
+  function appInitials(name) {
+    const words = String(name || "").trim().split(/\s+/).filter(Boolean);
+    return words.slice(0, 2).map(function (word) {
+      return word[0].toUpperCase();
+    }).join("") || "P";
+  }
+
+  function element(tagName, className, text) {
+    const node = document.createElement(tagName);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+  }
+
+  function setPremiumStatus(value) {
+    if (premiumMarketplaceStatus) {
+      premiumMarketplaceStatus.textContent = value;
     }
   }
 

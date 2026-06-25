@@ -38,6 +38,20 @@
       </section>
     </main>
 
+    <section class="marketplace-panel" aria-label="Marketplace">
+      <div class="marketplace-header">
+        <div>
+          <p class="eyebrow">Marketplace</p>
+          <h2>Premium Apps</h2>
+        </div>
+        <div class="marketplace-actions">
+          <span class="marketplace-status" id="premium-marketplace-status" data-testid="premium-marketplace-status">Static fallback</span>
+          <button id="refresh-premium-catalog" data-testid="refresh-premium-catalog-button" title="Refresh Premium catalog">Refresh</button>
+        </div>
+      </div>
+      <div id="premium-apps-list" class="premium-apps-list" data-testid="premium-apps-list"></div>
+    </section>
+
     <section class="debug-panel" aria-label="Bridge debug log">
       <div class="debug-header">
         <h2>Bridge Calls</h2>
