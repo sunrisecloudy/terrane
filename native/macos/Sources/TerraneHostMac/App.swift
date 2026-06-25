@@ -60,7 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let shellController = NativeShellViewController()
         self.shellController = shellController
 
-        let window = TerraneWindow(
+        let window = NSWindow(
             contentRect: NativeWindowConfiguration.initialContentRect(),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
@@ -140,27 +140,6 @@ enum NativeShellPreferences {
     }
 }
 
-final class TerraneWindow: NSWindow {
-    override func zoom(_ sender: Any?) {
-        applyTerraneZoom()
-    }
-
-    override func performZoom(_ sender: Any?) {
-        applyTerraneZoom()
-    }
-
-    private func applyTerraneZoom() {
-        setFrame(
-            NativeWindowConfiguration.toggledZoomFrame(
-                currentFrame: frame,
-                screenVisibleFrame: screen?.visibleFrame
-            ),
-            display: true,
-            animate: true
-        )
-    }
-}
-
 final class SidebarToggleAccessoryController: NSTitlebarAccessoryViewController {
     private weak var shellController: NativeShellViewController?
     private let button = NSButton()
@@ -199,7 +178,7 @@ final class SidebarToggleAccessoryController: NSTitlebarAccessoryViewController 
 enum NativeWindowConfiguration {
     static let preferredContentSize = NSSize(width: 1080, height: 720)
     static let minimumContentSize = NSSize(width: 860, height: 560)
-    static let collectionBehavior: NSWindow.CollectionBehavior = [.fullScreenNone]
+    static let collectionBehavior: NSWindow.CollectionBehavior = [.fullScreenPrimary]
 
     static func initialContentRect(screen: NSScreen? = NSScreen.main) -> NSRect {
         let visibleFrame = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
@@ -232,22 +211,6 @@ enum NativeWindowConfiguration {
               screenVisibleFrame.width > defaultFrame.width || screenVisibleFrame.height > defaultFrame.height
         else {
             return defaultFrame
-        }
-        return screenVisibleFrame
-    }
-
-    static func toggledZoomFrame(currentFrame: NSRect, screenVisibleFrame: NSRect?) -> NSRect {
-        guard let screenVisibleFrame else {
-            return currentFrame
-        }
-        if abs(currentFrame.width - screenVisibleFrame.width) < 1,
-           abs(currentFrame.height - screenVisibleFrame.height) < 1 {
-            var restored = initialContentRect(visibleFrame: screenVisibleFrame)
-            restored.origin = NSPoint(
-                x: screenVisibleFrame.midX - (restored.width / 2),
-                y: screenVisibleFrame.midY - (restored.height / 2)
-            )
-            return restored
         }
         return screenVisibleFrame
     }

@@ -113,7 +113,7 @@ struct NativeHostTests {
         #expect(NativeWindowConfiguration.initialContentRect(visibleFrame: wideScreen).size == NSSize(width: 1080, height: 720))
         #expect(NativeWindowConfiguration.initialContentRect(visibleFrame: compactScreen).size == NSSize(width: 860, height: 560))
         #expect(NativeWindowConfiguration.minimumContentSize == NSSize(width: 860, height: 560))
-        #expect(NativeWindowConfiguration.collectionBehavior.contains(.fullScreenNone))
+        #expect(NativeWindowConfiguration.collectionBehavior.contains(.fullScreenPrimary))
         #expect(
             NativeWindowConfiguration.fullScreenContentSize(
                 proposedSize: NSSize(width: 1080, height: 720),
@@ -123,12 +123,6 @@ struct NativeHostTests {
         #expect(
             NativeWindowConfiguration.zoomedFrame(
                 defaultFrame: NSRect(x: 10, y: 10, width: 1080, height: 720),
-                screenVisibleFrame: NSRect(x: 0, y: 24, width: 1440, height: 876)
-            ) == NSRect(x: 0, y: 24, width: 1440, height: 876)
-        )
-        #expect(
-            NativeWindowConfiguration.toggledZoomFrame(
-                currentFrame: NSRect(x: 100, y: 100, width: 1080, height: 720),
                 screenVisibleFrame: NSRect(x: 0, y: 24, width: 1440, height: 876)
             ) == NSRect(x: 0, y: 24, width: 1440, height: 876)
         )
