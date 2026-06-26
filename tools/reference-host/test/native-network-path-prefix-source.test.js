@@ -16,7 +16,7 @@ test("Apple native network policy enforces allow pathPrefix", () => {
     assert.match(source, /raw\["pathPrefix"\] as\? String/);
     assert.match(source, /func allows\(origin: String, method: String, path: String, headers: \[String\]\)/);
     assert.match(source, /if let pathPrefix, !path\.hasPrefix\(pathPrefix\)/);
-    assert.match(source, /path: PlatformNetwork\.path\(for: url\)/);
+    assert.match(source, /path: (?:PlatformNetwork|Self)\.path\(for: url\)/);
   }
   const macDevControl = read("native/macos/Sources/TerraneHostMac/DevControlPlane.swift");
   assert.match(macDevControl, /path: PlatformNetwork\.path\(for: url\)/);

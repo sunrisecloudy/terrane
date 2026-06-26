@@ -61,7 +61,7 @@ test("Linux core.step loader prefers packaged libforge_ffi beside the executable
   assert.match(linuxCore, /g_build_filename\(dir,\s*"libforge_ffi\.so",\s*NULL\)/);
   assert.match(linuxCore, /dlopen\(path, RTLD_NOW \| RTLD_LOCAL\)/);
   assert.match(linuxCore, /dlsym\(handle, "forge_core_handle_command"\)/);
-  assert.match(linuxCore, /json_builder_add_string_value\(builder, "legacy\.core_step"\)/);
+  assert.match(linuxCore, /core_command_envelope\("legacy\.core_step"/);
 });
 
 function read(relativePath) {

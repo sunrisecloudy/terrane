@@ -24,7 +24,7 @@ test("macOS dev control signs packages with Ed25519 instead of none-dev", () => 
   assert.match(control, /"algorithm": "ed25519"/);
   assert.match(control, /"permissionsHash": hashes\["permissionsHash"\]/);
   assert.match(control, /"policyHash": hashes\["policyHash"\]/);
-  assert.match(control, /signaturePayload\(/);
+  assert.match(control, /buildSignaturePayload\(/);
   assert.match(control, /signingKey\.signature/);
   assert.match(control, /verifyActiveInstallForMount/);
   assert.match(control, /isValidSignature/);

@@ -36,8 +36,10 @@ test("desktop production guards reject dev-only startup flags outside debug buil
   assert.match(windowsMain, /INSERT INTO control_commands/);
   assert.match(windowsMain, /native\.production_guard/);
   assert.match(windowsMain, /dev_only_flag/);
-  assert.match(windowsDatabase, /CREATE TABLE IF NOT EXISTS control_sessions/);
-  assert.match(windowsDatabase, /CREATE TABLE IF NOT EXISTS control_commands/);
+  const controlMigration = read("db/sqlite/003_codex_control.sql");
+  assert.match(controlMigration, /CREATE TABLE IF NOT EXISTS control_sessions/);
+  assert.match(controlMigration, /CREATE TABLE IF NOT EXISTS control_commands/);
+  assert.match(windowsDatabase, /ApplyCheckedInMigrations\(\)/);
 
   assert.match(linuxMain, /terrane_reject_dev_only_flags_if_needed\(argc, argv\)/);
   assert.match(linuxMain, /terrane_application_argv_without_dev_flags\(argc, argv, &application_argc\)/);
@@ -51,8 +53,7 @@ test("desktop production guards reject dev-only startup flags outside debug buil
   assert.match(linuxMain, /INSERT INTO control_commands/);
   assert.match(linuxMain, /native\.production_guard/);
   assert.match(linuxMain, /dev_only_flag/);
-  assert.match(linuxDatabase, /CREATE TABLE IF NOT EXISTS control_sessions/);
-  assert.match(linuxDatabase, /CREATE TABLE IF NOT EXISTS control_commands/);
+  assert.match(linuxDatabase, /apply_checked_in_migrations/);
   assert.match(linuxMeson, /'b_ndebug=if-release'/);
 });
 

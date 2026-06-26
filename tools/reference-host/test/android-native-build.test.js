@@ -360,13 +360,13 @@ test("Android debug dev control registers and consumes DB-backed network and dia
   }
 
   for (const snippet of [
-    "PlatformNetwork(database)",
+    "PlatformNetwork(database, core)",
   ]) {
     assert.equal(bridge.includes(snippet), true, `Android bridge mock source should contain ${snippet}`);
   }
 
   for (const snippet of [
-    "class PlatformNetwork(private val database: PlatformDatabase? = null)",
+    "private val database: PlatformDatabase? = null,",
     "val mocked = mockedNetworkResponse(request, rule, urlText, method, effectiveTimeoutMs)",
     "mockedNetworkResponse",
     "findNetworkMock",

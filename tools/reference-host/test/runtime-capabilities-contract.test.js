@@ -86,8 +86,8 @@ test("native capability implementations expose app-scoped manifest capability id
       target: "macos",
       source: "native/macos/Sources/TerraneHostMac/WebBridge.swift",
       snippets: [
-        '"platform": "macos"',
-        '"target": "macos"',
+        '"platform": catalog.runtimeConfig.platform',
+        '"target": catalog.runtimeConfig.target',
         '"appId": request.context.appId',
         '"devMode": nativeDevMode',
         '"storage.read": true',
@@ -162,6 +162,13 @@ test("native capability implementations expose app-scoped manifest capability id
       assert.equal(source.includes(snippet), true, `${contract.target} runtime.capabilities missing ${snippet}`);
     }
   }
+
+  // The macOS block now sources platform/target from the shared ForgeDataCatalog
+  // (catalog.runtimeConfig.*) instead of hardcoded literals. Pin the app-visible
+  // values in the shared data file so this contract stays verified.
+  const runtimeConfig = readJson(path.join(repoRoot, "forge", "data", "runtime-config.json"));
+  assert.equal(runtimeConfig.platform, "macos", "shared runtime-config platform feeds macOS runtime.capabilities");
+  assert.equal(runtimeConfig.target, "macos", "shared runtime-config target feeds macOS runtime.capabilities");
 });
 
 test("Forge server exposes the CoreCommand HTTP replacement surface", () => {

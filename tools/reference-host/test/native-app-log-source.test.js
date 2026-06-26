@@ -44,7 +44,10 @@ test("native bridges validate and budget app.log", () => {
   assert.match(macosBridge, /bridgeCallCount\(appId: request\.context\.appId, method: "app\.log", seconds: 60\)/);
   assert.match(macosBridge, /for \(key, value\) in request\.context\.resourceBudget/);
   assert.match(macosBridge, /let resourceBudget: \[String: Int\]/);
-  assert.match(macosBridge, /metadata_json\)\n\s+VALUES \(\?, 'macos', 'macos', '0\.1\.0'/);
+  assert.match(macosBridge, /metadata_json\)\n\s+VALUES \(\?, 'macos', 'macos', \?, /);
+  // The runtime_version literal moved into shared config; assert it still carries a valid semver.
+  const runtimeConfig = JSON.parse(read("forge/data/runtime-config.json"));
+  assert.match(runtimeConfig.runtimeVersion, /^\d+\.\d+\.\d+$/);
   assert.match(macosControl, /resourceBudget: AppSandboxContext\.resourceBudget\(from: manifest\)/);
 
   assert.match(windowsBridge, /json::JsonObject WebBridge::AppLog\(BridgeRequest const& request\) const/);

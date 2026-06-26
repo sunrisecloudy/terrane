@@ -23,7 +23,7 @@ const targetAssertions = [
           "PRAGMA integrity_check",
           'Bundle.main.resourceURL?.appendingPathComponent("db/sqlite")',
           'RuntimeResourceLocator.repoRootURL().appendingPathComponent("db/sqlite")',
-          "CREATE TABLE IF NOT EXISTS apps",
+          "applyCheckedInMigrations",
         ],
       },
       {
@@ -53,7 +53,6 @@ const targetAssertions = [
           "PRAGMA foreign_keys = ON",
           "PRAGMA integrity_check",
           "RuntimeResourceLocator.sqliteMigrationsDirectoryURL()",
-          "CREATE TABLE IF NOT EXISTS apps",
         ],
       },
       {
@@ -83,7 +82,6 @@ const targetAssertions = [
           "PRAGMA foreign_keys = ON",
           "PRAGMA integrity_check",
           'assets.list("db/sqlite")',
-          "CREATE TABLE IF NOT EXISTS apps",
         ],
       },
       {
@@ -111,7 +109,7 @@ const targetAssertions = [
           "PRAGMA foreign_keys = ON",
           "PRAGMA integrity_check",
           'L"db" / L"sqlite"',
-          "CREATE TABLE IF NOT EXISTS apps",
+          "ApplyCheckedInMigrations",
         ],
       },
       {
@@ -154,7 +152,7 @@ const targetAssertions = [
           '"resources", "db", "sqlite"',
           '"db", "sqlite"',
           "g_dir_open",
-          "CREATE TABLE IF NOT EXISTS apps",
+          "apply_checked_in_migrations",
         ],
       },
       {
@@ -223,6 +221,8 @@ function collectNativeSourceFiles(directory) {
 }
 
 test("native host scaffolds use SQLite-backed storage by default", () => {
+  const initialMigration = readRepoFile("db/sqlite/001_initial.sql");
+  assert.match(initialMigration, /CREATE TABLE IF NOT EXISTS apps/);
   for (const target of targetAssertions) {
     for (const file of target.files) {
       const text = readRepoFile(file.path);

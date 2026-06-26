@@ -57,7 +57,8 @@ test("macOS bridge quarantines and restores after repeated resource budget error
   assert.match(macosBridge, /BridgeBudgetQuarantine\.maybeQuarantineAfterBudgetError\(/);
   assert.match(macosControl, /BridgeBudgetQuarantine\.maybeQuarantineAfterBudgetError\(/);
   assert.match(macosBudgetQuarantine, /error\?\["code"\] as\? String == "resource_budget_exceeded"/);
-  assert.match(macosBudgetQuarantine, /bridgeBudgetErrorCountSince\(database: database, appId: appId, installId: installId, seconds: 60\) >= 3/);
+  assert.match(macosBudgetQuarantine, /let count = bridgeBudgetErrorCountSince\(database: database, appId: appId, installId: installId, seconds: 60\)/);
+  assert.match(macosBudgetQuarantine, /count >= 3/);
   assert.match(macosBudgetQuarantine, /activeInstallId\(database: database, appId: appId\) == installId/);
   assert.match(macosBudgetQuarantine, /quarantineWebapp\(/);
   assert.match(macosBudgetQuarantine, /restorePrevious: true/);

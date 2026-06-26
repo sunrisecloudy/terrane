@@ -81,7 +81,13 @@ test("macOS WebView crash recovery records failed runtime session and reload act
   assert.match(macosCrashRecovery, /status = 'failed'/);
   assert.match(macosCrashRecovery, /"reason": "web_content_process_terminated"/);
   assert.match(macosCrashRecovery, /"reloadOffered": true/);
-  assert.match(macosCrashRecovery, /"canAutoRemount": previousMountCompletedReady/);
+  assert.match(macosCrashRecovery, /"canAutoRemount": canAutoRemount/);
+  // The crash-recovery dict was extracted into coreCrashRecovery(canAutoRemount:);
+  // confirm previousMountCompletedReady is still the source threaded into that param.
+  assert.match(
+    macosCrashRecovery,
+    /coreCrashRecovery\(canAutoRemount: previousMountCompletedReady\)/
+  );
 });
 
 function read(relativePath) {

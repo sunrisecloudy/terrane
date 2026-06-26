@@ -556,7 +556,7 @@ test("iOS debug dev control health endpoint is source-wired and token-gated", ()
     "\"appMigrations\"",
     "\"appInstallReports\"",
     "\"debug-bundle\"",
-    "\"sha256:\"",
+    "sha256:\\(Self.sha256Hex",
     "source_platform",
     "LIMIT ?",
     "appFilterColumn",
