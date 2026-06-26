@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use terrane_core::Core;
-use terrane_domain::Command;
+use terrane_domain::{Command, Event};
+
+mod net;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -33,6 +35,8 @@ fn run(argv: &[&str]) -> Result<(), String> {
         }
         ["app", rest @ ..] => run_app(rest),
         ["kv", rest @ ..] => run_kv(rest),
+        ["fetch", app, url] => run_fetch(app, url),
+        ["fetched", app] => run_fetched(app),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
         [other, ..] => Err(format!("unknown command {other:?} (try `terrane help`)")),
@@ -144,6 +148,39 @@ fn run_kv(argv: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Perform a network fetch for an app. The HTTP GET runs here, at the edge; its
+/// result is recorded as an event, so `replay` reproduces it without the network.
+fn run_fetch(app: &str, url: &str) -> Result<(), String> {
+    let mut core = open()?;
+    let events = core
+        .execute(Command::Fetch {
+            app: app.to_string(),
+            url: url.to_string(),
+        })
+        .map_err(|e| e.to_string())?;
+    if let Some(Event::Fetched { status, body, .. }) = events.first() {
+        println!("fetched {url} → {status} ({} bytes)", body.len());
+    }
+    Ok(())
+}
+
+/// List an app's recorded network responses (read from State, no network).
+fn run_fetched(app: &str) -> Result<(), String> {
+    let core = open()?;
+    match core.state().fetches.get(app) {
+        Some(responses) if !responses.is_empty() => {
+            for (url, resp) in responses {
+                println!("{url}\t{} ({} bytes)", resp.status, resp.body.len());
+            }
+            Ok(())
+        }
+        _ => {
+            println!("(no fetches for {app})");
+            Ok(())
+        }
+    }
+}
+
 /// Decode the binary event log and print it for humans — the inspectability we
 /// kept when moving the log from JSON to borsh.
 fn run_log() -> Result<(), String> {
@@ -197,8 +234,8 @@ fn parse_add(rest: &[&str]) -> Result<(String, Option<String>), String> {
     Ok((name_parts.join(" "), source))
 }
 
-fn open() -> Result<Core, String> {
-    Core::open(log_path()).map_err(|e| e.to_string())
+fn open() -> Result<Core<net::HttpGetRunner>, String> {
+    Core::open_with(log_path(), net::HttpGetRunner).map_err(|e| e.to_string())
 }
 
 fn log_path() -> PathBuf {
@@ -220,6 +257,8 @@ fn print_help() {
          \x20 terrane kv get <app> <key>     read a value\n\
          \x20 terrane kv list <app>          list an app's stored data\n\
          \x20 terrane kv rm <app> <key>      delete a value\n\
+         \x20 terrane fetch <app> <url>      GET a url; record the response\n\
+         \x20 terrane fetched <app>          list an app's recorded responses\n\
          \x20 terrane log                    print the event log (decoded)\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
          \x20 terrane help                   this message\n\n\

@@ -50,6 +50,14 @@ pub enum Command {
         app: AppId,
         key: String,
     },
+    /// Fetch `url` over the network into `app`'s recorded responses. This is the
+    /// engine's first *effectful* command: it is performed at the edge and its
+    /// result is recorded as [`Event::Fetched`], so replay reproduces it without
+    /// touching the network.
+    Fetch {
+        app: AppId,
+        url: String,
+    },
 }
 
 /// A fact that has happened. Events are the durable truth: the log is a list of
@@ -76,15 +84,34 @@ pub enum Event {
         app: AppId,
         key: String,
     },
+    /// The recorded result of a `Fetch`. Carrying the body in the event is what
+    /// makes the non-deterministic network call deterministic on replay.
+    Fetched {
+        app: AppId,
+        url: String,
+        status: u16,
+        body: String,
+    },
 }
 
-/// The whole world the core holds: the catalog of saved apps plus each app's
-/// key/value resource. Keyed and ordered (BTreeMap keeps iteration
-/// deterministic, which keeps replay deterministic).
+/// A recorded network response, rebuilt by folding a `Fetched` event. It lives
+/// in State so apps can read what was fetched; it is never serialized directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchResponse {
+    pub status: u16,
+    pub body: String,
+}
+
+/// The whole world the core holds: the catalog of saved apps, each app's
+/// key/value resource, and each app's recorded network responses. Keyed and
+/// ordered (BTreeMap keeps iteration deterministic, which keeps replay
+/// deterministic).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     pub apps: BTreeMap<AppId, AppRecord>,
     pub data: BTreeMap<AppId, BTreeMap<String, String>>,
+    /// Recorded network responses per app, keyed by URL.
+    pub fetches: BTreeMap<AppId, BTreeMap<String, FetchResponse>>,
 }
 
 /// Typed errors. No panics on real paths — every failure is one of these.
