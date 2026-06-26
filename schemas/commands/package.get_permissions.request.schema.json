@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/package.get_permissions.request.schema.json",
+  "title": "package.get_permissions request",
+  "description": "Preview schema for package.get_permissions. Legacy webapp: read package permissions. Full schema pending.",
+  "type": "object"
+}

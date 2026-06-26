@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/runtime.replay_session.response.schema.json",
+  "title": "runtime.replay_session response",
+  "description": "Preview schema for runtime.replay_session. Replay an ordered interactive session (run + UI events). Full schema pending.",
+  "type": "object"
+}

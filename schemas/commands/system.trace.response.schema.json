@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "run_id": { "type": "string" },
+    "applet_id": { "type": "string" },
+    "calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "seq": { "type": "integer" },
+          "method": { "type": "string" },
+          "args": {},
+          "response": {}
+        },
+        "required": ["seq", "method", "args", "response"]
+      }
+    },
+    "truncated": { "type": "boolean" }
+  },
+  "required": ["run_id", "calls", "truncated"],
+  "additionalProperties": false
+}

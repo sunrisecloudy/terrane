@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/package.get_manifest.response.schema.json",
+  "title": "package.get_manifest response",
+  "description": "Preview schema for package.get_manifest. Legacy webapp: read the trusted package manifest. Full schema pending.",
+  "type": "object"
+}

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/applet.upgrade.response.schema.json",
+  "title": "applet.upgrade response",
+  "description": "Preview schema for applet.upgrade. Atomically upgrade an active applet to a new version. Full schema pending.",
+  "type": "object"
+}

@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/package.list_versions.request.schema.json",
+  "title": "package.list_versions request",
+  "description": "Preview schema for package.list_versions. Legacy webapp: list installed package versions. Full schema pending.",
+  "type": "object"
+}

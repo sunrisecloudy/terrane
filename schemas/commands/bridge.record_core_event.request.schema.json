@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/bridge.record_core_event.request.schema.json",
+  "title": "bridge.record_core_event request",
+  "description": "Preview schema for bridge.record_core_event. Phase C bridge: record a core event from the bridge. Full schema pending.",
+  "type": "object"
+}

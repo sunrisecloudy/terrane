@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/query.execute.request.schema.json",
+  "title": "query.execute request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["collection"],
+  "properties": {
+    "collection": {
+      "type": "string",
+      "description": "Collection to read from the records projection."
+    },
+    "grants": {
+      "type": "object",
+      "description": "Optional payload-side grant narrowing (never widens trusted scope).",
+      "additionalProperties": false,
+      "properties": {
+        "db": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "read": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

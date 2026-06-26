@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/workspace.open.request.schema.json",
+  "title": "workspace.open request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {}
+}

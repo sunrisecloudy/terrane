@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/sync.trust_peer.response.schema.json",
+  "title": "sync.trust_peer response",
+  "description": "Preview schema for sync.trust_peer. Trust a sync peer for CRDT import authorization. Full schema pending.",
+  "type": "object"
+}

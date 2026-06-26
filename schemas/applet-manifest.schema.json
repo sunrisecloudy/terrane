@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/applet-manifest.schema.json",
+  "title": "Forge Applet Manifest",
+  "description": "Runnable applet manifest (forge_domain::Manifest): capabilities, limits, and entrypoint. Distinct from the generated-webapp manifest.schema.json.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["entrypoint"],
+  "properties": {
+    "entrypoint": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Source path key in the install sources map that is the runnable program."
+    },
+    "min_api": {
+      "type": "string",
+      "pattern": "^forge-api@",
+      "default": "forge-api@0.1"
+    },
+    "deterministic": {
+      "type": "boolean",
+      "default": false
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "storage": {
+          "type": "object",
+          "properties": {
+            "read": { "type": "array", "items": { "type": "string" } },
+            "write": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "db": {
+          "type": "object",
+          "properties": {
+            "read": { "type": "array", "items": { "type": "string" } },
+            "write": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "ui": { "type": "boolean" },
+        "time": { "type": "boolean" },
+        "random": { "type": "boolean" },
+        "net": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/netRule" }
+        },
+        "files": {
+          "type": "object",
+          "properties": {
+            "read": { "type": "array", "items": { "$ref": "#/$defs/fileRule" } },
+            "write": { "type": "array", "items": { "$ref": "#/$defs/fileRule" } }
+          }
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "properties": {
+        "wall_ms": { "type": "integer", "minimum": 1 },
+        "fuel": { "type": "integer", "minimum": 1 },
+        "memory_bytes": { "type": "integer", "minimum": 1 },
+        "max_host_calls": { "type": "integer", "minimum": 1 },
+        "storage_bytes": { "type": "integer", "minimum": 0 },
+        "log_bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "properties": {
+        "min_app_version": { "type": "string" },
+        "required_features": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["feature_id"],
+            "properties": {
+              "feature_id": { "type": "string" },
+              "min_version": { "type": "string", "default": "0" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "netRule": {
+      "type": "object",
+      "required": ["method", "url"],
+      "properties": {
+        "method": { "type": "string" },
+        "url": { "type": "string" },
+        "max_response_bytes": { "type": "integer" },
+        "max_body_bytes": { "type": "integer" },
+        "timeout_ms": { "type": "integer" },
+        "request_content_types": { "type": "array", "items": { "type": "string" } },
+        "response_content_types": { "type": "array", "items": { "type": "string" } },
+        "allow_secret_headers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "fileRule": {
+      "type": "object",
+      "required": ["handle", "path_glob"],
+      "properties": {
+        "handle": { "type": "string" },
+        "path_glob": { "type": "string" },
+        "max_bytes": { "type": "integer" },
+        "content_types": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

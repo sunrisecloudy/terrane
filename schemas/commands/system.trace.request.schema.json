@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "run_id": { "type": "string", "description": "Run id to trace." },
+    "since_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Return calls with seq >= since_seq (default 0)."
+    },
+    "methods": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Optional filter: only these host-call methods."
+    }
+  },
+  "required": ["run_id"],
+  "additionalProperties": false
+}

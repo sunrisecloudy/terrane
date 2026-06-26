@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/schema.rebuild_indexes.response.schema.json",
+  "title": "schema.rebuild_indexes response",
+  "description": "Preview schema for schema.rebuild_indexes. Rebuild collection indexes from the schema registry. Full schema pending.",
+  "type": "object"
+}

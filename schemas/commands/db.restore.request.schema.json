@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/db.restore.request.schema.json",
+  "title": "db.restore request",
+  "description": "Preview schema for db.restore. Non-destructive restore: append a new record version. Full schema pending.",
+  "type": "object"
+}
