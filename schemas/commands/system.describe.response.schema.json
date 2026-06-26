@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/system.describe.response.schema.json",
+  "title": "system.describe response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "catalogVersion",
+    "runtimeVersion",
+    "commands",
+    "roles",
+    "tiers",
+    "effectiveRole",
+    "maxTier"
+  ],
+  "properties": {
+    "catalogVersion": {
+      "type": "string",
+      "description": "Stable hash over the sorted command catalog."
+    },
+    "runtimeVersion": {
+      "type": "string"
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["name", "namespace", "summary", "surface", "mutates", "effectful", "visibility", "required_roles", "stability", "since"],
+        "properties": {
+          "name": { "type": "string" },
+          "namespace": { "type": "string" },
+          "summary": { "type": "string" },
+          "surface": { "type": "string", "enum": ["outer", "inner"] },
+          "mutates": { "type": "boolean" },
+          "effectful": { "type": "boolean" },
+          "visibility": { "type": "string", "enum": ["public", "operator", "admin", "debug"] },
+          "required_roles": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "payload_schema": { "type": "string" },
+          "response_schema": { "type": "string" },
+          "events": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "stability": { "type": "string", "enum": ["stable", "preview", "legacy", "deprecated"] },
+          "since": { "type": "string" }
+        }
+      }
+    },
+    "roles": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tiers": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "effectiveRole": { "type": "string" },
+    "maxTier": { "type": "string" }
+  }
+}
