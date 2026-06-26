@@ -114,7 +114,7 @@ pub fn decode_event<E: BorshDeserialize>(record: &EventRecord) -> Result<E> {
 }
 
 /// The namespace of a dotted name (`"app.add"` → `"app"`).
-fn namespace_of(name: &str) -> Result<&str> {
+pub(crate) fn namespace_of(name: &str) -> Result<&str> {
     name.split_once('.')
         .map(|(ns, _)| ns)
         .ok_or_else(|| Error::InvalidInput(format!("command name must be 'namespace.verb': {name}")))
@@ -137,7 +137,7 @@ impl Registry {
         self.caps.insert(capability.namespace(), capability);
     }
 
-    fn get(&self, namespace: &str) -> Result<&dyn Capability> {
+    pub(crate) fn get(&self, namespace: &str) -> Result<&dyn Capability> {
         self.caps
             .get(namespace)
             .map(AsRef::as_ref)
@@ -157,7 +157,7 @@ pub fn default_registry() -> Registry {
 }
 
 /// Offer one recorded event to every capability (broadcast fold).
-fn apply(registry: &Registry, state: &mut State, record: &EventRecord) -> Result<()> {
+pub(crate) fn apply(registry: &Registry, state: &mut State, record: &EventRecord) -> Result<()> {
     for capability in registry.caps.values() {
         capability.fold(state, record)?;
     }
@@ -203,6 +203,9 @@ pub struct Core<R: EffectRunner = NoEffects> {
     state: State,
     runner: R,
     registry: Registry,
+    /// String printed by the most recent `host.run` backend, if any. Not part of
+    /// State, never logged or replayed — purely a transport for the host to print.
+    last_output: Option<String>,
 }
 
 impl Core<NoEffects> {
@@ -227,6 +230,7 @@ impl<R: EffectRunner> Core<R> {
             state,
             runner,
             registry,
+            last_output: None,
         })
     }
 
@@ -240,6 +244,14 @@ impl<R: EffectRunner> Core<R> {
     /// written unless the command succeeds.
     pub fn dispatch(&mut self, request: Request) -> Result<Vec<EventRecord>> {
         let namespace = namespace_of(&request.name)?;
+
+        // `host.run` re-dispatches the backend's kv.* writes and therefore needs
+        // &mut self, which a pure decide (&State) cannot have. Every other command
+        // goes through the unchanged decide -> commit path.
+        if request.name == "host.run" {
+            return self.run_backend(&request.args);
+        }
+
         let decision =
             self.registry
                 .get(namespace)?
@@ -251,6 +263,37 @@ impl<R: EffectRunner> Core<R> {
                 self.commit(records)
             }
         }
+    }
+
+    /// Execute `host.run app [input…]`: load the app's bundle, run its JS backend
+    /// in QuickJS over a sandboxed app-scoped `ctx.resource`, commit the `kv.*`
+    /// records it produced (so the global log holds only ordinary events), and
+    /// stash the backend's printed string for [`take_last_output`](Self::take_last_output).
+    /// JS runs once here, never on replay.
+    fn run_backend(&mut self, args: &[String]) -> Result<Vec<EventRecord>> {
+        let app = cap::arg(args, 0, "app")?;
+        let input: Vec<String> = args.get(1..).unwrap_or_default().to_vec();
+
+        let source = self
+            .state
+            .app
+            .apps
+            .get(&app)
+            .ok_or_else(|| Error::AppNotFound(app.clone()))?
+            .source
+            .clone()
+            .ok_or_else(|| Error::Runtime(format!("app {app} has no --source bundle")))?;
+
+        let result = cap::host::run(&app, &input, &source, self.state.clone())?;
+        let records = self.commit(result.records)?;
+        self.last_output = Some(result.output);
+        Ok(records)
+    }
+
+    /// Take the string printed by the most recent `host.run` (if any). Not part
+    /// of State; never logged or replayed.
+    pub fn take_last_output(&mut self) -> Option<String> {
+        self.last_output.take()
     }
 
     /// Human-readable lines for the event log, asking each event's owning
