@@ -64,33 +64,32 @@ fn open_core() -> Result<Core<EdgeRunner>, String> {
     Ok(core)
 }
 
-/// The fields we need off any incoming JSON-RPC message. `method` parses via
-/// nanoserde (unknown fields are skipped); `id` is extracted raw so we can echo
-/// it back verbatim regardless of whether it's a number or a string.
-#[derive(DeJson)]
-struct Rpc {
-    #[nserde(default)]
-    method: String,
-}
-
 /// Route one message. Returns the response line, or `None` for notifications
 /// (no `id`) and messages we don't answer.
+///
+/// The JSON-RPC envelope is parsed STRUCTURALLY (top-level object only), not by
+/// substring scan or whole-message nanoserde: `id` is captured as its exact
+/// source token so it echoes back verbatim whatever its type, and a value we
+/// don't read (a giant `id`, an unusual `params`) can never drop the message.
 fn handle(core: &mut Core<EdgeRunner>, raw: &str) -> Option<String> {
-    let rpc: Rpc = match DeJson::deserialize_json(raw) {
-        Ok(rpc) => rpc,
-        Err(e) => {
-            eprintln!("terrane-mcp: ignoring unparseable message: {e}");
-            return None;
-        }
-    };
-    let id = extract_id(raw);
-    match rpc.method.as_str() {
-        "initialize" => id.map(|id| ok(&id, &initialize_result())),
-        "ping" => id.map(|id| ok(&id, "{}")),
-        "tools/list" => id.map(|id| ok(&id, &tools_list_result())),
-        "tools/call" => id.map(|id| tool_call(core, &id, raw)),
-        // Notifications (no id) and anything else we don't implement.
-        other => id.map(|id| error(&id, -32601, &format!("method not found: {other}"))),
+    let fields = top_level_fields(raw);
+    let field = |name: &str| fields.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
+
+    // A present, non-null top-level id means a request that needs a response.
+    let id = field("id").filter(|v| *v != "null");
+    let method = field("method").and_then(json_string_value);
+
+    match method {
+        Some("initialize") => id.map(|id| ok(id, &initialize_result())),
+        Some("ping") => id.map(|id| ok(id, "{}")),
+        Some("tools/list") => id.map(|id| ok(id, &tools_list_result())),
+        Some("tools/call") => id.map(|id| tool_call(core, id, field("params").unwrap_or("{}"))),
+        // Notifications (no id) are silently accepted; a request with an
+        // unknown/!string method still gets a proper error reply.
+        _ => id.map(|id| {
+            let shown = field("method").unwrap_or("(none)");
+            error(id, -32601, &format!("method not found: {shown}"))
+        }),
     }
 }
 
@@ -117,11 +116,6 @@ fn tools_list_result() -> String {
 }
 
 #[derive(DeJson)]
-struct CallWrap {
-    params: CallParams,
-}
-
-#[derive(DeJson)]
 struct CallParams {
     name: String,
     #[nserde(default)]
@@ -138,13 +132,15 @@ struct CallArgs {
     args: Vec<String>,
 }
 
-fn tool_call(core: &mut Core<EdgeRunner>, id: &str, raw: &str) -> String {
-    let call: CallWrap = match DeJson::deserialize_json(raw) {
-        Ok(call) => call,
+/// Handle `tools/call`. `params_raw` is the isolated top-level `params` object,
+/// so nanoserde only ever parses that sub-object (never the whole envelope).
+fn tool_call(core: &mut Core<EdgeRunner>, id: &str, params_raw: &str) -> String {
+    let params: CallParams = match DeJson::deserialize_json(params_raw) {
+        Ok(params) => params,
         Err(e) => return error(id, -32602, &format!("invalid params: {e}")),
     };
-    let args = call.params.arguments;
-    match call.params.name.as_str() {
+    let args = params.arguments;
+    match params.name.as_str() {
         TOOL_LIST_APPS => tool_text(id, &list_apps(core), false),
         TOOL_INVOKE => {
             if args.app.is_empty() || args.verb.is_empty() {
@@ -233,35 +229,113 @@ fn json_str(s: &str) -> String {
     s.to_string().serialize_json()
 }
 
-/// Pull the raw `id` token (number or quoted string) out of a JSON-RPC message so
-/// we can echo it back verbatim. Returns `None` for notifications (no top-level
-/// `id`) or a `null` id. Tolerant of optional space after the key.
-fn extract_id(raw: &str) -> Option<String> {
-    let key = raw.find("\"id\"")?;
-    let after_key = raw[key + 4..].trim_start();
-    let after_colon = after_key.strip_prefix(':')?.trim_start();
-    let token = if let Some(rest) = after_colon.strip_prefix('"') {
-        // String id: take through the closing quote (minimal escape handling).
-        let bytes = rest.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            match bytes[i] {
-                b'\\' => i += 2,
-                b'"' => break,
-                _ => i += 1,
-            }
+/// Parse the **top-level** object of a JSON message into `(key, raw_value)`
+/// pairs, where each value is its exact source slice (balanced for
+/// objects/arrays/strings) — so `id` can be echoed back verbatim and `params`
+/// handed to nanoserde without re-parsing the whole frame. Only depth-1 keys are
+/// returned; nested keys are ignored. Empty if the input isn't a JSON object.
+fn top_level_fields(raw: &str) -> Vec<(&str, &str)> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::new();
+    let mut i = skip_ws(bytes, 0);
+    if bytes.get(i) != Some(&b'{') {
+        return out;
+    }
+    i += 1;
+    loop {
+        i = skip_ws(bytes, i);
+        match bytes.get(i) {
+            Some(b'"') => {}
+            _ => return out, // '}' (done) or malformed
         }
-        format!("\"{}\"", &rest[..i.min(rest.len())])
-    } else {
-        // Number id: up to the next delimiter.
-        let end = after_colon
-            .find(|c: char| c == ',' || c == '}' || c.is_whitespace())
-            .unwrap_or(after_colon.len());
-        after_colon[..end].to_string()
-    };
-    if token.is_empty() || token == "null" {
-        None
-    } else {
-        Some(token)
+        let Some(key_end) = scan_string_end(bytes, i) else {
+            return out;
+        };
+        let key = &raw[i + 1..key_end - 1]; // inner (our keys are escape-free)
+        i = skip_ws(bytes, key_end);
+        if bytes.get(i) != Some(&b':') {
+            return out;
+        }
+        i = skip_ws(bytes, i + 1);
+        let Some(value_end) = scan_value(bytes, i) else {
+            return out;
+        };
+        out.push((key, &raw[i..value_end]));
+        i = skip_ws(bytes, value_end);
+        match bytes.get(i) {
+            Some(b',') => i += 1,
+            _ => return out, // '}' (done) or malformed
+        }
+    }
+}
+
+/// The inner text of a JSON string token (`"x"` → `x`), or `None` if `raw` isn't
+/// a quoted string. Used for method names (escape-free), so no unescaping.
+fn json_string_value(raw: &str) -> Option<&str> {
+    raw.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+}
+
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
+        i += 1;
+    }
+    i
+}
+
+/// Index just past the closing quote of the string starting at `start`. Byte-safe
+/// (UTF-8 continuation bytes are never `"` or `\`).
+fn scan_string_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2,
+            b'"' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Index just past the JSON value starting at `start` (string, balanced
+/// object/array, or primitive). `None` if it runs off the end.
+fn scan_value(bytes: &[u8], start: usize) -> Option<usize> {
+    match bytes.get(start)? {
+        b'"' => scan_string_end(bytes, start),
+        b'{' | b'[' => {
+            let mut depth = 0usize;
+            let mut i = start;
+            let mut in_str = false;
+            while i < bytes.len() {
+                let c = bytes[i];
+                if in_str {
+                    match c {
+                        b'\\' => i += 1,
+                        b'"' => in_str = false,
+                        _ => {}
+                    }
+                } else {
+                    match c {
+                        b'"' => in_str = true,
+                        b'{' | b'[' => depth += 1,
+                        b'}' | b']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return Some(i + 1);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                i += 1;
+            }
+            None
+        }
+        _ => {
+            let mut i = start;
+            while i < bytes.len() && !matches!(bytes[i], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r') {
+                i += 1;
+            }
+            (i > start).then_some(i)
+        }
     }
 }

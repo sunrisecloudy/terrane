@@ -113,6 +113,32 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     let unknown = read_line(&mut out);
     assert!(unknown.contains("unknown tool"), "unknown tool: {unknown}");
 
+    // --- regression: structural id parsing (the extract_id substring bug) ---
+
+    // A tool ARGUMENT literally equal to "id" must NOT swallow the response: the
+    // old substring scan matched the "id" inside args:["id"] and dropped the reply.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["id"]}}}"#,
+    );
+    let with_id_arg = read_line(&mut out);
+    assert!(with_id_arg.contains("\"id\":7"), "top-level id echoed, not the arg: {with_id_arg}");
+    assert!(with_id_arg.contains("added: id"), "added the literal 'id': {with_id_arg}");
+
+    // A nested "id" before the top-level id must not be echoed in its place.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","method":"ping","params":{"item":{"id":555}},"id":8}"#,
+    );
+    let nested = read_line(&mut out);
+    assert!(nested.contains("\"id\":8"), "echoed top-level id 8, not nested 555: {nested}");
+    assert!(!nested.contains("555"), "nested id leaked: {nested}");
+
+    // A string id round-trips verbatim.
+    send(&mut stdin, r#"{"jsonrpc":"2.0","id":"abc-9","method":"tools/list"}"#);
+    let strid = read_line(&mut out);
+    assert!(strid.contains("\"id\":\"abc-9\""), "string id echoed: {strid}");
+
     // EOF → the server exits cleanly.
     drop(stdin);
     let mut rest = String::new();

@@ -23,6 +23,12 @@ fn invoke_request_parses_real_client_json() {
     let req = InvokeRequest::deserialize_json(r#"{"verb":"add","args":["buy milk"]}"#).unwrap();
     assert_eq!(req.verb, "add");
     assert_eq!(req.args, vec!["buy milk".to_string()]);
+
+    // `args` is optional (matches the MCP invoke schema) — an arg-less verb may
+    // omit it, defaulting to empty.
+    let bare = InvokeRequest::deserialize_json(r#"{"verb":"list"}"#).unwrap();
+    assert_eq!(bare.verb, "list");
+    assert!(bare.args.is_empty());
 }
 
 #[test]

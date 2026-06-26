@@ -74,6 +74,10 @@ pub struct AppsResponse {
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
 pub struct InvokeRequest {
     pub verb: String,
+    /// Optional — a verb with no arguments may omit it. This matches the MCP
+    /// `invoke` tool's schema (`required: [app, verb]`), so the HTTP and MCP
+    /// shapes agree.
+    #[nserde(default)]
     pub args: Vec<String>,
 }
 

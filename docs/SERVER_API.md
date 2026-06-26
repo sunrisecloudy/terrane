@@ -66,8 +66,12 @@ act on it**. Tools:
 // tools/call → invoke
 { "name": "invoke",
   "arguments": { "app": "todo-cli-collaborate", "verb": "add", "args": ["buy milk"] } }
-// → content: [{ "type": "text", "text": "added: buy milk" }]
+// → { content: [{ "type": "text", "text": "added: buy milk" }], isError: false }
 ```
+
+Every `tools/call` result carries `isError`. Tool-level failures (unknown app, a
+backend error) come back as a result with `isError: true` and the message as
+text — not as a JSON-RPC error — so the model sees them.
 
 ---
 
