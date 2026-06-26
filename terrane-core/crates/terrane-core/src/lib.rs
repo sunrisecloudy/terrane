@@ -27,7 +27,7 @@ use terrane_domain::{AppRecord, Command, Error, Event, Result, State};
 /// Pure: same `(state, cmd)` always yields the same result.
 pub fn decide(state: &State, cmd: &Command) -> Result<Vec<Event>> {
     match cmd {
-        Command::AddApp { id, name } => {
+        Command::AddApp { id, name, source } => {
             if id.trim().is_empty() {
                 return Err(Error::InvalidInput("app id must not be empty".into()));
             }
@@ -40,6 +40,7 @@ pub fn decide(state: &State, cmd: &Command) -> Result<Vec<Event>> {
             Ok(vec![Event::AppAdded {
                 id: id.clone(),
                 name: name.clone(),
+                source: source.clone(),
             }])
         }
         Command::RemoveApp { id } => {
@@ -54,12 +55,13 @@ pub fn decide(state: &State, cmd: &Command) -> Result<Vec<Event>> {
 /// Apply one Event to State. Pure and total — Events are already-true facts.
 pub fn fold(state: &mut State, event: &Event) {
     match event {
-        Event::AppAdded { id, name } => {
+        Event::AppAdded { id, name, source } => {
             state.apps.insert(
                 id.clone(),
                 AppRecord {
                     id: id.clone(),
                     name: name.clone(),
+                    source: source.clone(),
                 },
             );
         }
@@ -157,6 +159,7 @@ mod tests {
         Command::AddApp {
             id: id.into(),
             name: name.into(),
+            source: None,
         }
     }
 
@@ -179,6 +182,24 @@ mod tests {
         // A brand-new Core opened on the same log rebuilds the same world.
         let reopened = Core::open(&log).unwrap();
         assert_eq!(reopened.state(), &replayed);
+    }
+
+    #[test]
+    fn source_round_trips_through_the_log() {
+        let dir = tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let mut core = Core::open(&log).unwrap();
+        core.execute(Command::AddApp {
+            id: "notes".into(),
+            name: "Notes".into(),
+            source: Some("apps/notes".into()),
+        })
+        .unwrap();
+        let reopened = Core::open(&log).unwrap();
+        assert_eq!(
+            reopened.state().apps["notes"].source.as_deref(),
+            Some("apps/notes")
+        );
     }
 
     #[test]

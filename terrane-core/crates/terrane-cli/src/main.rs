@@ -39,17 +39,19 @@ fn run(argv: &[&str]) -> Result<(), String> {
 
 fn run_app(argv: &[&str]) -> Result<(), String> {
     match argv {
-        ["add", id, name @ ..] if !name.is_empty() => {
+        ["add", id, rest @ ..] => {
+            let (name, source) = parse_add(rest)?;
             let mut core = open()?;
             core.execute(Command::AddApp {
                 id: (*id).to_string(),
-                name: name.join(" "),
+                name,
+                source,
             })
             .map_err(|e| e.to_string())?;
             println!("added {id}");
             Ok(())
         }
-        ["add", ..] => Err("usage: terrane app add <id> <name…>".into()),
+        ["add", ..] => Err("usage: terrane app add <id> <name…> [--source <path>]".into()),
         ["list"] => {
             let core = open()?;
             let apps = &core.state().apps;
@@ -66,8 +68,9 @@ fn run_app(argv: &[&str]) -> Result<(), String> {
             let core = open()?;
             match core.state().apps.get(*id) {
                 Some(app) => {
-                    println!("id:   {}", app.id);
-                    println!("name: {}", app.name);
+                    println!("id:     {}", app.id);
+                    println!("name:   {}", app.name);
+                    println!("source: {}", app.source.as_deref().unwrap_or("(none)"));
                     Ok(())
                 }
                 None => Err(format!("app not found: {id}")),
@@ -98,6 +101,33 @@ fn run_replay() -> Result<(), String> {
     }
 }
 
+/// Parse the tail of `app add <id> …` into `(name, source)`, pulling out an
+/// optional `--source <path>` flag from among the name words.
+fn parse_add(rest: &[&str]) -> Result<(String, Option<String>), String> {
+    let mut name_parts: Vec<&str> = Vec::new();
+    let mut source = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--source" => {
+                let path = rest
+                    .get(i + 1)
+                    .ok_or("`--source` needs a path")?;
+                source = Some((*path).to_string());
+                i += 2;
+            }
+            word => {
+                name_parts.push(word);
+                i += 1;
+            }
+        }
+    }
+    if name_parts.is_empty() {
+        return Err("usage: terrane app add <id> <name…> [--source <path>]".into());
+    }
+    Ok((name_parts.join(" "), source))
+}
+
 fn open() -> Result<Core, String> {
     Core::open(log_path()).map_err(|e| e.to_string())
 }
@@ -113,7 +143,7 @@ fn print_help() {
     println!(
         "terrane — your local app catalog\n\n\
          USAGE:\n\
-         \x20 terrane app add <id> <name…>   save an app to the catalog\n\
+         \x20 terrane app add <id> <name…> [--source <path>]  save an app\n\
          \x20 terrane app list               list saved apps\n\
          \x20 terrane app show <id>          show one app\n\
          \x20 terrane app rm <id>            remove an app\n\

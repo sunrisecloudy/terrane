@@ -13,11 +13,15 @@ use std::collections::BTreeMap;
 /// Identifier for a saved app. Caller-supplied and stable.
 pub type AppId = String;
 
-/// A saved app, as the user sees it in their catalog.
+/// A saved app, as the user sees it in their catalog. `source` is where the
+/// app's body lives — a path to its bundle (UI + backend). It is metadata for
+/// now; the host will read it once it can run apps.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppRecord {
     pub id: AppId,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// An intent to change the catalog. Commands are *requests*; the engine decides
@@ -25,8 +29,15 @@ pub struct AppRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
-    AddApp { id: AppId, name: String },
-    RemoveApp { id: AppId },
+    AddApp {
+        id: AppId,
+        name: String,
+        #[serde(default)]
+        source: Option<String>,
+    },
+    RemoveApp {
+        id: AppId,
+    },
 }
 
 /// A fact that has happened. Events are the durable truth: the log is a list of
@@ -34,8 +45,15 @@ pub enum Command {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
-    AppAdded { id: AppId, name: String },
-    AppRemoved { id: AppId },
+    AppAdded {
+        id: AppId,
+        name: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+    },
+    AppRemoved {
+        id: AppId,
+    },
 }
 
 /// The whole world the core holds: the catalog of saved apps, keyed and ordered
