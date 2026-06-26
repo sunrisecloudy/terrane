@@ -38,6 +38,12 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 - Keep domain logic deterministic and replayable; effects live at the edge.
 - No `unwrap`/panics on real paths — return typed errors.
 - Reuse existing terrane-domain types and errors instead of redefining them.
+- **New commands are new capabilities.** Add a module under
+  `terrane-core/src/cap/` implementing `Capability` (namespace, decide, fold,
+  optional describe) and register it in `default_registry`. Never reintroduce a
+  central command/event enum or a central decide/fold match. Events are
+  name-tagged (`{kind, payload}`); cross-capability reactions go through
+  broadcast fold, not direct coupling.
 - **Tests live in their own files, never inline in the implementation.** Put
   them in the crate's `tests/` directory (integration tests over the public
   surface). The `src/*.rs` files hold code; the proofs live beside them.
