@@ -1,8 +1,8 @@
-//! e2e for `host` — drive the real `terrane` binary running the real
-//! `apps/todo` JS backend in QuickJS. Deterministic + local (no clock / rng /
-//! network), so it runs by DEFAULT. The replay assertion is the Option-A
-//! contract: the log holds only the kv.* events the backend emitted; `replay`
-//! rebuilds the todos by folding them, never by re-running JS.
+//! e2e for `host` — drive the real `terrane` binary running real app bundles in
+//! QuickJS. Deterministic + local (no clock / rng / network), so it runs by
+//! DEFAULT. The CLI lifecycle uses the UI-free `apps/todo-cli`; a smaller smoke
+//! exercises `apps/todo`'s UI-facing `items` verb. The replay assertion is the
+//! Option-A contract: the log holds only the kv.* events the backend emitted.
 
 use std::fs;
 use std::path::PathBuf;
@@ -12,69 +12,79 @@ use tempfile::tempdir;
 
 use crate::helpers::terrane;
 
-/// Absolute path to the repo's `apps/todo` bundle.
-fn todo_source() -> String {
+/// Absolute path to a repo app bundle (`apps/<name>`).
+fn app_source(name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")) // …/terrane-core/crates/terrane-cli
-        .join("../../../apps/todo") // repo-root/apps/todo
+        .join("../../../apps")
+        .join(name)
         .canonicalize()
-        .expect("apps/todo bundle exists")
+        .unwrap_or_else(|_| panic!("apps/{name} bundle exists"))
         .to_str()
         .unwrap()
         .to_string()
 }
 
 #[test]
-fn todo_backend_runs_and_replays() {
+fn todo_cli_backend_runs_and_replays() {
     let dir = tempdir().unwrap();
     let home = dir.path();
-    let src = todo_source();
+    let src = app_source("todo-cli");
 
-    let (ok, out, err) = terrane(home, &["app", "add", "todo", "Todo", "--source", &src]);
+    let (ok, out, err) = terrane(home, &["app", "add", "todo-cli", "Todo (CLI)", "--source", &src]);
     assert!(ok, "app add failed: {err}");
     assert!(out.contains("app.added"), "out: {out}");
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo", "add", "buy milk"]);
+    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "add", "buy milk"]);
     assert!(ok, "host run add failed: {err}");
     assert_eq!(out.trim(), "added #1 buy milk", "out: {out}");
 
-    let (ok, out, _) = terrane(home, &["host", "run", "todo", "add", "ship it"]);
+    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "add", "ship it"]);
     assert!(ok);
     assert_eq!(out.trim(), "added #2 ship it", "out: {out}");
 
-    // The UI-facing `items` verb returns structured JSON (no spaces from
-    // QuickJS JSON.stringify), and emits no events.
-    let (ok, out, _) = terrane(home, &["host", "run", "todo", "items"]);
-    assert!(ok);
-    assert_eq!(
-        out.trim(),
-        r#"[{"id":1,"text":"buy milk"},{"id":2,"text":"ship it"}]"#,
-        "items out: {out}"
-    );
-
-    let (ok, out, _) = terrane(home, &["host", "run", "todo", "list"]);
+    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "list"]);
     assert!(ok);
     assert_eq!(out.trim(), "#1 buy milk\n#2 ship it", "out: {out}");
 
-    let (ok, out, _) = terrane(home, &["host", "run", "todo", "done", "1"]);
+    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "done", "1"]);
     assert!(ok);
     assert_eq!(out.trim(), "done #1", "out: {out}");
 
-    let (ok, out, _) = terrane(home, &["host", "run", "todo", "list"]);
+    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "list"]);
     assert!(ok);
     assert_eq!(out.trim(), "#2 ship it", "out: {out}");
 
     // The log holds only app.added + kv.* — no host.* record (Option A).
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
-    assert!(log.contains("kv.set todo/seq = 1"), "log: {log}");
-    assert!(log.contains("kv.set todo/item:1 = buy milk"), "log: {log}");
-    assert!(log.contains("kv.deleted todo/item:1"), "log: {log}");
+    assert!(log.contains("kv.set todo-cli/seq = 1"), "log: {log}");
+    assert!(log.contains("kv.set todo-cli/item:1 = buy milk"), "log: {log}");
+    assert!(log.contains("kv.deleted todo-cli/item:1"), "log: {log}");
     assert!(!log.contains("host."), "no host.* in log: {log}");
 
     // Replay folds kv.* only; QuickJS is never re-entered.
     let (ok, out, err) = terrane(home, &["replay"]);
     assert!(ok, "replay failed: {err}");
     assert!(out.contains("replay ok"), "out: {out}");
+}
+
+/// Smoke the full `apps/todo` bundle's UI-facing `items` verb (the GUI app's
+/// data surface) — JSON, no spaces, emits no events.
+#[test]
+fn todo_app_items_returns_json() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let src = app_source("todo");
+
+    terrane(home, &["app", "add", "todo", "Todo", "--source", &src]);
+    terrane(home, &["host", "run", "todo", "add", "buy milk"]);
+
+    let (ok, out, err) = terrane(home, &["host", "run", "todo", "items"]);
+    assert!(ok, "items failed: {err}");
+    assert_eq!(out.trim(), r#"[{"id":1,"text":"buy milk"}]"#, "items out: {out}");
+
+    let (ok, _, _) = terrane(home, &["replay"]);
+    assert!(ok);
 }
 
 /// A backend that never returns must be interrupted by the time budget, not hang

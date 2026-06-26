@@ -1,6 +1,7 @@
 //! Smoke test for the `terrane-host` binary: its top-level `run` verb executes
-//! the real `apps/todo` JS backend and the world replays. The exhaustive logic
-//! lives in terrane-core/tests/cap/host.rs; this just proves the host front door.
+//! the real `apps/todo-cli` JS backend (the UI-free CLI app) and the world
+//! replays. The exhaustive logic lives in terrane-core/tests/cap/host.rs; this
+//! just proves the host front door.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,29 +21,29 @@ fn host(home: &Path, args: &[&str]) -> (bool, String, String) {
     )
 }
 
-fn todo_source() -> String {
+fn todo_cli_source() -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")) // host/cli
-        .join("../../apps/todo") // repo-root/apps/todo
+        .join("../../apps/todo-cli") // repo-root/apps/todo-cli
         .canonicalize()
-        .expect("apps/todo bundle exists")
+        .expect("apps/todo-cli bundle exists")
         .to_str()
         .unwrap()
         .to_string()
 }
 
 #[test]
-fn terrane_host_runs_todo_backend() {
+fn terrane_host_runs_todo_cli_backend() {
     let dir = tempdir().unwrap();
     let home = dir.path();
-    let src = todo_source();
+    let src = todo_cli_source();
 
-    assert!(host(home, &["app", "add", "todo", "Todo", "--source", &src]).0);
+    assert!(host(home, &["app", "add", "todo-cli", "Todo (CLI)", "--source", &src]).0);
 
-    let (ok, out, err) = host(home, &["run", "todo", "add", "buy milk"]);
+    let (ok, out, err) = host(home, &["run", "todo-cli", "add", "buy milk"]);
     assert!(ok, "stderr: {err}");
     assert_eq!(out.trim(), "added #1 buy milk", "out: {out}");
 
-    let (ok, out, _) = host(home, &["run", "todo", "list"]);
+    let (ok, out, _) = host(home, &["run", "todo-cli", "list"]);
     assert!(ok);
     assert_eq!(out.trim(), "#1 buy milk", "out: {out}");
 
