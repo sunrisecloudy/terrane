@@ -10,6 +10,10 @@ import { buildPublicContract } from "./export-public-contract.mjs";
 
 const checks = [];
 
+// Pinned so CI and local runs lint with an identical rule set. Bump deliberately
+// alongside any .oxlintrc.json change and re-confirm the tree is clean.
+const OXLINT_VERSION = "1.71.0";
+
 await runCheck("json.parse", checkJsonParse);
 await runCheck("schema.fixtures", checkSchemaFixtures);
 await runCheck("sqlite.migrate", checkSqliteMigrations);
@@ -25,6 +29,7 @@ await runCheck("reference-host.static", checkReferenceHostStatic);
 await runCheck("runtime.static", checkRuntimeStatic);
 await runCheck("server.static", checkServerStatic);
 await runCheck("native.static", checkNativeStatic);
+await runCheck("js.oxlint", checkOxlint);
 
 for (const check of checks) {
   console.log(`${check.ok ? "ok" : "fail"} ${check.name}${check.detail ? ` ${check.detail}` : ""}`);
@@ -222,6 +227,27 @@ function applyPostgresMigrations(url, sql) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+function checkOxlint() {
+  const configPath = path.join(repoRoot, ".oxlintrc.json");
+  if (!fs.existsSync(configPath)) {
+    throw new Error("missing .oxlintrc.json at repo root");
+  }
+  try {
+    execFileSync(
+      "npx",
+      ["--yes", `oxlint@${OXLINT_VERSION}`, "--config", configPath, "--deny-warnings", "."],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+  } catch (error) {
+    const output = `${error.stdout ?? ""}${error.stderr ?? ""}`.trim();
+    if (error.code === "ENOENT") {
+      throw new Error("npx is required to run oxlint but was not found on PATH");
+    }
+    throw new Error(output || error.message);
+  }
+  return `oxlint=${OXLINT_VERSION},clean`;
 }
 
 function checkExamplePackages() {

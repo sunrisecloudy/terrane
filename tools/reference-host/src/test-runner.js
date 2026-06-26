@@ -332,7 +332,7 @@ function escapeRegExp(value) {
 }
 
 function normalizeControlStep(step, appId) {
-  const args = { ...(step.args ?? {}) };
+  const args = { ...step.args };
   if (args.path && !args.packagePath) {
     args.packagePath = args.path;
   }

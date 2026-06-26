@@ -41,7 +41,7 @@ test("checked-in accessibility microtests execute against reference-host control
       try {
         host.installPackage(path.join(examplesDir, appId));
         for (const step of fixture.steps ?? []) {
-          const result = await host.runControlCommand(step.tool, { ...(step.args ?? {}), appId });
+          const result = await host.runControlCommand(step.tool, { ...step.args, appId });
           assert.equal(result.ok ?? true, true, `${fileName}:${appId}:${step.tool}`);
         }
       } finally {

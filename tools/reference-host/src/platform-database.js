@@ -285,7 +285,7 @@ export class PlatformDatabase {
       this.run(
         "UPDATE app_install_reports SET status = 'accepted', permissions_json = ? WHERE report_id = ?",
         prettyJson({
-          ...(report.permissions ?? {}),
+          ...report.permissions,
           approved: target.manifest.permissions,
           requiresUserApproval: true,
           approvalGranted: true,
@@ -325,7 +325,7 @@ export class PlatformDatabase {
     return runs;
   }
 
-  quarantineWebapp(appId, installId = null, reason = "manual quarantine", { restorePrevious = false, actor = "reference-host" } = {}) {
+  quarantineWebapp(appId, installId = null, reason = "manual quarantine", { restorePrevious = false } = {}) {
     if (!forgeCoreAvailable()) {
       throw new Error("package.set_status requires forge core");
     }
@@ -355,7 +355,7 @@ export class PlatformDatabase {
     };
   }
 
-  maybeAutoQuarantineAfterBudgetError({ appId, installId, error, budgetErrorCount60s, actor = "reference-host" }) {
+  maybeAutoQuarantineAfterBudgetError({ appId, installId, error, budgetErrorCount60s }) {
     if (!forgeCoreAvailable() || error?.code !== "resource_budget_exceeded" || !installId) {
       return null;
     }

@@ -168,7 +168,7 @@
     const loaded = [];
     for (const id of appIds) {
       const manifest = await fetchJson(`/webapps/examples/${id}/manifest.json`);
-      loaded.push({ ...manifest, ...(appIndexRecords.get(id) || {}) });
+      loaded.push({ ...manifest, ...appIndexRecords.get(id) });
     }
     apps = loaded;
     renderAppList();
@@ -348,6 +348,7 @@
   function normalizeCatalogEndpoint(value) {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
+    // oxlint-disable-next-line no-control-regex -- intentional: reject URLs containing ASCII control characters
     if (!trimmed || trimmed.length > 2048 || /[\u0000-\u001f\u007f]/.test(trimmed)) return null;
     let url;
     let base;
@@ -477,6 +478,7 @@
 
   function safeText(value, fallback, maxLength) {
     const text = value == null ? "" : String(value);
+    // oxlint-disable-next-line no-control-regex -- intentional: strip ASCII control characters from display text
     const cleaned = text.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
     if (!cleaned) return fallback || "";
     return cleaned.slice(0, maxLength);

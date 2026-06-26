@@ -51,10 +51,10 @@ test("checked-in bridge fixtures match reference-host expected responses", async
       const pkg = readPackage(path.join(examplesDir, fixture.context.appId));
       const manifest = {
         ...pkg.manifest,
-        ...(fixture.preconditions?.manifestPatch ?? {}),
+        ...fixture.preconditions?.manifestPatch,
         resourceBudget: {
           ...pkg.manifest.resourceBudget,
-          ...(fixture.preconditions?.resourceBudget ?? {}),
+          ...fixture.preconditions?.resourceBudget,
         },
       };
       const signed = signPackage({ manifest, files: pkg.files, keypair: createPlatformKeypair() });

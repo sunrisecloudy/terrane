@@ -15,7 +15,6 @@ test("native bridges validate and budget app.log", () => {
   const windowsBridge = read("native/windows/src/WebBridge.cpp");
   const windowsHost = read("native/windows/src/WebViewHost.cpp");
   const linuxBridge = read("native/linux/src/web_bridge.c");
-  const linuxHost = read("native/linux/src/webkit_host.c");
   const linuxSandbox = read("native/linux/src/app_sandbox.c");
 
   assert.match(androidBridge, /private fun appLog\(request: BridgeRequest\): String/);

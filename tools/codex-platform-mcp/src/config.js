@@ -1,4 +1,4 @@
-import { controlTokenPath, readControlToken } from "../../control-token.js";
+import { readControlToken } from "../../control-token.js";
 
 export { controlTokenPath, readControlToken } from "../../control-token.js";
 

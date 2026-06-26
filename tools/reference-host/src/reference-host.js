@@ -5,7 +5,7 @@ import { referenceHostCapabilities } from "./capabilities.js";
 import { CoreEngine } from "./core.js";
 import { bridgeError, errorBody, PlatformError } from "./errors.js";
 import { examplesDir, repoRoot, resolveInside, runtimeWebDir } from "./paths.js";
-import { packageHashes, readPackage, validatePackage } from "./package-validator.js";
+import { readPackage, validatePackage } from "./package-validator.js";
 import { PlatformDatabase } from "./platform-database.js";
 import { loadOrCreatePlatformKeypair, publicKeyDescriptor, signPackage, verifyInstalledPackage } from "./signing.js";
 import { TestRunner } from "./test-runner.js";
