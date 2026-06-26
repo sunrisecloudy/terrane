@@ -1446,6 +1446,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-api"
+version = "0.1.0"
+dependencies = [
+ "nanoserde",
+]
+
+[[package]]
 name = "terrane-cli"
 version = "0.1.0"
 dependencies = [

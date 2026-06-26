@@ -5,6 +5,7 @@ members = [
   "crates/terrane-core",
   "crates/terrane-cli",
   "crates/terrane-ffi",
+  "crates/terrane-api",
 ]
 
 [workspace.package]

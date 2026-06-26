@@ -1,0 +1,13 @@
+[package]
+name = "terrane-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The terrane host API contract: shared wire types + route/tool table for the web (HTTP) and MCP hosts, and the subset of the terrane-premium API."
+
+# Kept deliberately dependency-light (just nanoserde for JSON) so it can be a
+# clean, vendorable contract crate. The cross-language source of truth premium
+# pins is the *exported* public-contract.json; this crate is the OSS-side typed
+# implementation of the same surface.
+[dependencies]
+nanoserde = { workspace = true }
