@@ -7,6 +7,9 @@ deliberate reset: instead of growing the platform outward (sync, server, UI,
 native hosts, FFI, policy, …), we start from the one thing that is actually
 *the system* and add nothing until a real need forces it.
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the high-level layer model
+(apps ▸ native host ▸ terrane-core ▸ resources).
+
 ## The one rule
 
 Everything goes through a single front door and a single shape:
