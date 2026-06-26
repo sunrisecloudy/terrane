@@ -4,7 +4,9 @@
 //! contract: the log holds only the kv.* events the backend emitted; `replay`
 //! rebuilds the todos by folding them, never by re-running JS.
 
+use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use tempfile::tempdir;
 
@@ -63,4 +65,37 @@ fn todo_backend_runs_and_replays() {
     let (ok, out, err) = terrane(home, &["replay"]);
     assert!(ok, "replay failed: {err}");
     assert!(out.contains("replay ok"), "out: {out}");
+}
+
+/// A backend that never returns must be interrupted by the time budget, not hang
+/// the host. (If the DoS guard regresses, this test hangs the suite — which is
+/// the loud failure we want.)
+#[test]
+fn runaway_backend_is_interrupted() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    let bundle = home.join("loop");
+    fs::create_dir(&bundle).unwrap();
+    fs::write(
+        bundle.join("manifest.json"),
+        r#"{ "id": "loop", "name": "Loop", "backend": "main.js", "resources": ["kv"] }"#,
+    )
+    .unwrap();
+    fs::write(bundle.join("main.js"), "function handle(input) { while (true) {} }").unwrap();
+
+    let (ok, _, err) = terrane(home, &["app", "add", "loop", "Loop", "--source", bundle.to_str().unwrap()]);
+    assert!(ok, "app add failed: {err}");
+
+    // Short budget so the test is fast; the run must fail, not wedge.
+    let output = Command::new(env!("CARGO_BIN_EXE_terrane"))
+        .args(["host", "run", "loop", "go"])
+        .env("TERRANE_HOME", home)
+        .env("TERRANE_BACKEND_BUDGET_MS", "200")
+        .output()
+        .expect("spawn terrane");
+    assert!(
+        !output.status.success(),
+        "runaway backend should be interrupted and error, not succeed/hang"
+    );
 }

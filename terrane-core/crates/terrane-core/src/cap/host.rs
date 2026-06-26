@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 
-use rquickjs::{CatchResultExt, CaughtError, Context, Function, Object, Runtime};
+use rquickjs::{CatchResultExt, CaughtError, Context, Function, Object, Runtime, Value};
 use terrane_domain::{Error, EventRecord, Result};
 
 use super::Capability;
@@ -67,7 +67,7 @@ pub(crate) fn run(
     source: &str,
     base_state: State,
 ) -> Result<RunResult> {
-    let backend_src = read_backend(source)?;
+    let bundle = load_bundle(source)?;
 
     let cell = Rc::new(RefCell::new(RunAccum {
         app: app.to_string(),
@@ -77,7 +77,7 @@ pub(crate) fn run(
         first_error: None,
     }));
 
-    let output = execute_js(&backend_src, input, cell.clone());
+    let output = execute_js(&bundle.source, &bundle.resources, input, cell.clone());
 
     // Sole ownership again now that the Context/Runtime (and their closures) dropped.
     let accum = Rc::try_unwrap(cell)
@@ -154,57 +154,78 @@ impl RunAccum {
     }
 }
 
-/// Build a QuickJS context, install a sandboxed app-scoped `ctx.resource.kv`,
-/// eval the backend script (which defines globals `ctx`-consumer and `handle`),
-/// then call `handle(input)` and return its String.
-fn execute_js(backend_src: &str, input: &[String], cell: Rc<RefCell<RunAccum>>) -> Result<String> {
+/// Default wall-clock budget for a single backend run; override with
+/// `TERRANE_BACKEND_BUDGET_MS`. Bounds runaway scripts (e.g. `while(true){}`)
+/// that neither the stack nor the memory limit would catch.
+const DEFAULT_BACKEND_BUDGET_MS: u64 = 5000;
+
+fn backend_budget() -> std::time::Duration {
+    let ms = std::env::var("TERRANE_BACKEND_BUDGET_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_BACKEND_BUDGET_MS);
+    std::time::Duration::from_millis(ms)
+}
+
+/// Build a QuickJS context, install the sandboxed app-scoped resources the
+/// bundle *declared* (only those — undeclared capabilities are simply absent
+/// from `ctx.resource`), eval the backend script (which defines globals `ctx`
+/// and `handle`), then call `handle(input)` and return its String. A wall-clock
+/// interrupt handler bounds CPU so a runaway loop can't wedge the host.
+fn execute_js(
+    backend_src: &str,
+    resources: &[String],
+    input: &[String],
+    cell: Rc<RefCell<RunAccum>>,
+) -> Result<String> {
     let rt = Runtime::new().map_err(js_err)?;
     rt.set_max_stack_size(512 * 1024);
     rt.set_memory_limit(64 * 1024 * 1024);
+    let deadline = std::time::Instant::now() + backend_budget();
+    rt.set_interrupt_handler(Some(Box::new(move || std::time::Instant::now() >= deadline)));
     let ctx = Context::full(&rt).map_err(js_err)?;
 
     ctx.with(|ctx| -> Result<String> {
-        let kv = Object::new(ctx.clone()).map_err(js_err)?;
-
-        // WRITE kv.set(key, value)
-        {
-            let cell = cell.clone();
-            let set = Function::new(ctx.clone(), move |key: String, value: String| {
-                cell.borrow_mut().write("kv.set", vec![key, value]);
-            })
-            .map_err(js_err)?;
-            kv.set("set", set).map_err(js_err)?;
-        }
-        // WRITE kv.rm(key)
-        {
-            let cell = cell.clone();
-            let rm = Function::new(ctx.clone(), move |key: String| {
-                cell.borrow_mut().write("kv.rm", vec![key]);
-            })
-            .map_err(js_err)?;
-            kv.set("rm", rm).map_err(js_err)?;
-        }
-        // READ kv.get(key) -> string | undefined  (backend uses `== null`)
-        {
-            let cell = cell.clone();
-            let get = Function::new(ctx.clone(), move |key: String| -> Option<String> {
-                cell.borrow().kv_get(&key)
-            })
-            .map_err(js_err)?;
-            kv.set("get", get).map_err(js_err)?;
-        }
-        // READ kv.all() -> { key: value, … }  (BTreeMap -> JS object)
-        {
-            let cell = cell.clone();
-            let all = Function::new(ctx.clone(), move || -> BTreeMap<String, String> {
-                cell.borrow().kv_all()
-            })
-            .map_err(js_err)?;
-            kv.set("all", all).map_err(js_err)?;
-        }
-
         let resource = Object::new(ctx.clone()).map_err(js_err)?;
-        resource.set("kv", kv).map_err(js_err)?;
+
+        // kv — installed only if the manifest declared it (capability sandbox).
+        if resources.iter().any(|r| r == "kv") {
+            let kv = Object::new(ctx.clone()).map_err(js_err)?;
+            {
+                let cell = cell.clone();
+                let set = Function::new(ctx.clone(), move |key: String, value: String| {
+                    cell.borrow_mut().write("kv.set", vec![key, value]);
+                })
+                .map_err(js_err)?;
+                kv.set("set", set).map_err(js_err)?;
+            }
+            {
+                let cell = cell.clone();
+                let rm = Function::new(ctx.clone(), move |key: String| {
+                    cell.borrow_mut().write("kv.rm", vec![key]);
+                })
+                .map_err(js_err)?;
+                kv.set("rm", rm).map_err(js_err)?;
+            }
+            {
+                let cell = cell.clone();
+                let get = Function::new(ctx.clone(), move |key: String| -> Option<String> {
+                    cell.borrow().kv_get(&key)
+                })
+                .map_err(js_err)?;
+                kv.set("get", get).map_err(js_err)?;
+            }
+            {
+                let cell = cell.clone();
+                let all = Function::new(ctx.clone(), move || -> BTreeMap<String, String> {
+                    cell.borrow().kv_all()
+                })
+                .map_err(js_err)?;
+                kv.set("all", all).map_err(js_err)?;
+            }
+            resource.set("kv", kv).map_err(js_err)?;
+        }
+
         let ctx_obj = Object::new(ctx.clone()).map_err(js_err)?;
         ctx_obj.set("resource", resource).map_err(js_err)?;
         ctx.globals().set("ctx", ctx_obj).map_err(js_err)?;
@@ -214,26 +235,80 @@ fn execute_js(backend_src: &str, input: &[String], cell: Rc<RefCell<RunAccum>>) 
             .catch(&ctx)
             .map_err(caught_to_err)?;
 
-        // Call global handle(input) -> String.
-        let handle: Function = ctx.globals().get("handle").map_err(js_err)?;
-        let output: String = handle.call((input,)).catch(&ctx).map_err(caught_to_err)?;
-        Ok(output)
+        // Call global handle(input); it must return a string.
+        let handle: Function = ctx
+            .globals()
+            .get("handle")
+            .map_err(|_| Error::Runtime("backend defines no callable `handle`".into()))?;
+        let result: Value = handle.call((input,)).catch(&ctx).map_err(caught_to_err)?;
+        result
+            .as_string()
+            .and_then(|s| s.to_string().ok())
+            .ok_or_else(|| {
+                Error::Runtime(format!(
+                    "handle() must return a string, got {}",
+                    result.type_name()
+                ))
+            })
     })
 }
 
-/// Read the backend JS for an app whose `source` is either the bundle directory
-/// (containing manifest.json + the backend file) or a direct `.js` path.
-fn read_backend(source: &str) -> Result<String> {
+/// A loaded app bundle: the backend JS source + the resource namespaces it is
+/// allowed to reach (its declared sandbox surface).
+struct Bundle {
+    source: String,
+    resources: Vec<String>,
+}
+
+/// Load the bundle for an app whose `source` is either the bundle directory
+/// (containing manifest.json + the backend file) or a direct `.js` path. A
+/// directory's resources come from `manifest.resources` (absent → none, least
+/// privilege); a direct `.js` has no manifest, so it gets the dev default of all
+/// currently-known resources.
+fn load_bundle(source: &str) -> Result<Bundle> {
     let path = Path::new(source);
-    let js_path = if path.is_dir() {
+    if path.is_dir() {
         let manifest = std::fs::read_to_string(path.join("manifest.json"))
             .map_err(|e| Error::Runtime(format!("read manifest.json: {e}")))?;
-        path.join(manifest_backend(&manifest)?)
+        let backend = manifest_backend(&manifest)?;
+        let resources = manifest_resources(&manifest);
+        let js_path = path.join(&backend);
+        let source = std::fs::read_to_string(&js_path)
+            .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))?;
+        Ok(Bundle { source, resources })
     } else {
-        path.to_path_buf()
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| Error::Runtime(format!("read backend {}: {e}", path.display())))?;
+        Ok(Bundle {
+            source,
+            resources: vec!["kv".to_string()],
+        })
+    }
+}
+
+/// Extract the `"resources"` string array from a (trusted, local) manifest.
+/// Absent → empty (least privilege). Best-effort hand parse (see
+/// [`manifest_backend`] for the dependency-surface rationale).
+fn manifest_resources(manifest: &str) -> Vec<String> {
+    let Some(key) = manifest.find("\"resources\"") else {
+        return Vec::new();
     };
-    std::fs::read_to_string(&js_path)
-        .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))
+    let after = &manifest[key..];
+    let Some(open) = after.find('[') else {
+        return Vec::new();
+    };
+    let Some(close) = after[open..].find(']') else {
+        return Vec::new();
+    };
+    let mut list = &after[open + 1..open + close];
+    let mut out = Vec::new();
+    while let Some(q1) = list.find('"') {
+        let rest = &list[q1 + 1..];
+        let Some(q2) = rest.find('"') else { break };
+        out.push(rest[..q2].to_string());
+        list = &rest[q2 + 1..];
+    }
+    out
 }
 
 /// Extract the `"backend"` string from a (trusted, local) manifest.json. A tiny

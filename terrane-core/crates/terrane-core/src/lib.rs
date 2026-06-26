@@ -271,6 +271,9 @@ impl<R: EffectRunner> Core<R> {
     /// stash the backend's printed string for [`take_last_output`](Self::take_last_output).
     /// JS runs once here, never on replay.
     fn run_backend(&mut self, args: &[String]) -> Result<Vec<EventRecord>> {
+        // Reset first, so take_last_output() reflects only this attempt — a
+        // failed run leaves no stale output from a previous successful one.
+        self.last_output = None;
         let app = cap::arg(args, 0, "app")?;
         let input: Vec<String> = args.get(1..).unwrap_or_default().to_vec();
 
