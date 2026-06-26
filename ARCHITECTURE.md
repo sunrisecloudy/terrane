@@ -82,6 +82,18 @@ in the Resources layer) are mediated here and recorded, so that replay stays
 deterministic even though the resources themselves are not. The CLI (`terrane`)
 is a front door onto this same spine.
 
+### Capabilities (the command registry)
+
+There is no central command/event enum. The spine is a **registry of
+capabilities**, each owning a namespace (`app`, `kv`, `net`, …) and wholly
+responsible for its own commands, events, deciding, and folding. A command
+`"app.add"` routes to the `app` capability; you add a command by writing and
+registering one capability — nothing central changes. Events are **name-tagged**
+on the wire (`{ kind: "app.added", payload }`) so new kinds never disturb old
+records. Folding is **broadcast**: every recorded event is offered to every
+capability, so one capability can react to another's events (e.g. `kv` drops an
+app's data when it sees `app.removed`) with no coupling between them.
+
 ## Layer 4 — Resources (the capability surface)
 
 What an app is actually allowed to *do*. Apps call these as `ctx.resource.*`;

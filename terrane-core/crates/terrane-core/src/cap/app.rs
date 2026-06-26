@@ -1,0 +1,148 @@
+//! The `app` capability — the catalog of saved apps.
+
+use std::collections::BTreeMap;
+
+use borsh::{BorshDeserialize, BorshSerialize};
+use terrane_domain::{AppId, Error, EventRecord, Result};
+
+use super::{arg, Capability};
+use crate::{decode_event, encode_event, Decision, State};
+
+/// A saved app, as the user sees it in their catalog. `source` is where the
+/// app's body lives — a path to its bundle (UI + backend).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppRecord {
+    pub id: AppId,
+    pub name: String,
+    pub source: Option<String>,
+}
+
+/// This capability's slice of State.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AppState {
+    pub apps: BTreeMap<AppId, AppRecord>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct Added {
+    id: String,
+    name: String,
+    source: Option<String>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct Removed {
+    id: String,
+}
+
+pub struct AppCapability;
+
+impl Capability for AppCapability {
+    fn namespace(&self) -> &'static str {
+        "app"
+    }
+
+    fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
+        match name {
+            "app.add" => {
+                let (id, app_name, source) = parse_add(args)?;
+                if id.trim().is_empty() {
+                    return Err(Error::InvalidInput("app id must not be empty".into()));
+                }
+                if app_name.trim().is_empty() {
+                    return Err(Error::InvalidInput("app name must not be empty".into()));
+                }
+                if state.app.apps.contains_key(&id) {
+                    return Err(Error::AppExists(id));
+                }
+                Ok(Decision::Commit(vec![encode_event(
+                    "app.added",
+                    &Added {
+                        id,
+                        name: app_name,
+                        source,
+                    },
+                )?]))
+            }
+            "app.remove" => {
+                let id = arg(args, 0, "app id")?;
+                if !state.app.apps.contains_key(&id) {
+                    return Err(Error::AppNotFound(id));
+                }
+                Ok(Decision::Commit(vec![encode_event(
+                    "app.removed",
+                    &Removed { id },
+                )?]))
+            }
+            other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
+        }
+    }
+
+    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+        match record.kind.as_str() {
+            "app.added" => {
+                let e: Added = decode_event(record)?;
+                state.app.apps.insert(
+                    e.id.clone(),
+                    AppRecord {
+                        id: e.id,
+                        name: e.name,
+                        source: e.source,
+                    },
+                );
+            }
+            "app.removed" => {
+                let e: Removed = decode_event(record)?;
+                state.app.apps.remove(&e.id);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn describe(&self, record: &EventRecord) -> Option<String> {
+        match record.kind.as_str() {
+            "app.added" => {
+                let e: Added = decode_event(record).ok()?;
+                Some(match e.source {
+                    Some(src) => format!("app.added {} \"{}\" [{}]", e.id, e.name, src),
+                    None => format!("app.added {} \"{}\"", e.id, e.name),
+                })
+            }
+            "app.removed" => {
+                let e: Removed = decode_event(record).ok()?;
+                Some(format!("app.removed {}", e.id))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Parse `add` args: `<id> <name…> [--source <path>]`.
+fn parse_add(args: &[String]) -> Result<(String, String, Option<String>)> {
+    let id = arg(args, 0, "app id")?;
+    let mut name_parts: Vec<&str> = Vec::new();
+    let mut source = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--source" => {
+                let path = args
+                    .get(i + 1)
+                    .ok_or_else(|| Error::InvalidInput("`--source` needs a path".into()))?;
+                source = Some(path.clone());
+                i += 2;
+            }
+            word => {
+                name_parts.push(word);
+                i += 1;
+            }
+        }
+    }
+    if name_parts.is_empty() {
+        return Err(Error::InvalidInput(
+            "usage: app add <id> <name…> [--source <path>]".into(),
+        ));
+    }
+    Ok((id, name_parts.join(" "), source))
+}

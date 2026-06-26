@@ -2,28 +2,24 @@
 //!
 //! It handles plain `http://` URLs only (HTTP/1.0, `Connection: close`) — enough
 //! to prove the architecture point: the GET happens here, at the edge, and its
-//! result is handed back as an `Event::Fetched` for the core to record. Replay
-//! never calls this. Swap in a TLS client (e.g. `ureq`) when https is needed.
+//! result is handed back as the `net` capability's recorded event. Replay never
+//! calls this. Swap in a TLS client (e.g. `ureq`) when https is needed.
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
+use terrane_core::cap::net::fetched_event;
 use terrane_core::{Effect, EffectRunner};
-use terrane_domain::{Error, Event, Result};
+use terrane_domain::{Error, EventRecord, Result};
 
 pub struct HttpGetRunner;
 
 impl EffectRunner for HttpGetRunner {
-    fn run(&self, effect: &Effect) -> Result<Vec<Event>> {
+    fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>> {
         match effect {
             Effect::HttpGet { app, url } => {
                 let (status, body) = http_get(url)?;
-                Ok(vec![Event::Fetched {
-                    app: app.clone(),
-                    url: url.clone(),
-                    status,
-                    body,
-                }])
+                Ok(vec![fetched_event(app, url, status, body)?])
             }
         }
     }

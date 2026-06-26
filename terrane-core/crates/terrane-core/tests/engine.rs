@@ -1,39 +1,34 @@
-//! Integration tests for the terrane-core engine, driven entirely through its
-//! public surface (`Core`, `replay`) — kept out of the implementation file so
-//! the engine reads as one thing and its proofs as another.
+//! Integration tests for the terrane-core engine, driven through its public
+//! surface (`Core::dispatch` with `Request`s) — kept out of the implementation
+//! so the engine reads as one thing and its proofs as another.
 
 use tempfile::tempdir;
-use terrane_core::{replay, Core, Effect, EffectRunner};
-use terrane_domain::{Command, Error, Event, Result};
+use terrane_core::cap::net::fetched_event;
+use terrane_core::{Core, Effect, EffectRunner};
+use terrane_domain::{Error, EventRecord, Request, Result};
 
-fn add(id: &str, name: &str) -> Command {
-    Command::AddApp {
-        id: id.into(),
-        name: name.into(),
-        source: None,
-    }
+fn req(name: &str, args: &[&str]) -> Request {
+    Request::new(name, args.iter().map(|s| s.to_string()).collect())
 }
 
 #[test]
-fn executes_and_replays_identically() {
+fn dispatches_and_replays_identically() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
 
     let mut core = Core::open(&log).unwrap();
-    core.execute(add("notes", "Notes")).unwrap();
-    core.execute(add("tasks", "Task Workbench")).unwrap();
-    core.execute(Command::RemoveApp { id: "notes".into() })
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
+    core.dispatch(req("app.add", &["tasks", "Task", "Workbench"]))
         .unwrap();
+    core.dispatch(req("app.remove", &["notes"])).unwrap();
 
-    // The in-memory State must equal a fresh replay of the log.
     assert!(core.replay_matches().unwrap());
-    let replayed = replay(&log).unwrap();
-    assert_eq!(replayed.apps.len(), 1);
-    assert!(replayed.apps.contains_key("tasks"));
+    assert_eq!(core.state().app.apps.len(), 1);
+    assert!(core.state().app.apps.contains_key("tasks"));
 
     // A brand-new Core opened on the same log rebuilds the same world.
     let reopened = Core::open(&log).unwrap();
-    assert_eq!(reopened.state(), &replayed);
+    assert_eq!(reopened.state(), core.state());
 }
 
 #[test]
@@ -41,86 +36,89 @@ fn source_round_trips_through_the_log() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
-    core.execute(Command::AddApp {
-        id: "notes".into(),
-        name: "Notes".into(),
-        source: Some("apps/notes".into()),
-    })
-    .unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes", "--source", "apps/notes"]))
+        .unwrap();
     let reopened = Core::open(&log).unwrap();
     assert_eq!(
-        reopened.state().apps["notes"].source.as_deref(),
+        reopened.state().app.apps["notes"].source.as_deref(),
         Some("apps/notes")
     );
 }
 
 #[test]
-fn rejects_duplicate_and_missing() {
+fn rejects_duplicate_missing_and_unknown() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
 
-    core.execute(add("notes", "Notes")).unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
     assert_eq!(
-        core.execute(add("notes", "Notes Again")),
+        core.dispatch(req("app.add", &["notes", "Again"])),
         Err(Error::AppExists("notes".into()))
     );
     assert_eq!(
-        core.execute(Command::RemoveApp { id: "ghost".into() }),
+        core.dispatch(req("app.remove", &["ghost"])),
         Err(Error::AppNotFound("ghost".into()))
     );
+    // Unknown namespace and unknown verb are both rejected.
+    assert!(matches!(
+        core.dispatch(req("bogus.thing", &[])),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        core.dispatch(req("app.frobnicate", &["x"])),
+        Err(Error::InvalidInput(_))
+    ));
 
-    // Rejected commands wrote nothing: still exactly one app.
-    assert_eq!(core.state().apps.len(), 1);
+    assert_eq!(core.state().app.apps.len(), 1);
     assert!(core.replay_matches().unwrap());
 }
 
 #[test]
-fn kv_resource_records_and_cascades() {
+fn kv_records_and_cascades_via_broadcast_fold() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
-    core.execute(add("notes", "Notes")).unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
 
     // Writing to an app that doesn't exist is rejected.
     assert_eq!(
-        core.execute(Command::KvSet {
-            app: "ghost".into(),
-            key: "k".into(),
-            value: "v".into()
-        }),
+        core.dispatch(req("kv.set", &["ghost", "k", "v"])),
         Err(Error::AppNotFound("ghost".into()))
     );
 
-    core.execute(Command::KvSet {
-        app: "notes".into(),
-        key: "theme".into(),
-        value: "dark".into(),
-    })
-    .unwrap();
-    assert_eq!(core.state().data["notes"]["theme"], "dark");
+    core.dispatch(req("kv.set", &["notes", "theme", "dark"]))
+        .unwrap();
+    assert_eq!(core.state().kv.data["notes"]["theme"], "dark");
     assert!(core.replay_matches().unwrap());
 
-    // Deleting a missing key errors; deleting a present key works.
+    // Deleting a missing key errors.
     assert_eq!(
-        core.execute(Command::KvDelete {
-            app: "notes".into(),
-            key: "ghost".into()
-        }),
+        core.dispatch(req("kv.rm", &["notes", "ghost"])),
         Err(Error::KeyNotFound("notes".into(), "ghost".into()))
     );
 
-    // Removing the app cascades: its data is gone from a fresh replay too.
-    core.execute(Command::KvSet {
-        app: "notes".into(),
-        key: "lang".into(),
-        value: "en".into(),
-    })
-    .unwrap();
-    core.execute(Command::RemoveApp { id: "notes".into() })
+    // Removing the app cascades to its data — the kv capability reacts to the
+    // app.removed event via broadcast fold, with no app→kv coupling.
+    core.dispatch(req("kv.set", &["notes", "lang", "en"]))
         .unwrap();
-    assert!(core.state().data.is_empty());
-    assert!(replay(&log).unwrap().data.is_empty());
+    core.dispatch(req("app.remove", &["notes"])).unwrap();
+    assert!(core.state().kv.data.is_empty());
+    assert!(Core::open(&log).unwrap().state().kv.data.is_empty());
+}
+
+#[test]
+fn rejects_empty_fields() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    assert!(matches!(
+        core.dispatch(req("app.add", &["", "x"])),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        core.dispatch(req("app.add", &["x"])),
+        Err(Error::InvalidInput(_))
+    ));
 }
 
 /// A deterministic stand-in for the network: every GET returns a canned body
@@ -128,14 +126,11 @@ fn kv_resource_records_and_cascades() {
 struct FakeHttp;
 
 impl EffectRunner for FakeHttp {
-    fn run(&self, effect: &Effect) -> Result<Vec<Event>> {
+    fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>> {
         match effect {
-            Effect::HttpGet { app, url } => Ok(vec![Event::Fetched {
-                app: app.clone(),
-                url: url.clone(),
-                status: 200,
-                body: format!("body for {url}"),
-            }]),
+            Effect::HttpGet { app, url } => {
+                Ok(vec![fetched_event(app, url, 200, format!("body for {url}"))?])
+            }
         }
     }
 }
@@ -146,25 +141,21 @@ fn fetch_effect_is_recorded_then_replays_without_the_runner() {
     let log = dir.path().join("log.bin");
 
     let mut core = Core::open_with(&log, FakeHttp).unwrap();
-    core.execute(add("notes", "Notes")).unwrap();
-    core.execute(Command::Fetch {
-        app: "notes".into(),
-        url: "http://example.test/data".into(),
-    })
-    .unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
+    core.dispatch(req("net.fetch", &["notes", "http://example.test/data"]))
+        .unwrap();
 
-    // The effect's result was recorded into State…
-    let resp = &core.state().fetches["notes"]["http://example.test/data"];
+    let resp = &core.state().net.fetches["notes"]["http://example.test/data"];
     assert_eq!(resp.status, 200);
     assert_eq!(resp.body, "body for http://example.test/data");
 
-    // …as a Fetched event in the log…
-    let events = terrane_core::read_log(&log).unwrap();
-    assert!(events.iter().any(|e| matches!(e, Event::Fetched { .. })));
+    let records = terrane_core::read_log(&log).unwrap();
+    assert!(records.iter().any(|r| r.kind == "net.fetched"));
 
-    // …and a plain replay (no runner, no network) reproduces it exactly.
-    let replayed = replay(&log).unwrap();
-    assert_eq!(replayed.fetches, core.state().fetches);
+    // Reopening with NO runner folds the log and reproduces the fetch — proof
+    // that replay reads the body from the log, not the network.
+    let reopened = Core::open(&log).unwrap();
+    assert_eq!(reopened.state().net.fetches, core.state().net.fetches);
     assert!(core.replay_matches().unwrap());
 }
 
@@ -174,34 +165,14 @@ fn fetch_is_validated_purely_before_any_effect() {
     let log = dir.path().join("log.bin");
     // A pure core (NoEffects): a valid Fetch reaches the runner and is refused…
     let mut core = Core::open(&log).unwrap();
-    core.execute(add("notes", "Notes")).unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
     assert!(matches!(
-        core.execute(Command::Fetch {
-            app: "notes".into(),
-            url: "http://x/".into()
-        }),
+        core.dispatch(req("net.fetch", &["notes", "http://x/"])),
         Err(Error::InvalidInput(_))
     ));
     // …but a Fetch for a missing app is rejected in decide, before the runner.
     assert_eq!(
-        core.execute(Command::Fetch {
-            app: "ghost".into(),
-            url: "http://x/".into()
-        }),
+        core.dispatch(req("net.fetch", &["ghost", "http://x/"])),
         Err(Error::AppNotFound("ghost".into()))
     );
-}
-
-#[test]
-fn rejects_empty_fields() {
-    let dir = tempdir().unwrap();
-    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
-    assert!(matches!(
-        core.execute(add("", "x")),
-        Err(Error::InvalidInput(_))
-    ));
-    assert!(matches!(
-        core.execute(add("x", "")),
-        Err(Error::InvalidInput(_))
-    ));
 }
