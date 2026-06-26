@@ -37,6 +37,7 @@ impl<'js> IntoJs<'js> for ReadValue {
         match self {
             ReadValue::OptString(opt) => opt.into_js(ctx),
             ReadValue::StringMap(map) => map.into_js(ctx),
+            ReadValue::StringList(list) => list.into_js(ctx),
         }
     }
 }

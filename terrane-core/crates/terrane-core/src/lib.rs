@@ -38,17 +38,24 @@ use terrane_domain::{Error, EventRecord, Request, Result};
 
 pub mod cap;
 
-use cap::{app::AppState, kv::KvState, model::ModelState, net::NetState, Capability};
+use cap::{
+    app::AppState, crdt::CrdtState, kv::KvState, model::ModelState, net::NetState, Capability,
+};
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
 /// Adding a capability with new data adds a field here.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// Not `Eq`: the `crdt` slice compares by Loro deep value, which can hold floats
+/// (`f64`), so only `PartialEq` is available — sufficient for the replay-identity
+/// check and `assert_eq!`.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
     pub app: AppState,
     pub kv: KvState,
     pub net: NetState,
     pub model: ModelState,
+    pub crdt: CrdtState,
 }
 
 /// What a Command resolves to. Pure commands commit Events immediately;
@@ -150,6 +157,7 @@ pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(cap::app::AppCapability));
     registry.register(Box::new(cap::kv::KvCapability));
+    registry.register(Box::new(cap::crdt::CrdtCapability));
     registry.register(Box::new(cap::net::NetCapability));
     registry.register(Box::new(cap::model::ModelCapability));
     registry.register(Box::new(cap::host::HostCapability));

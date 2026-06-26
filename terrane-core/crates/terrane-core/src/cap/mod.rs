@@ -11,6 +11,7 @@ use terrane_domain::{Error, EventRecord, Result};
 use crate::{Decision, State};
 
 pub mod app;
+pub mod crdt;
 pub mod host;
 pub mod kv;
 pub mod model;
@@ -56,6 +57,8 @@ pub enum ReadValue {
     OptString(Option<String>),
     /// A JS object `{ key: value, … }`.
     StringMap(BTreeMap<String, String>),
+    /// A JS array `[ value, … ]`.
+    StringList(Vec<String>),
 }
 
 /// A pure read over a capability's State slice for one app: `(state, app, args)`.

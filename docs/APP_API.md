@@ -57,6 +57,22 @@ Don't hand-edit between the markers — a test regenerates them and fails if the
 drift from the runtime.
 
 <!-- generated:resource-api:start -->
+#### `ctx.resource.crdt`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.crdt.mapSet(doc, key, value)` | write |
+| `ctx.resource.crdt.mapGet(doc, key)` | read |
+| `ctx.resource.crdt.mapAll(doc)` | read |
+| `ctx.resource.crdt.mapDel(doc, key)` | write |
+| `ctx.resource.crdt.listPush(doc, value)` | write |
+| `ctx.resource.crdt.listInsert(doc, index, value)` | write |
+| `ctx.resource.crdt.listDel(doc, index)` | write |
+| `ctx.resource.crdt.listAll(doc)` | read |
+| `ctx.resource.crdt.textInsert(doc, index, text)` | write |
+| `ctx.resource.crdt.textDel(doc, index, len)` | write |
+| `ctx.resource.crdt.textGet(doc)` | read |
+
 #### `ctx.resource.kv`
 
 | Method | Kind |
@@ -75,6 +91,23 @@ var kv = ctx.resource.kv;
 function handle(input) {
   if (input[0] === "add") { kv.set("greeting", input[1]); return "saved"; }
   if (input[0] === "get") { var v = kv.get("greeting"); return v == null ? "(unset)" : v; }
+  return "?";
+}
+```
+
+For `crdt`: where `kv` is last-writer-wins, a `crdt` document **merges** — two
+replicas that edited concurrently converge with no lost writes (the sync
+foundation). Every method's first argument is a container **name** (an app can
+hold many named Map/List/Text documents). Values are strings; positional
+arguments (`index`, `len`) are passed as strings too and parsed as integers.
+Reads come back as a string/`null` (`mapGet`, `textGet`), an object (`mapAll`),
+or an array (`listAll`).
+
+```js
+var crdt = ctx.resource.crdt;
+function handle(input) {
+  if (input[0] === "set")  { crdt.mapSet("prefs", input[1], input[2]); return "saved"; }
+  if (input[0] === "todo") { crdt.listPush("todo", input[1]); return crdt.listAll("todo").join(","); }
   return "?";
 }
 ```

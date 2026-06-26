@@ -5,6 +5,7 @@
 mod helpers;
 
 mod app;
+mod crdt;
 mod host;
 mod kv;
 mod model;
