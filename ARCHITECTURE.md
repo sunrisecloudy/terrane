@@ -94,6 +94,14 @@ records. Folding is **broadcast**: every recorded event is offered to every
 capability, so one capability can react to another's events (e.g. `kv` drops an
 app's data when it sees `app.removed`) with no coupling between them.
 
+The app-runtime itself is a capability: **`host`** runs an app's JS backend in
+**QuickJS** (embedded in `terrane-core` via `rquickjs`) over a sandboxed,
+app-scoped `ctx.resource`. It is the one *orchestrating* capability — while the
+backend runs, its `ctx.resource.*` calls re-enter `dispatch`, so an app's writes
+are recorded as ordinary `kv.*` events and replay rebuilds them without ever
+re-running JS (Option A). Hosts stay thin: `host/cli` (`terrane-host`) is the
+first host, and `apps/todo` the first app it runs.
+
 ## Layer 4 — Resources (the capability surface)
 
 What an app is actually allowed to *do*. Apps call these as `ctx.resource.*`;

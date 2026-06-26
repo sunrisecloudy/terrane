@@ -24,12 +24,21 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 
 ## Layout
 
-- `terrane-core/` — the only product code (Cargo workspace).
-  - `crates/terrane-domain/` — pure vocabulary: `Command`, `Event`, `Id`,
-    `Error`, `State`. No I/O. Keep it wasm-clean.
-  - `crates/terrane-core/` — the engine: `apply(Command) -> [Event] -> State`,
-    persistence, replay.
-  - `crates/terrane-cli/` — the `terrane` binary (front door).
+- `terrane-core/` — the engine + base CLI (Cargo **workspace A**).
+  - `crates/terrane-domain/` — shared vocabulary: `Request`, `EventRecord`,
+    `Error`, ids. Pure, no I/O.
+  - `crates/terrane-core/` — the deterministic engine: capability registry,
+    `dispatch`→decide→commit→broadcast-fold, persistence, replay. `src/cap/*`
+    are the capabilities (`app`, `kv`, `net`, `model`, `host`). The `host`
+    capability runs app backends in **QuickJS** (`rquickjs`) over a sandboxed,
+    app-scoped `ctx.resource` — QuickJS lives ONLY here, never in a host.
+  - `crates/terrane-cli/` — the `terrane` binary plus a reusable **lib** spine
+    (`run`/`dispatch`/`open`/`EdgeRunner`) that hosts wrap.
+- `host/` — hosts, each its **own Cargo workspace** (separate build) so non-Rust
+  hosts aren't entangled. `host/cli/` is `terrane-host`, the first host; it
+  path-deps across the boundary into `terrane-core/crates` and adds `run <app>`.
+- `apps/` — app bundles (plain JS, no build system). `apps/todo/` is the first
+  app: a `manifest.json` + `main.js` backend over `ctx.resource.kv`.
 - `legacy/` — the prior build, kept as reference. Never depend on it.
 
 ## Working rules
@@ -47,6 +56,11 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 - **Tests live in their own files, never inline in the implementation.** Put
   them in the crate's `tests/` directory (integration tests over the public
   surface). The `src/*.rs` files hold code; the proofs live beside them.
+- **Hosts are separate workspaces under `host/`; apps are JS bundles under
+  `apps/`.** A host is a thin client over the `terrane_cli` spine; it never
+  embeds its own runtime — running app backends is the core's `host` capability.
+  Apps run their JS backend via `host.run`, which records only ordinary `kv.*`
+  events so replay rebuilds without re-running JS (Option A).
 - **Always run clippy.** After any change, before committing, both must be
   green: `cargo test` and `cargo clippy --all-targets -- -D warnings`.
 - Commit often: small, green, granular. Branch off `main`. Stage your own files
@@ -76,3 +90,9 @@ cargo test -p terrane-cli -- --ignored   # real fetch + real agent call
 
 Add an e2e test for each new capability (pure ones run by default; effectful
 ones `#[ignore]` with a reason).
+
+Each host is its own workspace — validate it separately:
+
+```sh
+cd host/cli && cargo test && cargo clippy --all-targets -- -D warnings
+```
