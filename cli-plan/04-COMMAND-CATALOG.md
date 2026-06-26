@@ -163,7 +163,11 @@ from `auth.rs`. **Roles below are indicative** and must be reconciled against
 ## Inner surface (`ctx.*`) — reference entries
 
 Cataloged for documentation and capability reasoning only; `surface: "inner"`,
-never targetable by `forge run`:
+never targetable by `forge run`. These map to the `HostBridge` methods
+(`forge/crates/runtime/src/bridge.rs`) and are already recorded per run as
+`RecordedCall`/`RunRecord` (`forge/crates/domain/src/run.rs:49`); see
+[14-EFFECT-SURFACE-AND-OBSERVABILITY.md](14-EFFECT-SURFACE-AND-OBSERVABILITY.md)
+for the two-door decision and how the journal is exposed via `system.trace`.
 
 `ctx.db`, `ctx.net`, `ctx.files`, `ctx.ui`, `ctx.secrets`, `ctx.timetravel`,
 `ctx.future` (and the lower-level `db.*`, `files.*`, `net.fetch`,

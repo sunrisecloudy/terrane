@@ -115,6 +115,16 @@ The catalog (Phase 1) documents **both**, but the CLI's `run` verb targets the
 **outer** surface; the **inner** `ctx.*` entries are reference/`describe`-only so
 nobody confuses an app capability with an operator action.
 
+**Why two doors and not one** — whether to force every JS host-call (db, files,
+net, ui) through the *same* entrypoint as operator commands is a real decision.
+The short answer: unify them at the **catalog, journal, policy, and
+observability** layers, but keep the **execution** doors separate (different
+trust, granularity, and transaction scope). The inner surface is *already* a
+single recorded seam (`HostBridge` → `RecordedCall`/`RunRecord`), so "observe"
+and "test" are largely solved; the remaining work is exposing that journal
+(`system.trace`) and driving the app as a user would (`ui.dispatch_event`). Full
+rationale in [14-EFFECT-SURFACE-AND-OBSERVABILITY.md](14-EFFECT-SURFACE-AND-OBSERVABILITY.md).
+
 ## Visibility tiers (preview)
 
 Because "every action" includes privileged ones, the catalog tags each command

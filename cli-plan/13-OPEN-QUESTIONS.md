@@ -108,3 +108,11 @@ CLI work also extract a shared builder the shells adopt?
 - Determinism and existing RBAC are invariants, not subject to change for
   convenience.
 - MVP = Phases 1→2→3; console and agent follow.
+- **Two doors, not one** (resolved): JS host-calls (`ctx.*`: db/files/net/ui) do
+  **not** route through the outer `handle(CoreCommand)` entrypoint. Outer and
+  inner stay separate at execution but share one catalog, journal, policy, and
+  observability surface. "Agent does anything the UI can" is achieved via
+  `ui.dispatch_event`; inner effects are observable via `system.trace`. Full
+  rationale and exit criteria in
+  [14-EFFECT-SURFACE-AND-OBSERVABILITY.md](14-EFFECT-SURFACE-AND-OBSERVABILITY.md).
+  This also resolves Q6 (inner entries are `describe`-only).

@@ -99,6 +99,16 @@ echo '{"request_id":"r1","actor":{"actor":"cli","role":"owner"},
   | cargo run -p forge-ffi --bin core-invoke
 ```
 
+## Sibling: `system.trace`
+
+`system.describe` answers *"what commands exist?"*. Its sibling `system.trace`
+answers *"what effects did a run actually perform?"* by surfacing the existing
+`RecordedCall`/`RunRecord` journal (`forge/crates/domain/src/run.rs:49`) as a
+read-only outer command. Same pure-read, replay-safe pattern; build it alongside
+`system.describe`. Full design — and why it is the bridge between the outer and
+inner doors — is in
+[14-EFFECT-SURFACE-AND-OBSERVABILITY.md](14-EFFECT-SURFACE-AND-OBSERVABILITY.md).
+
 ## Exit criteria
 
 - Any front-end can obtain the full, role-scoped catalog via one command.

@@ -33,6 +33,7 @@ agent tool surface all fall out of it.
 | [11-SCHEMAS-AND-CONTRACT.md](11-SCHEMAS-AND-CONTRACT.md) | Schema source of truth, drift gates, public-contract integration. |
 | [12-MILESTONES.md](12-MILESTONES.md) | Sequencing, effort, exit criteria, validation commands. |
 | [13-OPEN-QUESTIONS.md](13-OPEN-QUESTIONS.md) | Decisions to lock before/while building. |
+| [14-EFFECT-SURFACE-AND-OBSERVABILITY.md](14-EFFECT-SURFACE-AND-OBSERVABILITY.md) | The two-door decision: should JS host-calls pass through the same door? `system.trace`, agent-via-UI. |
 
 ## Status
 
