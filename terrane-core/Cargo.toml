@@ -16,6 +16,9 @@ license = "MIT OR Apache-2.0"
 terrane-domain = { path = "crates/terrane-domain" }
 terrane-core = { path = "crates/terrane-core" }
 borsh = { version = "1", features = ["derive"] }
+# JSON path only — no binary/ron/toml. borsh stays the event-log format; this
+# only reads hand-authored bundle manifests at the edge (see cap/host.rs).
+nanoserde = { version = "0.2", default-features = false, features = ["json"] }
 tempfile = "3"
 
 [profile.dev]

@@ -11,6 +11,7 @@ path = "src/lib.rs"
 [dependencies]
 terrane-domain.workspace = true
 borsh.workspace = true
+nanoserde.workspace = true
 rquickjs = { version = "0.12", features = ["macro"] }
 loro = "1.13.6"
 
