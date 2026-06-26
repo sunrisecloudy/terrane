@@ -18,6 +18,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 forge-core.workspace = true
 forge-domain.workspace = true
+forge-runtime.workspace = true
 
 # The data-driven fixture test (tests/scenarios.rs) drives every scenario
 # THROUGH the command/event facade (forge-core via the forge-cli helpers),

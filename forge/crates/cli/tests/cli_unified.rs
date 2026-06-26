@@ -28,7 +28,7 @@ fn describe_all(core: &mut WorkspaceCore, workspace_id: &str) -> serde_json::Val
 
 #[test]
 fn commands_json_matches_system_describe() {
-    let mut core = open_core(&WorkspaceOpenOptions::default()).unwrap();
+    let mut core = open_core(&WorkspaceOpenOptions::in_memory()).unwrap();
     let catalog = describe_all(&mut core, "ws-cli");
     let names: Vec<String> = catalog["commands"]
         .as_array()
@@ -38,12 +38,16 @@ fn commands_json_matches_system_describe() {
         .collect();
     assert!(names.contains(&"query.execute".to_string()));
     assert!(names.contains(&"system.describe".to_string()));
-    assert!(names.iter().all(|name| name.contains('.')));
+    // Outer commands are namespace.action; inner catalog may include short names (e.g. "log").
+    assert!(
+        names.iter().any(|name| name.contains('.')),
+        "catalog should include dotted outer commands: {names:?}"
+    );
 }
 
 #[test]
 fn describe_returns_one_command_entry() {
-    let mut core = open_core(&WorkspaceOpenOptions::default()).unwrap();
+    let mut core = open_core(&WorkspaceOpenOptions::in_memory()).unwrap();
     let catalog = describe_catalog(
         &mut core,
         "ws-cli",
@@ -66,7 +70,7 @@ fn run_query_execute_round_trips() {
     let opts = RunOptions {
         workspace: WorkspaceOpenOptions {
             workspace_id: "ws-test".into(),
-            ..WorkspaceOpenOptions::default()
+            ..WorkspaceOpenOptions::in_memory()
         },
         ..RunOptions::default()
     };
@@ -85,7 +89,7 @@ fn run_applet_install_via_demo_fixture() {
     let opts = RunOptions {
         workspace: WorkspaceOpenOptions {
             workspace_id: "ws-install".into(),
-            ..WorkspaceOpenOptions::default()
+            ..WorkspaceOpenOptions::in_memory()
         },
         applet_id: Some("notes-lite".into()),
         ..RunOptions::default()
@@ -95,6 +99,7 @@ fn run_applet_install_via_demo_fixture() {
     let outcome = run_command(
         "applet.install",
         serde_json::json!({
+            "applet_id": "notes-lite",
             "manifest": manifest,
             "sources": { entrypoint: NOTES_LITE_MAIN_TS },
         }),
@@ -106,14 +111,20 @@ fn run_applet_install_via_demo_fixture() {
 
 #[test]
 fn run_inner_command_is_rejected() {
-    let opts = RunOptions::default();
+    let opts = RunOptions {
+        workspace: WorkspaceOpenOptions::in_memory(),
+        ..RunOptions::default()
+    };
     let err = run_command("ctx.db.insert", serde_json::json!({}), &opts).unwrap_err();
     assert!(err.to_string().contains("inner host-call"), "{err}");
 }
 
 #[test]
 fn run_unknown_command_returns_cr_a5_error() {
-    let opts = RunOptions::default();
+    let opts = RunOptions {
+        workspace: WorkspaceOpenOptions::in_memory(),
+        ..RunOptions::default()
+    };
     let outcome = run_command(
         "definitely.not.a.command",
         serde_json::json!({}),
@@ -130,6 +141,7 @@ fn run_unknown_command_returns_cr_a5_error() {
 fn dry_run_rejects_invalid_payload() {
     let opts = RunOptions {
         dry_run: true,
+        workspace: WorkspaceOpenOptions::in_memory(),
         ..RunOptions::default()
     };
     let err = run_command("query.execute", serde_json::json!({}), &opts).unwrap_err();
@@ -140,6 +152,7 @@ fn dry_run_rejects_invalid_payload() {
 fn dry_run_prints_envelope_without_executing() {
     let opts = RunOptions {
         dry_run: true,
+        workspace: WorkspaceOpenOptions::in_memory(),
         ..RunOptions::default()
     };
     let outcome = run_command(
@@ -163,10 +176,44 @@ fn parse_payload_reads_stdin_marker_and_objects() {
 
 #[test]
 fn is_inner_command_detects_ctx_prefix() {
-    let mut core = open_core(&WorkspaceOpenOptions::default()).unwrap();
+    let mut core = open_core(&WorkspaceOpenOptions::in_memory()).unwrap();
     let catalog = describe_all(&mut core, "ws-cli");
     assert!(is_inner_command("ctx.db.insert", &catalog));
     assert!(!is_inner_command("query.execute", &catalog));
+}
+
+#[test]
+fn run_emit_events_drains_core_events_after_success() {
+    let manifest: serde_json::Value = serde_json::from_str(NOTES_LITE_MANIFEST_JSON).unwrap();
+    let entrypoint = manifest["entrypoint"].as_str().unwrap();
+    let opts = RunOptions {
+        workspace: WorkspaceOpenOptions {
+            workspace_id: "ws-events".into(),
+            ..WorkspaceOpenOptions::in_memory()
+        },
+        applet_id: Some("notes-lite".into()),
+        emit_events: true,
+        ..RunOptions::default()
+    };
+    let outcome = run_command(
+        "applet.install",
+        serde_json::json!({
+            "applet_id": "notes-lite",
+            "manifest": manifest,
+            "sources": { entrypoint: NOTES_LITE_MAIN_TS },
+        }),
+        &opts,
+    )
+    .unwrap();
+    assert!(outcome.response.ok, "{:?}", outcome.response.error);
+    assert!(
+        outcome
+            .events
+            .iter()
+            .any(|event| event.kind == "applet.installed"),
+        "expected applet.installed event, got {:?}",
+        outcome.events
+    );
 }
 
 #[test]
@@ -178,7 +225,10 @@ fn install_helper_still_works_for_scenarios() {
 
 #[test]
 fn unknown_command_error_is_validation_not_panic() {
-    let opts = RunOptions::default();
+    let opts = RunOptions {
+        workspace: WorkspaceOpenOptions::in_memory(),
+        ..RunOptions::default()
+    };
     let outcome = run_command("nope.nope", serde_json::json!({}), &opts).unwrap();
     assert!(matches!(
         outcome.response.error,

@@ -11,8 +11,8 @@
 
 use forge_core::WorkspaceCore;
 use forge_domain::{
-    catalog::CommandSurface, ActorContext, CoreCommand, CoreError, CoreResponse, RequestId,
-    Result, Role, WorkspaceId,
+    catalog::CommandSurface, ActorContext, CoreCommand, CoreError, CoreEvent, CoreResponse,
+    RequestId, Result, Role, WorkspaceId,
 };
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -27,6 +27,9 @@ pub const DEFAULT_WORKSPACE_ID: &str = "ws-cli";
 
 /// Environment variable for bearer token against `--server`.
 pub const FORGE_SERVER_TOKEN_ENV: &str = "FORGE_SERVER_TOKEN";
+
+/// Environment variable overriding the default on-disk CLI workspace path.
+pub const FORGE_WORKSPACE_ENV: &str = "FORGE_WORKSPACE";
 
 /// The notes-lite demo source + manifest, embedded so `forge demo` needs no
 /// filesystem layout at runtime (the binary is self-contained). Kept in lockstep
@@ -50,9 +53,28 @@ impl Default for WorkspaceOpenOptions {
         WorkspaceOpenOptions {
             workspace_id: DEFAULT_WORKSPACE_ID.to_string(),
             path: None,
-            in_memory: true,
+            // File-backed by default so successive CLI invocations (`forge run`,
+            // `forge trace`, …) share one workspace. Tests opt into `--in-memory`.
+            in_memory: false,
         }
     }
+}
+
+impl WorkspaceOpenOptions {
+    /// Ephemeral in-memory workspace (integration tests and `--in-memory`).
+    pub fn in_memory() -> Self {
+        WorkspaceOpenOptions {
+            in_memory: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// Default on-disk workspace path for CLI invocations without `--workspace`.
+pub fn default_cli_workspace_path() -> PathBuf {
+    std::env::var(FORGE_WORKSPACE_ENV)
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("terrane-forge-cli"))
 }
 
 /// Filters forwarded to `system.describe`.
@@ -75,6 +97,7 @@ pub struct RunOptions {
     pub server_url: Option<String>,
     pub token: Option<String>,
     pub dry_run: bool,
+    pub emit_events: bool,
 }
 
 /// Outcome of a `run` invocation (local or remote).
@@ -82,6 +105,7 @@ pub struct RunOptions {
 pub struct CommandOutcome {
     pub response: CoreResponse,
     pub envelope: CoreCommand,
+    pub events: Vec<CoreEvent>,
 }
 
 /// The outcome of driving the spine once: enough of the run to print a report
@@ -236,12 +260,44 @@ pub fn actor_context(actor_id: Option<&str>, role: Option<Role>) -> ActorContext
     }
 }
 
-/// Open a local [`WorkspaceCore`] (in-memory by default, or a file path).
+/// Open a local [`WorkspaceCore`].
+///
+/// CLI invocations use a persistent file-backed workspace by default
+/// ([`default_cli_workspace_path`] or `FORGE_WORKSPACE`) so commands like
+/// `forge run` and `forge trace` share state across process boundaries. Pass
+/// `--in-memory` (or [`WorkspaceOpenOptions::in_memory`]) for an isolated
+/// ephemeral workspace in tests.
 pub fn open_core(opts: &WorkspaceOpenOptions) -> Result<WorkspaceCore> {
-    match (&opts.path, opts.in_memory) {
-        (Some(path), false) => WorkspaceCore::open(path, &opts.workspace_id),
-        _ => WorkspaceCore::in_memory(&opts.workspace_id),
-    }
+    let mut core = if opts.in_memory {
+        WorkspaceCore::in_memory(&opts.workspace_id)?
+    } else {
+        let path = opts
+            .path
+            .clone()
+            .unwrap_or_else(default_cli_workspace_path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                CoreError::ValidationError(format!(
+                    "create workspace parent {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        WorkspaceCore::open(&path, &opts.workspace_id)?
+    };
+    wire_cli_host_seams(&mut core);
+    Ok(core)
+}
+
+/// Dev-harness defaults: canned HTTP + a sandbox filesystem with `workspace_data`.
+fn wire_cli_host_seams(core: &mut WorkspaceCore) {
+    core.set_http_client_factory(|| Box::new(forge_runtime::MockHttpClient::canned()));
+    core.set_file_system_factory(|| {
+        Box::new(
+            forge_runtime::InMemoryFileSystem::new()
+                .with_handle_root("workspace_data", "workspace-root"),
+        )
+    });
 }
 
 /// Call `system.describe` and return the catalog payload.
@@ -460,11 +516,21 @@ pub fn run_command(
                     "envelope": envelope,
                 })),
                 envelope,
+                events: Vec::new(),
             });
         }
 
         let response = dispatch_local(&mut core, envelope.clone())?;
-        return Ok(CommandOutcome { response, envelope });
+        let events = if opts.emit_events && response.ok {
+            core.events_mut().drain()
+        } else {
+            Vec::new()
+        };
+        return Ok(CommandOutcome {
+            response,
+            envelope,
+            events,
+        });
     }
 
     // Remote: identity is injected by the server; still validate envelope shape.
@@ -483,6 +549,7 @@ pub fn run_command(
                 "envelope": envelope,
             })),
             envelope,
+            events: Vec::new(),
         });
     }
 
@@ -490,7 +557,25 @@ pub fn run_command(
     let env_token = std::env::var(FORGE_SERVER_TOKEN_ENV).ok();
     let token = opts.token.as_deref().or(env_token.as_deref());
     let response = post_bridge(server_url, token, &envelope)?;
-    Ok(CommandOutcome { response, envelope })
+    Ok(CommandOutcome {
+        response,
+        envelope,
+        events: Vec::new(),
+    })
+}
+
+/// Pretty-print drained [`CoreEvent`]s for non-JSON CLI output.
+pub fn format_events(events: &[CoreEvent]) -> String {
+    events
+        .iter()
+        .map(|event| {
+            format!(
+                "[{}] {} (logical={})",
+                event.event_id, event.kind, event.created_at_logical.0
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Call `system.trace` for a recorded run.
@@ -979,7 +1064,7 @@ mod tests {
             dry_run: true,
             workspace: WorkspaceOpenOptions {
                 workspace_id: "ws".into(),
-                ..WorkspaceOpenOptions::default()
+                ..WorkspaceOpenOptions::in_memory()
             },
             ..RunOptions::default()
         };
@@ -1000,7 +1085,7 @@ mod tests {
         let opts = RunOptions {
             workspace: WorkspaceOpenOptions {
                 workspace_id: "ws".into(),
-                ..WorkspaceOpenOptions::default()
+                ..WorkspaceOpenOptions::in_memory()
             },
             ..RunOptions::default()
         };

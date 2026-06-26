@@ -6,8 +6,8 @@
 
 use forge_cli::{
     actor_context, describe_catalog, find_command_descriptor, format_command_describe,
-    format_commands_list, format_help_from_catalog, open_core, parse_payload, parse_role,
-    run_command, trace_run, DescribeFilter, RunOptions, WorkspaceOpenOptions,
+    format_commands_list, format_events, format_help_from_catalog, open_core, parse_payload,
+    parse_role, run_command, trace_run, DescribeFilter, RunOptions, WorkspaceOpenOptions,
     DEFAULT_WORKSPACE_ID, FORGE_SERVER_TOKEN_ENV,
 };
 use forge_domain::CoreError;
@@ -129,16 +129,23 @@ fn run_run(args: &[String]) -> forge_domain::Result<()> {
         server_url: parsed.server,
         token: parsed.token,
         dry_run: parsed.dry_run,
+        emit_events: parsed.emit_events,
     };
 
     let outcome = run_command(&name, payload, &opts)?;
     if parsed.json {
         println!("{}", serde_json::to_string_pretty(&outcome.response).unwrap());
+        if opts.emit_events && !outcome.events.is_empty() {
+            println!("{}", serde_json::to_string_pretty(&outcome.events).unwrap());
+        }
     } else if opts.dry_run {
         println!("dry-run ok");
         println!("{}", serde_json::to_string_pretty(&outcome.envelope).unwrap());
     } else if outcome.response.ok {
         println!("{}", serde_json::to_string_pretty(&outcome.response.payload).unwrap());
+        if opts.emit_events && !outcome.events.is_empty() {
+            println!("{}", format_events(&outcome.events));
+        }
     } else {
         let err = outcome
             .response
@@ -276,6 +283,7 @@ struct CommandNameArgs {
     server: Option<String>,
     token: Option<String>,
     dry_run: bool,
+    emit_events: bool,
     json: bool,
     for_role: Option<String>,
 }
@@ -298,6 +306,7 @@ impl CommandNameArgs {
             server: None,
             token: None,
             dry_run: false,
+            emit_events: false,
             json: false,
             for_role: None,
         };
@@ -311,6 +320,7 @@ impl CommandNameArgs {
                     out.workspace.in_memory = false;
                 }
                 "--in-memory" => out.workspace.in_memory = true,
+                "--events" => out.emit_events = true,
                 "--payload" => {
                     out.payload = Some(require_value(args, &mut i, "--payload")?.into())
                 }
