@@ -4,7 +4,7 @@
 //! and renders the result. It never touches the event log or State directly —
 //! every mutation goes through the engine, every read goes through `state()`.
 //!
-//! Catalog lives at `$TERRANE_HOME/log.jsonl` (default `./.terrane/`).
+//! Catalog lives at `$TERRANE_HOME/log.bin` (default `./.terrane/`).
 
 use std::env;
 use std::path::PathBuf;
@@ -33,6 +33,7 @@ fn run(argv: &[&str]) -> Result<(), String> {
         }
         ["app", rest @ ..] => run_app(rest),
         ["kv", rest @ ..] => run_kv(rest),
+        ["log"] => run_log(),
         ["replay"] => run_replay(),
         [other, ..] => Err(format!("unknown command {other:?} (try `terrane help`)")),
     }
@@ -143,6 +144,20 @@ fn run_kv(argv: &[&str]) -> Result<(), String> {
     }
 }
 
+/// Decode the binary event log and print it for humans — the inspectability we
+/// kept when moving the log from JSON to borsh.
+fn run_log() -> Result<(), String> {
+    let events = terrane_core::read_log(&log_path()).map_err(|e| e.to_string())?;
+    if events.is_empty() {
+        println!("(empty log)");
+        return Ok(());
+    }
+    for (i, event) in events.iter().enumerate() {
+        println!("{:>4}  {event:?}", i + 1);
+    }
+    Ok(())
+}
+
 fn run_replay() -> Result<(), String> {
     let core = open()?;
     let ok = core.replay_matches().map_err(|e| e.to_string())?;
@@ -190,7 +205,7 @@ fn log_path() -> PathBuf {
     env::var("TERRANE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".terrane"))
-        .join("log.jsonl")
+        .join("log.bin")
 }
 
 fn print_help() {
@@ -205,8 +220,9 @@ fn print_help() {
          \x20 terrane kv get <app> <key>     read a value\n\
          \x20 terrane kv list <app>          list an app's stored data\n\
          \x20 terrane kv rm <app> <key>      delete a value\n\
+         \x20 terrane log                    print the event log (decoded)\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
          \x20 terrane help                   this message\n\n\
-         Catalog: $TERRANE_HOME/log.jsonl (default ./.terrane/)"
+         Catalog: $TERRANE_HOME/log.bin (binary event log; default ./.terrane/)"
     );
 }

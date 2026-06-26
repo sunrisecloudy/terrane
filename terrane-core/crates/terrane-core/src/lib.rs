@@ -18,10 +18,15 @@
 //! so that replay stays deterministic even when the resources are not.
 
 use std::fs::OpenOptions;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use terrane_domain::{AppRecord, Command, Error, Event, Result, State};
+
+/// Map any I/O error into a domain `Storage` error.
+fn storage_err(e: std::io::Error) -> Error {
+    Error::Storage(e.to_string())
+}
 
 /// Decide what Events a Command produces, validating it against current State.
 /// Pure: same `(state, cmd)` always yields the same result.
@@ -115,22 +120,43 @@ pub fn fold(state: &mut State, event: &Event) {
     }
 }
 
+/// Read every Event from the log, in order. The log is a flat sequence of
+/// length-prefixed borsh records: a little-endian `u32` byte length followed by
+/// that many bytes of one borsh-encoded [`Event`]. A missing log is an empty
+/// history, not an error.
+pub fn read_log(log_path: &Path) -> Result<Vec<Event>> {
+    let mut events = Vec::new();
+    let file = match std::fs::File::open(log_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(events),
+        Err(e) => return Err(storage_err(e)),
+    };
+    let mut reader = BufReader::new(file);
+    loop {
+        let mut len_buf = [0u8; 4];
+        match reader.read_exact(&mut len_buf) {
+            Ok(()) => {}
+            // A clean EOF at a record boundary is the end of the log.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+            Err(e) => return Err(storage_err(e)),
+        }
+        let len = u32::from_le_bytes(len_buf) as usize;
+        let mut buf = vec![0u8; len];
+        reader
+            .read_exact(&mut buf)
+            .map_err(|e| Error::Storage(format!("truncated log record: {e}")))?;
+        let event = borsh::from_slice::<Event>(&buf)
+            .map_err(|e| Error::Storage(format!("corrupt log record: {e}")))?;
+        events.push(event);
+    }
+    Ok(events)
+}
+
 /// Rebuild State by folding every Event in the log from empty. A missing log is
 /// an empty world, not an error.
 pub fn replay(log_path: &Path) -> Result<State> {
     let mut state = State::default();
-    let file = match std::fs::File::open(log_path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(state),
-        Err(e) => return Err(Error::Storage(e.to_string())),
-    };
-    for (i, line) in BufReader::new(file).lines().enumerate() {
-        let line = line.map_err(|e| Error::Storage(e.to_string()))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let event: Event = serde_json::from_str(&line)
-            .map_err(|e| Error::Storage(format!("corrupt log entry on line {}: {e}", i + 1)))?;
+    for event in read_log(log_path)? {
         fold(&mut state, &event);
     }
     Ok(state)
@@ -177,18 +203,20 @@ impl Core {
     fn append(&self, events: &[Event]) -> Result<()> {
         if let Some(parent) = self.log_path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|e| Error::Storage(e.to_string()))?;
+                std::fs::create_dir_all(parent).map_err(storage_err)?;
             }
         }
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.log_path)
-            .map_err(|e| Error::Storage(e.to_string()))?;
+            .map_err(storage_err)?;
         for event in events {
-            let line =
-                serde_json::to_string(event).map_err(|e| Error::Storage(e.to_string()))?;
-            writeln!(file, "{line}").map_err(|e| Error::Storage(e.to_string()))?;
+            let bytes = borsh::to_vec(event).map_err(storage_err)?;
+            let len = u32::try_from(bytes.len())
+                .map_err(|_| Error::Storage("event record too large".into()))?;
+            file.write_all(&len.to_le_bytes()).map_err(storage_err)?;
+            file.write_all(&bytes).map_err(storage_err)?;
         }
         Ok(())
     }

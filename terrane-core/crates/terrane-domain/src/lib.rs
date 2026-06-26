@@ -5,9 +5,13 @@
 //! `terrane-core` turns Commands into Events and folds Events into State; the
 //! rules for *how* live there, the words live here.
 //!
+//! Only [`Event`] is serialized — it is the durable truth written to the log —
+//! so it alone derives borsh. Commands are transient and State is rebuilt by
+//! folding, so neither needs a wire format.
+//!
 //! First slice: the **app catalog** — the user's saved apps.
 
-use serde::{Deserialize, Serialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use std::collections::BTreeMap;
 
 /// Identifier for a saved app. Caller-supplied and stable.
@@ -16,23 +20,20 @@ pub type AppId = String;
 /// A saved app, as the user sees it in their catalog. `source` is where the
 /// app's body lives — a path to its bundle (UI + backend). It is metadata for
 /// now; the host will read it once it can run apps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppRecord {
     pub id: AppId,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }
 
 /// An intent to change the catalog. Commands are *requests*; the engine decides
 /// whether they are allowed and what Events they produce.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "cmd", rename_all = "snake_case")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     AddApp {
         id: AppId,
         name: String,
-        #[serde(default)]
         source: Option<String>,
     },
     RemoveApp {
@@ -53,13 +54,14 @@ pub enum Command {
 
 /// A fact that has happened. Events are the durable truth: the log is a list of
 /// Events, and folding them from empty reproduces the State exactly.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
+///
+/// Serialized with borsh (binary, deterministic). Variant *order* is part of the
+/// wire format — append new variants at the end, never reorder existing ones.
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub enum Event {
     AppAdded {
         id: AppId,
         name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
     },
     AppRemoved {
@@ -79,10 +81,9 @@ pub enum Event {
 /// The whole world the core holds: the catalog of saved apps plus each app's
 /// key/value resource. Keyed and ordered (BTreeMap keeps iteration
 /// deterministic, which keeps replay deterministic).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct State {
     pub apps: BTreeMap<AppId, AppRecord>,
-    #[serde(default)]
     pub data: BTreeMap<AppId, BTreeMap<String, String>>,
 }
 

@@ -9,4 +9,4 @@ name = "terrane_domain"
 path = "src/lib.rs"
 
 [dependencies]
-serde.workspace = true
+borsh.workspace = true

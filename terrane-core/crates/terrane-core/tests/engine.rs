@@ -17,7 +17,7 @@ fn add(id: &str, name: &str) -> Command {
 #[test]
 fn executes_and_replays_identically() {
     let dir = tempdir().unwrap();
-    let log = dir.path().join("log.jsonl");
+    let log = dir.path().join("log.bin");
 
     let mut core = Core::open(&log).unwrap();
     core.execute(add("notes", "Notes")).unwrap();
@@ -39,7 +39,7 @@ fn executes_and_replays_identically() {
 #[test]
 fn source_round_trips_through_the_log() {
     let dir = tempdir().unwrap();
-    let log = dir.path().join("log.jsonl");
+    let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
     core.execute(Command::AddApp {
         id: "notes".into(),
@@ -57,7 +57,7 @@ fn source_round_trips_through_the_log() {
 #[test]
 fn rejects_duplicate_and_missing() {
     let dir = tempdir().unwrap();
-    let log = dir.path().join("log.jsonl");
+    let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
 
     core.execute(add("notes", "Notes")).unwrap();
@@ -78,7 +78,7 @@ fn rejects_duplicate_and_missing() {
 #[test]
 fn kv_resource_records_and_cascades() {
     let dir = tempdir().unwrap();
-    let log = dir.path().join("log.jsonl");
+    let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
     core.execute(add("notes", "Notes")).unwrap();
 
@@ -126,7 +126,7 @@ fn kv_resource_records_and_cascades() {
 #[test]
 fn rejects_empty_fields() {
     let dir = tempdir().unwrap();
-    let mut core = Core::open(dir.path().join("log.jsonl")).unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     assert!(matches!(
         core.execute(add("", "x")),
         Err(Error::InvalidInput(_))
