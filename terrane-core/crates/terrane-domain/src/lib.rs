@@ -46,6 +46,9 @@ pub enum Error {
     KeyNotFound(AppId, String),
     InvalidInput(String),
     Storage(String),
+    /// Backend (JS) execution failed: a thrown exception, a compile error, or a
+    /// missing/unreadable bundle.
+    Runtime(String),
 }
 
 impl std::fmt::Display for Error {
@@ -56,6 +59,7 @@ impl std::fmt::Display for Error {
             Error::KeyNotFound(app, key) => write!(f, "key not found: {app}/{key}"),
             Error::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
             Error::Storage(msg) => write!(f, "storage error: {msg}"),
+            Error::Runtime(msg) => write!(f, "runtime error: {msg}"),
         }
     }
 }

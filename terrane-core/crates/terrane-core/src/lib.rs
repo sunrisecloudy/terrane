@@ -152,6 +152,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(cap::kv::KvCapability));
     registry.register(Box::new(cap::net::NetCapability));
     registry.register(Box::new(cap::model::ModelCapability));
+    registry.register(Box::new(cap::host::HostCapability));
     registry
 }
 

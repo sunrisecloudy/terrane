@@ -9,6 +9,7 @@ use terrane_domain::{Error, EventRecord, Result};
 use crate::{Decision, State};
 
 pub mod app;
+pub mod host;
 pub mod kv;
 pub mod model;
 pub mod net;
