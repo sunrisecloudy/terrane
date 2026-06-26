@@ -105,6 +105,35 @@ fn concurrent_replicas_merge_without_losing_writes() {
     assert_eq!(map_get(&alice, "prefs", "lang"), Some("en".into()));
 }
 
+/// Collaboration through the *real capability*: two replicas of the same app
+/// each record a `crdt.update` for a concurrent write, then exchange updates.
+/// Both writes must survive — the regression guard for the per-app-peer bug,
+/// where shared PeerIDs collided and a merge silently dropped one write.
+#[test]
+fn two_app_replicas_merge_with_no_lost_writes() {
+    let dir = tempdir().unwrap();
+    let make_replica = |sub: &str, item: &str| {
+        let mut core = Core::open(dir.path().join(sub).join("log.bin")).unwrap();
+        core.dispatch(req("app.add", &["collab", "Collab"])).unwrap();
+        core.dispatch(req("crdt.listPush", &["collab", "todos", item])).unwrap();
+        core
+    };
+    let alice = make_replica("a", "buy milk");
+    let bob = make_replica("b", "walk dog");
+
+    // Ship Bob's recorded update to Alice (what sync will do over the wire).
+    let from_bob = bob.state().crdt.docs["collab"]
+        .export(loro::ExportMode::all_updates())
+        .unwrap();
+    let merged = alice.state().crdt.docs["collab"].fork();
+    merged.import(&from_bob).unwrap();
+
+    let items = list_strings(&merged, "todos");
+    assert_eq!(items.len(), 2, "both writes survive the merge: {items:?}");
+    assert!(items.contains(&"buy milk".to_string()));
+    assert!(items.contains(&"walk dog".to_string()));
+}
+
 #[test]
 fn removing_the_app_drops_its_document() {
     let dir = tempdir().unwrap();

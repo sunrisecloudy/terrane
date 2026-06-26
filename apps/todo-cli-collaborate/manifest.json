@@ -1,0 +1,7 @@
+{
+  "id": "todo-cli-collaborate",
+  "name": "Todo (CLI, collaborative)",
+  "version": "0.1.0",
+  "backend": "main.js",
+  "resources": ["crdt"]
+}

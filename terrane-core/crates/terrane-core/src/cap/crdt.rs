@@ -122,14 +122,15 @@ impl Capability for CrdtCapability {
         }
 
         // Apply the op to a fork (never to live State), then export just the new
-        // delta. Authoring under a stable per-app PeerID keeps the recorded bytes
-        // reproducible run-to-run; if Loro refuses the id we keep the fork's own
-        // peer — replay is unaffected either way, since we record the bytes.
+        // delta. `fork()` gives the op a fresh, distinct PeerID — exactly what a
+        // CRDT needs: two replicas of the same app must NOT share a peer, or their
+        // concurrent ops would collide on `(peer, counter)` and a merge would
+        // silently drop one. The randomness is frozen into the recorded bytes
+        // (Option A), so replay re-imports it and replay-identity still holds.
         let doc = match state.crdt.docs.get(&app) {
             Some(existing) => existing.fork(),
-            None => doc_for(&app),
+            None => LoroDoc::new(),
         };
-        let _ = doc.set_peer_id(peer_for(&app));
         let before = doc.oplog_vv();
 
         match name {
@@ -189,11 +190,7 @@ impl Capability for CrdtCapability {
         match record.kind.as_str() {
             "crdt.update" => {
                 let e: Update = decode_event(record)?;
-                let doc = state
-                    .crdt
-                    .docs
-                    .entry(e.app.clone())
-                    .or_insert_with(|| doc_for(&e.app));
+                let doc = state.crdt.docs.entry(e.app.clone()).or_default();
                 doc.import(&e.bytes)
                     .map_err(|err| Error::Storage(format!("crdt import: {err}")))?;
             }
@@ -220,24 +217,6 @@ impl Capability for CrdtCapability {
             _ => None,
         }
     }
-}
-
-/// A fresh document for `app`, authored under its stable PeerID.
-fn doc_for(app: &str) -> LoroDoc {
-    let doc = LoroDoc::new();
-    let _ = doc.set_peer_id(peer_for(app));
-    doc
-}
-
-/// A stable, valid (nonzero, sub-`2^47`) PeerID derived from the app id via
-/// FNV-1a — so the local replica always authors under the same peer.
-fn peer_for(app: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in app.bytes() {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    (h & ((1u64 << 47) - 1)) | 1
 }
 
 /// Join the trailing args from `from` into one value (so a value may contain
