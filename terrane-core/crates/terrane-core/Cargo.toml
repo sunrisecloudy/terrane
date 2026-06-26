@@ -1,0 +1,18 @@
+[package]
+name = "terrane-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_core"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-domain.workspace = true
+borsh.workspace = true
+rquickjs = { version = "0.12", features = ["macro"] }
+
+[dev-dependencies]
+terrane-domain.workspace = true
+tempfile.workspace = true

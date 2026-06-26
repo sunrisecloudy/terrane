@@ -1,0 +1,8 @@
+{
+  "id": "todo",
+  "name": "Todo",
+  "version": "0.1.0",
+  "backend": "main.js",
+  "ui": "index.html",
+  "resources": ["kv"]
+}

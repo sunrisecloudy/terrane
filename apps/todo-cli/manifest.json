@@ -1,0 +1,7 @@
+{
+  "id": "todo-cli",
+  "name": "Todo (CLI)",
+  "version": "0.1.0",
+  "backend": "main.js",
+  "resources": ["kv"]
+}

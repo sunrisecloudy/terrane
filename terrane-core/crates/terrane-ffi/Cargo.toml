@@ -1,0 +1,19 @@
+[package]
+name = "terrane-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_ffi"
+# staticlib: the .a a native host (Swift/Xcode) links. cdylib: a .dylib for
+# JNI/other. rlib: lets the Rust integration tests call the extern fns in-process.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+terrane-core.workspace = true
+terrane-domain.workspace = true
+terrane-cli = { path = "../terrane-cli" }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,20 @@
+[package]
+name = "terrane-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "terrane"
+path = "src/main.rs"
+
+[dependencies]
+terrane-core.workspace = true
+terrane-domain.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
