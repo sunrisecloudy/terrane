@@ -11,3 +11,6 @@ path = "src/main.rs"
 [dependencies]
 terrane-core.workspace = true
 terrane-domain.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

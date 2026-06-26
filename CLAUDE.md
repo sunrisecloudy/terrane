@@ -62,3 +62,15 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 cargo run -p terrane-cli -- help
 ```
+
+Every capability has a real binary-level e2e test in
+`terrane-core/crates/terrane-cli/tests/e2e.rs`. The effectful ones (`net`,
+`model`) hit the real network / real agent CLIs, so they are `#[ignore]`d —
+keep the default `cargo test` green and run them deliberately:
+
+```sh
+cargo test -p terrane-cli -- --ignored   # real fetch + real agent call
+```
+
+Add an e2e test for each new capability (pure ones run by default; effectful
+ones `#[ignore]` with a reason).
