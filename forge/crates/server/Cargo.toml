@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 forge-core.workspace = true
 forge-domain.workspace = true
+include_dir.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
