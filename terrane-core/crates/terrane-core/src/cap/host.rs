@@ -92,7 +92,7 @@ pub(crate) fn run(
     let output = output?;
 
     Ok(RunResult {
-        records: accum.recorded,
+        records: coalesce(accum.recorded),
         output,
     })
 }
@@ -103,8 +103,49 @@ struct RunAccum {
     app: String,
     state: State,
     registry: Registry,
-    recorded: Vec<EventRecord>,
+    recorded: Vec<RecordedWrite>,
     first_error: Option<Error>,
+}
+
+/// A write stashed during a run, carrying just enough to coalesce redundant
+/// same-key `kv.set`s before committing (see [`coalesce`]).
+struct RecordedWrite {
+    record: EventRecord,
+    /// The app-scoped key this write targets, set only for `kv.*` writes (the
+    /// only ones that participate in coalescing); `None` for anything else.
+    coalesce_key: Option<String>,
+    /// True only for a `kv.set` — the kind we drop when a later write supersedes
+    /// it. A `kv.rm` (or any other record) is always kept.
+    is_set: bool,
+}
+
+/// Coalesce redundant same-key `kv.set` records produced within a single run: a
+/// `kv.set` is dropped when a *later* write targets the same key (a newer
+/// `kv.set`, or a `kv.rm` that removes it). The last set of each key and every
+/// `kv.rm` survive, in their original relative order — so the committed records
+/// fold to the exact same State, just without the intra-run churn. Replay stays
+/// identical because only the net effect is logged.
+fn coalesce(writes: Vec<RecordedWrite>) -> Vec<EventRecord> {
+    let mut keep = vec![true; writes.len()];
+    for i in 0..writes.len() {
+        if !writes[i].is_set {
+            continue;
+        }
+        let Some(key) = writes[i].coalesce_key.as_deref() else {
+            continue;
+        };
+        if writes[i + 1..]
+            .iter()
+            .any(|w| w.coalesce_key.as_deref() == Some(key))
+        {
+            keep[i] = false;
+        }
+    }
+    writes
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(w, keep)| keep.then_some(w.record))
+        .collect()
 }
 
 impl RunAccum {
@@ -113,6 +154,10 @@ impl RunAccum {
     /// it, and stash the records. Errors are captured (first wins), not thrown.
     fn write(&mut self, name: &str, mut args: Vec<String>) {
         args.insert(0, self.app.clone());
+        // The kv key (args[1] after app-scoping) drives coalescing; non-kv writes
+        // never coalesce.
+        let coalesce_key = name.starts_with("kv.").then(|| args.get(1).cloned()).flatten();
+        let is_set = name == "kv.set";
         let result = (|| -> Result<()> {
             let decision = self
                 .registry
@@ -127,7 +172,13 @@ impl RunAccum {
             for record in &records {
                 apply(&self.registry, &mut self.state, record)?;
             }
-            self.recorded.extend(records);
+            for record in records {
+                self.recorded.push(RecordedWrite {
+                    record,
+                    coalesce_key: coalesce_key.clone(),
+                    is_set,
+                });
+            }
             Ok(())
         })();
         if let Err(e) = result {
@@ -189,28 +240,51 @@ fn execute_js(
         let resource = Object::new(ctx.clone()).map_err(js_err)?;
 
         // kv — installed only if the manifest declared it (capability sandbox).
+        // The set/rm/get bridges take strict strings: a non-string arg is NOT
+        // coerced (that would change app-visible semantics); instead it captures a
+        // typed, attributable error so the run aborts naming the offending call.
         if resources.iter().any(|r| r == "kv") {
             let kv = Object::new(ctx.clone()).map_err(js_err)?;
             {
                 let cell = cell.clone();
-                let set = Function::new(ctx.clone(), move |key: String, value: String| {
-                    cell.borrow_mut().write("kv.set", vec![key, value]);
+                let set = Function::new(ctx.clone(), move |key: Value, value: Value| {
+                    let mut accum = cell.borrow_mut();
+                    let key = match js_string_arg(&key) {
+                        Ok(k) => k,
+                        Err(t) => return accum.capture(kv_type_error("kv.set", "key", t)),
+                    };
+                    let value = match js_string_arg(&value) {
+                        Ok(v) => v,
+                        Err(t) => return accum.capture(kv_type_error("kv.set", "value", t)),
+                    };
+                    accum.write("kv.set", vec![key, value]);
                 })
                 .map_err(js_err)?;
                 kv.set("set", set).map_err(js_err)?;
             }
             {
                 let cell = cell.clone();
-                let rm = Function::new(ctx.clone(), move |key: String| {
-                    cell.borrow_mut().write("kv.rm", vec![key]);
+                let rm = Function::new(ctx.clone(), move |key: Value| {
+                    let mut accum = cell.borrow_mut();
+                    match js_string_arg(&key) {
+                        Ok(k) => accum.write("kv.rm", vec![k]),
+                        Err(t) => accum.capture(kv_type_error("kv.rm", "key", t)),
+                    }
                 })
                 .map_err(js_err)?;
                 kv.set("rm", rm).map_err(js_err)?;
             }
             {
                 let cell = cell.clone();
-                let get = Function::new(ctx.clone(), move |key: String| -> Option<String> {
-                    cell.borrow().kv_get(&key)
+                let get = Function::new(ctx.clone(), move |key: Value| -> Option<String> {
+                    let mut accum = cell.borrow_mut();
+                    match js_string_arg(&key) {
+                        Ok(k) => accum.kv_get(&k),
+                        Err(t) => {
+                            accum.capture(kv_type_error("kv.get", "key", t));
+                            None
+                        }
+                    }
                 })
                 .map_err(js_err)?;
                 kv.set("get", get).map_err(js_err)?;
@@ -270,8 +344,9 @@ fn load_bundle(source: &str) -> Result<Bundle> {
     if path.is_dir() {
         let manifest = std::fs::read_to_string(path.join("manifest.json"))
             .map_err(|e| Error::Runtime(format!("read manifest.json: {e}")))?;
-        let backend = manifest_backend(&manifest)?;
-        let resources = manifest_resources(&manifest);
+        let fields = parse_manifest(&manifest)?;
+        let backend = manifest_backend(&fields)?;
+        let resources = manifest_resources(&fields);
         let js_path = path.join(&backend);
         let source = std::fs::read_to_string(&js_path)
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))?;
@@ -286,56 +361,236 @@ fn load_bundle(source: &str) -> Result<Bundle> {
     }
 }
 
-/// Extract the `"resources"` string array from a (trusted, local) manifest.
-/// Absent → empty (least privilege). Best-effort hand parse (see
-/// [`manifest_backend`] for the dependency-surface rationale).
-fn manifest_resources(manifest: &str) -> Vec<String> {
-    let Some(key) = manifest.find("\"resources\"") else {
+/// Extract the top-level `"resources"` string array from a parsed manifest.
+/// Absent (or not an array of strings) → empty (least privilege). Only top-level
+/// keys count, and string escapes are already decoded by [`parse_manifest`].
+fn manifest_resources(fields: &[(String, Json)]) -> Vec<String> {
+    let Some(Json::Array(items)) = lookup(fields, "resources") else {
         return Vec::new();
     };
-    let after = &manifest[key..];
-    let Some(open) = after.find('[') else {
-        return Vec::new();
-    };
-    let Some(close) = after[open..].find(']') else {
-        return Vec::new();
-    };
-    let mut list = &after[open + 1..open + close];
-    let mut out = Vec::new();
-    while let Some(q1) = list.find('"') {
-        let rest = &list[q1 + 1..];
-        let Some(q2) = rest.find('"') else { break };
-        out.push(rest[..q2].to_string());
-        list = &rest[q2 + 1..];
-    }
-    out
+    items
+        .iter()
+        .filter_map(|v| match v {
+            Json::Str(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
-/// Extract the `"backend"` string from a (trusted, local) manifest.json. A tiny
-/// hand parse keeps the crate's dependency surface unchanged; swap in serde_json
-/// when manifests grow richer fields.
-fn manifest_backend(manifest: &str) -> Result<String> {
-    let key = manifest
-        .find("\"backend\"")
-        .ok_or_else(|| Error::Runtime("manifest.json missing \"backend\"".into()))?;
-    let after = &manifest[key + "\"backend\"".len()..];
-    let colon = after
-        .find(':')
-        .ok_or_else(|| Error::Runtime("manifest.json: malformed backend entry".into()))?;
-    let rest = &after[colon + 1..];
-    let start = rest
-        .find('"')
-        .ok_or_else(|| Error::Runtime("manifest.json: backend value not a string".into()))?;
-    let value = &rest[start + 1..];
-    let end = value
-        .find('"')
-        .ok_or_else(|| Error::Runtime("manifest.json: unterminated backend value".into()))?;
-    Ok(value[..end].to_string())
+/// Extract the top-level `"backend"` string from a parsed manifest.json.
+fn manifest_backend(fields: &[(String, Json)]) -> Result<String> {
+    match lookup(fields, "backend") {
+        Some(Json::Str(s)) => Ok(s.clone()),
+        Some(_) => Err(Error::Runtime("manifest.json: \"backend\" is not a string".into())),
+        None => Err(Error::Runtime("manifest.json missing \"backend\"".into())),
+    }
+}
+
+/// First value bound to `key` among the manifest's top-level fields.
+fn lookup<'a>(fields: &'a [(String, Json)], key: &str) -> Option<&'a Json> {
+    fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+/// A manifest value we care about. Numbers, booleans, and null parse but are not
+/// retained (`Other`) — the manifest only reads strings and string arrays.
+enum Json {
+    Str(String),
+    Array(Vec<Json>),
+    Object(Vec<(String, Json)>),
+    Other,
+}
+
+/// Parse a manifest into its top-level `(key, value)` fields.
+///
+/// We keep a hand-written JSON parser rather than pulling in `serde_json`:
+/// terrane-core is deliberately serde-free (it serializes with borsh), and the
+/// review confirmed serde is not in the workspace. This is the "harden the hand
+/// parser" path of the deferred decision — a real (if minimal) JSON parse that
+/// fixes the two edge cases the old positional scan got wrong: it matches keys
+/// only at the *top level* (a nested `"backend"` in a sub-object no longer wins)
+/// and it *decodes* string escapes (so `\"`, `\\`, `\uXXXX`, … in values are
+/// read correctly). Revisit (and reconsider serde_json) only if manifests grow
+/// genuinely rich/nested schemas.
+fn parse_manifest(manifest: &str) -> Result<Vec<(String, Json)>> {
+    let mut p = JsonParser {
+        chars: manifest.chars().collect(),
+        pos: 0,
+    };
+    match p.value()? {
+        Json::Object(fields) => Ok(fields),
+        _ => Err(Error::Runtime("manifest.json: root is not an object".into())),
+    }
+}
+
+/// A tiny recursive-descent JSON reader over a `char` cursor. Correct for the
+/// JSON grammar's structure (objects, arrays, strings with escapes); scalars
+/// (numbers/bools/null) are consumed but discarded since manifests never read
+/// them. Inputs are small, trusted, local bundle manifests.
+struct JsonParser {
+    chars: Vec<char>,
+    pos: usize,
+}
+
+impl JsonParser {
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn bump(&mut self) -> Option<char> {
+        let c = self.peek();
+        if c.is_some() {
+            self.pos += 1;
+        }
+        c
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+            self.pos += 1;
+        }
+    }
+
+    fn value(&mut self) -> Result<Json> {
+        self.skip_ws();
+        match self.peek() {
+            Some('"') => Ok(Json::Str(self.string()?)),
+            Some('{') => self.object(),
+            Some('[') => self.array(),
+            Some(_) => {
+                self.skip_scalar();
+                Ok(Json::Other)
+            }
+            None => Err(Error::Runtime("manifest.json: unexpected end of input".into())),
+        }
+    }
+
+    /// Read a string literal (cursor on the opening quote), decoding escapes.
+    fn string(&mut self) -> Result<String> {
+        self.bump(); // opening quote
+        let mut out = String::new();
+        loop {
+            match self.bump() {
+                None => return Err(Error::Runtime("manifest.json: unterminated string".into())),
+                Some('"') => return Ok(out),
+                Some('\\') => match self.bump() {
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    Some('/') => out.push('/'),
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('b') => out.push('\u{0008}'),
+                    Some('f') => out.push('\u{000C}'),
+                    Some('u') => out.push(self.unicode_escape()?),
+                    _ => return Err(Error::Runtime("manifest.json: invalid string escape".into())),
+                },
+                Some(c) => out.push(c),
+            }
+        }
+    }
+
+    /// Read the four hex digits of a `\uXXXX` escape (the `\u` is already eaten).
+    fn unicode_escape(&mut self) -> Result<char> {
+        let mut cp = 0u32;
+        for _ in 0..4 {
+            let d = self
+                .bump()
+                .and_then(|c| c.to_digit(16))
+                .ok_or_else(|| Error::Runtime("manifest.json: bad \\u escape".into()))?;
+            cp = cp * 16 + d;
+        }
+        // Lone surrogates can't form a char; fall back to the replacement char.
+        Ok(char::from_u32(cp).unwrap_or('\u{FFFD}'))
+    }
+
+    fn object(&mut self) -> Result<Json> {
+        self.bump(); // '{'
+        let mut fields = Vec::new();
+        loop {
+            self.skip_ws();
+            match self.peek() {
+                Some('}') => {
+                    self.bump();
+                    return Ok(Json::Object(fields));
+                }
+                Some('"') => {
+                    let key = self.string()?;
+                    self.skip_ws();
+                    if self.bump() != Some(':') {
+                        return Err(Error::Runtime("manifest.json: expected ':' after key".into()));
+                    }
+                    let value = self.value()?;
+                    fields.push((key, value));
+                    if !self.comma_or_end('}')? {
+                        return Ok(Json::Object(fields));
+                    }
+                }
+                _ => return Err(Error::Runtime("manifest.json: expected key or '}'".into())),
+            }
+        }
+    }
+
+    fn array(&mut self) -> Result<Json> {
+        self.bump(); // '['
+        let mut items = Vec::new();
+        loop {
+            self.skip_ws();
+            if self.peek() == Some(']') {
+                self.bump();
+                return Ok(Json::Array(items));
+            }
+            items.push(self.value()?);
+            if !self.comma_or_end(']')? {
+                return Ok(Json::Array(items));
+            }
+        }
+    }
+
+    /// After an element, consume a `,` (more follow → `true`) or the closing
+    /// delimiter (`end` → `false`); anything else is malformed.
+    fn comma_or_end(&mut self, end: char) -> Result<bool> {
+        self.skip_ws();
+        match self.bump() {
+            Some(',') => Ok(true),
+            Some(c) if c == end => Ok(false),
+            _ => Err(Error::Runtime(format!(
+                "manifest.json: expected ',' or '{end}'"
+            ))),
+        }
+    }
+
+    /// Consume a scalar token (number/true/false/null) we don't retain.
+    fn skip_scalar(&mut self) {
+        while let Some(c) = self.peek() {
+            if c == ',' || c == '}' || c == ']' || c.is_whitespace() {
+                break;
+            }
+            self.pos += 1;
+        }
+    }
 }
 
 /// Map an rquickjs error into our typed Runtime error.
 fn js_err(e: rquickjs::Error) -> Error {
     Error::Runtime(e.to_string())
+}
+
+/// Strictly read a JS string argument — no coercion. Returns the owned string, or
+/// the argument's JS type name (so the caller can report which kv call and which
+/// parameter got the wrong type).
+fn js_string_arg(v: &Value) -> std::result::Result<String, &'static str> {
+    match v.as_string().and_then(|s| s.to_string().ok()) {
+        Some(s) => Ok(s),
+        None => Err(v.type_name()),
+    }
+}
+
+/// Build the typed error a kv bridge raises when handed a non-string argument,
+/// naming the call (`kv.set`), the parameter (`key`), and the type it got.
+fn kv_type_error(call: &str, param: &str, got: &str) -> Error {
+    Error::InvalidInput(format!(
+        "{call}: expected string {param}, got {got}"
+    ))
 }
 
 /// Fold a caught JS exception/value into our typed Runtime error (owned String,
