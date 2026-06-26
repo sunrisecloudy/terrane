@@ -1,0 +1,19 @@
+# Standalone workspace: host/cli is its own Cargo workspace (separate Cargo.lock
+# and target/) so non-Rust hosts (macOS/Xcode, Android/Gradle, …) aren't
+# entangled with this one's build. It path-depends across the boundary into
+# terrane-core's crates; QuickJS comes transitively through terrane-core, so this
+# package has no direct rquickjs dependency.
+[workspace]
+
+[package]
+name = "terrane-host-cli"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "terrane-host"
+path = "src/main.rs"
+
+[dependencies]
+terrane-cli = { path = "../../terrane-core/crates/terrane-cli" }
