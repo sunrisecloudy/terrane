@@ -38,6 +38,11 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 - Keep domain logic deterministic and replayable; effects live at the edge.
 - No `unwrap`/panics on real paths — return typed errors.
 - Reuse existing terrane-domain types and errors instead of redefining them.
+- **Tests live in their own files, never inline in the implementation.** Put
+  them in the crate's `tests/` directory (integration tests over the public
+  surface). The `src/*.rs` files hold code; the proofs live beside them.
+- **Always run clippy.** After any change, before committing, both must be
+  green: `cargo test` and `cargo clippy --all-targets -- -D warnings`.
 - Commit often: small, green, granular. Branch off `main`. Stage your own files
   explicitly — never `git add -A`. Preserve unrelated dirty/untracked work.
 - Mine `legacy/` for hard-won details (CRDT merge, canonicalization,

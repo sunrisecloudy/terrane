@@ -13,4 +13,5 @@ terrane-domain.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+terrane-domain.workspace = true
 tempfile.workspace = true
