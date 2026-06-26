@@ -596,6 +596,50 @@ pub(crate) static CONTROL_CATALOG: &[CommandDescriptor] = &[
     ),
 ];
 
+const fn inner_desc(name: &'static str, summary: &'static str) -> CommandDescriptor {
+    CommandDescriptor {
+        name,
+        summary,
+        surface: CommandSurface::Inner,
+        mutates: false,
+        effectful: false,
+        visibility: CommandVisibility::Public,
+        required_roles: &[],
+        capabilities: &[],
+        payload_schema: None,
+        response_schema: None,
+        events: &[],
+        stability: CommandStability::Stable,
+        since: "m0a",
+    }
+}
+
+/// Reference-only inner (`ctx.*` / HostBridge) entries for describe/documentation.
+pub(crate) static INNER_CATALOG: &[CommandDescriptor] = &[
+    inner_desc("storage.get", "Read a key from applet storage."),
+    inner_desc("storage.set", "Write a key in applet storage."),
+    inner_desc("storage.delete", "Delete a key from applet storage."),
+    inner_desc("storage.list", "List storage keys by prefix."),
+    inner_desc("db.insert", "Insert a record into a collection."),
+    inner_desc("db.update", "Replace a record in a collection."),
+    inner_desc("db.patch", "Patch fields on a record."),
+    inner_desc("db.delete", "Tombstone a record."),
+    inner_desc("db.transact", "Apply mutations atomically."),
+    inner_desc("db.get", "Read one record by id."),
+    inner_desc("db.list", "List all records in a collection."),
+    inner_desc("db.query", "Run a structured query against a collection."),
+    inner_desc("db.watch", "Register a live query subscription."),
+    inner_desc("db.unwatch", "Cancel a live query subscription."),
+    inner_desc("ui.render", "Render a declarative UI tree."),
+    inner_desc("log", "Append a bounded log line."),
+    inner_desc("net.fetch", "Perform a policy-gated network fetch."),
+    inner_desc("files.write", "Write a sandbox file."),
+];
+
+pub(crate) fn inner_catalog_entries() -> &'static [CommandDescriptor] {
+    INNER_CATALOG
+}
+
 /// Lookup a command descriptor by name (outer catalog + optional debug control).
 pub(crate) fn descriptor_for(name: &str) -> Option<&'static CommandDescriptor> {
     if let Some(entry) = CATALOG.iter().find(|entry| entry.name == name) {

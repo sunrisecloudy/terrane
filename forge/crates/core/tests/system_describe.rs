@@ -55,6 +55,25 @@ fn system_describe_namespace_filter_narrows_results() {
 }
 
 #[test]
+fn system_describe_include_inner_surfaces_host_bridge_reference() {
+    let mut core = WorkspaceCore::in_memory("ws").unwrap();
+    let response = core.handle(command(
+        "system.describe",
+        Role::Viewer,
+        serde_json::json!({ "tier": "public", "include_inner": true }),
+    ));
+    assert!(response.ok, "{:?}", response.error);
+    let names: Vec<_> = response.payload["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(names.contains(&"db.insert".to_string()));
+    assert!(names.contains(&"net.fetch".to_string()));
+}
+
+#[test]
 fn system_describe_catalog_version_is_stable() {
     let mut core = WorkspaceCore::in_memory("ws").unwrap();
     let first = core.handle(command("system.describe", Role::Owner, serde_json::json!({})));

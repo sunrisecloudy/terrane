@@ -6,7 +6,9 @@ use forge_domain::{
 };
 use serde_json::{json, Value};
 
-use crate::catalog::{catalog_entries, catalog_version_hash, parse_visibility_tier};
+use crate::catalog::{
+    catalog_entries, catalog_version_hash, inner_catalog_entries, parse_visibility_tier,
+};
 use super::super::WorkspaceCore;
 
 impl WorkspaceCore {
@@ -34,10 +36,13 @@ impl WorkspaceCore {
             None => cmd.actor.role,
         };
 
-        let mut commands: Vec<_> = catalog_entries()
+        let mut sources: Vec<&forge_domain::CommandDescriptor> = catalog_entries();
+        if include_inner {
+            sources.extend(inner_catalog_entries().iter());
+        }
+        let mut commands: Vec<_> = sources
             .iter()
             .copied()
-            .filter(|entry| entry.surface == forge_domain::CommandSurface::Outer || include_inner)
             .filter(|entry| entry.visible_to(effective_role, max_tier))
             .filter(|entry| {
                 namespace_filter

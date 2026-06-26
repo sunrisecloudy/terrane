@@ -111,6 +111,9 @@ impl CommandDescriptor {
         if self.visibility > max_tier {
             return false;
         }
+        if self.required_roles.is_empty() {
+            return true;
+        }
         self.role_permitted(role)
     }
 }
