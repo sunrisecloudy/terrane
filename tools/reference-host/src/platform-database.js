@@ -21,6 +21,11 @@ export class PlatformDatabase {
     this.dbFile = dbFile;
     this.db = new DatabaseSync(dbFile);
     this.db.exec("PRAGMA foreign_keys = ON");
+    // Per-session monotonic sequence so each bridge call gets a unique request
+    // id (mirroring runtime-web's app_req_<n>). The core derives bridge_call_id
+    // deterministically from request_id; without this, fixtures/loops that reuse
+    // the same request.id collapse to one id and collide on the UNIQUE column.
+    this.bridgeCallSeq = 0;
     this.applyMigrations(migrationsDir);
     this.ensureControlCommandAuditColumns();
     this.ensureRuntimeSessionColumns();
@@ -964,14 +969,14 @@ export class PlatformDatabase {
       result,
       error,
       durationMs,
-      requestId: requestId ?? params?.id ?? method,
+      requestId: `${requestId ?? params?.id ?? method}_${this.bridgeCallSeq++}`,
     });
     this.run(
       "INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       record.bridge_call_id,
       record.session_id,
       record.app_id,
-      record.install_id,
+      record.install_id ?? null,
       record.method,
       prettyJson(record.params_json ?? null),
       record.result_json ? prettyJson(record.result_json) : null,
