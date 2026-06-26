@@ -20,6 +20,7 @@ await runCheck("sqlite.migrate", checkSqliteMigrations);
 await runCheck("postgres.static", checkPostgresSql);
 await runCheck("examples.validate", checkExamplePackages);
 await runCheck("examples.canonical", checkCanonicalExamples);
+await runCheck("bundled.apps.parity", checkBundledAppsParity);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("ci.workflow", checkCiWorkflow);
 await runCheck("performance.harness", checkPerformanceHarness);
@@ -268,6 +269,44 @@ function checkCanonicalExamples() {
   }
   const apps = fs.readdirSync(examplesDir).filter((entry) => fs.statSync(path.join(examplesDir, entry)).isDirectory());
   return `webapps/examples apps=${apps.length}`;
+}
+
+function checkBundledAppsParity() {
+  const bundledPath = path.join(repoRoot, "forge", "data", "bundled-apps.json");
+  const forgeExamplesDir = path.join(repoRoot, "forge", "examples");
+  const webappsExamplesDir = path.join(repoRoot, "webapps", "examples");
+
+  const bundledApps = readJson(bundledPath);
+  if (!Array.isArray(bundledApps) || bundledApps.length === 0) {
+    throw new Error("forge/data/bundled-apps.json must be a non-empty array");
+  }
+
+  const bundledIds = bundledApps.map((entry) => entry.id).sort();
+  const forgeIds = listExampleAppIds(forgeExamplesDir);
+  const webappIds = listExampleAppIds(webappsExamplesDir);
+
+  const mismatches = [];
+  if (JSON.stringify(bundledIds) !== JSON.stringify(forgeIds)) {
+    mismatches.push(`forge/examples ids=${forgeIds.join(",")} bundled=${bundledIds.join(",")}`);
+  }
+  if (JSON.stringify(bundledIds) !== JSON.stringify(webappIds)) {
+    mismatches.push(`webapps/examples ids=${webappIds.join(",")} bundled=${bundledIds.join(",")}`);
+  }
+  if (mismatches.length > 0) {
+    throw new Error(`bundled-apps.json IDs must match forge/examples/ and webapps/examples/: ${mismatches.join("; ")}`);
+  }
+
+  return `bundled-apps=${bundledIds.length} forge/examples=${forgeIds.length} webapps/examples=${webappIds.length}`;
+}
+
+function listExampleAppIds(examplesRoot) {
+  if (!fs.existsSync(examplesRoot)) {
+    throw new Error(`missing examples directory: ${relative(examplesRoot)}`);
+  }
+  return fs
+    .readdirSync(examplesRoot)
+    .filter((entry) => fs.statSync(path.join(examplesRoot, entry)).isDirectory())
+    .sort();
 }
 
 function checkSecurityLint() {

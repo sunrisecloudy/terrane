@@ -1,15 +1,17 @@
 {
-  "catalogVersion": "sha256:0c73ef387e7b9628bbc338a2abd7e5c996b64e0c143a7a061258941803a32978",
+  "catalogVersion": "sha256:0b9a087b2a2dd601dbba2258a58adeaa286621705303e9a257368bf55e937aba",
   "commands": [
     {
       "effectful": false,
       "mutates": true,
       "name": "applet.enable",
       "namespace": "applet",
+      "payload_schema": "schemas/commands/applet.enable.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/applet.enable.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Enable a suspended applet.",
@@ -21,10 +23,12 @@
       "mutates": true,
       "name": "applet.install",
       "namespace": "applet",
+      "payload_schema": "schemas/commands/applet.install.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/applet.install.response.schema.json",
       "since": "m0a",
       "stability": "stable",
       "summary": "Install an applet from a manifest and sources.",
@@ -36,10 +40,12 @@
       "mutates": true,
       "name": "applet.suspend",
       "namespace": "applet",
+      "payload_schema": "schemas/commands/applet.suspend.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/applet.suspend.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Suspend an active applet.",
@@ -51,10 +57,12 @@
       "mutates": true,
       "name": "applet.uninstall",
       "namespace": "applet",
+      "payload_schema": "schemas/commands/applet.uninstall.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/applet.uninstall.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Uninstall an applet.",
@@ -66,10 +74,12 @@
       "mutates": true,
       "name": "applet.upgrade",
       "namespace": "applet",
+      "payload_schema": "schemas/commands/applet.upgrade.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/applet.upgrade.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Upgrade an applet to a new version.",
@@ -81,11 +91,13 @@
       "mutates": false,
       "name": "audit.query",
       "namespace": "audit",
+      "payload_schema": "schemas/commands/audit.query.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/audit.query.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Query the durable security audit log.",
@@ -97,12 +109,14 @@
       "mutates": true,
       "name": "bridge.prepare_session",
       "namespace": "bridge",
+      "payload_schema": "schemas/commands/bridge.prepare_session.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/bridge.prepare_session.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Prepare a bridge runtime session.",
@@ -114,12 +128,14 @@
       "mutates": true,
       "name": "bridge.record_call",
       "namespace": "bridge",
+      "payload_schema": "schemas/commands/bridge.record_call.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/bridge.record_call.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Record a bridge call in durable logs.",
@@ -131,12 +147,14 @@
       "mutates": true,
       "name": "bridge.record_core_event",
       "namespace": "bridge",
+      "payload_schema": "schemas/commands/bridge.record_core_event.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/bridge.record_core_event.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Record a core event from the host bridge.",
@@ -148,12 +166,14 @@
       "mutates": true,
       "name": "bridge.record_crash_recovery",
       "namespace": "bridge",
+      "payload_schema": "schemas/commands/bridge.record_crash_recovery.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/bridge.record_crash_recovery.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Record crash recovery metadata for a bridge session.",
@@ -165,12 +185,14 @@
       "mutates": false,
       "name": "bridge.validate_envelope",
       "namespace": "bridge",
+      "payload_schema": "schemas/commands/bridge.validate_envelope.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/bridge.validate_envelope.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Validate a bridge envelope against policy.",
@@ -182,12 +204,14 @@
       "mutates": false,
       "name": "bridge.validate_network_request",
       "namespace": "bridge",
+      "payload_schema": "schemas/commands/bridge.validate_network_request.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/bridge.validate_network_request.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Validate a bridge network request against policy.",
@@ -379,6 +403,7 @@
       "mutates": false,
       "name": "db.history",
       "namespace": "db",
+      "payload_schema": "schemas/commands/db.history.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
@@ -386,6 +411,7 @@
         "viewer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/db.history.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Read the change history for a record.",
@@ -397,11 +423,13 @@
       "mutates": true,
       "name": "db.restore",
       "namespace": "db",
+      "payload_schema": "schemas/commands/db.restore.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor"
       ],
+      "response_schema": "schemas/commands/db.restore.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Restore a record to a prior version.",
@@ -413,6 +441,7 @@
       "mutates": true,
       "name": "db.unwatch",
       "namespace": "db",
+      "payload_schema": "schemas/commands/db.unwatch.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
@@ -420,6 +449,7 @@
         "viewer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/db.unwatch.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Cancel a live query subscription.",
@@ -431,6 +461,7 @@
       "mutates": false,
       "name": "db.watch",
       "namespace": "db",
+      "payload_schema": "schemas/commands/db.watch.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
@@ -438,6 +469,7 @@
         "viewer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/db.watch.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Register a live query subscription.",
@@ -449,12 +481,14 @@
       "mutates": true,
       "name": "legacy.core_step",
       "namespace": "legacy",
+      "payload_schema": "schemas/commands/legacy.core_step.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/legacy.core_step.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "Legacy host compatibility step for mounted webapps.",
@@ -466,12 +500,14 @@
       "mutates": true,
       "name": "package.activate_version",
       "namespace": "package",
+      "payload_schema": "schemas/commands/package.activate_version.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/package.activate_version.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "Activate a specific webapp package version.",
@@ -483,12 +519,14 @@
       "mutates": false,
       "name": "package.get_manifest",
       "namespace": "package",
+      "payload_schema": "schemas/commands/package.get_manifest.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/package.get_manifest.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "Read the trusted manifest for a mounted webapp.",
@@ -500,12 +538,14 @@
       "mutates": false,
       "name": "package.get_permissions",
       "namespace": "package",
+      "payload_schema": "schemas/commands/package.get_permissions.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/package.get_permissions.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "Read manifest permissions for a mounted webapp.",
@@ -517,12 +557,14 @@
       "mutates": false,
       "name": "package.list_versions",
       "namespace": "package",
+      "payload_schema": "schemas/commands/package.list_versions.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/package.list_versions.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "List installed versions for a webapp package.",
@@ -534,12 +576,14 @@
       "mutates": true,
       "name": "package.provision_registry",
       "namespace": "package",
+      "payload_schema": "schemas/commands/package.provision_registry.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/package.provision_registry.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "Provision the package registry for a mounted webapp.",
@@ -551,12 +595,14 @@
       "mutates": true,
       "name": "package.rollback_version",
       "namespace": "package",
+      "payload_schema": "schemas/commands/package.rollback_version.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/package.rollback_version.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "Rollback a webapp package to a prior version.",
@@ -568,12 +614,14 @@
       "mutates": true,
       "name": "package.set_status",
       "namespace": "package",
+      "payload_schema": "schemas/commands/package.set_status.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/package.set_status.response.schema.json",
       "since": "m0a",
       "stability": "legacy",
       "summary": "Set the lifecycle status for a webapp package.",
@@ -593,6 +641,7 @@
         "viewer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/query.execute.response.schema.json",
       "since": "m0a",
       "stability": "stable",
       "summary": "Read records from a collection projection.",
@@ -604,12 +653,14 @@
       "mutates": true,
       "name": "quota.auto_quarantine",
       "namespace": "quota",
+      "payload_schema": "schemas/commands/quota.auto_quarantine.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/quota.auto_quarantine.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Auto-quarantine a workspace that exceeded quotas.",
@@ -621,9 +672,11 @@
       "mutates": true,
       "name": "quota.set",
       "namespace": "quota",
+      "payload_schema": "schemas/commands/quota.set.request.schema.json",
       "required_roles": [
         "owner"
       ],
+      "response_schema": "schemas/commands/quota.set.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Configure workspace quota policy.",
@@ -635,6 +688,7 @@
       "mutates": false,
       "name": "quota.status",
       "namespace": "quota",
+      "payload_schema": "schemas/commands/quota.status.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
@@ -642,6 +696,7 @@
         "viewer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/quota.status.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Report workspace quota usage and limits.",
@@ -653,11 +708,13 @@
       "mutates": false,
       "name": "runtime.replay",
       "namespace": "runtime",
+      "payload_schema": "schemas/commands/runtime.replay.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/runtime.replay.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Replay a recorded run deterministically.",
@@ -669,11 +726,13 @@
       "mutates": false,
       "name": "runtime.replay_session",
       "namespace": "runtime",
+      "payload_schema": "schemas/commands/runtime.replay_session.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/runtime.replay_session.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Replay an ordered UI dispatch session.",
@@ -685,12 +744,14 @@
       "mutates": true,
       "name": "runtime.run",
       "namespace": "runtime",
+      "payload_schema": "schemas/commands/runtime.run.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/runtime.run.response.schema.json",
       "since": "m0a",
       "stability": "stable",
       "summary": "Run an applet entrypoint and record a deterministic run.",
@@ -702,10 +763,12 @@
       "mutates": true,
       "name": "schema.apply_change",
       "namespace": "schema",
+      "payload_schema": "schemas/commands/schema.apply_change.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/schema.apply_change.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Apply a schema change to the workspace.",
@@ -717,10 +780,12 @@
       "mutates": true,
       "name": "schema.rebuild_indexes",
       "namespace": "schema",
+      "payload_schema": "schemas/commands/schema.rebuild_indexes.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/schema.rebuild_indexes.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Rebuild expression indexes after schema changes.",
@@ -732,12 +797,14 @@
       "mutates": false,
       "name": "schema.validate_compatibility",
       "namespace": "schema",
+      "payload_schema": "schemas/commands/schema.validate_compatibility.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "auditor"
       ],
+      "response_schema": "schemas/commands/schema.validate_compatibility.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Validate schema compatibility for a proposed change.",
@@ -749,11 +816,13 @@
       "mutates": false,
       "name": "sync.export",
       "namespace": "sync",
+      "payload_schema": "schemas/commands/sync.export.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/sync.export.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Export CRDT chunks for sync.",
@@ -765,10 +834,12 @@
       "mutates": true,
       "name": "sync.import",
       "namespace": "sync",
+      "payload_schema": "schemas/commands/sync.import.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer"
       ],
+      "response_schema": "schemas/commands/sync.import.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Import CRDT chunks from a sync peer.",
@@ -780,9 +851,11 @@
       "mutates": true,
       "name": "sync.trust_peer",
       "namespace": "sync",
+      "payload_schema": "schemas/commands/sync.trust_peer.request.schema.json",
       "required_roles": [
         "owner"
       ],
+      "response_schema": "schemas/commands/sync.trust_peer.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Trust a sync peer for CRDT exchange.",
@@ -804,6 +877,7 @@
         "auditor",
         "reviewer"
       ],
+      "response_schema": "schemas/commands/system.describe.response.schema.json",
       "since": "m0a",
       "stability": "stable",
       "summary": "Return the role- and tier-scoped command catalog.",
@@ -821,6 +895,7 @@
         "maintainer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/system.trace.response.schema.json",
       "since": "m0a",
       "stability": "stable",
       "summary": "Return recorded host-call effects for a run.",
@@ -832,12 +907,14 @@
       "mutates": true,
       "name": "ui.dispatch_event",
       "namespace": "ui",
+      "payload_schema": "schemas/commands/ui.dispatch_event.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "editor",
         "runner"
       ],
+      "response_schema": "schemas/commands/ui.dispatch_event.response.schema.json",
       "since": "m0a",
       "stability": "stable",
       "summary": "Dispatch a UI event into an applet handler.",
@@ -849,9 +926,11 @@
       "mutates": true,
       "name": "workspace.create",
       "namespace": "workspace",
+      "payload_schema": "schemas/commands/workspace.create.request.schema.json",
       "required_roles": [
         "owner"
       ],
+      "response_schema": "schemas/commands/workspace.create.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Create a new workspace.",
@@ -863,11 +942,13 @@
       "mutates": false,
       "name": "workspace.export",
       "namespace": "workspace",
+      "payload_schema": "schemas/commands/workspace.export.request.schema.json",
       "required_roles": [
         "owner",
         "maintainer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/workspace.export.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Export a portable workspace bundle.",
@@ -879,9 +960,11 @@
       "mutates": true,
       "name": "workspace.import",
       "namespace": "workspace",
+      "payload_schema": "schemas/commands/workspace.import.request.schema.json",
       "required_roles": [
         "owner"
       ],
+      "response_schema": "schemas/commands/workspace.import.response.schema.json",
       "since": "m0a",
       "stability": "preview",
       "summary": "Import a workspace bundle into the target workspace.",
@@ -901,6 +984,7 @@
         "viewer",
         "auditor"
       ],
+      "response_schema": "schemas/commands/workspace.open.response.schema.json",
       "since": "m0a",
       "stability": "stable",
       "summary": "Open or inspect the current workspace.",

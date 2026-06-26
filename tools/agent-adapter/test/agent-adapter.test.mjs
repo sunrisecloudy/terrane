@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { catalogToTools } from "../catalog-to-tools.mjs";
 import { executeTool } from "../execute-tool.mjs";
+import { runReferenceAgentLoop } from "../reference-agent.mjs";
 import { loadCatalogFromFile } from "../lib/catalog.mjs";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -107,4 +108,21 @@ test("executeTool requires confirm for mutating tools", async () => {
   );
   assert.equal(result.ok, false);
   assert.equal(result.error.code, "confirm_required");
+});
+
+test("reference agent notes-lite loop smoke projects tools and dry-runs query_execute", async () => {
+  const result = await runReferenceAgentLoop({
+    catalog: fixturePath,
+    tier: "public",
+    role: "owner",
+    dryRun: true,
+  });
+
+  assert.equal(result.intent, "list my notes");
+  assert.deepEqual(result.tools, ["query_execute", "runtime_run", "ui_dispatch_event"]);
+  assert.equal(result.reverseMap.query_execute, "query.execute");
+  assert.equal(result.queryResult.ok, true);
+  assert.equal(result.queryResult.dry_run, true);
+  assert.equal(result.queryResult.envelope.name, "query.execute");
+  assert.deepEqual(result.queryResult.envelope.payload, { collection: "notes" });
 });
