@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "forge-server"
+path = "src/main.rs"
+
 [dependencies]
 forge-core.workspace = true
 forge-domain.workspace = true

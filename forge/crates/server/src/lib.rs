@@ -22,6 +22,17 @@ use std::sync::Mutex;
 const AUTH_HEADER: &str = "x-forge-server-token";
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
 
+const CONSOLE_INDEX: &str = include_str!("../static/console/index.html");
+const CONSOLE_JS: &str = include_str!("../static/console/console.js");
+const CONSOLE_CSS: &str = include_str!("../static/console/console.css");
+
+const SCHEMA_SYSTEM_DESCRIBE: &str =
+    include_str!("../../../../schemas/commands/system.describe.request.schema.json");
+const SCHEMA_QUERY_EXECUTE: &str =
+    include_str!("../../../../schemas/commands/query.execute.request.schema.json");
+const SCHEMA_WORKSPACE_OPEN: &str =
+    include_str!("../../../../schemas/commands/workspace.open.request.schema.json");
+
 /// Shared server state: one workspace core protected by a mutex so the std HTTP
 /// listener can serve one request at a time without exposing raw SQLite access to
 /// callers.
@@ -30,6 +41,7 @@ pub struct ForgeServer {
     trusted_actor: ActorContext,
     workspace_id: WorkspaceId,
     auth_token: Option<String>,
+    console_enabled: bool,
 }
 
 impl ForgeServer {
@@ -41,6 +53,7 @@ impl ForgeServer {
             trusted_actor: ActorContext::owner("forge-server"),
             workspace_id: WorkspaceId::new(workspace_id),
             auth_token: None,
+            console_enabled: true,
         })
     }
 
@@ -52,7 +65,14 @@ impl ForgeServer {
             trusted_actor: ActorContext::owner("forge-server"),
             workspace_id: WorkspaceId::new(workspace_id),
             auth_token: None,
+            console_enabled: true,
         })
+    }
+
+    /// Enable or disable serving the static web command console at `/console`.
+    pub fn serve_console(mut self, enabled: bool) -> Self {
+        self.console_enabled = enabled;
+        self
     }
 
     /// Require a bearer token before HTTP bridge/event requests can touch the core.
@@ -87,8 +107,48 @@ impl ForgeServer {
                     "ok": true,
                     "service": "forge-server",
                     "status": "ok",
+                    "console": self.console_enabled,
                 }),
             ),
+            ("GET", "/console" | "/console/") if self.console_enabled => {
+                static_response(200, "text/html; charset=utf-8", CONSOLE_INDEX.as_bytes())
+            }
+            ("GET", "/console/index.html") if self.console_enabled => {
+                static_response(200, "text/html; charset=utf-8", CONSOLE_INDEX.as_bytes())
+            }
+            ("GET", "/console/console.js") if self.console_enabled => {
+                static_response(200, "application/javascript; charset=utf-8", CONSOLE_JS.as_bytes())
+            }
+            ("GET", "/console/console.css") if self.console_enabled => {
+                static_response(200, "text/css; charset=utf-8", CONSOLE_CSS.as_bytes())
+            }
+            ("GET", "/schemas/commands/system.describe.request.schema.json")
+                if self.console_enabled =>
+            {
+                static_response(
+                    200,
+                    "application/json; charset=utf-8",
+                    SCHEMA_SYSTEM_DESCRIBE.as_bytes(),
+                )
+            }
+            ("GET", "/schemas/commands/query.execute.request.schema.json")
+                if self.console_enabled =>
+            {
+                static_response(
+                    200,
+                    "application/json; charset=utf-8",
+                    SCHEMA_QUERY_EXECUTE.as_bytes(),
+                )
+            }
+            ("GET", "/schemas/commands/workspace.open.request.schema.json")
+                if self.console_enabled =>
+            {
+                static_response(
+                    200,
+                    "application/json; charset=utf-8",
+                    SCHEMA_WORKSPACE_OPEN.as_bytes(),
+                )
+            }
             ("POST", "/bridge") => match self.authorize(headers) {
                 Ok(()) => self.handle_bridge(body),
                 Err(response) => response,
@@ -337,6 +397,12 @@ fn status_for_error(error: &CoreError) -> u16 {
     }
 }
 
+fn static_response(status: u16, content_type: &str, body: &[u8]) -> HttpResponse {
+    let mut response = HttpResponse::new(status, body.to_vec());
+    response.headers.insert("content-type".into(), content_type.into());
+    response
+}
+
 fn json_response<T: Serialize>(status: u16, value: &T) -> HttpResponse {
     match serde_json::to_vec(value) {
         Ok(body) => HttpResponse::new(status, body),
@@ -402,6 +468,60 @@ mod tests {
         let body = response.json_value().unwrap();
         assert_eq!(body["ok"], serde_json::json!(true));
         assert_eq!(body["service"], serde_json::json!("forge-server"));
+        assert_eq!(body["console"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn console_assets_are_served_when_enabled() {
+        let server = ForgeServer::in_memory("ws").unwrap().serve_console(true);
+        for (path, content_type) in [
+            ("/console", "text/html"),
+            ("/console/", "text/html"),
+            ("/console/console.js", "application/javascript"),
+            ("/console/console.css", "text/css"),
+            (
+                "/schemas/commands/query.execute.request.schema.json",
+                "application/json",
+            ),
+        ] {
+            let response = server.handle_http("GET", path, b"");
+            assert_eq!(response.status, 200, "{path}");
+            assert!(
+                response.headers["content-type"].starts_with(content_type),
+                "{} -> {}",
+                path,
+                response.headers["content-type"]
+            );
+            assert!(!response.body.is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn console_assets_are_hidden_when_disabled() {
+        let server = ForgeServer::in_memory("ws").unwrap().serve_console(false);
+        let response = server.handle_http("GET", "/console", b"");
+        assert_eq!(response.status, 404);
+    }
+
+    #[test]
+    fn bridge_returns_system_describe_catalog() {
+        let server = ForgeServer::in_memory("ws").unwrap();
+        let body = serde_json::to_vec(&owner_command(
+            "system.describe",
+            serde_json::json!({ "tier": "public" }),
+        ))
+        .unwrap();
+        let response = server.handle_http("POST", "/bridge", &body);
+        assert_eq!(response.status, 200);
+        let body: CoreResponse = serde_json::from_slice(&response.body).unwrap();
+        assert!(body.ok, "{:?}", body.error);
+        let commands = body.payload["commands"].as_array().expect("commands array");
+        assert!(commands.iter().any(|entry| entry["name"] == "query.execute"));
+        assert!(!commands.iter().any(|entry| entry["name"] == "quota.set"));
+        assert!(body.payload["catalogVersion"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("sha256:"));
     }
 
     #[test]
