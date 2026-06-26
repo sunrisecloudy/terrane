@@ -2609,6 +2609,40 @@ struct NativeHostTests {
         )
         #expect(bridgeLogText.contains("notes-lite runtime.capabilities ok"))
     }
+
+    @MainActor
+    @Test("native runtime update failures surface the underlying JavaScript message")
+    func nativeRuntimeUpdateSurfacesJavaScriptMessage() async throws {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.setURLSchemeHandler(RuntimeSchemeHandler(), forURLScheme: RuntimeResourceLocator.scheme)
+
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1000, height: 700), configuration: configuration)
+        webView.load(URLRequest(url: RuntimeResourceLocator.runtimeIndexURL()))
+
+        _ = try await waitForJavaScript(
+            in: webView,
+            "document.querySelector('[data-testid=\"runtime-status\"]')?.textContent || ''",
+            as: String.self,
+            matching: { $0 == "Ready" }
+        )
+
+        // A failing host update (here, a deliberately thrown error) must report the
+        // thrown message — not WebKit's opaque "A JavaScript exception occurred".
+        do {
+            _ = try await webView.callAsyncJavaScript(
+                "throw new Error('boom from runtime');\nreturn { ok: true };",
+                arguments: [:],
+                in: nil,
+                contentWorld: .page
+            )
+            Issue.record("expected the throwing script to reject")
+        } catch {
+            let described = WebHostView.describeRuntimeError(error)
+            #expect(described.contains("boom from runtime"))
+            #expect(described != "A JavaScript exception occurred")
+        }
+    }
 }
 
 private func sqliteTableExists(dbURL: URL, table: String) throws -> Bool {

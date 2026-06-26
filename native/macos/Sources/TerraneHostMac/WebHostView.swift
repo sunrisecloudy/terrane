@@ -171,12 +171,54 @@ final class WebHostView: NSView, WKNavigationDelegate {
                     contentWorld: .page
                 )
             } catch {
-                let message = "Terrane native runtime host update failed: \(error.localizedDescription)"
+                let message = "Terrane native runtime host update failed: \(Self.describeRuntimeError(error))"
                 fputs("\(message)\n", stderr)
                 onNativeRuntimeError?(message)
             }
         }
     }
+
+    /// Describes a failed runtime update in a way that is actually actionable.
+    ///
+    /// WebKit reports every JavaScript exception with the same opaque
+    /// `localizedDescription` ("A JavaScript exception occurred"); the thrown
+    /// message and its source location live in the error's `userInfo` instead.
+    /// Surfacing those turns an undiagnosable banner — which hides whatever the
+    /// runtime/Engine Room actually threw — into one that names the real cause.
+    /// Non-JavaScript errors (navigation, encoding) keep their normal description.
+    static func describeRuntimeError(_ error: Error) -> String {
+        let nsError = error as NSError
+        guard nsError.domain == WKError.errorDomain,
+              let rawMessage = nsError.userInfo[jsExceptionMessageKey] as? String,
+              !rawMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return nsError.localizedDescription
+        }
+
+        var description = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Line/column are zero when WebKit cannot attribute the exception (e.g. a
+        // throw from an injected top-level script), so only append a location when
+        // it points somewhere meaningful.
+        let line = (nsError.userInfo[jsExceptionLineKey] as? NSNumber)?.intValue ?? 0
+        if line > 0, let source = jsExceptionSourceName(from: nsError.userInfo[jsExceptionSourceKey]) {
+            description += " (\(source):\(line))"
+        }
+        return description
+    }
+
+    private static func jsExceptionSourceName(from value: Any?) -> String? {
+        if let url = value as? URL { return url.lastPathComponent }
+        if let string = value as? String, !string.isEmpty {
+            return URL(string: string)?.lastPathComponent ?? string
+        }
+        return nil
+    }
+
+    // WebKit populates these (non-public but stable) userInfo keys on a
+    // WKError.javaScriptExceptionOccurred from callAsyncJavaScript/evaluateJavaScript.
+    private static let jsExceptionMessageKey = "WKJavaScriptExceptionMessage"
+    private static let jsExceptionLineKey = "WKJavaScriptExceptionLineNumber"
+    private static let jsExceptionSourceKey = "WKJavaScriptExceptionSourceURL"
 
     static func nativeRuntimeUpdateScript(appId: String?, showMarketplace: Bool = false, showEngineRoom: Bool = false, nativeHostModeEnabled: Bool) -> String {
         var statements = [
