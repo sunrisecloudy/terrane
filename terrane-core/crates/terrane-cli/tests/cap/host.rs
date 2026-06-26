@@ -41,6 +41,16 @@ fn todo_backend_runs_and_replays() {
     assert!(ok);
     assert_eq!(out.trim(), "added #2 ship it", "out: {out}");
 
+    // The UI-facing `items` verb returns structured JSON (no spaces from
+    // QuickJS JSON.stringify), and emits no events.
+    let (ok, out, _) = terrane(home, &["host", "run", "todo", "items"]);
+    assert!(ok);
+    assert_eq!(
+        out.trim(),
+        r#"[{"id":1,"text":"buy milk"},{"id":2,"text":"ship it"}]"#,
+        "items out: {out}"
+    );
+
     let (ok, out, _) = terrane(home, &["host", "run", "todo", "list"]);
     assert!(ok);
     assert_eq!(out.trim(), "#1 buy milk\n#2 ship it", "out: {out}");

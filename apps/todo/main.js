@@ -81,6 +81,12 @@ function list() {
   return lines.join("\n");
 }
 
+// Structured view for a UI host: the live todos as a JSON string,
+// e.g. '[{"id":1,"text":"buy milk"}]'. A pure read — emits no events.
+function items() {
+  return JSON.stringify(readItems());
+}
+
 function done(args) {
   var raw = args.length > 0 ? args[0] : "";
   var id = parseInt(raw, 10);
@@ -107,6 +113,8 @@ function handle(input) {
       return list();
     case "done":
       return done(rest);
+    case "items":
+      return items();
     default:
       return "unknown verb: " + verb + " (try add | list | done)";
   }
