@@ -91,6 +91,21 @@ struct NativeHostTests {
         #expect((counts["app_storage"] ?? 0) >= 1)
     }
 
+    @Test("forge data catalog loads bundled apps and runtime config from forge/data")
+    func forgeDataCatalogLoadsSharedData() throws {
+        let catalog = ForgeDataCatalog.shared
+        let ids = Set(catalog.bundledApps.map(\.id))
+        #expect(ids.contains("notes-lite"))
+        #expect(ids.contains("calendar-planner"))
+        #expect(catalog.runtimeVersion == "0.4.0")
+        #expect(catalog.runtimeConfig.maxPackageBytes == 1_048_576)
+        #expect(catalog.isKnownControlTool("platform.health"))
+        #expect(!catalog.isKnownControlTool("platform.not_a_real_tool"))
+        #expect(catalog.isAllowedSnapshotType("manual"))
+        #expect(!catalog.isAllowedSnapshotType("backup"))
+        #expect(RuntimeResourceLocator.mimeType(for: URL(fileURLWithPath: "/tmp/app.js")) == "text/javascript")
+    }
+
     @Test("native app catalog loads bundled generated apps")
     func nativeAppCatalogLoadsBundledApps() throws {
         let apps = try MacAppCatalog().loadBundledApps()
@@ -944,7 +959,7 @@ struct NativeHostTests {
         let capabilitiesURL = URL(string: "http://127.0.0.1:\(port)/control/sessions/\(controlPlane.controlSessionId)/capabilities")!
         let capabilities = try await httpRequest(capabilitiesURL, headers: ["X-Platform-Control-Token": token])
         #expect(capabilities.statusCode == 200)
-        #expect(capabilities.body.contains(#""runtimeVersion":"0.1.0""#))
+        #expect(capabilities.body.contains(#""runtimeVersion":"0.4.0""#))
         #expect(capabilities.body.contains(#""runtime.capabilities":true"#))
 
         let capabilitiesCommand = try await httpRequest(
@@ -2877,8 +2892,10 @@ private func bridgeFixtureContext(_ fixture: [String: Any]) throws -> AppSandbox
         storagePrefix: manifest["storagePrefix"] as? String,
         approvedPermissions: Set(manifest["permissions"] as? [String] ?? []),
         networkPolicy: NetworkPolicyRule.fromManifest(manifest),
+        networkPolicyPayload: networkPolicy,
         denyPrivateNetwork: (networkPolicy["denyPrivateNetwork"] as? Bool) ?? true,
         resourceBudget: AppSandboxContext.resourceBudget(from: manifest),
+        resourceBudgetPayload: AppSandboxContext.resourceBudgetPayload(from: manifest),
         mountToken: "fixture-test-mount"
     )
 }

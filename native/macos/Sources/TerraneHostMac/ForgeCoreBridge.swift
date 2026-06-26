@@ -156,6 +156,48 @@ final class ForgeCoreBridge: @unchecked Sendable {
         }
     }
 
+    static func bridgePlatformIds() -> [String: Any] {
+        [
+            "platform": "macos",
+            "target": "native",
+        ]
+    }
+
+    func command(name: String, payload: [String: Any], requestId: String = "macos-core-\(UUID().uuidString.lowercased())") throws -> Any {
+        guard let library else {
+            throw ForgeCoreError.emptyOutput
+        }
+        return try library.handle(command: commandEnvelope(
+            requestId: requestId,
+            name: name,
+            payload: payload
+        ))
+    }
+
+    func controlCommand(name: String, payload: [String: Any]) throws -> Any {
+        try command(
+            name: name,
+            payload: payload,
+            requestId: "macos-control-\(UUID().uuidString.lowercased())"
+        )
+    }
+
+    func bridgeCommandDictionary(
+        name: String,
+        payload: [String: Any],
+        requestId: String = "macos-bridge-\(UUID().uuidString.lowercased())"
+    ) -> [String: Any]? {
+        guard isAvailable else { return nil }
+        do {
+            guard let result = try command(name: name, payload: payload, requestId: requestId) as? [String: Any] else {
+                return nil
+            }
+            return result
+        } catch {
+            return nil
+        }
+    }
+
     func smokeSyncExport() -> Bool {
         guard let library else {
             return false

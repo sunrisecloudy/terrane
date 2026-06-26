@@ -125,6 +125,61 @@ pub fn verify_signature(preimage: &[u8], signature: &str, public_key: &str) -> S
         .map_err(|_| validation_error("Ed25519 signature does not verify over the signed preimage"))
 }
 
+/// Verify a native-shell Ed25519 signature over `preimage`.
+///
+/// Native DevControlPlane shells store signatures as **raw** standard base64 of
+/// the 64-byte Ed25519 signature (no `ed25519:` label) and expose public keys as
+/// raw 32-byte standard base64 (CryptoKit `rawRepresentation`). This helper
+/// accepts those forms as well as the labelled/PEM encodings understood by
+/// [`verify_signature`].
+pub fn verify_shell_signature(preimage: &[u8], signature: &str, public_key: &str) -> SigResult<()> {
+    if signature.contains(':') || public_key.contains("BEGIN PUBLIC KEY") || public_key.starts_with("ed25519:")
+    {
+        return verify_signature(preimage, signature, public_key);
+    }
+    let key = parse_raw_public_key(public_key)?;
+    let sig = parse_raw_signature(signature)?;
+    key.verify_strict(preimage, &sig)
+        .map_err(|_| validation_error("Ed25519 signature does not verify over the signed preimage"))
+}
+
+/// Parse a 64-byte Ed25519 signature from raw standard base64 (shell form).
+fn parse_raw_signature(signature_b64: &str) -> SigResult<Signature> {
+    let bytes = BASE64
+        .decode(signature_b64.trim().as_bytes())
+        .map_err(|e| validation_error(format!("signature is not valid base64: {e}")))?;
+    if bytes.len() != SIGNATURE_LENGTH {
+        return Err(validation_error(format!(
+            "signature is {} bytes, expected {SIGNATURE_LENGTH}",
+            bytes.len()
+        )));
+    }
+    let arr: [u8; SIGNATURE_LENGTH] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| validation_error("signature has an unexpected length"))?;
+    Ok(Signature::from_bytes(&arr))
+}
+
+/// Parse a 32-byte Ed25519 public key from raw standard base64 (shell form).
+fn parse_raw_public_key(public_key_b64: &str) -> SigResult<VerifyingKey> {
+    let raw = BASE64
+        .decode(public_key_b64.trim().as_bytes())
+        .map_err(|e| validation_error(format!("public key is not valid base64: {e}")))?;
+    if raw.len() != PUBLIC_KEY_LENGTH {
+        return Err(validation_error(format!(
+            "public key is {} bytes, expected {PUBLIC_KEY_LENGTH}",
+            raw.len()
+        )));
+    }
+    let arr: [u8; PUBLIC_KEY_LENGTH] = raw
+        .as_slice()
+        .try_into()
+        .map_err(|_| validation_error("public key has an unexpected length"))?;
+    VerifyingKey::from_bytes(&arr)
+        .map_err(|e| validation_error(format!("public key is not a valid Ed25519 point: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

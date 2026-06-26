@@ -42,12 +42,11 @@ class ForgeCoreBridge(context: Context) {
         val payload = JSONObject(request.params.toString())
         payload.put("app", request.context.appId)
 
-        val command = JSONObject()
-            .put("request_id", request.id ?: "android-core-step")
-            .put("actor", JSONObject().put("actor", "android-host").put("role", "owner"))
-            .put("workspace_id", "android-native")
-            .put("name", "legacy.core_step")
-            .put("payload", payload)
+        val command = commandEnvelope(
+            requestId = request.id ?: "android-core-step",
+            name = "legacy.core_step",
+            payload = payload,
+        )
 
         val output = runCatching { nativeHandleCommand(databasePath, command.toString()) }.getOrNull()
             ?: return BridgeResponse.failure(request.id, "core_error", "forge_core_handle_command failed").toString()
@@ -66,6 +65,33 @@ class ForgeCoreBridge(context: Context) {
             ?: return BridgeResponse.failure(request.id, "core_error", "legacy.core_step returned non-object payload").toString()
         return BridgeResponse.success(request.id, result).toString()
     }
+
+    fun controlCommand(name: String, payload: JSONObject): JSONObject? =
+        bridgeCommandDictionary(name, payload, "android-control-${System.nanoTime()}")
+
+    fun bridgeCommandDictionary(
+        name: String,
+        payload: JSONObject,
+        requestId: String = "android-bridge-${System.nanoTime()}",
+    ): JSONObject? {
+        if (!isAvailable()) return null
+        val command = commandEnvelope(requestId = requestId, name = name, payload = payload)
+        val output = runCatching { nativeHandleCommand(databasePath, command.toString()) }.getOrNull() ?: return null
+        val response = runCatching { JSONObject(output) }.getOrNull() ?: return null
+        if (!response.optBoolean("ok", false)) return null
+        return response.optJSONObject("payload")
+    }
+
+    fun bridgePlatformIds(): JSONObject =
+        JSONObject(mapOf("platform" to "android", "target" to "android"))
+
+    private fun commandEnvelope(requestId: String, name: String, payload: JSONObject): JSONObject =
+        JSONObject()
+            .put("request_id", requestId)
+            .put("actor", JSONObject().put("actor", "android-host").put("role", "owner"))
+            .put("workspace_id", "android-native")
+            .put("name", name)
+            .put("payload", payload)
 
     private external fun nativeIsAvailable(databasePath: String): Boolean
     private external fun nativeHandleCommand(databasePath: String, commandJson: String): String?

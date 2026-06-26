@@ -1,0 +1,9 @@
+{
+  "count": 4,
+  "cases": [
+    { "case": "rollback_to_prior_version", "file": "rollback_to_prior_version.json" },
+    { "case": "set_status_quarantine_restore_previous", "file": "set_status_quarantine_restore_previous.json" },
+    { "case": "auto_quarantine_after_third_budget_error", "file": "auto_quarantine_after_third_budget_error.json" },
+    { "case": "list_versions_returns_active_pointer", "file": "list_versions_returns_active_pointer.json" }
+  ]
+}

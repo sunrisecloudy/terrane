@@ -41,6 +41,9 @@ final class PlatformAppRegistry {
 
     init(databaseURL: URL? = nil, rollbackSmokeTest: @escaping RollbackSmokeTest = { _ in }) throws {
         self.database = PlatformDatabase(databaseURL: databaseURL)
+        if database.handle == nil {
+            throw PlatformAppRegistryError.sqlite("platform database migrations failed")
+        }
         self.rollbackSmokeTest = rollbackSmokeTest
         guard db != nil else {
             throw PlatformAppRegistryError.sqlite("sqlite open failed")
@@ -53,7 +56,7 @@ final class PlatformAppRegistry {
         appId: String,
         name: String,
         version: String,
-        runtimeVersion: String = "0.1.0",
+        runtimeVersion: String = ForgeDataCatalog.shared.runtimeVersion,
         dataVersion: Int = 1,
         manifestJSON: String,
         contentHash: String,
@@ -81,7 +84,7 @@ final class PlatformAppRegistry {
             try execute(
                 """
                 INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 'developer', ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
                 """,
                 [
                     installId,
@@ -92,6 +95,7 @@ final class PlatformAppRegistry {
                     manifestJSON,
                     "sha256:\(contentHash)",
                     contentHash,
+                    ForgeDataCatalog.shared.defaultTrustLevel,
                     status,
                     createdAt,
                     activatedAt
@@ -128,48 +132,30 @@ final class PlatformAppRegistry {
 
     func rollback(appId: String, targetInstallId: String? = nil, actor: String = "macos-test") throws -> AppRollbackResult {
         let createdAt = now()
-        var result: AppRollbackResult?
-        try transaction {
-            guard let current = try activeVersion(appId: appId) else {
-                throw PlatformAppRegistryError.appNotInstalled
-            }
-            let target: InstalledAppVersion?
-            if let targetInstallId {
-                target = try rollbackTarget(appId: appId, installId: targetInstallId)
-            } else {
-                target = try rollbackTarget(appId: appId, excluding: current.installId)
-            }
-            guard let target, target.installId != current.installId else {
-                throw PlatformAppRegistryError.noRollbackTarget
-            }
-            guard target.dataVersion == current.dataVersion else {
-                throw PlatformAppRegistryError.rollbackDataVersionIncompatible
-            }
-
-            try execute("UPDATE app_versions SET status = 'rolled-back' WHERE install_id = ?", [current.installId])
-            try execute("UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", [createdAt, target.installId])
-            try execute(
-                "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, updated_at = ? WHERE id = ?",
-                [target.installId, target.version, String(target.dataVersion), createdAt, appId]
-            )
-            try rollbackSmokeTest(target)
-            try insertInstallationEvent(
-                appId: appId,
-                installId: target.installId,
-                action: "rollback",
-                previousInstallId: current.installId,
-                actor: actor,
-                createdAt: createdAt
-            )
-
-            result = AppRollbackResult(
-                appId: appId,
-                activeInstallId: target.installId,
-                rolledBackInstallId: current.installId,
-                activeVersion: target.version
-            )
+        guard try activeVersion(appId: appId) != nil else {
+            throw PlatformAppRegistryError.appNotInstalled
         }
-        return try require(result)
+        let transition = try PlatformPackageLifecycle.rollback(
+            database: db,
+            appId: appId,
+            targetInstallId: targetInstallId,
+            actor: actor,
+            createdAt: createdAt,
+            eventId: "event-\(UUID().uuidString)"
+        )
+        guard let activeInstallId = transition["active_install_id"] as? String,
+              let rolledBackInstallId = transition["rolled_back_install_id"] as? String,
+              let activeVersion = transition["active_version"] as? String
+        else {
+            throw PlatformAppRegistryError.sqlite("package.rollback_version missing fields")
+        }
+        try rollbackSmokeTest(try requireVersion(installId: activeInstallId))
+        return AppRollbackResult(
+            appId: appId,
+            activeInstallId: activeInstallId,
+            rolledBackInstallId: rolledBackInstallId,
+            activeVersion: activeVersion
+        )
     }
 
     func activeVersion(appId: String) throws -> InstalledAppVersion? {

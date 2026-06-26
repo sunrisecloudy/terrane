@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,17 @@ class ForgeCoreBridge {
   winrt::Windows::Data::Json::JsonObject Step(BridgeRequest const& request);
   using StepCompletion = std::function<void(winrt::Windows::Data::Json::JsonObject)>;
   void StepAsync(BridgeRequest request, StepCompletion completion);
+  std::optional<winrt::Windows::Data::Json::IJsonValue> Command(
+      std::wstring const& name,
+      winrt::Windows::Data::Json::IJsonValue const& payload,
+      std::wstring const& requestId);
+  std::optional<winrt::Windows::Data::Json::IJsonValue> ControlCommand(
+      std::wstring const& name,
+      winrt::Windows::Data::Json::IJsonValue const& payload);
+  std::optional<winrt::Windows::Data::Json::JsonObject> BridgeCommandDictionary(
+      std::wstring const& name,
+      winrt::Windows::Data::Json::IJsonValue const& payload,
+      std::wstring const& requestId);
 
  private:
   using ForgeCoreOpenFn = void* (*)(char const*, char const*);
@@ -58,6 +70,11 @@ class ForgeCoreBridge {
   bool Load(std::filesystem::path const& path);
   winrt::Windows::Data::Json::JsonObject CoreCommandForRequest(BridgeRequest const& request) const;
   winrt::Windows::Data::Json::JsonObject CorePayloadForRequest(BridgeRequest const& request) const;
+  winrt::Windows::Data::Json::JsonObject CommandEnvelope(
+      std::wstring const& name,
+      winrt::Windows::Data::Json::IJsonValue const& payload,
+      std::wstring const& requestId) const;
+  std::optional<winrt::Windows::Data::Json::IJsonValue> PayloadFromCommandOutcome(CoreCommandOutcome const& outcome) const;
 
   std::shared_ptr<CoreRuntime> runtime_;
   std::filesystem::path loadedPath_;

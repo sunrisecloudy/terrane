@@ -1,0 +1,21 @@
+{
+  "kind": "envelope",
+  "input": {
+    "envelope": {
+      "appId": "notes-lite",
+      "mountToken": "tok",
+      "request": {
+        "id": "req_perm",
+        "method": "storage.get",
+        "params": { "key": "notes-lite:x" }
+      }
+    },
+    "is_main_frame": true,
+    "app_id": "notes-lite",
+    "permissions": [],
+    "storage_prefix": "notes-lite:",
+    "storage_key": "notes-lite:x"
+  },
+  "expect": "deny",
+  "error_code": "permission_denied"
+}

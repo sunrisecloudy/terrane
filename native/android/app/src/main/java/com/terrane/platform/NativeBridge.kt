@@ -20,7 +20,7 @@ class NativeBridge(
     private val database = PlatformDatabase(context)
     private val storage = PlatformStorage(context)
     private val notifications = PlatformNotifications()
-    private val network = PlatformNetwork(database)
+    private val network = PlatformNetwork(database, core)
     private val core = ForgeCoreBridge(context)
     private val trustedRuntimeOrigin = "https://appassets.androidplatform.net"
     private val runtimeEnvelopeFields = setOf("appId", "mountToken", "request")
@@ -98,6 +98,20 @@ class NativeBridge(
         if (requestValidationFailure != null) {
             respond(requestValidationFailure)
             return
+        }
+
+        coreEnvelopeDecision(envelope, isMainFrame, appId, requestBody)?.let { decision ->
+            if (!decision.optBoolean("allowed", false)) {
+                respond(
+                    BridgeResponse.failure(
+                        decision.optString("request_id", requestId),
+                        decision.optString("error_code", "invalid_request"),
+                        decision.optString("message", "Bridge request denied"),
+                        decision.optJSONObject("details") ?: JSONObject(),
+                    ).toString(),
+                )
+                return
+            }
         }
 
         val context = try {
@@ -522,10 +536,47 @@ data class AppSandboxContext(
     val storagePrefix: String,
     val approvedPermissions: Set<String>,
     val networkPolicy: List<NetworkPolicyRule> = emptyList(),
+    val networkPolicyPayload: JSONObject = JSONObject(),
     val denyPrivateNetwork: Boolean = true,
     val resourceBudget: JSONObject = JSONObject(),
+    val resourceBudgetPayload: JSONObject = JSONObject(),
     val mountToken: String? = null,
 )
+
+private fun NativeBridge.coreEnvelopeDecision(
+    envelope: JSONObject,
+    isMainFrame: Boolean,
+    appId: String,
+    requestBody: JSONObject,
+): JSONObject? {
+    if (!core.isAvailable()) return null
+    val params = requestBody.optJSONObject("params")
+    val storageKey = params?.optString("key")?.ifBlank { null }
+        ?: params?.optString("prefix")?.ifBlank { null }
+    return core.bridgeCommandDictionary(
+        "bridge.validate_envelope",
+        JSONObject()
+            .put(
+                "input",
+                JSONObject()
+                    .put("envelope", envelope)
+                    .put("is_main_frame", isMainFrame)
+                    .put("app_id", appId)
+                    .put("permissions", JSONArray(contextForApp(appId).approvedPermissions.sorted()))
+                    .put("resource_budget", contextForApp(appId).resourceBudgetPayload)
+                    .put("storage_prefix", contextForApp(appId).storagePrefix)
+                    .put(
+                        "counts",
+                        JSONObject()
+                            .put("total_last_60s", bridgeCallCount(appId, 60))
+                            .put("network_last_60s", bridgeCallCount(appId, "network.request", 60))
+                            .put("app_log_last_60s", bridgeCallCount(appId, "app.log", 60)),
+                    )
+                    .put("storage_key", storageKey ?: JSONObject.NULL),
+            ),
+        requestBody.optString("id", "android-envelope-gate"),
+    )
+}
 
 private fun JSONObject.toMap(): Map<String, Any> =
     keys().asSequence().associateWith { key -> opt(key) }

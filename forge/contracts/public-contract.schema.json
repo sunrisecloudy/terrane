@@ -193,6 +193,7 @@
       "required": [
         "docs",
         "contracts",
+        "data",
         "fixtures",
         "tools"
       ],
@@ -201,6 +202,9 @@
           "$ref": "#/$defs/fileList"
         },
         "contracts": {
+          "$ref": "#/$defs/fileList"
+        },
+        "data": {
           "$ref": "#/$defs/fileList"
         },
         "fixtures": {

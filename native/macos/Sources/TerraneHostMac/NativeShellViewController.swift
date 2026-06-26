@@ -14,6 +14,28 @@ final class MacAppCatalog {
         var apps: [MacAppCatalogItem] = []
         var seenIds = Set<String>()
 
+        for entry in ForgeDataCatalog.shared.bundledApps {
+            let manifestURL = RuntimeResourceLocator.exampleManifestURL(for: entry.id)
+            let ratingLabel = manifestURL.flatMap { url -> String? in
+                guard let data = try? Data(contentsOf: url),
+                      let manifest = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let rating = manifest["contentRating"] as? [String: Any]
+                else { return nil }
+                return rating["label"] as? String
+            }
+            apps.append(
+                MacAppCatalogItem(
+                    id: entry.id,
+                    name: entry.name,
+                    version: entry.version,
+                    description: entry.description,
+                    contentRatingLabel: ratingLabel,
+                    isPremium: false
+                )
+            )
+            seenIds.insert(entry.id)
+        }
+
         // Bundled (free) apps are the primary catalog and are always flat (one directory
         // per app); a read failure here is surfaced to the shell as a catalog error.
         if let examplesDirectory = RuntimeResourceLocator.examplesDirectoryURL() {

@@ -1,0 +1,8 @@
+{
+  "runtimeVersion": "0.4.0",
+  "maxPackageBytes": 1048576,
+  "maxFileBytes": 524288,
+  "defaultFileMaxBytes": 1048576,
+  "platform": "macos",
+  "target": "macos"
+}

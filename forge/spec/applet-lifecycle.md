@@ -165,3 +165,13 @@ Pinned CR-7 lifecycle semantics:
 - prior versions and per-run program pins are retained so recorded runs replay against their own `code_hash`, not the new active version;
 - uninstall supports `keep_data` and `purge_data`, with purge represented as tombstoned applet-owned records;
 - same-payload reinstall is idempotent and does not create a new version.
+
+## Legacy webapp package registry (shell `platform.sqlite`)
+
+Distinct from v1 workspace applets above. Native shells still maintain a file-based
+webapp registry (`apps` / `app_versions` / `app_installations`) until a full
+`applet.install` cutover. Status and trust tokens for that registry are defined in
+`forge-domain` as `PackageAppStatus`, `PackageVersionStatus`, and `TrustLevel`, and
+exported to `forge/data/app-status-enums.json` and `forge/data/trust-levels.json`.
+Lifecycle commands for that registry use the `package.*` namespace (see
+`forge/spec/commands.md`), not `applet.*`.

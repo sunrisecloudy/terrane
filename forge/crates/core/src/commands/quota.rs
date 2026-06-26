@@ -23,10 +23,14 @@
 //! request payload. `quota.status` likewise reads the trusted policy + the persisted
 //! usage, with no wall clock on the path, so the report is deterministic.
 
-use forge_domain::{CoreError, Result};
+use forge_domain::{CoreCommand, CoreError, Result};
+use forge_policy::{
+    evaluate_auto_quarantine, AutoQuarantinePolicy, AutoQuarantineRequest,
+};
 use forge_storage::{QuotaCategory, QuotaPolicy, QuotaScope, QuotaUsage};
 
 use super::super::WorkspaceCore;
+use super::{bool_field, take_field};
 use crate::bridge::QUOTA_APPROACHING_SUGGESTION;
 
 impl WorkspaceCore {
@@ -55,16 +59,110 @@ impl WorkspaceCore {
     /// (a storage-usage report is an oversight/read operation).
     pub(in crate::workspace) fn cmd_quota_status(
         &mut self,
-        _cmd: &forge_domain::CoreCommand,
+        cmd: &CoreCommand,
     ) -> Result<serde_json::Value> {
         let usage = self.quota_usage()?;
         let policy = self.quota_policy()?;
         let approaching = approaching_warnings(&usage, &policy);
-        Ok(serde_json::json!({
+        let mut out = serde_json::json!({
             "usage": usage,
             "policy": policy,
             "approaching": approaching,
-        }))
+        });
+        if let Some(count) = cmd.payload.get("budget_error_count_60s").and_then(|v| v.as_u64()) {
+            let is_active = bool_field(cmd, "is_active_install")?;
+            let error_code = cmd
+                .payload
+                .get("error_code")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let decision = evaluate_auto_quarantine(&AutoQuarantineRequest {
+                app_id: cmd
+                    .payload
+                    .get("app_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                install_id: cmd
+                    .payload
+                    .get("install_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                error_code,
+                budget_error_count_60s: count as u32,
+                is_active_install: is_active,
+                policy: AutoQuarantinePolicy {
+                    error_threshold: policy.auto_quarantine_error_threshold,
+                    window_seconds: policy.auto_quarantine_window_seconds,
+                },
+            });
+            out["budget_error_count_60s"] = serde_json::json!(decision.budget_error_count_60s);
+            out["quarantine_eligible"] = serde_json::json!(decision.quarantine_eligible);
+        }
+        Ok(out)
+    }
+
+    /// `quota.auto_quarantine` — evaluate budget-error policy and, when eligible,
+    /// perform the authoritative `package.set_status` quarantine + prior-version
+    /// restore through the core-owned registry seam.
+    pub(in crate::workspace) fn cmd_quota_auto_quarantine(
+        &mut self,
+        cmd: &CoreCommand,
+    ) -> Result<serde_json::Value> {
+        let app_id: String = take_field(cmd, "app_id")?;
+        let install_id: String = take_field(cmd, "install_id")?;
+        let budget_error_count_60s: u32 = take_field(cmd, "budget_error_count_60s")?;
+        let is_active_install = bool_field(cmd, "is_active_install")?;
+        let error_code = cmd
+            .payload
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_str())
+            .or_else(|| cmd.payload.get("error_code").and_then(|v| v.as_str()))
+            .map(str::to_string);
+        let policy = self.quota_policy()?;
+        let decision = evaluate_auto_quarantine(&AutoQuarantineRequest {
+            app_id: app_id.clone(),
+            install_id: install_id.clone(),
+            error_code: error_code.clone(),
+            budget_error_count_60s,
+            is_active_install,
+            policy: AutoQuarantinePolicy {
+                error_threshold: policy.auto_quarantine_error_threshold,
+                window_seconds: policy.auto_quarantine_window_seconds,
+            },
+        });
+        if !decision.should_quarantine {
+            return Ok(serde_json::to_value(decision).expect("AutoQuarantineDecision serializes"));
+        }
+        let actor = cmd
+            .payload
+            .get("actor")
+            .and_then(|v| v.as_str())
+            .unwrap_or_else(|| cmd.actor.actor.as_str());
+        let created_at = cmd
+            .payload
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or("1970-01-01T00:00:00Z");
+        let transition = self.package_set_status(
+            &app_id,
+            &install_id,
+            forge_domain::PackageVersionStatus::Quarantined.as_str(),
+            actor,
+            created_at,
+            decision.reason.as_deref(),
+            true,
+            cmd.payload
+                .get("installation_event_id")
+                .and_then(|v| v.as_str()),
+        )?;
+        let mut payload = serde_json::to_value(decision).expect("AutoQuarantineDecision serializes");
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("transition".into(), serde_json::to_value(&transition).unwrap());
+        }
+        Ok(payload)
     }
 
     /// `quota.set` — configure the trusted DL-22 [`QuotaPolicy`] override (quotas are
@@ -216,6 +314,12 @@ fn merge_policy_override(mut base: QuotaPolicy, overrides: &serde_json::Value) -
                     ))
                 })?
             }
+            "auto_quarantine_error_threshold" => {
+                base.auto_quarantine_error_threshold = take_u32(key, value)?
+            }
+            "auto_quarantine_window_seconds" => {
+                base.auto_quarantine_window_seconds = take_u32(key, value)?
+            }
             other => {
                 return Err(CoreError::ValidationError(format!(
                     "quota.set `policy` has unknown field `{other}`"
@@ -234,4 +338,15 @@ fn take_u64(key: &str, value: &serde_json::Value) -> Result<u64> {
             "quota.set `policy.{key}` must be a non-negative integer byte count, got {value}"
         ))
     })
+}
+
+fn take_u32(key: &str, value: &serde_json::Value) -> Result<u32> {
+    value
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .ok_or_else(|| {
+            CoreError::ValidationError(format!(
+                "quota.set `policy.{key}` must be a non-negative integer, got {value}"
+            ))
+        })
 }

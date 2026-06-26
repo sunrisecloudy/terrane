@@ -4,6 +4,16 @@ import path from "node:path";
 import { serializedCrdtUpdate } from "./notebook-crdt.js";
 import { PlatformError } from "./errors.js";
 import { sqliteMigrationsDir } from "./paths.js";
+import { invokeControlCore } from "./control-core.js";
+import {
+  forgeCoreAvailable,
+  packageRollbackVersion,
+  packageSetStatus,
+  provisionPlatformRegistry,
+  quotaAutoQuarantine,
+  recordBridgeCall,
+  recordCoreEvent,
+} from "./forge-core-bridge.js";
 import { canonicalJson, id, nowIso, prettyJson, sha256 } from "./util.js";
 
 export class PlatformDatabase {
@@ -219,52 +229,23 @@ export class PlatformDatabase {
   }
 
   rollbackWebapp(appId, targetInstallId = null) {
-    const active = this.activeInstall(appId);
-    if (!active) {
-      throw new Error(`App is not installed: ${appId}`);
+    if (!forgeCoreAvailable()) {
+      throw new Error("package.rollback_version requires forge core");
     }
-
-    const target =
-      targetInstallId ??
-      this.get(
-        "SELECT install_id FROM app_versions WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled') ORDER BY created_at DESC LIMIT 1",
-        appId,
-        active.installId,
-      )?.install_id;
-
-    if (!target) {
-      throw new Error(`No rollback target exists for ${appId}`);
-    }
-
-    const targetRow = this.get("SELECT version, data_version FROM app_versions WHERE app_id = ? AND install_id = ?", appId, target);
-    if (!targetRow) {
-      throw new Error(`Rollback target not found: ${target}`);
-    }
-
+    this.syncPlatformRegistryToCore();
     const createdAt = nowIso();
-    this.transaction(() => {
-      this.run("UPDATE app_versions SET status = 'rolled-back' WHERE install_id = ?", active.installId);
-      this.run("UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", createdAt, target);
-      this.run(
-        "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
-        target,
-        targetRow.version,
-        targetRow.data_version,
-        createdAt,
-        appId,
-      );
-      this.run(
-        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'rollback', ?, 'reference-host', ?, ?)",
-        id("install_event"),
-        appId,
-        target,
-        active.installId,
-        createdAt,
-        prettyJson({ targetInstallId: target, rolledBackInstallId: active.installId }),
-      );
+    const transition = packageRollbackVersion({
+      appId,
+      targetInstallId,
+      createdAt,
+      installationEventId: id("install_event"),
     });
-
-    return { appId, activeInstallId: target, rolledBackInstallId: active.installId };
+    this.transaction(() => this.applyPackageSqlOps(transition.sql_ops));
+    return {
+      appId,
+      activeInstallId: transition.active_install_id,
+      rolledBackInstallId: transition.rolled_back_install_id,
+    };
   }
 
   approveWebappUpdate(appId, installId) {
@@ -345,60 +326,107 @@ export class PlatformDatabase {
   }
 
   quarantineWebapp(appId, installId = null, reason = "manual quarantine", { restorePrevious = false, actor = "reference-host" } = {}) {
+    if (!forgeCoreAvailable()) {
+      throw new Error("package.set_status requires forge core");
+    }
     const active = this.activeInstall(appId);
     const target = installId ?? active?.installId;
     if (!target) {
       throw new Error(`App is not installed: ${appId}`);
     }
-    const restoreTarget = restorePrevious && active?.installId === target
-      ? this.get(
-        "SELECT install_id, version, data_version FROM app_versions WHERE app_id = ? AND install_id != ? AND status NOT IN ('quarantined','uninstalled') ORDER BY created_at DESC LIMIT 1",
-        appId,
-        target,
-      )
-      : null;
-
+    this.syncPlatformRegistryToCore();
     const createdAt = nowIso();
-    this.transaction(() => {
-      this.run("UPDATE app_versions SET status = 'quarantined' WHERE app_id = ? AND install_id = ?", appId, target);
-      if (restoreTarget) {
-        this.run("UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?", createdAt, restoreTarget.install_id);
-        this.run(
-          "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
-          restoreTarget.install_id,
-          restoreTarget.version,
-          restoreTarget.data_version,
-          createdAt,
-          appId,
-        );
-      } else if (active?.installId === target) {
-        this.run("UPDATE apps SET status = 'quarantined', updated_at = ? WHERE id = ?", createdAt, appId);
-      }
-      this.run(
-        "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'quarantine', ?, ?, ?, ?)",
-        id("install_event"),
-        appId,
-        target,
-        restoreTarget?.install_id ?? null,
-        actor,
-        createdAt,
-        prettyJson({ reason, restoredInstallId: restoreTarget?.install_id ?? null }),
-      );
-      if (restoreTarget) {
-        this.run(
-          "INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json) VALUES (?, ?, ?, 'rollback', ?, ?, ?, ?)",
-          id("install_event"),
-          appId,
-          restoreTarget.install_id,
-          target,
-          actor,
-          createdAt,
-          prettyJson({ reason: "automatic rollback after quarantine", quarantinedInstallId: target }),
-        );
-      }
+    const transition = packageSetStatus({
+      appId,
+      installId: target,
+      status: "quarantined",
+      createdAt,
+      reason,
+      restorePrevious,
+      installationEventId: id("install_event"),
     });
+    this.transaction(() => this.applyPackageSqlOps(transition.sql_ops));
+    return {
+      appId,
+      installId: target,
+      status: "quarantined",
+      reason,
+      restoredInstallId: transition.active_install_id ?? null,
+    };
+  }
 
-    return { appId, installId: target, status: "quarantined", reason, restoredInstallId: restoreTarget?.install_id ?? null };
+  maybeAutoQuarantineAfterBudgetError({ appId, installId, error, budgetErrorCount60s, actor = "reference-host" }) {
+    if (!forgeCoreAvailable() || error?.code !== "resource_budget_exceeded" || !installId) {
+      return null;
+    }
+    const activeInstallId = this.activeInstallId(appId);
+    if (activeInstallId !== installId) {
+      return null;
+    }
+    this.syncPlatformRegistryToCore();
+    const createdAt = nowIso();
+    const decision = quotaAutoQuarantine({
+      appId,
+      installId,
+      budgetErrorCount60s,
+      isActiveInstall: true,
+      error,
+      createdAt,
+    });
+    if (!decision.should_quarantine || !decision.transition) {
+      return decision;
+    }
+    this.transaction(() => this.applyPackageSqlOps(decision.transition.sql_ops));
+    return decision;
+  }
+
+  syncPlatformRegistryToCore() {
+    provisionPlatformRegistry(this.exportPlatformRegistrySnapshot());
+  }
+
+  exportPlatformRegistrySnapshot() {
+    const apps = Object.fromEntries(
+      this.all("SELECT id, name, status, active_install_id, active_version, data_version FROM apps").map((row) => [
+        row.id,
+        {
+          id: row.id,
+          name: row.name,
+          status: row.status,
+          active_install_id: row.active_install_id,
+          active_version: row.active_version,
+          data_version: row.data_version,
+        },
+      ]),
+    );
+    const versions = Object.fromEntries(
+      this.all(
+        "SELECT install_id, app_id, version, runtime_version, data_version, status, created_at, activated_at FROM app_versions",
+      ).map((row) => [
+        row.install_id,
+        {
+          install_id: row.install_id,
+          app_id: row.app_id,
+          version: row.version,
+          runtime_version: row.runtime_version ?? "",
+          data_version: row.data_version,
+          status: row.status,
+          created_at: row.created_at,
+          activated_at: row.activated_at,
+        },
+      ]),
+    );
+    return { apps, versions, next_event_seq: 0 };
+  }
+
+  applyPackageSqlOps(sqlOps = []) {
+    for (const op of sqlOps) {
+      const args = (op.args ?? []).map((arg) => {
+        if (arg === null) return null;
+        if (typeof arg === "object") return prettyJson(arg);
+        return arg;
+      });
+      this.run(op.sql, ...args);
+    }
   }
 
   installReport(appId, installId = null) {
@@ -926,51 +954,166 @@ export class PlatformDatabase {
     );
   }
 
-  logBridgeCall({ sessionId, appId, installId = null, method, params, result = null, error = null, durationMs = 0 }) {
-    this.run(
-      "INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      id("bridge"),
+  logBridgeCall({ sessionId, appId, installId = null, method, params, result = null, error = null, durationMs = 0, requestId = null }) {
+    const record = this.coreBridgeCallRecord({
       sessionId,
       appId,
       installId,
       method,
-      prettyJson(params ?? null),
-      result ? prettyJson(result) : null,
-      error ? prettyJson(error) : null,
+      params,
+      result,
+      error,
       durationMs,
+      requestId: requestId ?? params?.id ?? method,
+    });
+    this.run(
+      "INSERT INTO bridge_calls (bridge_call_id, session_id, app_id, install_id, method, params_json, result_json, error_json, duration_ms, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      record.bridge_call_id,
+      record.session_id,
+      record.app_id,
+      record.install_id,
+      record.method,
+      prettyJson(record.params_json ?? null),
+      record.result_json ? prettyJson(record.result_json) : null,
+      record.error_json ? prettyJson(record.error_json) : null,
+      record.duration_ms,
       nowIso(),
     );
     this.recordResourceHighWater({ sessionId, appId });
   }
 
-  logCoreStep({ sessionId, appId, installId = null, event, result }) {
+  logCoreStep({ sessionId, appId, installId = null, event, result, requestId = null }) {
     const createdAt = nowIso();
-    const eventId = id("core_event");
-    const stateVersion = Number.isInteger(result?.stateVersion) ? result.stateVersion : null;
+    const records = this.coreEventRecords({
+      sessionId,
+      appId,
+      installId,
+      event,
+      result,
+      requestId: requestId ?? "core-step",
+    });
     this.transaction(() => {
       this.run(
         "INSERT INTO core_events (event_id, session_id, app_id, install_id, state_version_before, event_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        eventId,
-        sessionId,
-        appId,
-        installId,
-        stateVersion === null ? null : Math.max(0, stateVersion - 1),
-        prettyJson(event ?? null),
+        records.event.event_id,
+        records.event.session_id,
+        records.event.app_id,
+        records.event.install_id,
+        records.event.state_version_before,
+        prettyJson(records.event.event_json ?? null),
         createdAt,
       );
-      for (const action of result?.actions ?? []) {
+      for (const action of records.actions) {
         this.run(
           "INSERT INTO core_actions (action_id, event_id, session_id, app_id, action_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-          id("core_action"),
-          eventId,
-          sessionId,
-          appId,
-          prettyJson(action),
+          action.action_id,
+          action.event_id,
+          action.session_id,
+          action.app_id,
+          prettyJson(action.action_json),
           createdAt,
         );
       }
     });
-    return { eventId, actionCount: result?.actions?.length ?? 0 };
+    return { eventId: records.event.event_id, actionCount: records.actions.length };
+  }
+
+  coreBridgeCallRecord({ sessionId, appId, installId, method, params, result, error, durationMs, requestId }) {
+    if (!forgeCoreAvailable()) {
+      return {
+        bridge_call_id: id("bridge"),
+        session_id: sessionId,
+        app_id: appId,
+        install_id: installId,
+        method,
+        params_json: params ?? null,
+        result_json: result ?? null,
+        error_json: error ?? null,
+        duration_ms: durationMs,
+      };
+    }
+    try {
+      const ok = Boolean(result?.ok ?? (error == null));
+      return recordBridgeCall({
+        session_id: sessionId,
+        request_id: String(requestId ?? id("bridge-req")),
+        app_id: appId,
+        install_id: installId,
+        method,
+        params: params ?? null,
+        ok,
+        result: ok ? (result?.result ?? result) : null,
+        error: ok ? null : (error ?? result?.error ?? null),
+        duration_ms: durationMs,
+      });
+    } catch {
+      return {
+        bridge_call_id: id("bridge"),
+        session_id: sessionId,
+        app_id: appId,
+        install_id: installId,
+        method,
+        params_json: params ?? null,
+        result_json: result ?? null,
+        error_json: error ?? null,
+        duration_ms: durationMs,
+      };
+    }
+  }
+
+  coreEventRecords({ sessionId, appId, installId, event, result, requestId }) {
+    if (!forgeCoreAvailable()) {
+      const eventId = id("core_event");
+      const stateVersion = Number.isInteger(result?.stateVersion) ? result.stateVersion : null;
+      return {
+        event: {
+          event_id: eventId,
+          session_id: sessionId,
+          app_id: appId,
+          install_id: installId,
+          state_version_before: stateVersion === null ? null : Math.max(0, stateVersion - 1),
+          event_json: event ?? null,
+        },
+        actions: (result?.actions ?? []).map((action) => ({
+          action_id: id("core_action"),
+          event_id: eventId,
+          session_id: sessionId,
+          app_id: appId,
+          action_json: action,
+        })),
+      };
+    }
+    try {
+      return recordCoreEvent({
+        session_id: sessionId,
+        request_id: String(requestId ?? id("core-req")),
+        app_id: appId,
+        install_id: installId,
+        event: event ?? null,
+        result_state_version: Number.isInteger(result?.stateVersion) ? result.stateVersion : null,
+        actions: result?.actions ?? [],
+      });
+    } catch {
+      const eventId = id("core_event");
+      const stateVersion = Number.isInteger(result?.stateVersion) ? result.stateVersion : null;
+      return {
+        event: {
+          event_id: eventId,
+          session_id: sessionId,
+          app_id: appId,
+          install_id: installId,
+          state_version_before: stateVersion === null ? null : Math.max(0, stateVersion - 1),
+          event_json: event ?? null,
+        },
+        actions: (result?.actions ?? []).map((action) => ({
+          action_id: id("core_action"),
+          event_id: eventId,
+          session_id: sessionId,
+          app_id: appId,
+          action_json: action,
+        })),
+      };
+    }
   }
 
   storageGet(appId, key, defaultValue = null) {
@@ -1134,7 +1277,11 @@ export class PlatformDatabase {
           }
         : {},
     };
-    document.contentHash = `sha256:${sha256(canonicalJson(document))}`;
+    try {
+      document.contentHash = invokeControlCore("control.backup_content_hash", { document }).contentHash;
+    } catch {
+      document.contentHash = `sha256:${sha256(canonicalJson(document))}`;
+    }
     this.run(
       "INSERT INTO backup_exports (export_id, type, source_platform, runtime_version, export_json, content_hash, created_at) VALUES (?, ?, 'reference-host', ?, ?, ?, ?)",
       document.exportId,
@@ -1150,6 +1297,16 @@ export class PlatformDatabase {
   importBackup(document) {
     if (!document || typeof document !== "object") {
       throw new Error("Backup document must be an object");
+    }
+    try {
+      const validation = invokeControlCore("control.backup_validate", { document });
+      if (!validation.ok) {
+        throw new Error("Backup document failed validation");
+      }
+    } catch (error) {
+      if (error.message === "Backup document failed validation") {
+        throw error;
+      }
     }
     const createdAt = nowIso();
     this.transaction(() => {

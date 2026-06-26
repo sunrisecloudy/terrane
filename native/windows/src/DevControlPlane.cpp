@@ -5,6 +5,8 @@
 #include <Windows.h>
 #include <bcrypt.h>
 #include <ShlObj.h>
+#include <wincrypt.h>
+#include <memory>
 
 #include "DevControlPlane.h"
 
@@ -400,7 +402,22 @@ std::wstring CanonicalJsonValue(json::IJsonValue const& value) {
   return std::wstring(value.Stringify().c_str());
 }
 
-bool JsonMatchesSubset(json::IJsonValue const& actual, json::IJsonValue const& expected) {
+bool JsonMatchesSubset(
+    json::IJsonValue const& actual,
+    json::IJsonValue const& expected,
+    ForgeCoreBridge* controlCore = nullptr) {
+  if (controlCore != nullptr && controlCore->IsAvailable()) {
+    json::JsonObject payload;
+    payload.Insert(L"actual", actual);
+    payload.Insert(L"expected", expected);
+    if (auto result = controlCore->ControlCommand(L"control.json_matches_subset", payload)) {
+      if (result->ValueType() == json::JsonValueType::Object &&
+          result->GetObject().HasKey(L"matches") &&
+          result->GetObject().GetNamedValue(L"matches").ValueType() == json::JsonValueType::Boolean) {
+        return result->GetObject().GetNamedBoolean(L"matches", false);
+      }
+    }
+  }
   if (expected.ValueType() != json::JsonValueType::Object) {
     return CanonicalJsonValue(actual) == CanonicalJsonValue(expected);
   }
@@ -896,10 +913,33 @@ std::wstring Sha256Hex(std::wstring const& text) {
   return Hex(digest);
 }
 
-bool GenerateToken(std::wstring* token) {
+bool GenerateToken(std::wstring* token, ForgeCoreBridge* controlCore = nullptr) {
   std::array<unsigned char, 32> bytes{};
   if (BCryptGenRandom(nullptr, bytes.data(), static_cast<ULONG>(bytes.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
     return false;
+  }
+  if (controlCore != nullptr && controlCore->IsAvailable()) {
+    DWORD encodedLength = 0;
+    if (CryptBinaryToStringA(bytes.data(), static_cast<DWORD>(bytes.size()), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &encodedLength) &&
+        encodedLength > 0) {
+      std::vector<char> encoded(encodedLength);
+      if (CryptBinaryToStringA(bytes.data(), static_cast<DWORD>(bytes.size()), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, encoded.data(), &encodedLength)) {
+        std::string entropy(encoded.data());
+        while (!entropy.empty() && (entropy.back() == '\0' || entropy.back() == '\n' || entropy.back() == '\r')) {
+          entropy.pop_back();
+        }
+        json::JsonObject payload;
+        payload.Insert(L"entropy", json::JsonValue::CreateStringValue(Utf8ToWide(entropy)));
+        if (auto result = controlCore->ControlCommand(L"control.generate_token", payload)) {
+          if (result->ValueType() == json::JsonValueType::Object &&
+              result->GetObject().HasKey(L"token") &&
+              result->GetObject().GetNamedValue(L"token").ValueType() == json::JsonValueType::String) {
+            *token = std::wstring(result->GetObject().GetNamedString(L"token").c_str());
+            return !token->empty();
+          }
+        }
+      }
+    }
   }
   *token = Base64Url(bytes);
   return token->size() == 43;
@@ -965,6 +1005,7 @@ struct DevControlPlane::Impl {
   bool winsockStarted = false;
   uint16_t port = 0;
   std::filesystem::path databasePath;
+  std::unique_ptr<ForgeCoreBridge> controlCore;
   std::filesystem::path tokenPath;
   std::wstring token;
   std::wstring tokenHash;
@@ -986,8 +1027,9 @@ struct DevControlPlane::Impl {
       return false;
     }
     databasePath = config.databasePath;
+    controlCore = std::make_unique<ForgeCoreBridge>(databasePath);
     tokenPath = DefaultTokenPath();
-    if (!GenerateToken(&token) || !WriteTokenFile(tokenPath, token)) {
+    if (!GenerateToken(&token, controlCore.get()) || !WriteTokenFile(tokenPath, token)) {
       if (error != nullptr) {
         *error = L"Could not create Windows dev control token file";
       }
@@ -2275,6 +2317,24 @@ struct DevControlPlane::Impl {
     auto package = ReadPackageFromArgs(args);
     if (!package.has_value()) {
       return L"";
+    }
+    if (controlCore != nullptr && controlCore->IsAvailable()) {
+      json::JsonArray files;
+      for (auto const& file : package->files) {
+        json::JsonObject entry;
+        entry.Insert(L"path", json::JsonValue::CreateStringValue(file.path));
+        entry.Insert(L"content", json::JsonValue::CreateStringValue(file.content));
+        entry.Insert(L"contentHash", json::JsonValue::CreateStringValue(file.contentHash));
+        files.Append(entry);
+      }
+      json::JsonObject payload;
+      payload.Insert(L"manifest", package->manifest);
+      payload.Insert(L"files", files);
+      if (auto result = controlCore->ControlCommand(L"control.package_validate", payload)) {
+        if (result->ValueType() == json::JsonValueType::Object) {
+          return std::wstring(result->GetObject().Stringify().c_str());
+        }
+      }
     }
     auto appId = OptionalStringMember(package->manifest, L"id").value_or(L"");
     auto version = OptionalStringMember(package->manifest, L"version").value_or(L"");
@@ -5448,6 +5508,20 @@ struct DevControlPlane::Impl {
     if (rightJson.empty()) {
       return L"";
     }
+    if (controlCore != nullptr && controlCore->IsAvailable()) {
+      json::JsonValue left{nullptr};
+      json::JsonValue right{nullptr};
+      if (json::JsonValue::TryParse(leftJson, left) && json::JsonValue::TryParse(rightJson, right)) {
+        json::JsonObject payload;
+        payload.Insert(L"left", left);
+        payload.Insert(L"right", right);
+        if (auto result = controlCore->ControlCommand(L"control.compare_snapshot", payload)) {
+          if (result->ValueType() == json::JsonValueType::Object) {
+            return std::wstring(result->GetObject().Stringify().c_str());
+          }
+        }
+      }
+    }
     json::JsonValue left{nullptr};
     json::JsonValue right{nullptr};
     if (!json::JsonValue::TryParse(leftJson, left) || !json::JsonValue::TryParse(rightJson, right)) {
@@ -6124,7 +6198,7 @@ struct DevControlPlane::Impl {
       if (expectedAction.has_value() && CanonicalJsonValue(parsed) != CanonicalJsonValue(expectedAction.value())) {
         continue;
       }
-      if (expectedMatch.has_value() && !JsonMatchesSubset(parsed, expectedMatch.value())) {
+      if (expectedMatch.has_value() && !JsonMatchesSubset(parsed, expectedMatch.value(), controlCore.get())) {
         continue;
       }
       if (!first) {
@@ -6328,7 +6402,22 @@ struct DevControlPlane::Impl {
                 L",\"testRuns\":" + SafeTableRowsJson(db, "test_runs", {"test_run_id", "micro_test_id", "session_id", "control_session_id", "app_id", "status", "started_at", "finished_at", "result_json", "diagnostics_json"}, "started_at") +
                 L"}}"
             : L",\"debug\":{}}");
-    auto contentHash = L"sha256:" + Sha256Hex(documentWithoutHash);
+    std::wstring contentHash = L"sha256:" + Sha256Hex(documentWithoutHash);
+    if (controlCore != nullptr && controlCore->IsAvailable()) {
+      json::JsonValue documentValue{nullptr};
+      if (json::JsonValue::TryParse(documentWithoutHash, documentValue) &&
+          documentValue.ValueType() == json::JsonValueType::Object) {
+        json::JsonObject payload;
+        payload.Insert(L"document", documentValue);
+        if (auto result = controlCore->ControlCommand(L"control.backup_content_hash", payload)) {
+          if (result->ValueType() == json::JsonValueType::Object &&
+              result->GetObject().HasKey(L"contentHash") &&
+              result->GetObject().GetNamedValue(L"contentHash").ValueType() == json::JsonValueType::String) {
+            contentHash = std::wstring(result->GetObject().GetNamedString(L"contentHash").c_str());
+          }
+        }
+      }
+    }
     auto document = documentWithoutHash.substr(0, documentWithoutHash.size() - 1) +
         L",\"contentHash\":" + JsonString(contentHash) + L"}";
 
@@ -6366,10 +6455,23 @@ struct DevControlPlane::Impl {
   }
 
   std::wstring DbImportBackupJson(json::JsonObject const& document, std::wstring* error) {
-    auto type = TextValue(document, {L"type"}).value_or(L"");
-    if (type != L"backup" && type != L"debug-bundle" && type != L"test-fixture") {
-      *error = L"Backup import requires type backup, debug-bundle, or test-fixture";
-      return L"";
+    if (controlCore != nullptr && controlCore->IsAvailable()) {
+      json::JsonObject payload;
+      payload.Insert(L"document", document);
+      if (auto result = controlCore->ControlCommand(L"control.backup_validate", payload)) {
+        if (result->ValueType() != json::JsonValueType::Object ||
+            !result->GetObject().HasKey(L"ok") ||
+            !result->GetObject().GetNamedBoolean(L"ok", false)) {
+          *error = L"Backup import document failed validation";
+          return L"";
+        }
+      }
+    } else {
+      auto type = TextValue(document, {L"type"}).value_or(L"");
+      if (type != L"backup" && type != L"debug-bundle" && type != L"test-fixture") {
+        *error = L"Backup import requires type backup, debug-bundle, or test-fixture";
+        return L"";
+      }
     }
     auto apps = OptionalArrayMember(document, L"apps");
     auto versions = OptionalArrayMember(document, L"appVersions");

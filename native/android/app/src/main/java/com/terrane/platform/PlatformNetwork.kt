@@ -19,7 +19,10 @@ import java.util.concurrent.atomic.AtomicReference
 
 private val plainTextMediaType = "text/plain".toMediaType()
 
-class PlatformNetwork(private val database: PlatformDatabase? = null) {
+class PlatformNetwork(
+    private val database: PlatformDatabase? = null,
+    private val core: ForgeCoreBridge? = null,
+) {
     fun request(request: BridgeRequest): String {
         val urlText = request.params.optString("url", "")
         val url = try {
@@ -45,6 +48,9 @@ class PlatformNetwork(private val database: PlatformDatabase? = null) {
         val body = (bodyResult as NetworkBody.Valid).bytes
 
         val path = path(url)
+        coreNetworkDecision(core, request, urlText, method, headers, body, null)?.let { decision ->
+            return networkDecisionFailure(request.id, decision)
+        }
         val rule = request.context.networkPolicy.firstOrNull { it.allows(origin, method, path, headers.keys) }
             ?: return BridgeResponse.failure(request.id, "network_policy_denied", "network.request is not allowed by manifest.networkPolicy").toString()
         if (body != null && body.size > rule.maxRequestBytes) {
@@ -422,6 +428,51 @@ private sealed class NetworkTimeout {
     data class Valid(val value: Int) : NetworkTimeout()
     data class Invalid(val value: Any) : NetworkTimeout()
 }
+
+private fun coreNetworkDecision(
+    core: ForgeCoreBridge?,
+    request: BridgeRequest,
+    urlText: String,
+    method: String,
+    headers: Map<String, String>,
+    body: ByteArray?,
+    responseBytes: Int?,
+): JSONObject? {
+    if (core == null || !core.isAvailable()) return null
+    val netRequest = JSONObject()
+        .put("url", urlText)
+        .put("method", method)
+    if (headers.isNotEmpty()) {
+        netRequest.put("headers", JSONObject(headers))
+    }
+    body?.let { netRequest.put("body_bytes", it.size) }
+    if (request.params.has("credentials")) {
+        netRequest.put("credentials", request.params.opt("credentials"))
+    }
+    requestedTimeoutMs(request.params).let { timeout ->
+        if (timeout is NetworkTimeout.Valid) {
+            netRequest.put("timeout_ms", timeout.value)
+        }
+    }
+    responseBytes?.let { netRequest.put("response_bytes", it) }
+    val decision = core.bridgeCommandDictionary(
+        "bridge.validate_network_request",
+        JSONObject()
+            .put("network_policy", request.context.networkPolicyPayload)
+            .put("request", netRequest)
+            .put("resource_budget", request.context.resourceBudgetPayload),
+        request.id ?: "android-network",
+    ) ?: return null
+    return if (decision.optBoolean("allowed", false)) null else decision
+}
+
+private fun networkDecisionFailure(requestId: String?, decision: JSONObject): String =
+    BridgeResponse.failure(
+        requestId,
+        decision.optString("error_code", "network_policy_denied"),
+        decision.optString("message", "network.request denied"),
+        decision.optJSONObject("details") ?: JSONObject(),
+    ).toString()
 
 data class NetworkPolicyRule(
     val origin: String,

@@ -1,0 +1,229 @@
+{
+  "vectors": [
+    {
+      "name": "snapshot_compare_equal",
+      "command": "control.compare_snapshot",
+      "input": {
+        "left": {
+          "snapshotId": "snap-a",
+          "createdAt": "2026-01-01T00:00:00Z",
+          "storage": [
+            {
+              "app_id": "notes-lite",
+              "key": "notes-lite:b",
+              "value_json": "[]",
+              "updated_at": "t2"
+            },
+            {
+              "app_id": "notes-lite",
+              "key": "notes-lite:a",
+              "value_json": "[]",
+              "updatedAt": "t1"
+            }
+          ]
+        },
+        "right": {
+          "snapshotId": "snap-b",
+          "createdAt": "2026-01-02T00:00:00Z",
+          "storage": [
+            {
+              "appId": "notes-lite",
+              "key": "notes-lite:a",
+              "value_json": "[]"
+            },
+            {
+              "appId": "notes-lite",
+              "key": "notes-lite:b",
+              "value_json": "[]"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "ok": true,
+        "equal": true
+      }
+    },
+    {
+      "name": "snapshot_compare_different",
+      "command": "control.compare_snapshot",
+      "input": {
+        "left": {
+          "resourceUsage": { "bridgeCalls": 0 }
+        },
+        "right": {
+          "resourceUsage": { "bridgeCalls": 1 }
+        }
+      },
+      "expect": {
+        "ok": false,
+        "equal": false
+      }
+    },
+    {
+      "name": "json_matches_subset_object",
+      "command": "control.json_matches_subset",
+      "input": {
+        "actual": {
+          "type": "Toast",
+          "message": "hello",
+          "level": "success"
+        },
+        "expected": {
+          "type": "Toast",
+          "message": "hello"
+        }
+      },
+      "expect": {
+        "ok": true,
+        "matches": true
+      }
+    },
+    {
+      "name": "json_matches_subset_missing_key",
+      "command": "control.json_matches_subset",
+      "input": {
+        "actual": { "type": "Toast" },
+        "expected": { "message": "hello" }
+      },
+      "expect": {
+        "ok": false,
+        "matches": false
+      }
+    },
+    {
+      "name": "package_validate_minimal",
+      "command": "control.package_validate",
+      "input": {
+        "manifest": {
+          "id": "notes-lite",
+          "name": "Notes Lite",
+          "version": "0.1.0",
+          "runtimeVersion": "0.4.0",
+          "dataVersion": 1,
+          "entry": "index.html",
+          "description": "demo",
+          "permissions": ["storage.read", "storage.write"],
+          "storagePrefix": "notes-lite:",
+          "capabilities": {},
+          "resourceBudget": {
+            "maxDomNodes": 100,
+            "maxStorageBytes": 1000,
+            "maxBridgeCallsPerMinute": 10,
+            "maxNetworkRequestsPerMinute": 10,
+            "maxTimers": 10,
+            "maxLogLinesPerMinute": 10,
+            "maxPackageBytes": 10000,
+            "maxFileBytes": 1000
+          },
+          "networkPolicy": { "allow": [] }
+        },
+        "files": [
+          { "path": "manifest.json", "content": "{}" },
+          { "path": "index.html", "content": "<html></html>" },
+          { "path": "styles.css", "content": "body{}" },
+          { "path": "app.js", "content": "export default {}" }
+        ]
+      },
+      "expect": {
+        "ok": true,
+        "appId": "notes-lite"
+      }
+    },
+    {
+      "name": "package_hashes_deterministic",
+      "command": "control.package_hashes",
+      "input": {
+        "manifest": {
+          "id": "demo",
+          "permissions": ["b", "a"],
+          "capabilities": { "x": 1 },
+          "networkPolicy": { "allow": [] },
+          "resourceBudget": { "maxDomNodes": 1 }
+        },
+        "files": [
+          { "path": "b.txt", "content": "beta" },
+          { "path": "a.txt", "content": "alpha" }
+        ]
+      },
+      "expect": {}
+    },
+    {
+      "name": "backup_validate_minimal",
+      "command": "control.backup_validate",
+      "input": {
+        "document": {
+          "type": "backup",
+          "apps": [],
+          "appVersions": [],
+          "appFiles": [],
+          "appPermissions": [],
+          "appStorage": []
+        }
+      },
+      "expect": {
+        "ok": true,
+        "type": "backup"
+      }
+    },
+    {
+      "name": "backup_validate_rejects_bad_type",
+      "command": "control.backup_validate",
+      "input": {
+        "document": {
+          "type": "snapshot",
+          "apps": [],
+          "appVersions": [],
+          "appFiles": [],
+          "appPermissions": [],
+          "appStorage": []
+        }
+      },
+      "expect": {
+        "ok": false
+      }
+    },
+    {
+      "name": "generate_token_macos_linux_vector",
+      "command": "control.generate_token",
+      "input": {
+        "entropy": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+      },
+      "expect": {
+        "token": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+      }
+    },
+    {
+      "name": "sign_payload_valid_signature_fixture",
+      "command": "control.sign_payload",
+      "input": {
+        "appId": "app.notes",
+        "appVersion": "1.0.0",
+        "dataVersion": 1,
+        "runtimeVersion": "forge-m0a",
+        "trustLevel": "signed-test",
+        "keyId": "test-ed25519-2026-06",
+        "manifestHash": "sha256:37a8edfc2c682e33aec811dac577a4fc20490ef087eab60663071b089abd5f1c",
+        "contentHash": "sha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6",
+        "permissionsHash": "sha256:e5c1e51014c9440151539f7d172180d61ba35ad25b086f7dbd258948cd6e0aa1",
+        "policyHash": "sha256:2db54efc565f3a45d032e9792f783f8ed93819c09d250d5b335952c9a020266c",
+        "signedAt": "2026-06-13T00:00:00Z"
+      },
+      "expect": {
+        "payload": "terrane/sig/v1\napp.notes\n1.0.0\n1\nforge-m0a\nsigned-test\ntest-ed25519-2026-06\nsha256:37a8edfc2c682e33aec811dac577a4fc20490ef087eab60663071b089abd5f1c\nsha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6\nsha256:e5c1e51014c9440151539f7d172180d61ba35ad25b086f7dbd258948cd6e0aa1\nsha256:2db54efc565f3a45d032e9792f783f8ed93819c09d250d5b335952c9a020266c\n2026-06-13T00:00:00Z"
+      }
+    },
+    {
+      "name": "verify_signature_valid_fixture",
+      "command": "control.verify_signature",
+      "input": {
+        "payload": "terrane/sig/v1\napp.notes\n1.0.0\n1\nforge-m0a\nsigned-test\ntest-ed25519-2026-06\nsha256:37a8edfc2c682e33aec811dac577a4fc20490ef087eab60663071b089abd5f1c\nsha256:8a8835929eec58f5f3cc3f3bcf57d57ba9db5b46efbfb8eeb984c0663acba3f6\nsha256:e5c1e51014c9440151539f7d172180d61ba35ad25b086f7dbd258948cd6e0aa1\nsha256:2db54efc565f3a45d032e9792f783f8ed93819c09d250d5b335952c9a020266c\n2026-06-13T00:00:00Z",
+        "signature": "ed25519:uwfp2JYYx4946G0XXmDSRnc75GHzPLOlVPLTsg72uqfeD5mGb/uMSmJgjJ+xCyip9igArg+lgqJE1fsZ7hCvAQ==",
+        "publicKey": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n"
+      },
+      "expect": {
+        "ok": true
+      }
+    }
+  ]
+}

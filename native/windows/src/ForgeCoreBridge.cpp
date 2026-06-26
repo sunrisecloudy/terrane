@@ -299,20 +299,73 @@ winrt::Windows::Data::Json::JsonObject ForgeCoreBridge::CorePayloadForRequest(Br
   return payload;
 }
 
-winrt::Windows::Data::Json::JsonObject ForgeCoreBridge::CoreCommandForRequest(BridgeRequest const& request) const {
+std::optional<winrt::Windows::Data::Json::IJsonValue> ForgeCoreBridge::PayloadFromCommandOutcome(
+    CoreCommandOutcome const& outcome) const {
+  if (outcome.kind != CoreCommandOutcome::Kind::Output) {
+    return std::nullopt;
+  }
+  json::JsonObject response{nullptr};
+  if (!json::JsonObject::TryParse(Utf8ToWide(outcome.output), response)) {
+    return std::nullopt;
+  }
+  if (!response.HasKey(L"ok") || !response.GetNamedBoolean(L"ok", false)) {
+    return std::nullopt;
+  }
+  return response.GetNamedValue(L"payload", json::JsonValue::CreateNullValue());
+}
+
+std::optional<winrt::Windows::Data::Json::IJsonValue> ForgeCoreBridge::Command(
+    std::wstring const& name,
+    winrt::Windows::Data::Json::IJsonValue const& payload,
+    std::wstring const& requestId) {
+  if (!IsAvailable()) {
+    return std::nullopt;
+  }
+  auto command = CommandEnvelope(name, payload, requestId);
+  auto outcome = RunCoreStep(runtime_, WideToUtf8(std::wstring(command.Stringify().c_str())));
+  return PayloadFromCommandOutcome(outcome);
+}
+
+std::optional<winrt::Windows::Data::Json::IJsonValue> ForgeCoreBridge::ControlCommand(
+    std::wstring const& name,
+    winrt::Windows::Data::Json::IJsonValue const& payload) {
+  static std::atomic_uint64_t sequence{0};
+  auto requestId = L"windows-control-" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+      std::to_wstring(NowMs()) + L"_" + std::to_wstring(sequence.fetch_add(1));
+  return Command(name, payload, requestId);
+}
+
+std::optional<winrt::Windows::Data::Json::JsonObject> ForgeCoreBridge::BridgeCommandDictionary(
+    std::wstring const& name,
+    winrt::Windows::Data::Json::IJsonValue const& payload,
+    std::wstring const& requestId) {
+  auto result = Command(name, payload, requestId);
+  if (!result.has_value() || result->ValueType() != json::JsonValueType::Object) {
+    return std::nullopt;
+  }
+  return result->GetObject();
+}
+
+winrt::Windows::Data::Json::JsonObject ForgeCoreBridge::CommandEnvelope(
+    std::wstring const& name,
+    winrt::Windows::Data::Json::IJsonValue const& payload,
+    std::wstring const& requestId) const {
   json::JsonObject actor;
   actor.Insert(L"actor", json::JsonValue::CreateStringValue(L"windows-host"));
   actor.Insert(L"role", json::JsonValue::CreateStringValue(L"owner"));
 
   json::JsonObject command;
-  command.Insert(
-      L"request_id",
-      json::JsonValue::CreateStringValue(request.hasId && !request.id.empty() ? request.id : L"windows-core-step"));
+  command.Insert(L"request_id", json::JsonValue::CreateStringValue(requestId));
   command.Insert(L"actor", actor);
   command.Insert(L"workspace_id", json::JsonValue::CreateStringValue(L"windows-native"));
-  command.Insert(L"name", json::JsonValue::CreateStringValue(L"legacy.core_step"));
-  command.Insert(L"payload", CorePayloadForRequest(request));
+  command.Insert(L"name", json::JsonValue::CreateStringValue(name));
+  command.Insert(L"payload", payload);
   return command;
+}
+
+winrt::Windows::Data::Json::JsonObject ForgeCoreBridge::CoreCommandForRequest(BridgeRequest const& request) const {
+  auto requestId = request.hasId && !request.id.empty() ? request.id : L"windows-core-step";
+  return CommandEnvelope(L"legacy.core_step", CorePayloadForRequest(request), requestId);
 }
 
 winrt::Windows::Data::Json::JsonObject ForgeCoreBridge::TimeoutFailure(BridgeRequest const& request) {

@@ -29,7 +29,11 @@ use super::WorkspaceCore;
 
 pub(super) mod applet;
 pub(super) mod audit;
+pub(super) mod bridge;
+#[cfg(feature = "control")]
+pub(super) mod control;
 pub(super) mod legacy_core_step;
+pub(super) mod package;
 pub(super) mod lifecycle;
 pub(super) mod query;
 pub(super) mod quota;
@@ -80,6 +84,21 @@ const COMMANDS: &[(&str, Handler)] = &[
     // bridges still receive `core.step` from legacy webapps, but the host calls it
     // through the Forge CoreCommand ABI as `legacy.core_step`.
     ("legacy.core_step", WorkspaceCore::cmd_legacy_core_step),
+    // Phase C bridge security gates (macOS + reference-host delegate here).
+    ("bridge.validate_network_request", WorkspaceCore::cmd_bridge_validate_network_request),
+    ("bridge.validate_envelope", WorkspaceCore::cmd_bridge_validate_envelope),
+    ("bridge.prepare_session", WorkspaceCore::cmd_bridge_prepare_session),
+    ("bridge.record_call", WorkspaceCore::cmd_bridge_record_call),
+    ("bridge.record_core_event", WorkspaceCore::cmd_bridge_record_core_event),
+    ("bridge.record_crash_recovery", WorkspaceCore::cmd_bridge_record_crash_recovery),
+    // Legacy webapp trusted manifest (Q8 `package.*` namespace).
+    ("package.get_manifest", WorkspaceCore::cmd_package_get_manifest),
+    ("package.get_permissions", WorkspaceCore::cmd_package_get_permissions),
+    ("package.provision_registry", WorkspaceCore::cmd_package_provision_registry),
+    ("package.list_versions", WorkspaceCore::cmd_package_list_versions),
+    ("package.activate_version", WorkspaceCore::cmd_package_activate_version),
+    ("package.rollback_version", WorkspaceCore::cmd_package_rollback_version),
+    ("package.set_status", WorkspaceCore::cmd_package_set_status),
     ("runtime.replay", WorkspaceCore::cmd_runtime_replay),
     ("runtime.replay_session", WorkspaceCore::cmd_runtime_replay_session),
     ("ui.dispatch_event", WorkspaceCore::cmd_ui_dispatch_event),
@@ -121,8 +140,50 @@ const COMMANDS: &[(&str, Handler)] = &[
     // state, never the write's payload, so a write cannot widen its own quota).
     ("quota.status", WorkspaceCore::cmd_quota_status),
     ("quota.set", WorkspaceCore::cmd_quota_set),
+    ("quota.auto_quarantine", WorkspaceCore::cmd_quota_auto_quarantine),
     ("workspace.export", WorkspaceCore::cmd_workspace_export),
     ("workspace.import", WorkspaceCore::cmd_workspace_import),
+];
+
+/// Debug-gated DevControlPlane pure algorithms (forge-core-plan B6).
+#[cfg(feature = "control")]
+const CONTROL_COMMANDS: &[(&str, Handler)] = &[
+    (
+        "control.compare_snapshot",
+        WorkspaceCore::cmd_control_compare_snapshot,
+    ),
+    (
+        "control.json_matches_subset",
+        WorkspaceCore::cmd_control_json_matches_subset,
+    ),
+    (
+        "control.package_validate",
+        WorkspaceCore::cmd_control_package_validate,
+    ),
+    (
+        "control.package_hashes",
+        WorkspaceCore::cmd_control_package_hashes,
+    ),
+    (
+        "control.backup_validate",
+        WorkspaceCore::cmd_control_backup_validate,
+    ),
+    (
+        "control.backup_content_hash",
+        WorkspaceCore::cmd_control_backup_content_hash,
+    ),
+    (
+        "control.generate_token",
+        WorkspaceCore::cmd_control_generate_token,
+    ),
+    (
+        "control.sign_payload",
+        WorkspaceCore::cmd_control_sign_payload,
+    ),
+    (
+        "control.verify_signature",
+        WorkspaceCore::cmd_control_verify_signature,
+    ),
 ];
 
 /// The command registry: maps a command name to its handler over the [`COMMANDS`]
@@ -154,12 +215,16 @@ impl Registry {
         cmd: &CoreCommand,
     ) -> Result<serde_json::Value> {
         let name = cmd.name.as_str();
-        match self.table.iter().find(|(n, _)| *n == name) {
-            Some((_, handler)) => handler(core, cmd),
-            None => Err(CoreError::ValidationError(format!(
-                "unknown command {name:?} (CR-A5: client should negotiate capability)"
-            ))),
+        if let Some((_, handler)) = self.table.iter().find(|(n, _)| *n == name) {
+            return handler(core, cmd);
         }
+        #[cfg(feature = "control")]
+        if let Some((_, handler)) = CONTROL_COMMANDS.iter().find(|(n, _)| *n == name) {
+            return handler(core, cmd);
+        }
+        Err(CoreError::ValidationError(format!(
+            "unknown command {name:?} (CR-A5: client should negotiate capability)"
+        )))
     }
 }
 

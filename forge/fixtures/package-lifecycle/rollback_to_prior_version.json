@@ -1,0 +1,19 @@
+{
+  "given": {
+    "app_id": "notes-lite",
+    "created_at": "2024-06-01T12:00:00Z"
+  },
+  "when": {
+    "command": "package.rollback_version",
+    "payload": {
+      "app_id": "notes-lite",
+      "created_at": "2024-06-01T12:00:00Z"
+    }
+  },
+  "expect": {
+    "active_install_id": "install-v1",
+    "rolled_back_install_id": "install-v2",
+    "active_version": "0.1.0",
+    "audit_actions": ["package.rollback"]
+  }
+}

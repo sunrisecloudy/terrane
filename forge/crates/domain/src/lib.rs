@@ -17,14 +17,18 @@ use std::fmt;
 pub mod hash;
 pub mod ids;
 pub mod manifest;
+pub mod package_status;
 pub mod record;
 pub mod run;
+pub mod webapp_manifest;
 
 pub use hash::*;
 pub use ids::*;
 pub use manifest::*;
+pub use package_status::*;
 pub use record::*;
 pub use run::*;
+pub use webapp_manifest::*;
 
 /// Stable, typed, user-displayable, machine-actionable error set.
 ///

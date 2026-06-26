@@ -140,6 +140,44 @@ final class ForgeCoreBridge: @unchecked Sendable {
         }
     }
 
+    func controlCommand(name: String, payload: [String: Any]) throws -> Any {
+        try command(name: name, payload: payload, requestId: "ios-control-\(UUID().uuidString.lowercased())")
+    }
+
+    func command(name: String, payload: [String: Any], requestId: String = "ios-core-\(UUID().uuidString.lowercased())") throws -> Any {
+        guard let library else {
+            throw ForgeCoreError.emptyOutput
+        }
+        return try library.handle(command: commandEnvelope(
+            requestId: requestId,
+            name: name,
+            payload: payload
+        ))
+    }
+
+    func bridgeCommandDictionary(
+        name: String,
+        payload: [String: Any],
+        requestId: String = "ios-bridge-\(UUID().uuidString.lowercased())"
+    ) -> [String: Any]? {
+        guard isAvailable else { return nil }
+        do {
+            guard let result = try command(name: name, payload: payload, requestId: requestId) as? [String: Any] else {
+                return nil
+            }
+            return result
+        } catch {
+            return nil
+        }
+    }
+
+    static func bridgePlatformIds() -> [String: Any] {
+        [
+            "platform": "ios",
+            "target": "ios-simulator",
+        ]
+    }
+
     private func commandEnvelope(requestId: String, name: String, payload: [String: Any]) -> [String: Any] {
         [
             "request_id": requestId,

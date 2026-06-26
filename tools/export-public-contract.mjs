@@ -9,7 +9,7 @@ export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)
 
 const CONTRACT_VERSION = "0.1.0";
 const PLATFORM_BASELINE = "forge-v1-m0b";
-const RUNTIME_VERSION = "0.1.0";
+const RUNTIME_VERSION = "0.4.0";
 
 const PUBLIC_DOCS = [
   "docs/00_V1_PIVOT.md",
@@ -46,6 +46,24 @@ const PUBLIC_CONTRACT_FILES = [
   "forge/std/ui-catalog.d.ts",
 ];
 
+const PUBLIC_DATA_FILES = [
+  "forge/data/README.md",
+  "forge/data/bundled-apps.json",
+  "forge/data/mime-types.json",
+  "forge/data/env-variables.json",
+  "forge/data/control-plane-config.json",
+  "forge/data/runtime-config.json",
+  "forge/data/engine-room-tables.json",
+  "forge/data/snapshot-types.json",
+  "forge/data/app-status-enums.json",
+  "forge/data/trust-levels.json",
+  "forge/data/package-manifest.json",
+  "forge/data/control-commands.json",
+  "forge/data/control-response-schema.json",
+  "forge/data/tables.json",
+  "forge/spec/data-catalog.md",
+];
+
 const PUBLIC_FIXTURE_DIRS = [
   "forge/examples",
   "forge/fixtures",
@@ -70,6 +88,12 @@ const CORE_COMMANDS = [
   "applet.suspend",
   "applet.uninstall",
   "applet.upgrade",
+  "bridge.prepare_session",
+  "bridge.record_call",
+  "bridge.record_core_event",
+  "bridge.record_crash_recovery",
+  "bridge.validate_envelope",
+  "bridge.validate_network_request",
   "audit.query",
   "permission.request_grant",
   "permission.revoke",
@@ -92,6 +116,8 @@ const CORE_COMMANDS = [
   "workspace.export",
   "workspace.import",
   "workspace.open",
+  "package.get_manifest",
+  "package.get_permissions",
 ];
 
 const RUNTIME_EVENTS = [
@@ -229,6 +255,7 @@ export function buildPublicContract({ root = repoRoot } = {}) {
     files: {
       docs: describeFiles(root, PUBLIC_DOCS),
       contracts: describeFiles(root, PUBLIC_CONTRACT_FILES),
+      data: describeFiles(root, PUBLIC_DATA_FILES),
       fixtures: describeFiles(root, collectFixtureFiles(root)),
       tools: describeFiles(root, PUBLIC_TOOL_FILES),
     },

@@ -1,20 +1,14 @@
 import Foundation
 
 final class PlatformNetwork {
+    private let core = ForgeCoreBridge()
+
     func request(_ request: BridgeRequest) -> BridgeResponse {
         guard let urlText = request.params["url"] as? String,
               let url = URL(string: urlText),
               let origin = Self.origin(for: url)
         else {
             return .failure(id: request.id, code: "invalid_request", message: "network.request requires an absolute url")
-        }
-        if request.context.denyPrivateNetwork && Self.isPrivateNetworkHost(url.host) {
-            return .failure(
-                id: request.id,
-                code: "network_policy_denied",
-                message: "network.request private network targets are denied",
-                details: Self.privateNetworkDeniedDetails(origin: origin, host: url.host)
-            )
         }
 
         let method = (request.params["method"] as? String ?? "GET").uppercased()
@@ -28,31 +22,23 @@ final class PlatformNetwork {
         }
 
         let path = Self.path(for: url)
-        guard let rule = request.context.networkPolicy.first(where: { $0.matchesTarget(origin: origin, method: method, path: path) }) else {
+        let rule = request.context.networkPolicy.first(where: { $0.matchesTarget(origin: origin, method: method, path: path) })
+        if let preflightFailure = validateNetworkRequest(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            bodyData: bodyData,
+            rule: rule
+        ) {
+            return preflightFailure
+        }
+        guard let rule else {
             return .failure(
                 id: request.id,
                 code: "network_policy_denied",
                 message: "network.request is not allowed by manifest.networkPolicy",
                 details: Self.networkPolicyDeniedDetails(origin: origin, method: method)
-            )
-        }
-        if let headerFailure = Self.headerPolicyFailure(id: request.id, headers: headers, rule: rule) {
-            return headerFailure
-        }
-        if let credentials = request.params["credentials"], !(credentials is NSNull) {
-            return .failure(
-                id: request.id,
-                code: "network_policy_denied",
-                message: "network.request credentials are not allowed",
-                details: ["credentials": credentials]
-            )
-        }
-        if let bodyData, bodyData.count > rule.maxRequestBytes {
-            return .failure(
-                id: request.id,
-                code: "network_policy_denied",
-                message: "network.request body exceeds manifest.networkPolicy maxRequestBytes",
-                details: Self.maxRequestBytesDetails(limit: rule.maxRequestBytes, bytes: bodyData.count)
             )
         }
         let requestedTimeout = Self.requestedTimeoutMs(from: request.params)
@@ -82,7 +68,13 @@ final class PlatformNetwork {
         configuration.timeoutIntervalForRequest = urlRequest.timeoutInterval
         configuration.timeoutIntervalForResource = urlRequest.timeoutInterval
 
-        let redirectGuard = NetworkRedirectGuard(policy: request.context.networkPolicy, denyPrivateNetwork: request.context.denyPrivateNetwork, method: method)
+        let redirectGuard = NetworkRedirectGuard(
+            policy: request.context.networkPolicy,
+            denyPrivateNetwork: request.context.denyPrivateNetwork,
+            method: method,
+            sandboxContext: request.context,
+            network: self
+        )
         let session = URLSession(configuration: configuration, delegate: redirectGuard, delegateQueue: nil)
         defer {
             session.invalidateAndCancel()
@@ -118,14 +110,15 @@ final class PlatformNetwork {
             return .failure(id: request.id, code: "network_error", message: "network.request did not return an HTTP response")
         }
         let data = result.data ?? Data()
-        let maxResponseBytes = Self.effectiveMaxResponseBytes(rule: rule, resourceBudget: request.context.resourceBudget)
-        if data.count > maxResponseBytes {
-            return .failure(
-                id: request.id,
-                code: "network_policy_denied",
-                message: "network.response exceeds manifest.networkPolicy maxResponseBytes",
-                details: Self.maxResponseBytesDetails(limit: maxResponseBytes, bytes: data.count)
-            )
+        if let responseFailure = validateNetworkResponse(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            responseBytes: data.count,
+            rule: rule
+        ) {
+            return responseFailure
         }
 
         return .success(id: request.id, result: [
@@ -133,6 +126,181 @@ final class PlatformNetwork {
             "headers": Self.responseHeaders(from: httpResponse),
             "bodyText": String(data: data, encoding: .utf8) ?? ""
         ])
+    }
+
+    private func validateNetworkRequest(
+        request: BridgeRequest,
+        urlText: String,
+        method: String,
+        headers: NetworkHeaders,
+        bodyData: Data?,
+        rule: NetworkPolicyRule?
+    ) -> BridgeResponse? {
+        if let decision = coreNetworkDecision(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            bodyData: bodyData,
+            responseBytes: nil,
+            redirectURL: nil
+        ) {
+            return networkDecisionFailure(id: request.id, decision: decision)
+        }
+        guard let rule else { return nil }
+        if let headerFailure = Self.headerPolicyFailure(id: request.id, headers: headers, rule: rule) {
+            return headerFailure
+        }
+        if let credentials = request.params["credentials"], !(credentials is NSNull) {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request credentials are not allowed",
+                details: ["credentials": credentials]
+            )
+        }
+        if let bodyData, bodyData.count > rule.maxRequestBytes {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.request body exceeds manifest.networkPolicy maxRequestBytes",
+                details: Self.maxRequestBytesDetails(limit: rule.maxRequestBytes, bytes: bodyData.count)
+            )
+        }
+        return nil
+    }
+
+    private func validateNetworkResponse(
+        request: BridgeRequest,
+        urlText: String,
+        method: String,
+        headers: NetworkHeaders,
+        responseBytes: Int,
+        rule: NetworkPolicyRule
+    ) -> BridgeResponse? {
+        if let decision = coreNetworkDecision(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            bodyData: nil,
+            responseBytes: responseBytes,
+            redirectURL: nil
+        ) {
+            return networkDecisionFailure(id: request.id, decision: decision)
+        }
+        let maxResponseBytes = Self.effectiveMaxResponseBytes(rule: rule, resourceBudget: request.context.resourceBudget)
+        if responseBytes > maxResponseBytes {
+            return .failure(
+                id: request.id,
+                code: "network_policy_denied",
+                message: "network.response exceeds manifest.networkPolicy maxResponseBytes",
+                details: Self.maxResponseBytesDetails(limit: maxResponseBytes, bytes: responseBytes)
+            )
+        }
+        return nil
+    }
+
+    func validateRedirectTarget(
+        request: BridgeRequest,
+        redirectURL: String,
+        method: String
+    ) -> NetworkPolicyFailure? {
+        if core.isAvailable {
+            if let decision = coreNetworkDecision(
+                request: request,
+                urlText: redirectURL,
+                method: method,
+                headers: NetworkHeaders(),
+                bodyData: nil,
+                responseBytes: nil,
+                redirectURL: redirectURL
+            ) {
+                return NetworkPolicyFailure(
+                    message: decision["message"] as? String ?? "network.response redirect is outside manifest.networkPolicy",
+                    details: decision["details"] as? [String: Any] ?? [:]
+                )
+            }
+            return nil
+        }
+        guard let url = URL(string: redirectURL),
+              let origin = Self.origin(for: url)
+        else {
+            return NetworkPolicyFailure(message: "network.response redirect is outside manifest.networkPolicy", details: [:])
+        }
+        if request.context.denyPrivateNetwork && Self.isPrivateNetworkHost(url.host) {
+            return NetworkPolicyFailure(
+                message: "network.response redirect targets private network",
+                details: Self.privateNetworkDeniedDetails(origin: origin, host: url.host)
+            )
+        }
+        guard request.context.networkPolicy.contains(where: {
+            $0.matchesTarget(origin: origin, method: method, path: Self.path(for: url))
+        }) else {
+            return NetworkPolicyFailure(
+                message: "network.response redirect is outside manifest.networkPolicy",
+                details: Self.networkPolicyDeniedDetails(origin: origin, method: method)
+            )
+        }
+        return nil
+    }
+
+    private func coreNetworkDecision(
+        request: BridgeRequest,
+        urlText: String,
+        method: String,
+        headers: NetworkHeaders,
+        bodyData: Data?,
+        responseBytes: Int?,
+        redirectURL: String?
+    ) -> [String: Any]? {
+        guard core.isAvailable else { return nil }
+        var netRequest: [String: Any] = [
+            "url": urlText,
+            "method": method,
+        ]
+        if !headers.values.isEmpty {
+            netRequest["headers"] = headers.values
+        }
+        if let bodyData {
+            netRequest["body_bytes"] = bodyData.count
+        }
+        if let credentials = request.params["credentials"] {
+            netRequest["credentials"] = credentials
+        }
+        if let timeoutMs = Self.requestedTimeoutMs(from: request.params).value {
+            netRequest["timeout_ms"] = timeoutMs
+        }
+        if let responseBytes {
+            netRequest["response_bytes"] = responseBytes
+        }
+        if let redirectURL {
+            netRequest["redirect_url"] = redirectURL
+        }
+        guard let decision = core.bridgeCommandDictionary(
+            name: "bridge.validate_network_request",
+            payload: [
+                "network_policy": request.context.networkPolicyPayload,
+                "request": netRequest,
+                "resource_budget": request.context.resourceBudgetPayload,
+            ],
+            requestId: request.id ?? "macos-network"
+        ) else {
+            return nil
+        }
+        if decision["allowed"] as? Bool == true {
+            return nil
+        }
+        return decision
+    }
+
+    private func networkDecisionFailure(id: String?, decision: [String: Any]) -> BridgeResponse {
+        .failure(
+            id: id,
+            code: decision["error_code"] as? String ?? "network_policy_denied",
+            message: decision["message"] as? String ?? "network.request denied",
+            details: decision["details"] as? [String: Any] ?? [:]
+        )
     }
 
     static func origin(for url: URL) -> String? {
@@ -426,7 +594,7 @@ struct NetworkPolicyHeaderViolation {
     let credential: Bool
 }
 
-private struct NetworkPolicyFailure {
+struct NetworkPolicyFailure {
     let message: String
     let details: [String: Any]
 }
@@ -451,16 +619,26 @@ private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
     private let policy: [NetworkPolicyRule]
     private let denyPrivateNetwork: Bool
     private let method: String
+    private let sandboxContext: AppSandboxContext
+    private weak var network: PlatformNetwork?
     private let state = NetworkRedirectState()
 
     var deniedFailure: NetworkPolicyFailure? {
         state.failure
     }
 
-    init(policy: [NetworkPolicyRule], denyPrivateNetwork: Bool, method: String) {
+    init(
+        policy: [NetworkPolicyRule],
+        denyPrivateNetwork: Bool,
+        method: String,
+        sandboxContext: AppSandboxContext,
+        network: PlatformNetwork
+    ) {
         self.policy = policy
         self.denyPrivateNetwork = denyPrivateNetwork
         self.method = method
+        self.sandboxContext = sandboxContext
+        self.network = network
     }
 
     func urlSession(
@@ -471,25 +649,24 @@ private final class NetworkRedirectGuard: NSObject, URLSessionTaskDelegate {
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
         guard let url = request.url,
-              let origin = PlatformNetwork.origin(for: url)
+              PlatformNetwork.origin(for: url) != nil
         else {
             state.markDenied(NetworkPolicyFailure(message: "network.response redirect is outside manifest.networkPolicy", details: [:]))
             completionHandler(nil)
             return
         }
-        if denyPrivateNetwork && PlatformNetwork.isPrivateNetworkHost(url.host) {
-            state.markDenied(NetworkPolicyFailure(
-                message: "network.response redirect targets private network",
-                details: PlatformNetwork.privateNetworkDeniedDetails(origin: origin, host: url.host)
-            ))
-            completionHandler(nil)
-            return
-        }
-        guard policy.contains(where: { $0.matchesTarget(origin: origin, method: method, path: PlatformNetwork.path(for: url)) }) else {
-            state.markDenied(NetworkPolicyFailure(
-                message: "network.response redirect is outside manifest.networkPolicy",
-                details: PlatformNetwork.networkPolicyDeniedDetails(origin: origin, method: method)
-            ))
+        if let network,
+           let failure = network.validateRedirectTarget(
+               request: BridgeRequest(
+                   id: nil,
+                   method: "network.request",
+                   params: ["url": url.absoluteString],
+                   context: sandboxContext
+               ),
+               redirectURL: url.absoluteString,
+               method: method
+           ) {
+            state.markDenied(failure)
             completionHandler(nil)
             return
         }

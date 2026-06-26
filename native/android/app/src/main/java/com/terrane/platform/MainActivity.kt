@@ -108,8 +108,10 @@ class MainActivity : ComponentActivity() {
             storagePrefix = manifest.optString("storagePrefix", "$actualAppId:"),
             approvedPermissions = manifest.optJSONArray("permissions").toStringSet { it },
             networkPolicy = NetworkPolicyRule.fromManifest(manifest),
+            networkPolicyPayload = manifest.optJSONObject("networkPolicy") ?: JSONObject(),
             denyPrivateNetwork = manifest.optJSONObject("networkPolicy")?.optBoolean("denyPrivateNetwork", true) ?: true,
             resourceBudget = manifest.optJSONObject("resourceBudget") ?: JSONObject(),
+            resourceBudgetPayload = manifest.optJSONObject("resourceBudget") ?: JSONObject(),
         )
     }
 

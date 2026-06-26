@@ -15,6 +15,9 @@ let package = Package(
         .executableTarget(
             name: "TerraneHostMac",
             dependencies: ["CForgeCoreBridge"],
+            resources: [
+                .copy("forge-data")
+            ],
             swiftSettings: [
                 .define("DEBUG", .when(configuration: .debug))
             ],

@@ -171,6 +171,20 @@ pub struct QuotaPolicy {
     /// non-blocking [`QuotaDecision::ApproachingLimit`] warning (DL-22 "approaching
     /// limits → suggest compaction/cleanup/export"). DL-22 default 0.8 (80%).
     pub approaching_threshold: f64,
+    /// Budget-error count threshold for auto-quarantine (D12/Q2 default 3 / 60s).
+    #[serde(default = "default_auto_quarantine_error_threshold")]
+    pub auto_quarantine_error_threshold: u32,
+    /// Rolling window in seconds for auto-quarantine budget errors (D12 default 60).
+    #[serde(default = "default_auto_quarantine_window_seconds")]
+    pub auto_quarantine_window_seconds: u32,
+}
+
+fn default_auto_quarantine_error_threshold() -> u32 {
+    3
+}
+
+fn default_auto_quarantine_window_seconds() -> u32 {
+    60
 }
 
 impl QuotaPolicy {
@@ -190,6 +204,8 @@ impl QuotaPolicy {
         snapshots_cap: 256 * MIB,
         cache_cap: 128 * MIB,
         approaching_threshold: 0.8,
+        auto_quarantine_error_threshold: 3,
+        auto_quarantine_window_seconds: 60,
     };
 
     /// This policy's cap for `category`.

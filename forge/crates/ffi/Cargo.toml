@@ -8,8 +8,12 @@ license.workspace = true
 name = "forge_ffi"
 crate-type = ["cdylib", "staticlib", "rlib"]
 
+[[bin]]
+name = "core-invoke"
+path = "src/bin/core_invoke.rs"
+
 [dependencies]
-forge-core.workspace = true
+forge-core = { workspace = true, features = ["control"] }
 forge-domain.workspace = true
 serde.workspace = true
 serde_json.workspace = true

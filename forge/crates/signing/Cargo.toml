@@ -20,3 +20,4 @@ sha2 = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }

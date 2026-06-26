@@ -16,11 +16,24 @@ enum BridgeBudgetQuarantine {
         guard let database,
               error?["code"] as? String == "resource_budget_exceeded",
               let installId,
-              bridgeBudgetErrorCountSince(database: database, appId: appId, installId: installId, seconds: 60) >= 3,
               activeInstallId(database: database, appId: appId) == installId
         else {
             return
         }
+        let count = bridgeBudgetErrorCountSince(database: database, appId: appId, installId: installId, seconds: 60)
+        if PlatformPackageLifecycle.isAvailable {
+            _ = try? PlatformPackageLifecycle.autoQuarantine(
+                database: database,
+                appId: appId,
+                installId: installId,
+                budgetErrorCount60s: count,
+                error: error ?? [:],
+                actor: actor,
+                createdAt: now()
+            )
+            return
+        }
+        guard count >= 3 else { return }
         quarantineWebapp(
             database: database,
             appId: appId,

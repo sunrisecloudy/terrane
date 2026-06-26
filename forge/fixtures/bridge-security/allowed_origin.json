@@ -1,0 +1,17 @@
+{
+  "kind": "network",
+  "network_policy": {
+    "allow": [
+      {
+        "origin": "https://api.example.com",
+        "methods": ["GET", "POST"],
+        "allowedHeaders": ["authorization", "content-type"]
+      }
+    ]
+  },
+  "request": {
+    "url": "https://api.example.com/v1/widgets",
+    "method": "GET"
+  },
+  "expect": "allow"
+}

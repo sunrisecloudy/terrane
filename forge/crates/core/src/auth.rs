@@ -57,6 +57,25 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
         "runtime.run" | "legacy.core_step" => {
             Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner])
         }
+        // Bridge security gates + legacy package manifest reads are host-runtime
+        // operations issued by the native shell on behalf of a mounted webapp.
+        // Same run-capable roles as `legacy.core_step`.
+        "bridge.validate_network_request"
+        | "bridge.validate_envelope"
+        | "bridge.prepare_session"
+        | "bridge.record_call"
+        | "bridge.record_core_event"
+        | "bridge.record_crash_recovery"
+        | "package.get_manifest"
+        | "package.get_permissions"
+        | "package.provision_registry"
+        | "package.list_versions"
+        | "package.activate_version"
+        | "package.rollback_version"
+        | "package.set_status"
+        | "quota.auto_quarantine" => {
+            Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner])
+        }
         // Re-entering an applet's handler on a UI event is *execution* (UI-4/CR-6):
         // same run-capable roles as `runtime.run`. A Viewer/Auditor is read-only and
         // cannot dispatch an event; the capability gate inside the handler then

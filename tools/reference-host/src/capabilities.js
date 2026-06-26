@@ -1,4 +1,6 @@
-export const RUNTIME_VERSION = "0.1.0";
+import { forgeDataCatalog } from "./forge-data-catalog.js";
+
+export const RUNTIME_VERSION = forgeDataCatalog().runtimeConfig.runtimeVersion;
 
 export const DEFAULT_REFERENCE_HOST_FEATURES = Object.freeze({
   "core.step": true,

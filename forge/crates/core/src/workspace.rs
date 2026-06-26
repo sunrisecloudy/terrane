@@ -57,7 +57,7 @@ use crate::sync_rbac::{
 };
 use forge_domain::{CoreCommand, CoreError, CoreResponse, Result};
 use forge_schema::SchemaRegistry;
-use forge_storage::{IndexManager, Store};
+use forge_storage::{IndexManager, PlatformRegistry, Store, PLATFORM_REGISTRY_KEY, PLATFORM_REGISTRY_NS};
 
 /// The KV key (within [`META_NS`]) holding the persisted trusted `db.read` grant
 /// table (actor id → readable collections). Persisted so a scoped grant survives
@@ -245,6 +245,10 @@ pub struct WorkspaceCore {
     /// A factory (not one shared store) is used because the run's bridge owns its
     /// store and the trait object is not `Clone`.
     secret_store_factory: SecretStoreFactory,
+    /// Authoritative legacy webapp package registry (D12/Q8). Persisted in
+    /// `__forge/meta/platform_registry`; shells apply returned `sql_ops` to
+    /// `platform.sqlite` but must not mutate `app_versions.status` directly.
+    platform_registry: PlatformRegistry,
     /// Factory for the `ctx.files` sandbox [`FileSystem`](forge_runtime::FileSystem)
     /// (prd-merged/01 CR-3, prd-merged/07 SC-8/SC-10/SC-12, `forge/spec/files.md`).
     /// Each `runtime.run` builds a fresh filesystem from this factory and hands it
@@ -308,6 +312,7 @@ impl WorkspaceCore {
         let registry = load_schema_registry(&store)?;
         let indexes = rebuild_indexes_from_registry(&store, &registry)?;
         let watch_sessions = load_watch_sessions(&store, META_NS)?;
+        let platform_registry = load_platform_registry(&store)?;
         Ok(WorkspaceCore {
             store,
             registry,
@@ -320,6 +325,7 @@ impl WorkspaceCore {
             run_policy,
             client_features,
             watch_sessions,
+            platform_registry,
             // Fail-closed default: no live network. A host/shell opts in by
             // calling `set_http_client_factory` (review: keep the network seam
             // injectable so CI/the demo never reach the network).
@@ -1666,6 +1672,15 @@ fn load_client_features(store: &Store) -> Result<ClientFeatureRegistry> {
         Some(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| CoreError::StorageError(format!("deserialize client features: {e}"))),
         None => Ok(ClientFeatureRegistry::current()),
+    }
+}
+
+fn load_platform_registry(store: &Store) -> Result<PlatformRegistry> {
+    match store.kv_get(PLATFORM_REGISTRY_NS, PLATFORM_REGISTRY_KEY)? {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
+            CoreError::StorageError(format!("deserialize platform registry: {e}"))
+        }),
+        None => Ok(PlatformRegistry::default()),
     }
 }
 

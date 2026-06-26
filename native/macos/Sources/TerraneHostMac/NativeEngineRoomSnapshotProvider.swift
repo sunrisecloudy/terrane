@@ -68,26 +68,20 @@ final class NativeEngineRoomSnapshotProvider {
         let networkRows = bridgeRows.filter { ($0["method"] as? String) == "network.request" }
         let logRows = bridgeRows.filter { ($0["method"] as? String) == "app.log" }
 
+        let catalog = ForgeDataCatalog.shared
         return [
             "generatedAt": Self.now(),
             "overview": [
-                "source": "macos-runtime-scheme",
-                "platform": "macos",
-                "target": "macos",
-                "runtimeVersion": "0.4.0",
+                "source": catalog.engineRoomTables.source,
+                "platform": catalog.runtimeConfig.platform,
+                "target": catalog.runtimeConfig.target,
+                "runtimeVersion": catalog.runtimeVersion,
                 "devMode": true,
                 "appId": appId.map { $0 as Any } ?? NSNull(),
                 "activeAppId": latestActiveAppId() ?? NSNull(),
                 "runtimeSession": latestRuntimeSession().map { $0 as Any } ?? NSNull(),
-                "featureFlags": ["engineRoom": true],
-                "capabilities": [
-                    "storage.read",
-                    "storage.write",
-                    "network.request",
-                    "app.log",
-                    "core.emit",
-                    "engineRoom.snapshot",
-                ],
+                "featureFlags": catalog.engineRoomTables.featureFlags,
+                "capabilities": catalog.engineRoomTables.capabilities,
                 "resourceLimits": resourceLimits(),
             ],
             "apps": [

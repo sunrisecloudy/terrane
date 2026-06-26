@@ -1,0 +1,25 @@
+{
+  "given": {
+    "app_id": "notes-lite",
+    "created_at": "2024-06-01T12:00:00Z"
+  },
+  "when": {
+    "command": "quota.auto_quarantine",
+    "payload": {
+      "app_id": "notes-lite",
+      "install_id": "install-v2",
+      "budget_error_count_60s": 3,
+      "is_active_install": true,
+      "error": { "code": "resource_budget_exceeded" },
+      "created_at": "2024-06-01T12:00:00Z"
+    }
+  },
+  "expect": {
+    "should_quarantine": true,
+    "quarantine_eligible": true,
+    "transition": {
+      "active_install_id": "install-v1",
+      "rolled_back_install_id": "install-v2"
+    }
+  }
+}

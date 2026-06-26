@@ -641,8 +641,10 @@ struct AppSandboxContext {
     let storagePrefix: String
     let approvedPermissions: Set<String>
     let networkPolicy: [NetworkPolicyRule]
+    let networkPolicyPayload: [String: Any]
     let denyPrivateNetwork: Bool
     let resourceBudget: [String: Int]
+    let resourceBudgetPayload: [String: Any]
     let mountToken: String?
 
     @MainActor
@@ -654,8 +656,10 @@ struct AppSandboxContext {
         self.storagePrefix = "\(appId):"
         self.approvedPermissions = AppSandboxContext.permissions(from: manifest)
         self.networkPolicy = NetworkPolicyRule.fromManifest(manifest)
+        self.networkPolicyPayload = manifest["networkPolicy"] as? [String: Any] ?? [:]
         self.denyPrivateNetwork = AppSandboxContext.denyPrivateNetwork(from: manifest)
         self.resourceBudget = AppSandboxContext.resourceBudget(from: manifest)
+        self.resourceBudgetPayload = manifest["resourceBudget"] as? [String: Any] ?? [:]
         self.mountToken = envelope.mountToken
     }
 
@@ -666,8 +670,10 @@ struct AppSandboxContext {
         self.storagePrefix = "\(appId):"
         self.approvedPermissions = AppSandboxContext.permissions(from: manifest)
         self.networkPolicy = NetworkPolicyRule.fromManifest(manifest)
+        self.networkPolicyPayload = manifest["networkPolicy"] as? [String: Any] ?? [:]
         self.denyPrivateNetwork = AppSandboxContext.denyPrivateNetwork(from: manifest)
         self.resourceBudget = AppSandboxContext.resourceBudget(from: manifest)
+        self.resourceBudgetPayload = manifest["resourceBudget"] as? [String: Any] ?? [:]
         self.mountToken = mountToken
     }
 #endif

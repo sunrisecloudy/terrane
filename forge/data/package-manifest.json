@@ -1,0 +1,12 @@
+{
+  "required": ["manifest.json"],
+  "entry_point": "index.html",
+  "allowed_files": [
+    "index.html",
+    "styles.css",
+    "app.js",
+    "smoke-tests.json",
+    "README.md"
+  ],
+  "allowed_prefixes": ["migrations/", "assets/"]
+}

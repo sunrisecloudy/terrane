@@ -64,6 +64,8 @@
 use forge_domain::{CoreError, Result};
 
 mod preimage;
+mod signature_payload;
+mod token;
 mod trust;
 mod verify;
 
@@ -71,8 +73,14 @@ pub use preimage::{
     canonical_json, content_hash, file_digest, manifest_hash, package_preimage, permissions_hash,
     policy_hash, Package, PackageFile, PackageHashes, SIG_DOMAIN_TAG,
 };
+pub use signature_payload::{
+    signature_payload, signature_payload_from_parts, SignaturePayloadFields,
+};
+pub use token::{
+    encode_control_token, encode_control_token_from_entropy_b64, CONTROL_TOKEN_ENTROPY_BYTES,
+};
 pub use trust::{verify_package, FailureLayer, PublisherTrust, TrustError, TrustOutcome};
-pub use verify::{verify_signature, ALGORITHM_LABEL};
+pub use verify::{verify_shell_signature, verify_signature, ALGORITHM_LABEL};
 
 /// Re-export so callers can pattern-match the error this crate returns without
 /// taking a direct dependency on forge-domain.

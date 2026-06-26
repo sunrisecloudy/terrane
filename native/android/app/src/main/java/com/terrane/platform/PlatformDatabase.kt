@@ -31,11 +31,7 @@ class PlatformDatabase(private val context: Context) : SQLiteOpenHelper(context,
             ?.sorted()
             .orEmpty()
         if (migrations.isEmpty()) {
-            executeScript(
-                db,
-                "CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL); " +
-                    "CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));",
-            )
+            Log.e("TerranePlatformDatabase", "db/sqlite migrations are missing from Android assets")
             return
         }
 

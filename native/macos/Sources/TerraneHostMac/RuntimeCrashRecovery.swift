@@ -9,6 +9,7 @@ struct RuntimeCrashRecord {
 
 final class RuntimeCrashRecovery {
     private let database: PlatformDatabase
+    private let core = ForgeCoreBridge()
 
     init(databaseURL: URL? = nil) {
         self.database = PlatformDatabase(databaseURL: databaseURL)
@@ -52,15 +53,15 @@ final class RuntimeCrashRecovery {
         sessionId: String,
         previousMountCompletedReady: Bool
     ) -> RuntimeCrashRecord {
+        let recovery = coreCrashRecovery(canAutoRemount: previousMountCompletedReady)
         guard let db = database.handle else {
-            return RuntimeCrashRecord(sessionId: sessionId, reloadOffered: true, canAutoRemount: false)
+            return RuntimeCrashRecord(
+                sessionId: sessionId,
+                reloadOffered: recovery.reloadOffered,
+                canAutoRemount: recovery.canAutoRemount
+            )
         }
-        let metadata = jsonBody([
-            "source": "native-macos-webview",
-            "reason": "web_content_process_terminated",
-            "reloadOffered": true,
-            "canAutoRemount": previousMountCompletedReady,
-        ] as [String: Any])
+        let metadata = jsonBody(recovery.metadata)
         var statement: OpaquePointer?
         let sql = """
         UPDATE runtime_sessions
@@ -78,8 +79,46 @@ final class RuntimeCrashRecovery {
         }
         return RuntimeCrashRecord(
             sessionId: sessionId,
+            reloadOffered: recovery.reloadOffered,
+            canAutoRemount: recovery.canAutoRemount
+        )
+    }
+
+    private struct CrashRecoveryDecision {
+        let reloadOffered: Bool
+        let canAutoRemount: Bool
+        let metadata: [String: Any]
+    }
+
+    private func coreCrashRecovery(canAutoRemount: Bool) -> CrashRecoveryDecision {
+        if let payload = core.bridgeCommandDictionary(
+            name: "bridge.record_crash_recovery",
+            payload: [
+                "source": "native-macos-webview",
+                "can_auto_remount": canAutoRemount,
+            ],
+            requestId: "macos-crash-recovery"
+        ) {
+            return CrashRecoveryDecision(
+                reloadOffered: payload["reloadOffered"] as? Bool ?? true,
+                canAutoRemount: payload["canAutoRemount"] as? Bool ?? canAutoRemount,
+                metadata: payload["metadata"] as? [String: Any] ?? [
+                    "source": "native-macos-webview",
+                    "reason": "web_content_process_terminated",
+                    "reloadOffered": true,
+                    "canAutoRemount": canAutoRemount,
+                ]
+            )
+        }
+        return CrashRecoveryDecision(
             reloadOffered: true,
-            canAutoRemount: previousMountCompletedReady
+            canAutoRemount: canAutoRemount,
+            metadata: [
+                "source": "native-macos-webview",
+                "reason": "web_content_process_terminated",
+                "reloadOffered": true,
+                "canAutoRemount": canAutoRemount,
+            ]
         )
     }
 

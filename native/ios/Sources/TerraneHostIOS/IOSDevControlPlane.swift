@@ -53,6 +53,7 @@ final class IOSDevControlPlane: @unchecked Sendable {
     let controlSessionId: String
 
     private let queue = DispatchQueue(label: "dev.terrane.ios.control-plane")
+    private let controlCore = ControlCoreClient()
     private let database: PlatformDatabase
     private let bridgeCommandHandler: BridgeCommandHandler?
     private var listener: NWListener?
@@ -2051,6 +2052,12 @@ final class IOSDevControlPlane: @unchecked Sendable {
     private func compareSnapshot(args: [String: Any]) throws -> [String: Any] {
         let left = try snapshotArgument(args: args, valueKey: "left", snapshotIdKey: "leftSnapshotId")
         let right = try snapshotArgument(args: args, valueKey: "right", snapshotIdKey: "rightSnapshotId")
+        if let result = controlCore.invoke(
+            name: "control.compare_snapshot",
+            payload: ["left": left, "right": right]
+        ) {
+            return result
+        }
         let leftJson = jsonString(comparableSnapshotValue(left))
         let rightJson = jsonString(comparableSnapshotValue(right))
         let equal = leftJson == rightJson
@@ -2478,6 +2485,12 @@ final class IOSDevControlPlane: @unchecked Sendable {
     }
 
     private func jsonMatchesSubset(_ actual: Any, _ expected: Any) -> Bool {
+        if let result = controlCore.invoke(
+            name: "control.json_matches_subset",
+            payload: ["actual": actual, "expected": expected]
+        ), let matches = result["matches"] as? Bool {
+            return matches
+        }
         if expected is NSNull {
             return actual is NSNull
         }
@@ -2632,8 +2645,15 @@ final class IOSDevControlPlane: @unchecked Sendable {
             "runtimeCapabilities": runtimeCapabilities(appId: nil),
             "debug": debug
         ]
-        let contentHashPrefix = "sha256:"
-        let contentHash = "\(contentHashPrefix)\(Self.sha256Hex(jsonString(documentWithoutHash)))"
+        let contentHash: String
+        if let result = controlCore.invoke(
+            name: "control.backup_content_hash",
+            payload: ["document": documentWithoutHash]
+        ), let hash = result["contentHash"] as? String {
+            contentHash = hash
+        } else {
+            contentHash = "sha256:\(Self.sha256Hex(jsonString(documentWithoutHash)))"
+        }
         var document = documentWithoutHash
         document["contentHash"] = contentHash
         let exportJson = jsonString(document)
@@ -2655,9 +2675,18 @@ final class IOSDevControlPlane: @unchecked Sendable {
         guard let document = args["backup"] as? [String: Any] else {
             throw CommandError(status: 400, code: "invalid_request", message: "db.import_backup requires backup")
         }
-        let type = backupString(document, "type") ?? ""
-        guard ["backup", "debug-bundle", "test-fixture"].contains(type) else {
-            throw CommandError(status: 400, code: "invalid_request", message: "Backup import requires type backup, debug-bundle, or test-fixture")
+        if let validation = controlCore.invoke(
+            name: "control.backup_validate",
+            payload: ["document": document]
+        ) {
+            guard (validation["ok"] as? Bool) == true else {
+                throw CommandError(status: 400, code: "invalid_request", message: "Backup import document failed validation")
+            }
+        } else {
+            let type = backupString(document, "type") ?? ""
+            guard ["backup", "debug-bundle", "test-fixture"].contains(type) else {
+                throw CommandError(status: 400, code: "invalid_request", message: "Backup import requires type backup, debug-bundle, or test-fixture")
+            }
         }
         let apps = try requiredBackupArray(document, key: "apps")
         let appVersions = try requiredBackupArray(document, key: "appVersions")
@@ -3460,10 +3489,17 @@ final class IOSDevControlPlane: @unchecked Sendable {
         ISO8601DateFormatter().string(from: Date())
     }
 
-    private static func generateToken() throws -> String {
+    private static func generateToken(controlCore: ControlCoreClient = ControlCoreClient()) throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             throw ControlError.randomTokenFailed
+        }
+        let entropy = Data(bytes).base64EncodedString()
+        if let result = controlCore.invoke(
+            name: "control.generate_token",
+            payload: ["entropy": entropy]
+        ), let token = result["token"] as? String {
+            return token
         }
         return Data(bytes)
             .base64EncodedString()

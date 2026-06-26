@@ -2,6 +2,7 @@ import Foundation
 import SQLite3
 
 final class PlatformNetwork {
+    private let core = ForgeCoreBridge()
     var databaseHandle: OpaquePointer?
 
     func request(_ request: BridgeRequest) -> BridgeResponse {
@@ -29,6 +30,16 @@ final class PlatformNetwork {
         }
 
         let path = Self.path(for: url)
+        if let preflightFailure = validateNetworkRequest(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            bodyData: bodyData,
+            responseBytes: nil
+        ) {
+            return preflightFailure
+        }
         guard let rule = request.context.networkPolicy.first(where: { $0.allows(origin: origin, method: method, path: path, headers: Array(headers.keys)) }) else {
             return .failure(id: request.id, code: "network_policy_denied", message: "network.request is not allowed by manifest.networkPolicy")
         }
@@ -102,8 +113,15 @@ final class PlatformNetwork {
             return .failure(id: request.id, code: "network_error", message: "network.request did not return an HTTP response")
         }
         let data = result.data ?? Data()
-        if data.count > rule.maxResponseBytes {
-            return .failure(id: request.id, code: "network_policy_denied", message: "network.response exceeds manifest.networkPolicy maxResponseBytes")
+        if let responseFailure = validateNetworkResponse(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            responseBytes: data.count,
+            rule: rule
+        ) {
+            return responseFailure
         }
 
         return .success(id: request.id, result: [
@@ -417,6 +435,105 @@ final class PlatformNetwork {
             (first == 169 && second == 254) ||
             (first == 172 && second >= 16 && second <= 31) ||
             (first == 192 && second == 168)
+    }
+
+    private func validateNetworkRequest(
+        request: BridgeRequest,
+        urlText: String,
+        method: String,
+        headers: [String: String],
+        bodyData: Data?,
+        responseBytes: Int?
+    ) -> BridgeResponse? {
+        if let decision = coreNetworkDecision(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            bodyData: bodyData,
+            responseBytes: responseBytes
+        ) {
+            return networkDecisionFailure(id: request.id, decision: decision)
+        }
+        return nil
+    }
+
+    private func validateNetworkResponse(
+        request: BridgeRequest,
+        urlText: String,
+        method: String,
+        headers: [String: String],
+        responseBytes: Int,
+        rule: NetworkPolicyRule
+    ) -> BridgeResponse? {
+        if let decision = coreNetworkDecision(
+            request: request,
+            urlText: urlText,
+            method: method,
+            headers: headers,
+            bodyData: nil,
+            responseBytes: responseBytes
+        ) {
+            return networkDecisionFailure(id: request.id, decision: decision)
+        }
+        if responseBytes > rule.maxResponseBytes {
+            return .failure(id: request.id, code: "network_policy_denied", message: "network.response exceeds manifest.networkPolicy maxResponseBytes")
+        }
+        return nil
+    }
+
+    private func coreNetworkDecision(
+        request: BridgeRequest,
+        urlText: String,
+        method: String,
+        headers: [String: String],
+        bodyData: Data?,
+        responseBytes: Int?
+    ) -> [String: Any]? {
+        guard core.isAvailable else { return nil }
+        var netRequest: [String: Any] = [
+            "url": urlText,
+            "method": method,
+        ]
+        if !headers.isEmpty {
+            netRequest["headers"] = headers
+        }
+        if let bodyData {
+            netRequest["body_bytes"] = bodyData.count
+        }
+        if let credentials = request.params["credentials"] {
+            netRequest["credentials"] = credentials
+        }
+        if let timeoutMs = Self.requestedTimeoutMs(from: request.params).value {
+            netRequest["timeout_ms"] = timeoutMs
+        }
+        if let responseBytes {
+            netRequest["response_bytes"] = responseBytes
+        }
+        guard let decision = core.bridgeCommandDictionary(
+            name: "bridge.validate_network_request",
+            payload: [
+                "network_policy": request.context.networkPolicyPayload,
+                "request": netRequest,
+                "resource_budget": request.context.resourceBudgetPayload,
+            ],
+            requestId: request.id ?? "ios-network"
+        ) else {
+            return nil
+        }
+        if decision["allowed"] as? Bool == true {
+            return nil
+        }
+        return decision
+    }
+
+    private func networkDecisionFailure(id: String?, decision: [String: Any]) -> BridgeResponse {
+        .failure(
+            id: id,
+            code: decision["error_code"] as? String ?? "network_policy_denied",
+            message: decision["message"] as? String ?? "network.request denied",
+            details: decision["details"] as? [String: Any] ?? [:]
+        )
     }
 }
 

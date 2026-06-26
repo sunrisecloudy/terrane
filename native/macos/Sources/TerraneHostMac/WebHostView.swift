@@ -551,18 +551,7 @@ enum RuntimeResourceLocator {
     }
 
     static func mimeType(for fileURL: URL) -> String {
-        switch fileURL.pathExtension.lowercased() {
-        case "html":
-            return "text/html"
-        case "css":
-            return "text/css"
-        case "js":
-            return "text/javascript"
-        case "json":
-            return "application/json"
-        default:
-            return "text/plain"
-        }
+        ForgeDataCatalog.shared.mimeTypes.mimeType(for: fileURL.pathExtension)
     }
 
     private static func logicalResourcePath(for url: URL) -> String {

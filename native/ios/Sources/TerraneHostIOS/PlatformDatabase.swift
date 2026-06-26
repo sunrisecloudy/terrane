@@ -30,12 +30,7 @@ final class PlatformDatabase {
             Bundle.main.resourceURL?.appendingPathComponent("db/sqlite"),
             RuntimeResourceLocator.repoRootURL().appendingPathComponent("db/sqlite")
         ]) else {
-            execute(
-                """
-                CREATE TABLE IF NOT EXISTS apps (id TEXT PRIMARY KEY, name TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'enabled', data_version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS app_storage (app_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(app_id, key));
-                """
-            )
+            fputs("PlatformDatabase migrations directory was not found\n", stderr)
             return
         }
 
@@ -44,15 +39,19 @@ final class PlatformDatabase {
             includingPropertiesForKeys: nil
         )
             .filter({ $0.pathExtension == "sql" })
-            .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+            .sorted(by: { $0.lastPathComponent < $1.lastPathComponent }),
+            !migrations.isEmpty
         else {
+            fputs("PlatformDatabase could not enumerate sqlite migrations\n", stderr)
             return
         }
 
         for migration in migrations {
-            if let sql = try? String(contentsOf: migration, encoding: .utf8) {
-                execute(sql)
+            guard let sql = try? String(contentsOf: migration, encoding: .utf8) else {
+                fputs("PlatformDatabase could not read migration \(migration.lastPathComponent)\n", stderr)
+                continue
             }
+            execute(sql)
         }
     }
 

@@ -18,7 +18,14 @@ forge-ui.workspace = true
 forge-schema.workspace = true
 forge-signing.workspace = true
 
+[dependencies.forge-controlcore]
+workspace = true
+optional = true
+
 [features]
+# Debug-only DevControlPlane algorithms (forge-core-plan B6, Q1). Enabled by
+# forge-ffi for native debug shells; omitted from release forge-cli.
+control = ["dep:forge-controlcore"]
 # TEST-ONLY fault-injection hooks (the `simulate_failure_stage` payload field used by
 # the atomicity / fail-closed regressions — see `commands::test_hooks`). NOT in the
 # default set, so the forge-cli release binary CANNOT honor a `simulate_failure_stage`

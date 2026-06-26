@@ -1,6 +1,7 @@
 #include "forge_core_bridge.h"
 
 #include <dlfcn.h>
+#include <unistd.h>
 
 typedef void *(*ForgeCoreOpenFn)(const char *path, const char *workspace_id);
 typedef char *(*ForgeCoreHandleCommandFn)(void *core, const char *command_json);
@@ -15,7 +16,9 @@ static gchar *forge_database_path(void);
 static gboolean load_library(ForgeCoreBridge *core, const gchar *path);
 static JsonNode *core_payload_for_request(const BridgeRequest *request);
 static JsonNode *core_command_for_request(const BridgeRequest *request);
+static JsonNode *core_command_envelope(const gchar *name, JsonNode *payload, const gchar *request_id);
 static JsonNode *payload_from_core_response(ForgeCoreBridge *core, const BridgeRequest *request, gchar *output);
+static JsonNode *payload_from_core_command_response(ForgeCoreBridge *core, gchar *output);
 static gchar *json_node_to_string(JsonNode *node);
 static void free_core_string(ForgeCoreBridge *core, gchar *value);
 
@@ -55,6 +58,37 @@ gboolean forge_core_bridge_is_available(const ForgeCoreBridge *core) {
       core->core != NULL &&
       core->handle_command != NULL &&
       core->free_string != NULL;
+}
+
+JsonNode *forge_core_bridge_command(ForgeCoreBridge *core, const gchar *name, JsonNode *payload, const gchar *request_id) {
+  if (!forge_core_bridge_is_available(core) || name == NULL || request_id == NULL) {
+    return NULL;
+  }
+
+  JsonNode *command_node = core_command_envelope(name, payload, request_id);
+  gchar *command_json = json_node_to_string(command_node);
+  json_node_unref(command_node);
+
+  ForgeCoreHandleCommandFn handle_command = (ForgeCoreHandleCommandFn)core->handle_command;
+  gchar *output = handle_command(core->core, command_json);
+  g_free(command_json);
+  if (output == NULL) {
+    return NULL;
+  }
+  return payload_from_core_command_response(core, output);
+}
+
+JsonNode *forge_core_bridge_control_invoke(ForgeCoreBridge *core, const gchar *name, JsonNode *payload) {
+  g_autofree gchar *request_id = g_strdup_printf("linux-control-%d-%" G_GINT64_FORMAT, getpid(), g_get_real_time());
+  return forge_core_bridge_command(core, name, payload, request_id);
+}
+
+gboolean forge_core_bridge_decision_allowed(JsonNode *decision) {
+  if (decision == NULL || !JSON_NODE_HOLDS_OBJECT(decision)) {
+    return FALSE;
+  }
+  JsonObject *object = json_node_get_object(decision);
+  return json_object_has_member(object, "allowed") && json_object_get_boolean_member(object, "allowed");
 }
 
 JsonNode *forge_core_bridge_step(ForgeCoreBridge *core, const BridgeRequest *request) {
@@ -193,13 +227,12 @@ static JsonNode *core_payload_for_request(const BridgeRequest *request) {
   return node;
 }
 
-static JsonNode *core_command_for_request(const BridgeRequest *request) {
-  JsonNode *payload = core_payload_for_request(request);
+static JsonNode *core_command_envelope(const gchar *name, JsonNode *payload, const gchar *request_id) {
   JsonBuilder *builder = json_builder_new();
   json_builder_begin_object(builder);
 
   json_builder_set_member_name(builder, "request_id");
-  json_builder_add_string_value(builder, request->has_id && request->id != NULL ? request->id : "linux-core-step");
+  json_builder_add_string_value(builder, request_id);
 
   json_builder_set_member_name(builder, "actor");
   json_builder_begin_object(builder);
@@ -212,14 +245,52 @@ static JsonNode *core_command_for_request(const BridgeRequest *request) {
   json_builder_set_member_name(builder, "workspace_id");
   json_builder_add_string_value(builder, "linux-native");
   json_builder_set_member_name(builder, "name");
-  json_builder_add_string_value(builder, "legacy.core_step");
+  json_builder_add_string_value(builder, name);
   json_builder_set_member_name(builder, "payload");
-  json_builder_add_value(builder, payload);
+  if (payload != NULL) {
+    json_builder_add_value(builder, json_node_copy(payload));
+  } else {
+    json_builder_begin_object(builder);
+    json_builder_end_object(builder);
+  }
 
   json_builder_end_object(builder);
   JsonNode *node = json_builder_get_root(builder);
   g_object_unref(builder);
   return node;
+}
+
+static JsonNode *core_command_for_request(const BridgeRequest *request) {
+  JsonNode *payload = core_payload_for_request(request);
+  const gchar *request_id = request->has_id && request->id != NULL ? request->id : "linux-core-step";
+  JsonNode *node = core_command_envelope("legacy.core_step", payload, request_id);
+  json_node_unref(payload);
+  return node;
+}
+
+static JsonNode *payload_from_core_command_response(ForgeCoreBridge *core, gchar *output) {
+  JsonParser *parser = json_parser_new();
+  GError *parse_error = NULL;
+  gboolean parsed = json_parser_load_from_data(parser, output, -1, &parse_error);
+  free_core_string(core, output);
+  if (!parsed) {
+    g_clear_error(&parse_error);
+    g_object_unref(parser);
+    return NULL;
+  }
+
+  JsonNode *root = json_parser_get_root(parser);
+  JsonObject *response = root != NULL && JSON_NODE_HOLDS_OBJECT(root) ? json_node_get_object(root) : NULL;
+  if (response == NULL || !json_object_has_member(response, "ok") || !json_object_get_boolean_member(response, "ok")) {
+    g_object_unref(parser);
+    return NULL;
+  }
+
+  JsonNode *payload = json_object_has_member(response, "payload")
+      ? json_node_copy(json_object_get_member(response, "payload"))
+      : json_node_init_null(json_node_alloc());
+  g_object_unref(parser);
+  return payload;
 }
 
 static JsonNode *payload_from_core_response(ForgeCoreBridge *core, const BridgeRequest *request, gchar *output) {

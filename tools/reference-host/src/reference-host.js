@@ -9,13 +9,15 @@ import { packageHashes, readPackage, validatePackage } from "./package-validator
 import { PlatformDatabase } from "./platform-database.js";
 import { loadOrCreatePlatformKeypair, publicKeyDescriptor, signPackage, verifyInstalledPackage } from "./signing.js";
 import { TestRunner } from "./test-runner.js";
-import { canonicalJson, prettyJson, sha256 } from "./util.js";
+import { invokeControlCore } from "./control-core.js";
+import { canonicalJson, id as makeId, prettyJson, sha256 } from "./util.js";
+import { forgeDataCatalog, isKnownReferenceHostTool } from "./forge-data-catalog.js";
 
 export class ReferenceHost {
   constructor({
     dbFile = ":memory:",
     controlToken = "dev-token-change-me",
-    runtimeVersion = "0.1.0",
+    runtimeVersion = forgeDataCatalog().runtimeConfig.runtimeVersion,
     allowRuntimeMismatch = false,
     capabilityOverrides = {},
     browserSmokeRunner = null,
@@ -418,13 +420,17 @@ export class ReferenceHost {
     if (!left || !right) {
       throw new PlatformError("invalid_request", "runtime.compare_snapshot requires left/right snapshots or snapshot ids", {});
     }
-    const equal = canonicalJson(left) === canonicalJson(right);
-    return {
-      ok: equal,
-      equal,
-      leftHash: `sha256:${sha256(canonicalJson(left))}`,
-      rightHash: `sha256:${sha256(canonicalJson(right))}`,
-    };
+    try {
+      return invokeControlCore("control.compare_snapshot", { left, right });
+    } catch {
+      const equal = canonicalJson(left) === canonicalJson(right);
+      return {
+        ok: equal,
+        equal,
+        leftHash: `sha256:${sha256(canonicalJson(left))}`,
+        rightHash: `sha256:${sha256(canonicalJson(right))}`,
+      };
+    }
   }
 
   controlAuditSession() {
@@ -700,6 +706,12 @@ export class ReferenceHost {
   }
 
   async runControlCommand(tool, args = {}) {
+    if (!tool || typeof tool !== "string") {
+      throw new PlatformError("invalid_request", "Control command requires tool", { tool });
+    }
+    if (!isKnownReferenceHostTool(tool)) {
+      throw new PlatformError("unknown_tool", `Unknown control tool: ${tool}`, { tool });
+    }
     switch (tool) {
       case "platform.health":
         return this.health();
@@ -817,12 +829,12 @@ export class ReferenceHost {
         return this.assertNoConsoleErrors(args.appId ?? null);
       case "runtime.call_bridge":
         return this.bridge.dispatch(
-          { id: args.id ?? "control_call_bridge", method: requiredArg(args, "method"), params: args.params ?? {} },
+          { id: args.id ?? makeId("control_call_bridge"), method: requiredArg(args, "method"), params: args.params ?? {} },
           { appId: requiredArg(args, "appId"), sessionId: args.sessionId },
         );
       case "runtime.core_step":
         return this.bridge.dispatch(
-          { id: args.id ?? "control_core_step", method: "core.step", params: { event: requiredArg(args, "event") } },
+          { id: args.id ?? makeId("control_core_step"), method: "core.step", params: { event: requiredArg(args, "event") } },
           { appId: requiredArg(args, "appId"), sessionId: args.sessionId },
         );
       case "runtime.core_snapshot":
@@ -838,7 +850,7 @@ export class ReferenceHost {
       case "runtime.storage_get":
         return this.bridge.dispatch(
           {
-            id: args.id ?? "control_storage_get",
+            id: args.id ?? makeId("control_storage_get"),
             method: "storage.get",
             params: { key: requiredArg(args, "key"), defaultValue: args.defaultValue ?? null },
           },
@@ -847,7 +859,7 @@ export class ReferenceHost {
       case "runtime.storage_set":
         return this.bridge.dispatch(
           {
-            id: args.id ?? "control_storage_set",
+            id: args.id ?? makeId("control_storage_set"),
             method: "storage.set",
             params: { key: requiredArg(args, "key"), value: args.value },
           },
@@ -1596,13 +1608,17 @@ function escapeRegExp(value) {
 }
 
 function matchesJsonSubset(actual, expected) {
-  if (expected === undefined || expected === null) return true;
-  if (Array.isArray(expected)) return canonicalJson(actual) === canonicalJson(expected);
-  if (expected && typeof expected === "object") {
-    if (!actual || typeof actual !== "object") return false;
-    return Object.entries(expected).every(([key, value]) => matchesJsonSubset(actual[key], value));
+  try {
+    return invokeControlCore("control.json_matches_subset", { actual, expected }).matches === true;
+  } catch {
+    if (expected === undefined || expected === null) return true;
+    if (Array.isArray(expected)) return canonicalJson(actual) === canonicalJson(expected);
+    if (expected && typeof expected === "object") {
+      if (!actual || typeof actual !== "object") return false;
+      return Object.entries(expected).every(([key, value]) => matchesJsonSubset(actual[key], value));
+    }
+    return Object.is(actual, expected);
   }
-  return Object.is(actual, expected);
 }
 
 function repairStep(tool, status, result) {

@@ -16,7 +16,8 @@ members = [
   "crates/ffi",
   "crates/server",
   "crates/cli",
-  "crates/testkit",
+    "crates/testkit",
+    "crates/controlcore",
 ]
 
 [workspace.package]
@@ -46,6 +47,7 @@ forge-core = { path = "crates/core" }
 forge-ffi = { path = "crates/ffi" }
 forge-server = { path = "crates/server" }
 forge-testkit = { path = "crates/testkit" }
+forge-controlcore = { path = "crates/controlcore" }
 
 [profile.dev]
 debug = 1

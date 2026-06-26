@@ -45,11 +45,28 @@ use forge_domain::{
 };
 use serde::{Deserialize, Serialize};
 
+mod auto_quarantine;
+mod bridge_gate;
+mod bridge_record;
 mod net;
 mod net_url;
+mod webapp_net;
 
+pub use auto_quarantine::{
+    evaluate_auto_quarantine, AutoQuarantineDecision, AutoQuarantinePolicy, AutoQuarantineRequest,
+};
+
+pub use bridge_gate::{
+    bridge_context_from_manifest, permission_for_bridge_method, validate_bridge_envelope,
+    BridgeCallCounts, BridgeEnvelopeDecision, BridgeEnvelopeRequest,
+};
+pub use bridge_record::{
+    bridge_call_id, core_action_id, core_event_id, runtime_session_id, state_version_before,
+    BridgeCallRecord, BridgePlatformIds, CoreActionRecord, CoreEventRecord, RuntimeSessionMetadata,
+};
 pub use net::{check_net, HeaderValue, NetPolicy, NetRequest};
 pub use net_url::{host_is_private_literal, ParsedUrl};
+pub use webapp_net::{check_webapp_network, WebappNetDecision, WebappNetRequest};
 
 /// A concrete `ctx.*` host call the runtime is about to perform.
 ///

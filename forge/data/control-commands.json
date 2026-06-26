@@ -1,0 +1,1072 @@
+[
+  {
+    "name": "platform.health",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.list_targets",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.launch",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.stop",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.reload_runtime",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.validate_package",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.install_webapp_package",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.list_webapps",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.open_webapp",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.uninstall_webapp",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.reset_webapp",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.snapshot",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.query",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.click",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.type",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.set_value",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.press_key",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.drag",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.wait_for",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.screenshot",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.console_logs",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.bridge_calls",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.event_log",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.clear_logs",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.call_bridge",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.storage_get",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.storage_set",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.storage_reset",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.network_mock_set",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.network_mock_reset",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.dialog_mock_set",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.notification_capture",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.timer_advance",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.fault_inject",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.core_step",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.core_snapshot",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.replay_events",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.sign_webapp_package",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.install_report",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.list_webapp_versions",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.approve_webapp_update",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.rollback_webapp",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.quarantine_webapp",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.create_snapshot",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.restore_snapshot",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.migration_dry_run",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.migration_apply",
+    "namespace": "platform",
+    "category": "webapp",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.run_policy_audit",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "platform.run_platform_smoke",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "platform.run_repair_loop",
+    "namespace": "platform",
+    "category": "meta",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host"
+    ]
+  },
+  {
+    "name": "runtime.capabilities",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.compare_snapshot",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.resource_usage",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.run_accessibility_audit",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.accessibility_snapshot",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.assert_visible",
+    "namespace": "runtime",
+    "category": "assertion",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.assert_text",
+    "namespace": "runtime",
+    "category": "assertion",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios"
+    ]
+  },
+  {
+    "name": "runtime.assert_bridge_call",
+    "namespace": "runtime",
+    "category": "assertion",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.assert_no_console_errors",
+    "namespace": "runtime",
+    "category": "assertion",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.assert_accessibility",
+    "namespace": "runtime",
+    "category": "assertion",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.assert_storage",
+    "namespace": "runtime",
+    "category": "assertion",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.assert_core_action",
+    "namespace": "runtime",
+    "category": "assertion",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.run_microtest",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "runtime.run_smoke_tests",
+    "namespace": "runtime",
+    "category": "runtime",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.snapshot",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.query_app_storage",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.query_app_versions",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.query_bridge_calls",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.query_core_events",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.query_test_runs",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.export_backup",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.import_backup",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "db.export_debug_bundle",
+    "namespace": "db",
+    "category": "database",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "linux",
+      "windows",
+      "reference-host",
+      "ios",
+      "android"
+    ]
+  },
+  {
+    "name": "engineRoom.snapshot",
+    "namespace": "engineRoom",
+    "category": "telemetry",
+    "params": {},
+    "returns": {},
+    "platforms": [
+      "macos",
+      "reference-host"
+    ]
+  }
+]

@@ -1,5 +1,11 @@
 import { referenceHostCapabilities } from "./capabilities.js";
 import { bridgeError, bridgeOk, errorBody, PlatformError } from "./errors.js";
+import {
+  forgeCoreAvailable,
+  packagePermissions,
+  validateBridgeEnvelope,
+  validateNetworkRequest,
+} from "./forge-core-bridge.js";
 import { NotebookCrdtService } from "./notebook-crdt.js";
 import { id as makeId } from "./util.js";
 
@@ -73,6 +79,7 @@ export class BridgeDispatcher {
       if (!appId) {
         throw new PlatformError("bridge.unauthorized_channel", "Bridge calls require a channel-derived app id");
       }
+      this.assertEnvelopeGate(request, { ...context, appId, sessionId, active });
 
       const result = await this.call(method, params, { ...context, appId, sessionId, active });
       const response = bridgeOk(id, result);
@@ -84,6 +91,7 @@ export class BridgeDispatcher {
         params,
         result: response,
         durationMs: Date.now() - started,
+        requestId: id,
       });
       return response;
     } catch (error) {
@@ -96,6 +104,7 @@ export class BridgeDispatcher {
         params,
         error: response.error,
         durationMs: Date.now() - started,
+        requestId: id,
       });
       this.quarantineAfterRepeatedBudgetViolations({ appId, active, error: response.error });
       return response;
@@ -109,9 +118,12 @@ export class BridgeDispatcher {
 
     this.assertRuntimeCompatibility(context);
     this.throwInjectedFault(method, context);
-    this.assertPermission(method, context);
+    if (!this.usedCoreEnvelopeGate) {
+      this.assertPermission(method, context);
+      this.assertBridgeResourceBudget(method, params, context);
+    }
+    this.assertStorageResourceBudget(method, params, context);
     this.assertCapability(method, context);
-    this.assertResourceBudget(method, params, context);
 
     const enrichedContext = {
       ...context,
@@ -140,6 +152,7 @@ export class BridgeDispatcher {
         installId: context.active?.installId ?? null,
         event: params.event,
         result,
+        requestId: params?.id ?? context.requestId ?? "core-step",
       });
       return result;
     }
@@ -273,7 +286,7 @@ export class BridgeDispatcher {
     });
   }
 
-  assertResourceBudget(method, params, context) {
+  assertBridgeResourceBudget(method, params, context) {
     const budget = context.active?.manifest?.resourceBudget ?? {};
     const since = new Date(Date.now() - 60_000).toISOString();
     const bridgeLimit = budget.maxBridgeCallsPerMinute;
@@ -329,6 +342,10 @@ export class BridgeDispatcher {
       }
     }
 
+  }
+
+  assertStorageResourceBudget(method, params, context) {
+    const budget = context.active?.manifest?.resourceBudget ?? {};
     if (method === "storage.set" && Number.isInteger(budget.maxStorageBytes)) {
       const projectedBytes = this.database.storageBytesAfterSet(context.appId, params.key, params.value);
       if (projectedBytes > budget.maxStorageBytes) {
@@ -385,7 +402,82 @@ export class BridgeDispatcher {
     throw new PlatformError("unknown_method", `Unknown notebook method: ${method}`, { method });
   }
 
+  assertEnvelopeGate(request, context) {
+    this.usedCoreEnvelopeGate = false;
+    if (!forgeCoreAvailable() || !context.appId) return;
+    const manifest = context.active?.manifest;
+    if (!manifest) return;
+    const trusted = packagePermissions(context.appId, manifest);
+    const since = new Date(Date.now() - 60_000).toISOString();
+    const decision = validateBridgeEnvelope({
+      envelope: request,
+      is_main_frame: true,
+      app_id: context.appId,
+      permissions: trusted.permissions ?? [],
+      resource_budget: trusted.resource_budget ?? {},
+      storage_prefix: trusted.storage_prefix ?? `${context.appId}:`,
+      counts: {
+        total_last_60s: this.database.countBridgeCallsSince({
+          appId: context.appId,
+          installId: context.active?.installId ?? null,
+          since,
+        }),
+        network_last_60s: this.database.countBridgeCallsSince({
+          appId: context.appId,
+          installId: context.active?.installId ?? null,
+          since,
+          method: "network.request",
+        }),
+        app_log_last_60s: this.database.countBridgeCallsSince({
+          appId: context.appId,
+          installId: context.active?.installId ?? null,
+          since,
+          method: "app.log",
+        }),
+      },
+      storage_key: request.params?.key ?? request.params?.prefix ?? null,
+    });
+    this.usedCoreEnvelopeGate = true;
+    if (!decision.allowed) {
+      throw new PlatformError(decision.error_code ?? "invalid_request", decision.message ?? "Bridge request denied", decision.details ?? {});
+    }
+  }
+
   assertNetworkPolicy(params, context) {
+    const manifest = context.active?.manifest;
+    const networkPolicy = manifest?.networkPolicy ?? {};
+    if (forgeCoreAvailable() && manifest) {
+      const trusted = packagePermissions(context.appId, manifest);
+      const headers = normalizeNetworkHeaders(params.headers ?? {});
+      const bodyBytes = bodyByteLength(params.body);
+      const decision = validateNetworkRequest({
+        networkPolicy: trusted.network_policy ?? networkPolicy,
+        resourceBudget: trusted.resource_budget ?? manifest.resourceBudget ?? null,
+        request: {
+          url: params.url,
+          method: (params.method ?? "GET").toUpperCase(),
+          headers,
+          body_bytes: bodyBytes,
+          credentials: params.credentials ?? null,
+          timeout_ms: params.timeoutMs ?? null,
+        },
+      });
+      if (!decision.allowed) {
+        throw new PlatformError(decision.error_code ?? "network_policy_denied", decision.message ?? "network.request denied", decision.details ?? {});
+      }
+      const allow = Array.isArray(networkPolicy.allow) ? networkPolicy.allow : [];
+      const url = new URL(params.url);
+      const method = (params.method ?? "GET").toUpperCase();
+      const matching = findMatchingNetworkPolicy(allow, url, method);
+      if (!matching) {
+        throw new PlatformError("network_policy_denied", "network.request is outside manifest.networkPolicy", {
+          origin: url.origin,
+          method,
+        });
+      }
+      return matching;
+    }
+
     let url;
     try {
       url = new URL(params.url);
@@ -394,7 +486,6 @@ export class BridgeDispatcher {
     }
 
     const method = (params.method ?? "GET").toUpperCase();
-    const networkPolicy = context.active?.manifest?.networkPolicy ?? {};
     assertPrivateNetworkPolicy(networkPolicy, url, "network.request private network targets are denied");
     const allow = Array.isArray(networkPolicy.allow) ? networkPolicy.allow : [];
     const matching = findMatchingNetworkPolicy(allow, url, method);
@@ -513,6 +604,25 @@ function findMatchingNetworkPolicy(allow, url, method) {
     if (entry.pathPrefix && !url.pathname.startsWith(entry.pathPrefix)) return false;
     return true;
   });
+}
+
+function normalizeNetworkHeaders(headers) {
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) {
+    return {};
+  }
+  const normalized = {};
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value === "string") {
+      normalized[name] = value;
+    }
+  }
+  return normalized;
+}
+
+function bodyByteLength(body) {
+  if (body == null) return null;
+  if (typeof body === "string") return Buffer.byteLength(body, "utf8");
+  return null;
 }
 
 function assertPrivateNetworkPolicy(policy, url, message) {

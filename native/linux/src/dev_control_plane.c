@@ -129,12 +129,64 @@ static gboolean json_node_matches_subset(JsonNode *actual, JsonNode *expected) {
   for (GList *item = members; item != NULL; item = item->next) {
     const gchar *member = item->data;
     if (!json_object_has_member(actual_object, member) ||
-        !json_node_matches_subset(json_object_get_member(actual_object, member), json_object_get_member(expected_object, member))) {
+        !control_core_matches_subset(json_object_get_member(actual_object, member), json_object_get_member(expected_object, member))) {
       matches = FALSE;
       break;
     }
   }
   g_list_free(members);
+  return matches;
+}
+
+static ForgeCoreBridge control_plane_core = {0};
+static gboolean control_plane_core_ready = FALSE;
+
+static void ensure_control_plane_core(void) {
+  if (!control_plane_core_ready) {
+    forge_core_bridge_init(&control_plane_core);
+    control_plane_core_ready = TRUE;
+  }
+}
+
+static JsonNode *control_core_invoke(const gchar *name, JsonNode *payload) {
+  ensure_control_plane_core();
+  if (!forge_core_bridge_is_available(&control_plane_core)) {
+    return NULL;
+  }
+  return forge_core_bridge_control_invoke(&control_plane_core, name, payload);
+}
+
+static gchar *control_core_result_text(const gchar *name, JsonNode *payload) {
+  JsonNode *result = control_core_invoke(name, payload);
+  if (result == NULL) {
+    return NULL;
+  }
+  gchar *text = json_node_to_text(result);
+  json_node_unref(result);
+  return text;
+}
+
+static gboolean control_core_matches_subset(JsonNode *actual, JsonNode *expected) {
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "actual");
+  json_builder_add_value(builder, actual != NULL ? json_node_copy(actual) : json_node_init_null(json_node_alloc()));
+  json_builder_set_member_name(builder, "expected");
+  json_builder_add_value(builder, expected != NULL ? json_node_copy(expected) : json_node_init_null(json_node_alloc()));
+  json_builder_end_object(builder);
+  JsonNode *payload = json_builder_get_root(builder);
+  g_object_unref(builder);
+
+  JsonNode *result = control_core_invoke("control.json_matches_subset", payload);
+  json_node_unref(payload);
+  if (result == NULL || !JSON_NODE_HOLDS_OBJECT(result)) {
+    if (result != NULL) {
+      json_node_unref(result);
+    }
+    return json_node_matches_subset(actual, expected);
+  }
+  gboolean matches = json_object_get_boolean_member_with_default(json_node_get_object(result), "matches", FALSE);
+  json_node_unref(result);
   return matches;
 }
 
@@ -214,6 +266,26 @@ static gchar *generate_control_token(GError **error) {
   }
 
   gchar *encoded = g_base64_encode(bytes, sizeof(bytes));
+  JsonBuilder *builder = json_builder_new();
+  json_builder_begin_object(builder);
+  json_builder_set_member_name(builder, "entropy");
+  json_builder_add_string_value(builder, encoded);
+  json_builder_end_object(builder);
+  JsonNode *payload = json_builder_get_root(builder);
+  g_object_unref(builder);
+  JsonNode *result = control_core_invoke("control.generate_token", payload);
+  json_node_unref(payload);
+  if (result != NULL && JSON_NODE_HOLDS_OBJECT(result)) {
+    const gchar *token = json_object_get_string_member_with_default(json_node_get_object(result), "token", NULL);
+    if (token != NULL && token[0] != '\0') {
+      json_node_unref(result);
+      g_free(encoded);
+      return g_strdup(token);
+    }
+  }
+  if (result != NULL) {
+    json_node_unref(result);
+  }
   GString *token = g_string_new("");
   for (gchar *cursor = encoded; *cursor != '\0'; cursor++) {
     if (*cursor == '+') {
@@ -1858,10 +1930,10 @@ static gchar *runtime_assert_core_action_json(
           g_strcmp0(json_node_get_string(type_node), expected_type) == 0;
     }
     if (matches && expected_action != NULL) {
-      matches = json_node_matches_subset(action_node, expected_action) && json_node_matches_subset(expected_action, action_node);
+      matches = control_core_matches_subset(action_node, expected_action) && control_core_matches_subset(expected_action, action_node);
     }
     if (matches && expected_match != NULL) {
-      matches = json_node_matches_subset(action_node, expected_match);
+      matches = control_core_matches_subset(action_node, expected_match);
     }
     if (matches) {
       count++;
@@ -3426,8 +3498,39 @@ static gchar *db_export_document_json(DevControlPlane *plane, const gchar *expor
   g_autofree gchar *without_hash = json_builder_to_text(builder);
   g_object_unref(builder);
 
-  g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, without_hash, -1);
-  g_autofree gchar *content_hash = g_strdup_printf("sha256:%s", hash);
+  g_autofree gchar *content_hash = NULL;
+  JsonParser *document_parser = json_parser_new();
+  if (json_parser_load_from_data(document_parser, without_hash, -1, NULL)) {
+    JsonNode *document_node = json_parser_get_root(document_parser);
+    if (document_node != NULL) {
+      JsonBuilder *hash_payload = json_builder_new();
+      json_builder_begin_object(hash_payload);
+      json_builder_set_member_name(hash_payload, "document");
+      json_builder_add_value(hash_payload, json_node_copy(document_node));
+      json_builder_end_object(hash_payload);
+      JsonNode *payload = json_builder_get_root(hash_payload);
+      g_object_unref(hash_payload);
+      JsonNode *hash_result = control_core_invoke("control.backup_content_hash", payload);
+      json_node_unref(payload);
+      if (hash_result != NULL && JSON_NODE_HOLDS_OBJECT(hash_result)) {
+        const gchar *hash_text = json_object_get_string_member_with_default(
+            json_node_get_object(hash_result),
+            "contentHash",
+            NULL);
+        if (hash_text != NULL && hash_text[0] != '\0') {
+          content_hash = g_strdup(hash_text);
+        }
+      }
+      if (hash_result != NULL) {
+        json_node_unref(hash_result);
+      }
+    }
+  }
+  g_object_unref(document_parser);
+  if (content_hash == NULL) {
+    g_autofree gchar *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, without_hash, -1);
+    content_hash = g_strdup_printf("sha256:%s", hash);
+  }
   gsize without_hash_len = strlen(without_hash);
   g_autofree gchar *escaped_hash = json_escape(content_hash);
   g_autofree gchar *document = g_strdup_printf(
@@ -3472,10 +3575,28 @@ static gchar *db_export_debug_bundle_json(DevControlPlane *plane, GError **error
 }
 
 static gchar *db_import_backup_json(DevControlPlane *plane, JsonObject *document, JsonNode *document_node, GError **error) {
-  const gchar *type = object_string(document, "type", "");
-  if (g_strcmp0(type, "backup") != 0 && g_strcmp0(type, "debug-bundle") != 0 && g_strcmp0(type, "test-fixture") != 0) {
-    g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Backup import requires type backup, debug-bundle, or test-fixture");
-    return NULL;
+  JsonBuilder *validate_payload = json_builder_new();
+  json_builder_begin_object(validate_payload);
+  json_builder_set_member_name(validate_payload, "document");
+  json_builder_add_value(validate_payload, json_node_copy(document_node));
+  json_builder_end_object(validate_payload);
+  JsonNode *payload = json_builder_get_root(validate_payload);
+  g_object_unref(validate_payload);
+  JsonNode *validation = control_core_invoke("control.backup_validate", payload);
+  json_node_unref(payload);
+  if (validation != NULL) {
+    if (!JSON_NODE_HOLDS_OBJECT(validation) || !json_object_get_boolean_member_with_default(json_node_get_object(validation), "ok", FALSE)) {
+      json_node_unref(validation);
+      g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Backup import document failed validation");
+      return NULL;
+    }
+    json_node_unref(validation);
+  } else {
+    const gchar *type = object_string(document, "type", "");
+    if (g_strcmp0(type, "backup") != 0 && g_strcmp0(type, "debug-bundle") != 0 && g_strcmp0(type, "test-fixture") != 0) {
+      g_set_error_literal(error, G_MARKUP_ERROR, G_MARKUP_ERROR_INVALID_CONTENT, "Backup import requires type backup, debug-bundle, or test-fixture");
+      return NULL;
+    }
   }
 
   JsonArray *apps = object_array(document, "apps");
@@ -5811,6 +5932,42 @@ static gchar *validate_package_result_json(JsonObject *args, gchar **error_code,
     package_read_clear(&package);
     return NULL;
   }
+
+  if (package.manifest != NULL) {
+    JsonBuilder *payload_builder = json_builder_new();
+    json_builder_begin_object(payload_builder);
+    json_builder_set_member_name(payload_builder, "manifest");
+    if (package.manifest_parser != NULL) {
+      JsonNode *manifest_root = json_parser_get_root(package.manifest_parser);
+      json_builder_add_value(payload_builder, manifest_root != NULL ? json_node_copy(manifest_root) : json_node_init_null(json_node_alloc()));
+    } else {
+      json_builder_add_null_value(payload_builder);
+    }
+    json_builder_set_member_name(payload_builder, "files");
+    json_builder_begin_array(payload_builder);
+    for (guint index = 0; index < package.files->len; ++index) {
+      PackageFile *file = g_ptr_array_index(package.files, index);
+      json_builder_begin_object(payload_builder);
+      json_builder_set_member_name(payload_builder, "path");
+      json_builder_add_string_value(payload_builder, file->path);
+      json_builder_set_member_name(payload_builder, "content");
+      json_builder_add_string_value(payload_builder, file->content);
+      json_builder_set_member_name(payload_builder, "contentHash");
+      json_builder_add_string_value(payload_builder, file->content_hash);
+      json_builder_end_object(payload_builder);
+    }
+    json_builder_end_array(payload_builder);
+    json_builder_end_object(payload_builder);
+    JsonNode *payload = json_builder_get_root(payload_builder);
+    g_object_unref(payload_builder);
+    gchar *core_text = control_core_result_text("control.package_validate", payload);
+    json_node_unref(payload);
+    if (core_text != NULL) {
+      package_read_clear(&package);
+      return core_text;
+    }
+  }
+
   g_autofree gchar *files = package_paths_json(&package);
   gboolean ok = package.errors->len == 0;
   JsonBuilder *builder = json_builder_new();
@@ -6670,6 +6827,35 @@ static gchar *runtime_compare_snapshot_json(DevControlPlane *plane, JsonObject *
   if (right_json == NULL) {
     return NULL;
   }
+
+  JsonParser *left_parser = json_parser_new();
+  JsonParser *right_parser = json_parser_new();
+  if (json_parser_load_from_data(left_parser, left_json, -1, NULL) &&
+      json_parser_load_from_data(right_parser, right_json, -1, NULL)) {
+    JsonNode *left_node = json_parser_get_root(left_parser);
+    JsonNode *right_node = json_parser_get_root(right_parser);
+    if (left_node != NULL && right_node != NULL) {
+      JsonBuilder *payload_builder = json_builder_new();
+      json_builder_begin_object(payload_builder);
+      json_builder_set_member_name(payload_builder, "left");
+      json_builder_add_value(payload_builder, json_node_copy(left_node));
+      json_builder_set_member_name(payload_builder, "right");
+      json_builder_add_value(payload_builder, json_node_copy(right_node));
+      json_builder_end_object(payload_builder);
+      JsonNode *payload = json_builder_get_root(payload_builder);
+      g_object_unref(payload_builder);
+      gchar *core_text = control_core_result_text("control.compare_snapshot", payload);
+      json_node_unref(payload);
+      if (core_text != NULL) {
+        g_object_unref(left_parser);
+        g_object_unref(right_parser);
+        return core_text;
+      }
+    }
+  }
+  g_object_unref(left_parser);
+  g_object_unref(right_parser);
+
   g_autofree gchar *left_comparable = comparable_snapshot_json(left_json, error);
   if (left_comparable == NULL) {
     return NULL;

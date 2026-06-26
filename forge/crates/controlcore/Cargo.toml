@@ -1,0 +1,21 @@
+[package]
+name = "forge-controlcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Pure JSON-in/JSON-out DevControlPlane algorithms (debug-only)"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+forge-domain.workspace = true
+forge-signing.workspace = true
+sha2.workspace = true
+
+[[bin]]
+name = "control-invoke"
+path = "src/bin/control_invoke.rs"
+
+[dev-dependencies]
+serde_json.workspace = true
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }

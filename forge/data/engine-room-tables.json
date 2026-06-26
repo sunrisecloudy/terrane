@@ -1,0 +1,42 @@
+{
+  "source": "macos-runtime-scheme",
+  "featureFlags": {
+    "engineRoom": true
+  },
+  "capabilities": [
+    "storage.read",
+    "storage.write",
+    "network.request",
+    "app.log",
+    "core.emit",
+    "engineRoom.snapshot"
+  ],
+  "tables": [
+    "apps",
+    "app_versions",
+    "app_files",
+    "app_permissions",
+    "app_installations",
+    "app_install_reports",
+    "app_storage",
+    "app_migrations",
+    "migration_runs",
+    "runtime_sessions",
+    "bridge_calls",
+    "core_events",
+    "core_actions",
+    "runtime_snapshots",
+    "control_sessions",
+    "control_commands",
+    "network_mocks",
+    "test_runs",
+    "crdt_notebooks",
+    "crdt_documents",
+    "crdt_updates",
+    "crdt_heads",
+    "crdt_actors",
+    "crdt_permissions",
+    "crdt_proposals",
+    "crdt_sync_cursors"
+  ]
+}

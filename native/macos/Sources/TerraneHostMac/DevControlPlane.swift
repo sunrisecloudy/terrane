@@ -16,19 +16,20 @@ final class DevControlPlane: @unchecked Sendable {
         var signingKeyAccount = "terrane.macos.dev-control.platform-key"
 
         static func defaultConfiguration() -> Configuration {
-            Configuration(
-                port: UInt16(ProcessInfo.processInfo.environment["TERRANE_MACOS_CONTROL_PORT"] ?? ""),
+            let catalog = ForgeDataCatalog.shared
+            return Configuration(
+                port: UInt16(ProcessInfo.processInfo.environment[catalog.macosPortEnvVar] ?? ""),
                 tokenFileURL: defaultTokenFileURL(),
                 databaseURL: nil,
                 tokenOverride: nil,
-                signingKeyAccount: ProcessInfo.processInfo.environment["TERRANE_MACOS_SIGNING_KEY_ACCOUNT"]
-                    ?? "terrane.macos.dev-control.platform-key"
+                signingKeyAccount: ProcessInfo.processInfo.environment[catalog.macosSigningKeyEnvVar]
+                    ?? catalog.macosSigningKeyAccount
             )
         }
 
         private static func defaultTokenFileURL() -> URL {
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            return base.appendingPathComponent("terrane/control.token")
+            return base.appendingPathComponent(ForgeDataCatalog.shared.controlPlaneConfig.tokenFileLocation)
         }
     }
 
@@ -70,6 +71,7 @@ final class DevControlPlane: @unchecked Sendable {
     private let database: PlatformDatabase
     private let databaseURL: URL?
     private let core = ForgeCoreBridge()
+    private let controlCore = ControlCoreClient()
     private let signingKey: Curve25519.Signing.PrivateKey
     private let signingKeyAccount: String
     private let queue = DispatchQueue(label: "dev.terrane.macos.control-plane")
@@ -77,16 +79,8 @@ final class DevControlPlane: @unchecked Sendable {
     private var sessionStatus = "running"
     private var activeRuntimeSessionId: String?
     private var activeAppId: String?
-    private static let signingKeyService = "terrane.macos.dev-control"
-    private static let snapshotTypes: Set<String> = [
-        "bug-report",
-        "pre-install",
-        "pre-migration",
-        "post-test",
-        "golden",
-        "manual",
-        "debug-bundle",
-    ]
+    private static var signingKeyService: String { ForgeDataCatalog.shared.macosSigningKeyService }
+    private static var snapshotTypes: Set<String> { ForgeDataCatalog.shared.snapshotTypes.creatableTypes }
 
     var boundPort: UInt16? {
         listener?.port?.rawValue
@@ -103,7 +97,7 @@ final class DevControlPlane: @unchecked Sendable {
     init(configuration: Configuration = .defaultConfiguration()) throws {
         self.token = try configuration.tokenOverride ?? Self.generateToken()
         self.tokenFileURL = configuration.tokenFileURL
-        self.controlSessionId = "control_\(UUID().uuidString.lowercased())"
+        self.controlSessionId = "\(ForgeDataCatalog.shared.macosSessionIdPrefix)\(UUID().uuidString.lowercased())"
         self.databaseURL = configuration.databaseURL
         self.database = PlatformDatabase(databaseURL: configuration.databaseURL)
         self.signingKeyAccount = configuration.signingKeyAccount
@@ -116,7 +110,7 @@ final class DevControlPlane: @unchecked Sendable {
     static func enabledFromProcess() throws -> DevControlPlane? {
         let args = CommandLine.arguments
         let env = ProcessInfo.processInfo.environment
-        guard args.contains("--terrane-dev-control") || env["TERRANE_MACOS_DEV_CONTROL"] == "1" else {
+        guard args.contains("--terrane-dev-control") || env[ForgeDataCatalog.shared.macosDevControlEnvVar] == "1" else {
             return nil
         }
         return try DevControlPlane()
@@ -333,6 +327,21 @@ final class DevControlPlane: @unchecked Sendable {
         }
         let tool = body["tool"] as? String ?? ""
         let args = body["args"] as? [String: Any] ?? [:]
+        guard !tool.isEmpty else {
+            sendRejected(connection, request, status: 400, code: "invalid_request", message: "Control command requires tool", startedAt: startedAt)
+            return
+        }
+        guard ForgeDataCatalog.shared.isKnownControlTool(tool) else {
+            sendRejected(
+                connection,
+                request,
+                status: 501,
+                code: "platform_unsupported",
+                message: "Control command is not implemented by the macOS host yet",
+                startedAt: startedAt
+            )
+            return
+        }
         switch tool {
         case "platform.health":
             sendAccepted(connection, request, startedAt: startedAt, result: healthResult())
@@ -541,7 +550,7 @@ final class DevControlPlane: @unchecked Sendable {
                     "id": "macos",
                     "platform": "macos",
                     "status": sessionStatus == "running" ? "available" : "stopped",
-                    "runtimeVersion": "0.1.0",
+                    "runtimeVersion": ForgeDataCatalog.shared.runtimeVersion,
                     "controlSessionId": controlSessionId,
                 ],
                 [
@@ -600,9 +609,10 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func runtimeCapabilities(appId: String?) -> [String: Any] {
+        let catalog = ForgeDataCatalog.shared
         var limits: [String: Any] = [
-            "maxPackageBytes": 1_048_576,
-            "maxFileBytes": 524_288,
+            "maxPackageBytes": catalog.runtimeConfig.maxPackageBytes,
+            "maxFileBytes": catalog.runtimeConfig.maxFileBytes,
         ]
         if let appId {
             for (key, value) in AppSandboxContext.resourceBudget(from: manifestForApp(appId)) {
@@ -610,9 +620,9 @@ final class DevControlPlane: @unchecked Sendable {
             }
         }
         return [
-            "runtimeVersion": "0.1.0",
-            "platform": "macos",
-            "target": "macos",
+            "runtimeVersion": catalog.runtimeVersion,
+            "platform": catalog.runtimeConfig.platform,
+            "target": catalog.runtimeConfig.target,
             "appId": appId ?? NSNull(),
             "devMode": true,
             "features": [
@@ -1305,12 +1315,16 @@ final class DevControlPlane: @unchecked Sendable {
         }
         let expectedType = args["type"] as? String ?? args["actionType"] as? String
         let expectedAction = args["action"]
+        let expectedMatch = args["match"] as? [String: Any]
         let rows = coreActionRows(appId: appId).filter { row in
             let action = jsonDictionary(row["action_json"] as? String ?? "") ?? [:]
             if let expectedType, (action["type"] as? String) != expectedType {
                 return false
             }
             if let expectedAction, !canonicalJSONEqual(action, expectedAction) {
+                return false
+            }
+            if let expectedMatch, !jsonMatchesSubset(action, expectedMatch) {
                 return false
             }
             return true
@@ -1334,6 +1348,13 @@ final class DevControlPlane: @unchecked Sendable {
               let right = snapshotValue(args["right"], snapshotId: args["rightSnapshotId"] as? String)
         else {
             sendRejected(connection, request, status: 400, code: "invalid_request", message: "runtime.compare_snapshot requires left/right snapshots or snapshot ids", startedAt: startedAt)
+            return
+        }
+        if let result = controlCore.invoke(
+            name: "control.compare_snapshot",
+            payload: ["left": left, "right": right]
+        ) {
+            sendAccepted(connection, request, startedAt: startedAt, result: result)
             return
         }
         let leftJSON = jsonString(comparableSnapshotValue(left))
@@ -2012,7 +2033,7 @@ final class DevControlPlane: @unchecked Sendable {
         else {
             return ("signature_invalid", "Installed package signature is malformed")
         }
-        let payload = signaturePayload(
+        let payload = buildSignaturePayload(
             appId: appId,
             appVersion: version.version,
             dataVersion: version.dataVersion,
@@ -2025,6 +2046,18 @@ final class DevControlPlane: @unchecked Sendable {
             policyHash: hashes["policyHash"] ?? "",
             signedAt: signedAt
         )
+        if let verified = controlCore.invoke(
+            name: "control.verify_signature",
+            payload: [
+                "payload": payload,
+                "signature": signatureText,
+                "publicKey": signingKey.publicKey.rawRepresentation.base64EncodedString(),
+            ]
+        ),
+            verified["ok"] as? Bool == true
+        {
+            return nil
+        }
         guard signingKey.publicKey.isValidSignature(signatureData, for: Data(payload.utf8)) else {
             return ("signature_invalid", "Ed25519 signature verification failed")
         }
@@ -2570,13 +2603,22 @@ final class DevControlPlane: @unchecked Sendable {
                 ),
             ] : [:],
         ]
-        let contentHash = "sha256:\(sha256Hex(jsonBody(document)))"
+        let contentHash = controlCore.invoke(
+            name: "control.backup_content_hash",
+            payload: ["document": document]
+        )?["contentHash"] as? String ?? "sha256:\(sha256Hex(jsonBody(document)))"
         document["contentHash"] = contentHash
         recordBackupExport(document, type: type, contentHash: contentHash, createdAt: createdAt)
         return document
     }
 
     private func importBackup(_ document: [String: Any]) -> [String: Any]? {
+        if let validation = controlCore.invoke(
+            name: "control.backup_validate",
+            payload: ["document": document]
+        ), (validation["ok"] as? Bool) != true {
+            return nil
+        }
         guard ["backup", "debug-bundle", "test-fixture"].contains(document["type"] as? String ?? ""),
               document["apps"] is [[String: Any]],
               document["appVersions"] is [[String: Any]],
@@ -2638,13 +2680,13 @@ final class DevControlPlane: @unchecked Sendable {
                     installId,
                     appId,
                     appVersion,
-                    textValue(version, keys: ["runtime_version", "runtimeVersion"]) ?? "0.1.0",
+                    textValue(version, keys: ["runtime_version", "runtimeVersion"]) ?? ForgeDataCatalog.shared.runtimeVersion,
                     intValue(firstValue(version, keys: ["data_version", "dataVersion"])) ?? 1,
                     jsonTextValue(version, stringKeys: ["manifest_json", "manifestJson"], objectKeys: ["manifest"], fallback: "{}"),
                     textValue(version, keys: ["manifest_hash", "manifestHash"]) ?? "",
                     textValue(version, keys: ["content_hash", "contentHash"]) ?? "",
                     jsonTextValue(version, stringKeys: ["signature_json", "signatureJson"], objectKeys: ["signature"], fallback: nil),
-                    textValue(version, keys: ["trust_level", "trustLevel"]) ?? "developer",
+                    textValue(version, keys: ["trust_level", "trustLevel"]) ?? ForgeDataCatalog.shared.defaultTrustLevel,
                     textValue(version, keys: ["status"]) ?? "installed",
                     textValue(version, keys: ["created_at", "installedAt", "createdAt"]) ?? createdAt,
                     textValue(version, keys: ["activated_at", "activatedAt"]),
@@ -2829,10 +2871,19 @@ final class DevControlPlane: @unchecked Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenFileURL.path)
     }
 
-    private static func generateToken() throws -> String {
+    private static func generateToken(controlCore: ControlCoreClient = ControlCoreClient()) throws -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
         guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
             throw ControlError.randomTokenFailed
+        }
+        let entropy = Data(bytes).base64EncodedString()
+        if let result = controlCore.invoke(
+            name: "control.generate_token",
+            payload: ["entropy": entropy]
+        ),
+            let token = result["token"] as? String
+        {
+            return token
         }
         return Data(bytes)
             .base64EncodedString()
@@ -3511,6 +3562,34 @@ final class DevControlPlane: @unchecked Sendable {
         guard let package = readPackage(args: args) else {
             return nil
         }
+        if let result = controlCore.invoke(
+            name: "control.package_validate",
+            payload: [
+                "manifest": package.manifest,
+                "files": package.files.map { file in
+                    [
+                        "path": file.path,
+                        "content": file.content,
+                        "contentHash": file.contentHash,
+                    ] as [String: Any]
+                },
+            ]
+        ) {
+            var merged = result
+            merged["bridgeMethods"] = bridgeMethods(in: package.files.first { $0.path == "app.js" }?.content ?? "").sorted()
+            if !package.errors.isEmpty {
+                var errors = merged["errors"] as? [[String: Any]] ?? []
+                errors.append(contentsOf: package.errors)
+                merged["errors"] = errors
+                merged["ok"] = false
+            }
+            if !package.warnings.isEmpty {
+                var warnings = merged["warnings"] as? [[String: Any]] ?? []
+                warnings.append(contentsOf: package.warnings)
+                merged["warnings"] = warnings
+            }
+            return merged
+        }
         let ok = package.errors.isEmpty
         return [
             "ok": ok,
@@ -3530,7 +3609,7 @@ final class DevControlPlane: @unchecked Sendable {
             return nil
         }
         let hashes = packageHashes(package)
-        let trustLevel = args["trustLevel"] as? String ?? package.manifest["trust"].flatMap { ($0 as? [String: Any])?["level"] as? String } ?? "developer"
+        let trustLevel = args["trustLevel"] as? String ?? package.manifest["trust"].flatMap { ($0 as? [String: Any])?["level"] as? String } ?? ForgeDataCatalog.shared.defaultTrustLevel
         let appId = package.manifest["id"] as? String ?? ""
         let appVersion = package.manifest["version"] as? String ?? ""
         let runtimeVersion = package.manifest["runtimeVersion"] as? String ?? ""
@@ -3552,7 +3631,7 @@ final class DevControlPlane: @unchecked Sendable {
             "signedAt": signedAt,
             "signedBy": "macos-dev-control",
         ]
-        signature["signature"] = signPayload(signaturePayload(
+        let payload = buildSignaturePayload(
             appId: appId,
             appVersion: appVersion,
             dataVersion: dataVersion,
@@ -3564,7 +3643,8 @@ final class DevControlPlane: @unchecked Sendable {
             permissionsHash: hashes["permissionsHash"] ?? "",
             policyHash: hashes["policyHash"] ?? "",
             signedAt: signedAt
-        ))
+        )
+        signature["signature"] = signPayload(payload)
         return [
             "ok": package.errors.isEmpty,
             "appId": package.manifest["id"] ?? NSNull(),
@@ -3643,8 +3723,9 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func readPackage(directory: URL) -> PackageRead {
-        let required = ["manifest.json", "index.html", "styles.css", "app.js"]
-        let optional = Set(["smoke-tests.json", "README.md"])
+        let manifestRules = ForgeDataCatalog.shared.packageManifest
+        let required = ["manifest.json"] + manifestRules.allowed_files.filter { $0 != "manifest.json" && $0 != "README.md" && $0 != "smoke-tests.json" }
+        let optional = Set(manifestRules.allowed_files.filter { !required.contains($0) })
         var errors: [[String: Any]] = []
         var warnings: [[String: Any]] = []
         var files: [PackageFile] = []
@@ -3828,9 +3909,9 @@ final class DevControlPlane: @unchecked Sendable {
         ok = ok && executePrepared(
             """
             INSERT INTO app_versions (install_id, app_id, version, runtime_version, data_version, manifest_json, manifest_hash, content_hash, signature_json, trust_level, status, created_at, activated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'developer', ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            [installId, appId, version, runtimeVersion, dataVersion, package.manifestJSON, hashes["manifestHash"] ?? "", hashes["contentHash"] ?? "", jsonString(signature), status, now, status == "enabled" ? now : nil]
+            [installId, appId, version, runtimeVersion, dataVersion, package.manifestJSON, hashes["manifestHash"] ?? "", hashes["contentHash"] ?? "", jsonString(signature), ForgeDataCatalog.shared.defaultTrustLevel, status, now, status == "enabled" ? now : nil]
         )
         for file in package.files {
             ok = ok && executePrepared(
@@ -4591,18 +4672,22 @@ final class DevControlPlane: @unchecked Sendable {
         var statement: OpaquePointer?
         let sql = """
         INSERT INTO runtime_sessions (session_id, target, platform, runtime_version, active_app_id, active_install_id, started_at, status, capabilities_json, metadata_json)
-        VALUES (?, 'macos', 'macos', '0.1.0', ?, ?, ?, 'running', ?, '{"source":"native-macos-control"}')
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, '{"source":"native-macos-control"}')
         ON CONFLICT(session_id) DO UPDATE SET active_app_id = excluded.active_app_id, active_install_id = excluded.active_install_id, status = 'running'
         """
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             return sessionId
         }
         defer { sqlite3_finalize(statement) }
+        let catalog = ForgeDataCatalog.shared
         bind(statement, 1, sessionId)
-        bind(statement, 2, appId)
-        bindNullable(statement, 3, active?.installId)
-        bind(statement, 4, now)
-        bind(statement, 5, jsonBody(runtimeCapabilities(appId: appId)))
+        bind(statement, 2, catalog.runtimeConfig.target)
+        bind(statement, 3, catalog.runtimeConfig.platform)
+        bind(statement, 4, catalog.runtimeVersion)
+        bind(statement, 5, appId)
+        bindNullable(statement, 6, active?.installId)
+        bind(statement, 7, now)
+        bind(statement, 8, jsonBody(runtimeCapabilities(appId: appId)))
         sqlite3_step(statement)
         return sessionId
     }
@@ -4722,72 +4807,29 @@ final class DevControlPlane: @unchecked Sendable {
         else {
             return nil
         }
-        let restoreTarget = restorePrevious && app.activeInstallId == targetInstallId
-            ? previousRestorableVersion(appId: appId, excluding: targetInstallId)
-            : nil
-        let now = Self.now()
-
-        guard executeSQL("BEGIN IMMEDIATE") else { return nil }
-        var ok = true
-        ok = ok && executePrepared(
-            "UPDATE app_versions SET status = 'quarantined' WHERE app_id = ? AND install_id = ?",
-            [appId, targetInstallId]
-        )
-        if let restoreTarget {
-            ok = ok && executePrepared(
-                "UPDATE app_versions SET status = 'enabled', activated_at = ? WHERE install_id = ?",
-                [now, restoreTarget.installId]
+        guard PlatformPackageLifecycle.isAvailable else { return nil }
+        do {
+            let transition = try PlatformPackageLifecycle.setStatus(
+                database: database.handle,
+                appId: appId,
+                installId: targetInstallId,
+                status: "quarantined",
+                actor: "codex",
+                createdAt: Self.now(),
+                reason: reason,
+                restorePrevious: restorePrevious,
+                eventId: "event_\(UUID().uuidString.lowercased())"
             )
-            ok = ok && executePrepared(
-                "UPDATE apps SET active_install_id = ?, active_version = ?, data_version = ?, status = 'enabled', updated_at = ? WHERE id = ?",
-                [restoreTarget.installId, restoreTarget.version, restoreTarget.dataVersion, now, appId]
-            )
-            ok = ok && executePrepared(
-                """
-                INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json)
-                VALUES (?, ?, ?, 'rollback', ?, 'codex', ?, ?)
-                """,
-                [
-                    "event_\(UUID().uuidString.lowercased())",
-                    appId,
-                    restoreTarget.installId,
-                    targetInstallId,
-                    now,
-                    jsonBody(["reason": "automatic rollback after quarantine", "quarantinedInstallId": targetInstallId] as [String: Any]),
-                ]
-            )
-        } else if app.activeInstallId == targetInstallId {
-            ok = ok && executePrepared(
-                "UPDATE apps SET status = 'quarantined', updated_at = ? WHERE id = ?",
-                [now, appId]
-            )
-        }
-        ok = ok && executePrepared(
-            """
-            INSERT INTO app_installations (installation_event_id, app_id, install_id, action, previous_install_id, actor, created_at, details_json)
-            VALUES (?, ?, ?, 'quarantine', ?, 'codex', ?, ?)
-            """,
-            [
-                "event_\(UUID().uuidString.lowercased())",
-                appId,
-                targetInstallId,
-                restoreTarget?.installId,
-                now,
-                jsonBody(["reason": reason, "restoredInstallId": restoreTarget?.installId ?? NSNull()] as [String: Any]),
+            return [
+                "appId": appId,
+                "installId": targetInstallId,
+                "status": "quarantined",
+                "reason": reason,
+                "restoredInstallId": transition["active_install_id"] ?? NSNull(),
             ]
-        )
-
-        guard ok, executeSQL("COMMIT") else {
-            _ = executeSQL("ROLLBACK")
+        } catch {
             return nil
         }
-        return [
-            "appId": appId,
-            "installId": targetInstallId,
-            "status": "quarantined",
-            "reason": reason,
-            "restoredInstallId": restoreTarget?.installId ?? NSNull(),
-        ]
     }
 
     private func uninstallWebapp(appId: String) -> [String: Any]? {
@@ -5120,6 +5162,32 @@ final class DevControlPlane: @unchecked Sendable {
 
     private func canonicalJSONEqual(_ left: Any, _ right: Any) -> Bool {
         jsonString(left) == jsonString(right)
+    }
+
+    private func jsonMatchesSubset(_ actual: Any, _ expected: Any) -> Bool {
+        if let result = controlCore.invoke(
+            name: "control.json_matches_subset",
+            payload: ["actual": actual, "expected": expected]
+        ), let matches = result["matches"] as? Bool {
+            return matches
+        }
+        if expected is NSNull {
+            return actual is NSNull
+        }
+        if let expectedObject = expected as? [String: Any] {
+            guard let actualObject = actual as? [String: Any] else {
+                return false
+            }
+            for (key, expectedValue) in expectedObject {
+                guard let actualValue = actualObject[key],
+                      jsonMatchesSubset(actualValue, expectedValue)
+                else {
+                    return false
+                }
+            }
+            return true
+        }
+        return canonicalJSONEqual(actual, expected)
     }
 
     private func stringHeaders(_ value: Any?) -> [String: String]? {
@@ -5524,12 +5592,33 @@ final class DevControlPlane: @unchecked Sendable {
     }
 
     private func runtimeCompatibilityResult(_ appRuntimeVersion: String?) -> [String: Any] {
-        [
-            "ok": appRuntimeVersion == nil || appRuntimeVersion == "0.1.0",
-            "runtimeVersion": "0.1.0",
+        let runtimeVersion = ForgeDataCatalog.shared.runtimeVersion
+        let compatible = appRuntimeVersion == nil || runtimeVersionsCompatible(host: runtimeVersion, app: appRuntimeVersion)
+        return [
+            "ok": compatible,
+            "runtimeVersion": runtimeVersion,
             "appRuntimeVersion": appRuntimeVersion ?? NSNull(),
             "allowRuntimeMismatch": false,
         ]
+    }
+
+    private func runtimeVersionsCompatible(host: String, app: String?) -> Bool {
+        guard let app, let hostParts = parseSemver(host), let appParts = parseSemver(app) else {
+            return false
+        }
+        return hostParts.major == appParts.major && appParts.minor <= hostParts.minor
+    }
+
+    private func parseSemver(_ value: String) -> (major: Int, minor: Int, patch: Int)? {
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3,
+              let major = Int(parts[0]),
+              let minor = Int(parts[1]),
+              let patch = Int(parts[2])
+        else {
+            return nil
+        }
+        return (major, minor, patch)
     }
 
     private func packageHashes(_ package: PackageRead) -> [String: String] {
@@ -5545,6 +5634,26 @@ final class DevControlPlane: @unchecked Sendable {
         files: [(path: String, content: String)],
         permissions: [String]
     ) -> [String: String] {
+        if let hashes = controlCore.invoke(
+            name: "control.package_hashes",
+            payload: [
+                "manifest": manifest,
+                "files": files.map { file in
+                    [
+                        "path": file.path,
+                        "content": file.content,
+                        "contentHash": "sha256:\(sha256Hex(file.content))",
+                    ] as [String: Any]
+                },
+            ]
+        ) {
+            return [
+                "manifestHash": hashes["manifestHash"] as? String ?? "",
+                "contentHash": hashes["contentHash"] as? String ?? "",
+                "permissionsHash": hashes["permissionsHash"] as? String ?? "",
+                "policyHash": hashes["policyHash"] as? String ?? "",
+            ]
+        }
         let manifestHash = "sha256:\(sha256Hex(jsonString(manifest)))"
         let content = files
             .sorted { $0.path < $1.path }
@@ -5645,7 +5754,7 @@ final class DevControlPlane: @unchecked Sendable {
         (try? signingKey.signature(for: Data(payload.utf8)).base64EncodedString()) ?? ""
     }
 
-    private func signaturePayload(
+    private func buildSignaturePayload(
         appId: String,
         appVersion: String,
         dataVersion: Int,
@@ -5658,7 +5767,27 @@ final class DevControlPlane: @unchecked Sendable {
         policyHash: String,
         signedAt: String
     ) -> String {
-        [
+        if let result = controlCore.invoke(
+            name: "control.sign_payload",
+            payload: [
+                "appId": appId,
+                "appVersion": appVersion,
+                "dataVersion": dataVersion,
+                "runtimeVersion": runtimeVersion,
+                "trustLevel": trustLevel,
+                "keyId": keyId,
+                "manifestHash": manifestHash,
+                "contentHash": contentHash,
+                "permissionsHash": permissionsHash,
+                "policyHash": policyHash,
+                "signedAt": signedAt,
+            ]
+        ),
+            let payload = result["payload"] as? String
+        {
+            return payload
+        }
+        return [
             "terrane/sig/v1",
             appId,
             appVersion,

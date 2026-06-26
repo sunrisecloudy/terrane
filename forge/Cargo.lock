@@ -584,11 +584,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "forge-controlcore"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "forge-domain",
+ "forge-signing",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "forge-core"
 version = "0.1.0"
 dependencies = [
  "base64",
  "ed25519-dalek",
+ "forge-controlcore",
  "forge-core",
  "forge-domain",
  "forge-pipeline",

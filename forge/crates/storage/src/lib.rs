@@ -67,6 +67,12 @@ pub use quota::{
     QuotaDecision, QuotaPolicy, QuotaScope, QuotaUsage, GIB, MIB, QUOTA_META_NS, QUOTA_POLICY_KEY,
 };
 
+pub mod platform_registry;
+pub use platform_registry::{
+    PackageAppRecord, PackageInstallationEvent, PackageTransitionResult, PackageVersionRecord,
+    PlatformRegistry, SqlOp, PLATFORM_REGISTRY_KEY, PLATFORM_REGISTRY_NS,
+};
+
 pub mod export;
 pub use export::{
     bundle_meta, is_local_only_namespace, ExportOptions, RunLogPolicy, EXPORT_FORMAT_VERSION,

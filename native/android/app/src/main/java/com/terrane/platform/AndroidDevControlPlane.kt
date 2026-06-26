@@ -28,6 +28,7 @@ class AndroidDevControlPlane(
 ) {
     private val running = AtomicBoolean(false)
     private val database = PlatformDatabase(context)
+    private val core = ForgeCoreBridge(context)
     private val controlSessionId = "control_android_${UUID.randomUUID().toString().lowercase()}"
     private val token = generateToken()
     private val tokenPath = File(context.filesDir, "control.token")
@@ -1147,6 +1148,12 @@ class AndroidDevControlPlane(
     private fun runtimeCompareSnapshotJson(args: JSONObject): JSONObject {
         val left = snapshotArgument(args, "left", "leftSnapshotId")
         val right = snapshotArgument(args, "right", "rightSnapshotId")
+        core.controlCommand(
+            "control.compare_snapshot",
+            JSONObject().put("left", left).put("right", right),
+        )?.let { result ->
+            return JSONObject(result.toString())
+        }
         val leftComparable = comparableSnapshotJson(left)
         val rightComparable = comparableSnapshotJson(right)
         val leftHash = "sha256:${sha256Hex(leftComparable)}"
@@ -2058,6 +2065,10 @@ class AndroidDevControlPlane(
     }
 
     private fun jsonMatchesSubset(actual: Any?, expected: Any?): Boolean {
+        core.controlCommand(
+            "control.json_matches_subset",
+            JSONObject().put("actual", actual ?: JSONObject.NULL).put("expected", expected ?: JSONObject.NULL),
+        )?.optBoolean("matches")?.let { return it }
         val normalizedExpected = expected ?: JSONObject.NULL
         if (normalizedExpected is JSONObject) {
             val actualObject = actual as? JSONObject ?: return false

@@ -1,0 +1,35 @@
+{
+  "portEnvVars": {
+    "macos": "TERRANE_MACOS_CONTROL_PORT",
+    "ios": "TERRANE_IOS_CONTROL_PORT",
+    "windows": "TERRANE_WINDOWS_CONTROL_PORT",
+    "linux": "TERRANE_LINUX_CONTROL_PORT",
+    "android": "TERRANE_ANDROID_CONTROL_PORT",
+    "reference-host": "TERRANE_REFERENCE_HOST_CONTROL_PORT"
+  },
+  "devControlEnvVars": {
+    "macos": "TERRANE_MACOS_DEV_CONTROL",
+    "ios": "TERRANE_IOS_DEV_CONTROL",
+    "windows": "TERRANE_WINDOWS_DEV_CONTROL",
+    "linux": "TERRANE_LINUX_DEV_CONTROL",
+    "android": "TERRANE_ANDROID_DEV_CONTROL"
+  },
+  "signingKeyEnvVars": {
+    "macos": "TERRANE_MACOS_SIGNING_KEY_ACCOUNT",
+    "ios": "TERRANE_IOS_SIGNING_KEY_ACCOUNT",
+    "windows": "TERRANE_WINDOWS_SIGNING_KEY_ACCOUNT",
+    "linux": "TERRANE_LINUX_SIGNING_KEY_ACCOUNT",
+    "android": "TERRANE_ANDROID_SIGNING_KEY_ACCOUNT"
+  },
+  "tokenFileEnvVars": {
+    "macos": "TERRANE_MACOS_CONTROL_TOKEN_FILE",
+    "ios": "TERRANE_IOS_CONTROL_TOKEN_FILE"
+  },
+  "platformControlTokenEnvVars": {
+    "macos": "PLATFORM_CONTROL_TOKEN",
+    "ios": "PLATFORM_CONTROL_TOKEN",
+    "windows": "PLATFORM_CONTROL_TOKEN",
+    "linux": "PLATFORM_CONTROL_TOKEN",
+    "android": "PLATFORM_CONTROL_TOKEN"
+  }
+}

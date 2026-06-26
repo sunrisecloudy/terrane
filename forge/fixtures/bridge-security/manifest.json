@@ -1,0 +1,10 @@
+{
+  "cases": [
+    "private_host_denied",
+    "allowed_origin",
+    "path_prefix_denied",
+    "envelope_permission_denied",
+    "envelope_budget_exceeded",
+    "record_ids_deterministic"
+  ]
+}

@@ -17,3 +17,6 @@ void forge_core_bridge_init(ForgeCoreBridge *core);
 void forge_core_bridge_clear(ForgeCoreBridge *core);
 gboolean forge_core_bridge_is_available(const ForgeCoreBridge *core);
 JsonNode *forge_core_bridge_step(ForgeCoreBridge *core, const BridgeRequest *request);
+JsonNode *forge_core_bridge_command(ForgeCoreBridge *core, const gchar *name, JsonNode *payload, const gchar *request_id);
+JsonNode *forge_core_bridge_control_invoke(ForgeCoreBridge *core, const gchar *name, JsonNode *payload);
+gboolean forge_core_bridge_decision_allowed(JsonNode *decision);

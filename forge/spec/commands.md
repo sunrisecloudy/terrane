@@ -53,6 +53,34 @@ Source of record: prd-merged/01 CR-A2 plus the committed CoreCommand envelope in
 
 Every CR-A2 command currently travels through CoreCommand.name plus serde_json payload. There are no per-command Rust request/response structs yet. The facade should add typed builders around this table while keeping the envelope stable.
 
+## Legacy `package.*` shell registry (Phase A data)
+
+Native shell webapp version history, rollback, quarantine, and activation on
+`platform.sqlite` use the **`package.*`** namespace (not `applet.*`). Allowed
+`app_versions.status` / `apps.status` / `trust_level` values are generated from
+`forge-domain` (`PackageVersionStatus`, `PackageAppStatus`, `TrustLevel`) into
+`forge/data/app-status-enums.json` and `forge/data/trust-levels.json`. Dev-control
+tool names are cataloged in `forge/data/control-commands.json`.
+
+| Command | Purpose |
+|---|---|
+| `package.get_manifest` | Parse and return trusted `manifest_json` for an installed webapp (`app_id` + `manifest_json` payload; core validates, shell reads DB). |
+| `package.get_permissions` | Trusted sandbox view: permissions, storage prefix, network policy, resource budget. |
+
+## Bridge security gates (Phase C)
+
+Shells delegate policy **decisions** to the core; transport (WKWebView, URLSession,
+mock network, SQLite INSERT) stays in the shell.
+
+| Command | Purpose |
+|---|---|
+| `bridge.validate_network_request` | Private-IP + `manifest.networkPolicy` preflight for `network.request`. |
+| `bridge.validate_envelope` | Runtime envelope shape, permission map, rate budget, storage-prefix gate. |
+| `bridge.prepare_session` | Deterministic `runtime_sessions.session_id` + metadata shape. |
+| `bridge.record_call` | Deterministic `bridge_calls.bridge_call_id` row shape. |
+| `bridge.record_core_event` | Deterministic `core_events` / `core_actions` row shapes. |
+| `bridge.record_crash_recovery` | Capture `reloadOffered` / `canAutoRemount` metadata for replay. |
+
 ## PRD Implied But Not Yet Housed
 
 - Index definitions and rebuild reports need a storage/schema home before schema.rebuild_indexes can be implemented.
