@@ -7,6 +7,7 @@ import WebKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
     private var webView: WKWebView!
+    private var bridge: TerraneBridge?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let appId = Self.parseAppId()
@@ -15,7 +16,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let indexURL = appDir.appendingPathComponent("index.html")
 
-        webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let config = WKWebViewConfiguration()
+        bridge = TerraneBridge(home: Self.resolveHome(), appId: appId)
+        bridge?.install(into: config.userContentController)
+        webView = WKWebView(frame: .zero, configuration: config)
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 560),
@@ -36,6 +40,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        bridge?.close()
+    }
+
+    /// Workspace home: `$TERRANE_HOME`, else `~/.terrane`. terrane-ffi appends
+    /// `log.bin`.
+    static func resolveHome() -> URL {
+        if let home = ProcessInfo.processInfo.environment["TERRANE_HOME"], !home.isEmpty {
+            return URL(fileURLWithPath: home)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".terrane")
     }
 
     /// App id from `open Terrane.app --args <id>` / argv[1], default "todo".
