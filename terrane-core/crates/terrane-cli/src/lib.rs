@@ -18,7 +18,12 @@ use terrane_core::Core;
 use terrane_domain::Request;
 
 pub mod edge;
+pub mod sync;
 pub use edge::EdgeRunner;
+pub use sync::{serve_conn, sync_conn};
+
+/// Default address `terrane serve` binds when none is given.
+const DEFAULT_SERVE_ADDR: &str = "127.0.0.1:7777";
 
 /// Route an argv slice: `<ns> <verb> [args…]`, or one of the read/meta verbs.
 pub fn run(argv: &[&str]) -> Result<(), String> {
@@ -30,10 +35,13 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["state"] => run_state(),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
+        ["serve"] => sync::run_serve(DEFAULT_SERVE_ADDR),
+        ["serve", "--addr", addr] => sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
+        ["sync", app, "--peer", addr] => sync::run_sync_peer(app, addr),
         ["sync", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane sync <app> --from <home>".into())
+            Err("usage: terrane sync <app> (--from <home> | --peer <addr>)".into())
         }
         [ns, verb, rest @ ..] => run_command(ns, verb, rest),
         [other] => Err(format!("unknown command {other:?} (try `terrane help`)")),
@@ -71,7 +79,7 @@ pub fn dispatch(command: &str, args: &[&str]) -> Result<(), String> {
 
 /// Ensure this home has minted its replica identity before it authors anything.
 /// Idempotent — `replica.init` is a no-op once the id exists.
-fn ensure_identity(core: &mut Core<EdgeRunner>) -> Result<(), String> {
+pub(crate) fn ensure_identity(core: &mut Core<EdgeRunner>) -> Result<(), String> {
     if core.state().replica.peer.is_none() {
         core.dispatch(Request::new("replica.init", Vec::new()))
             .map_err(|e| e.to_string())?;
@@ -211,7 +219,9 @@ pub fn print_help() {
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane host run <app> [input…]                  run an app's JS backend\n\n\
          Multi-user:\n\
-         \x20 terrane sync <app> --from <home>   merge another home's edits for an app\n\n\
+         \x20 terrane serve [--addr <addr>]      listen for peers (default 127.0.0.1:7777)\n\
+         \x20 terrane sync <app> --from <home>   merge another home's edits (local)\n\
+         \x20 terrane sync <app> --peer <addr>   merge a serving peer's edits (network)\n\n\
          Reads & meta:\n\
          \x20 terrane state                  print the whole world\n\
          \x20 terrane log                    print the event log (decoded)\n\

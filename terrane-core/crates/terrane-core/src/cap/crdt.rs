@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use loro::{ExportMode, LoroDoc, LoroError, LoroValue};
+use loro::{ExportMode, LoroDoc, LoroError, LoroValue, VersionVector};
 use terrane_domain::{AppId, Error, EventRecord, Result};
 
 use super::{arg, Capability, ReadValue, ResourceMethod};
@@ -272,8 +272,46 @@ pub fn crdt_export_hex(source: &State, app: &str, since: &State) -> Result<Optio
     Ok(Some(to_hex(&bytes)))
 }
 
+/// This replica's encoded version vector for `app` (empty if it has no document
+/// yet). A peer sends this so we can export exactly the ops it's missing — the
+/// inbound half of a networked sync.
+pub fn crdt_vv(state: &State, app: &str) -> Vec<u8> {
+    state
+        .crdt
+        .docs
+        .get(app)
+        .map(|d| d.oplog_vv().encode())
+        .unwrap_or_default()
+}
+
+/// Export `app`'s ops that a peer (identified by its encoded version vector
+/// `peer_vv`, empty = has nothing) is missing — the raw Loro update bytes. Hex
+/// them for `crdt.merge`, or frame them straight onto a socket. Empty if we have
+/// no document for the app.
+pub fn crdt_export_from_vv(state: &State, app: &str, peer_vv: &[u8]) -> Result<Vec<u8>> {
+    let Some(doc) = state.crdt.docs.get(app) else {
+        return Ok(Vec::new());
+    };
+    let from = if peer_vv.is_empty() {
+        VersionVector::default()
+    } else {
+        VersionVector::decode(peer_vv)
+            .map_err(|e| Error::InvalidInput(format!("crdt sync: bad version vector: {e}")))?
+    };
+    doc.export(ExportMode::updates_owned(from))
+        .map_err(|e| Error::Storage(format!("crdt export: {e}")))
+}
+
+/// The string elements of `app`'s named list — a read accessor for hosts/tests.
+pub fn crdt_list_strings(state: &State, app: &str, container: &str) -> Vec<String> {
+    match read_list_all(state, app, &[container.to_string()]) {
+        ReadValue::StringList(items) => items,
+        _ => Vec::new(),
+    }
+}
+
 /// Lower-case hex encoding (the wire form for a Loro update on the command line).
-fn to_hex(bytes: &[u8]) -> String {
+pub fn to_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     let mut out = String::with_capacity(bytes.len() * 2);
     for b in bytes {
