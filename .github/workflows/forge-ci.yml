@@ -13,12 +13,14 @@ on:
       - 'forge/**'
       - 'tools/**'
       - 'schemas/**'
+      - 'cli-plan/**'
       - '.github/workflows/forge-ci.yml'
   pull_request:
     paths:
       - 'forge/**'
       - 'tools/**'
       - 'schemas/**'
+      - 'cli-plan/**'
       - '.github/workflows/forge-ci.yml'
   workflow_dispatch:
 
@@ -92,6 +94,12 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: forge
+
+      - name: Build Forge public API docs
+        run: node --no-warnings tools/build-forge-api-docs.mjs
+
+      - name: Forge public API docs tests
+        run: node --test --no-warnings tools/test/forge-api-docs.test.mjs
 
       - name: Export commands catalog
         run: node --no-warnings tools/export-commands-catalog.mjs

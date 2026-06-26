@@ -29,6 +29,8 @@ const CONSOLE_JS: &str = include_str!("../static/console/console.js");
 const CONSOLE_CSS: &str = include_str!("../static/console/console.css");
 
 static COMMAND_SCHEMAS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../../schemas/commands");
+static API_DOCS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../docs/public-api");
+const API_DOCS_ROUTE_PREFIX: &str = "/docs/";
 
 /// Shared server state: one workspace core protected by a mutex so the std HTTP
 /// listener can serve one request at a time without exposing raw SQLite access to
@@ -105,8 +107,38 @@ impl ForgeServer {
                     "service": "forge-server",
                     "status": "ok",
                     "console": self.console_enabled,
+                    "docs": self.console_enabled,
                 }),
             ),
+            ("GET", "/docs" | "/docs/") if self.console_enabled => api_docs_body("index.html")
+                .map(|body| static_response(200, "text/html; charset=utf-8", body))
+                .unwrap_or_else(|| {
+                    json_error(
+                        404,
+                        CoreError::ValidationError(
+                            "API docs not embedded; run tools/build-forge-api-docs.mjs".into(),
+                        ),
+                    )
+                }),
+            ("GET", path)
+                if self.console_enabled && (path == "/docs/styles.css" || path == "/docs/app.js") =>
+            {
+                let file_name = path.strip_prefix(API_DOCS_ROUTE_PREFIX).unwrap_or("");
+                match api_docs_body(file_name) {
+                    Some(body) => {
+                        let content_type = if file_name.ends_with(".css") {
+                            "text/css; charset=utf-8"
+                        } else {
+                            "application/javascript; charset=utf-8"
+                        };
+                        static_response(200, content_type, body)
+                    }
+                    None => json_error(
+                        404,
+                        CoreError::ValidationError(format!("unknown docs asset route {path}")),
+                    ),
+                }
+            }
             ("GET", "/console" | "/console/") if self.console_enabled => {
                 static_response(200, "text/html; charset=utf-8", CONSOLE_INDEX.as_bytes())
             }
@@ -390,6 +422,13 @@ fn command_schema_body(path: &str) -> Option<&'static [u8]> {
         .map(|file| file.contents())
 }
 
+fn api_docs_body(file_name: &str) -> Option<&'static [u8]> {
+    if file_name.is_empty() || file_name.contains('/') {
+        return None;
+    }
+    API_DOCS.get_file(file_name).map(|file| file.contents())
+}
+
 fn static_response(status: u16, content_type: &str, body: &[u8]) -> HttpResponse {
     let mut response = HttpResponse::new(status, body.to_vec());
     response.headers.insert("content-type".into(), content_type.into());
@@ -500,6 +539,12 @@ mod tests {
     #[test]
     fn console_and_bridge_system_describe_smoke() {
         let server = ForgeServer::in_memory("ws").unwrap().serve_console(true);
+
+        let docs = server.handle_http("GET", "/docs", b"");
+        assert_eq!(docs.status, 200);
+        let docs_html = String::from_utf8_lossy(&docs.body);
+        assert!(docs_html.contains("Forge Public API Reference"), "{docs_html}");
+        assert!(docs_html.contains("ctx.db"), "{docs_html}");
 
         let console = server.handle_http("GET", "/console", b"");
         assert_eq!(console.status, 200);
