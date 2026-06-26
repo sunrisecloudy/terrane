@@ -14,6 +14,7 @@
 //! authorization source; a request payload can only ever narrow it and a payload
 //! that tries to exceed it is rejected as a self-escalation (review 048).
 
+use crate::catalog::descriptor_for;
 use forge_domain::{CoreCommand, CoreError, Result, Role};
 
 /// Command-level RBAC gate (prd-merged/01 CR-A3): reject a command whose
@@ -29,159 +30,8 @@ pub(super) fn authorize(cmd: &CoreCommand) -> Result<()> {
     let role = cmd.actor.role;
     // `None` ⇒ no command-level role restriction (the command is reachable by
     // any authenticated actor, or it is an unknown name the dispatcher rejects).
-    let allowed: Option<&[Role]> = match cmd.name.as_str() {
-        // Owner-only workspace lifecycle (commands.md: workspace.create → Owner).
-        "workspace.create" => Some(&[Role::Owner]),
-        // Read-level metadata: every member role may open/inspect the workspace.
-        "workspace.open" => Some(&[
-            Role::Owner,
-            Role::Maintainer,
-            Role::Editor,
-            Role::Viewer,
-            Role::Auditor,
-        ]),
-        // Installing/compiling an applet is a maintainer+ operation (SC-15):
-        // Viewer/Auditor/Runner/Editor cannot install.
-        "applet.install" => Some(&[Role::Owner, Role::Maintainer]),
-        // Lifecycle administration — enable/suspend/upgrade/uninstall an applet
-        // (CR-7) — is the same maintainer+ surface as install: an admin pauses/
-        // resumes/upgrades/removes an applet. `applet.upgrade` installs a new version
-        // over the active one, so it carries the SAME install/maintainer authority. A
-        // Viewer/Auditor (read-only/oversight) or a bare Runner/Editor cannot change
-        // an applet's durable lifecycle.
-        "applet.enable" | "applet.suspend" | "applet.upgrade" | "applet.uninstall" => {
-            Some(&[Role::Owner, Role::Maintainer])
-        }
-        // Triggering execution: the run-capable roles (CR-8). Viewer/Auditor are
-        // read-only/oversight and cannot run code.
-        "runtime.run" | "legacy.core_step" => {
-            Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner])
-        }
-        // Bridge security gates + legacy package manifest reads are host-runtime
-        // operations issued by the native shell on behalf of a mounted webapp.
-        // Same run-capable roles as `legacy.core_step`.
-        "bridge.validate_network_request"
-        | "bridge.validate_envelope"
-        | "bridge.prepare_session"
-        | "bridge.record_call"
-        | "bridge.record_core_event"
-        | "bridge.record_crash_recovery"
-        | "package.get_manifest"
-        | "package.get_permissions"
-        | "package.provision_registry"
-        | "package.list_versions"
-        | "package.activate_version"
-        | "package.rollback_version"
-        | "package.set_status"
-        | "quota.auto_quarantine" => {
-            Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner])
-        }
-        // Re-entering an applet's handler on a UI event is *execution* (UI-4/CR-6):
-        // same run-capable roles as `runtime.run`. A Viewer/Auditor is read-only and
-        // cannot dispatch an event; the capability gate inside the handler then
-        // enforces the applet's manifest caps per `ctx.*` call exactly as a run does.
-        "ui.dispatch_event" => Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Runner]),
-        // Replay is an audit/oversight operation (CR-9): Auditor/Maintainer/Owner.
-        // A bare Runner can run but not replay (per commands.md).
-        "runtime.replay" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
-        // Session replay is the same audit/oversight operation lifted to an ordered
-        // event SESSION (UI-4/CR-6): it replays [initial run + N dispatched events]
-        // as one unit, so it carries the same roles as `runtime.replay`.
-        "runtime.replay_session" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
-        // Reading the durable SC-12 audit log is a PRIVILEGED oversight read
-        // (`forge/spec/audit-log.md`): the audit trail records every security
-        // decision (who did what, allow/deny), so it carries the same audit/
-        // oversight roles as `runtime.replay` — Owner, Maintainer, Auditor. A
-        // data-only Editor/Viewer or an execution-only Runner cannot read the
-        // security trail; the denial itself lands a command-RBAC audit row.
-        "audit.query" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
-        // Reading the records projection requires a read-capable role (db.read).
-        "query.execute" => Some(&[
-            Role::Owner,
-            Role::Maintainer,
-            Role::Editor,
-            Role::Viewer,
-            Role::Auditor,
-        ]),
-        // Registering/cancelling a live query (DL-16) is a data-READ operation —
-        // `forge/spec/live-queries.md` §Registration: "Registration requires the
-        // same db.read grant as all() for the watched collection". So `db.watch`
-        // carries the SAME read-capable roles as `query.execute`, plus the
-        // collection-scoped `db.read` grant enforced in the handler. `db.unwatch`
-        // only cancels a subscription (no data read), but a caller that could never
-        // read could never have watched, so it shares the same read-capable roles.
-        "db.watch" | "db.unwatch" => Some(&[
-            Role::Owner,
-            Role::Maintainer,
-            Role::Editor,
-            Role::Viewer,
-            Role::Auditor,
-        ]),
-        // Reading a record's DL-20 change feed (`db.history`) is a data-READ
-        // operation — the `file.history` analog in `forge/spec/commands.md` carries
-        // the read-membership roles (Owner, Maintainer, Editor, Viewer, Auditor), so
-        // it shares the same read-capable roles as `query.execute`, plus the
-        // collection-scoped `db.read` grant enforced in the handler.
-        "db.history" => Some(&[
-            Role::Owner,
-            Role::Maintainer,
-            Role::Editor,
-            Role::Viewer,
-            Role::Auditor,
-        ]),
-        // A non-destructive restore (`db.restore`) appends a NEW record version, i.e.
-        // it is a record WRITE (DL-20). `forge/spec/commands.md`'s `file.restore_version`
-        // (the file-level analog) and the `record.put`/`record.patch`/`record.delete`
-        // writers carry the data-write roles: Owner, Maintainer, Editor. A read-only
-        // Viewer / oversight Auditor or an execution-only Runner cannot restore; the
-        // handler then enforces the collection-scoped `db.write` grant.
-        "db.restore" => Some(&[Role::Owner, Role::Maintainer, Role::Editor]),
-        // Schema evolution (commands.md: schema.apply_change → Owner, Maintainer;
-        // DL-8). An additive schema change mutates workspace state, so it is a
-        // maintainer+ operation — a Viewer/Editor/Auditor cannot apply one.
-        "schema.apply_change" => Some(&[Role::Owner, Role::Maintainer]),
-        // Validating compatibility is a read-only check (commands.md:
-        // schema.validate_compatibility → Owner, Maintainer, Editor, Auditor).
-        "schema.validate_compatibility" => {
-            Some(&[Role::Owner, Role::Maintainer, Role::Editor, Role::Auditor])
-        }
-        // Rebuilding indexes is a maintenance op (commands.md:
-        // schema.rebuild_indexes → Owner, Maintainer; DL-5).
-        "schema.rebuild_indexes" => Some(&[Role::Owner, Role::Maintainer]),
-        // Reading the DL-22 storage-usage report (`quota.status`) is a read/oversight
-        // operation — like reading a projection — so it carries the read-membership
-        // roles (Owner, Maintainer, Editor, Viewer, Auditor). It exposes only byte
-        // counts vs. limits, no record contents.
-        "quota.status" => Some(&[
-            Role::Owner,
-            Role::Maintainer,
-            Role::Editor,
-            Role::Viewer,
-            Role::Auditor,
-        ]),
-        // Configuring the DL-22 quota policy (`quota.set`) is PRIVILEGED workspace
-        // administration: it changes the TRUSTED limits enforcement reads. Owner-only,
-        // mirroring `workspace.import` — a Maintainer/Editor/Viewer/Auditor/Runner
-        // cannot widen (or tighten) the workspace's quotas.
-        "quota.set" => Some(&[Role::Owner]),
-        // Sync packet exchange (SS-1/SS-2/SS-7). Trust provisioning is owner-only
-        // because it writes the receiver-side authority table. Export is equivalent
-        // to a workspace backup/debug read, while import mutates CRDT state and is a
-        // maintainer+ operation.
-        "sync.trust_peer" => Some(&[Role::Owner]),
-        "sync.export" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
-        "sync.import" => Some(&[Role::Owner, Role::Maintainer]),
-        // Exporting the portable workspace bundle (DL-24, commands.md:
-        // workspace.export → Owner, Maintainer, Auditor). The Auditor may take a
-        // backup/debug bundle (including run logs by policy) without otherwise
-        // mutating the workspace.
-        "workspace.export" => Some(&[Role::Owner, Role::Maintainer, Role::Auditor]),
-        // Importing a bundle reconstructs a workspace (commands.md:
-        // workspace.import → Owner). Owner-only because an import writes the whole
-        // syncable state (applets, records, grants) into the target.
-        "workspace.import" => Some(&[Role::Owner]),
-        _ => None,
-    };
+    // Role sets are the single source of truth in the command catalog (cli-plan P1.4).
+    let allowed = descriptor_for(cmd.name.as_str()).map(|entry| entry.required_roles);
     match allowed {
         Some(roles) if !roles.contains(&role) => Err(CoreError::PermissionDenied(format!(
             "actor role {role:?} is not permitted to issue {:?} (see forge/spec/commands.md)",

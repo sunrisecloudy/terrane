@@ -40,6 +40,7 @@ pub(super) mod quota;
 pub(super) mod replay;
 pub(super) mod runtime_run;
 pub(super) mod schema;
+pub(super) mod system;
 pub(super) mod sync;
 pub(super) mod test_hooks;
 pub(super) mod time_travel;
@@ -66,6 +67,8 @@ type Handler = fn(&mut WorkspaceCore, &CoreCommand) -> Result<serde_json::Value>
 /// Ordering mirrors the former match for readability only; dispatch is by exact
 /// name match, so order is not semantically significant (each name is unique).
 const COMMANDS: &[(&str, Handler)] = &[
+    ("system.describe", WorkspaceCore::cmd_system_describe),
+    ("system.trace", WorkspaceCore::cmd_system_trace),
     ("workspace.create", WorkspaceCore::cmd_workspace_create),
     ("workspace.open", WorkspaceCore::cmd_workspace_open),
     ("applet.install", WorkspaceCore::cmd_applet_install),
@@ -265,5 +268,65 @@ pub(super) fn bool_field(cmd: &CoreCommand, field: &str) -> Result<bool> {
             "{} `{field}` must be a boolean, got {other}",
             cmd.name
         ))),
+    }
+}
+
+#[cfg(test)]
+mod registry_catalog_sync {
+    use super::COMMANDS;
+    #[cfg(feature = "control")]
+    use super::CONTROL_COMMANDS;
+    use crate::catalog::{catalog_entries, descriptor_for};
+    use forge_domain::{catalog::CommandVisibility, Role};
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn every_registered_command_has_a_descriptor() {
+        for (name, _) in COMMANDS {
+            assert!(
+                descriptor_for(name).is_some(),
+                "missing catalog descriptor for {name}"
+            );
+        }
+        #[cfg(feature = "control")]
+        for (name, _) in CONTROL_COMMANDS {
+            assert!(
+                descriptor_for(name).is_some(),
+                "missing catalog descriptor for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalog_entry_has_a_handler() {
+        let mut registered: BTreeSet<&str> = COMMANDS.iter().map(|(name, _)| *name).collect();
+        #[cfg(feature = "control")]
+        {
+            registered.extend(CONTROL_COMMANDS.iter().map(|(name, _)| *name));
+        }
+        for entry in catalog_entries() {
+            assert!(
+                registered.contains(entry.name),
+                "orphan catalog entry {name} has no handler",
+                name = entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn public_commands_are_broadly_reachable() {
+        let privileged_only = [Role::Owner];
+        for entry in catalog_entries() {
+            if entry.visibility != CommandVisibility::Public {
+                continue;
+            }
+            let only_owner = entry.required_roles.len() == 1
+                && entry.required_roles == privileged_only;
+            assert!(
+                !only_owner,
+                "public command {} requires Owner only",
+                entry.name
+            );
+        }
     }
 }
