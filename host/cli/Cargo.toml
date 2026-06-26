@@ -17,3 +17,6 @@ path = "src/main.rs"
 
 [dependencies]
 terrane-cli = { path = "../../terrane-core/crates/terrane-cli" }
+
+[dev-dependencies]
+tempfile = "3"
