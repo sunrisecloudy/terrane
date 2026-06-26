@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/sync.export.request.schema.json",
+  "title": "sync.export request",
+  "description": "Preview schema for sync.export. Export CRDT sync chunks for a workspace. Full schema pending.",
+  "type": "object"
+}

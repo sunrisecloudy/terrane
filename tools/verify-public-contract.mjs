@@ -25,6 +25,8 @@ export function verifyPublicContract({
     }
   }
 
+  errors.push(...verifyCatalogDrift(contract, root));
+
   for (const file of allContractFiles(contract)) {
     const filePath = path.join(root, file.path);
     if (!fs.existsSync(filePath)) {
@@ -52,6 +54,42 @@ export function verifyPublicContract({
 
 function allContractFiles(contract) {
   return Object.values(contract.files ?? {}).flat();
+}
+
+function verifyCatalogDrift(contract, root) {
+  const catalogPath = path.join(root, "forge", "data", "commands.json");
+  if (!fs.existsSync(catalogPath)) {
+    return [];
+  }
+
+  const errors = [];
+  const live = readJson(catalogPath);
+  const contractVersion = contract.bridge?.catalogVersion;
+  const liveVersion = live.catalogVersion;
+
+  if (contractVersion && liveVersion && contractVersion !== liveVersion) {
+    errors.push(
+      `catalog: bridge.catalogVersion ${contractVersion} does not match forge/data/commands.json ${liveVersion}`,
+    );
+  }
+
+  if (!Array.isArray(live.commands) || live.commands.length === 0) {
+    return errors;
+  }
+
+  const expectedMethods = live.commands
+    .filter((entry) => entry.surface !== "inner" && entry.visibility !== "debug")
+    .map((entry) => entry.name)
+    .sort();
+  const contractMethods = [...(contract.bridge?.methods ?? [])].sort();
+
+  if (JSON.stringify(expectedMethods) !== JSON.stringify(contractMethods)) {
+    errors.push(
+      `catalog: bridge.methods drift from forge/data/commands.json (contract=${contractMethods.length}, live=${expectedMethods.length})`,
+    );
+  }
+
+  return errors;
 }
 
 function readJson(filePath) {

@@ -11,10 +11,16 @@ on:
     branches: [main, forge-m0a]
     paths:
       - 'forge/**'
+      - 'tools/**'
+      - 'schemas/**'
+      - 'cli-plan/**'
       - '.github/workflows/forge-ci.yml'
   pull_request:
     paths:
       - 'forge/**'
+      - 'tools/**'
+      - 'schemas/**'
+      - 'cli-plan/**'
       - '.github/workflows/forge-ci.yml'
   workflow_dispatch:
 
@@ -61,3 +67,70 @@ jobs:
           echo "$out"
           echo "$out" | grep -q "REPLAY IDENTICAL: true" \
             || { echo "::error::demo did not report REPLAY IDENTICAL: true"; exit 1; }
+
+  contract-gate:
+    name: Contract Gate (catalog · contract · agent-adapter)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Setup Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: forge
+
+      - name: Build Forge public API docs
+        run: node --no-warnings tools/build-forge-api-docs.mjs
+
+      - name: Forge public API docs tests
+        run: node --test --no-warnings tools/test/forge-api-docs.test.mjs
+
+      - name: Export commands catalog
+        run: node --no-warnings tools/export-commands-catalog.mjs
+
+      - name: Export public contract
+        run: node --no-warnings tools/export-public-contract.mjs --out artifacts/public-contract.json
+
+      - name: Verify public contract
+        run: node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-contract.json --root .
+
+      - name: Agent adapter tests
+        run: node --test --no-warnings tools/agent-adapter/test/agent-adapter.test.mjs
+
+  bundled-apps-legacy:
+    name: Bundled Apps Legacy (example-load-acceptance)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev
+
+      - name: Example load acceptance
+        run: node --test --no-warnings tools/reference-host/test/example-load-acceptance.test.js

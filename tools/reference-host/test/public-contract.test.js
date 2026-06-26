@@ -75,7 +75,7 @@ test("public contract export is deterministic and covers downstream boundaries",
   assert.equal(first.contractId, "terrane-public-contract");
   assert.equal(first.contractVersion, "0.1.0");
   assert.equal(first.platformBaseline, "forge-v1-m0b");
-  assert.equal(first.runtimeVersion, "0.1.0");
+  assert.equal(first.runtimeVersion, "0.4.0");
   assert.equal(first.license, "MIT");
   assert.equal(first.provenance.sourceRepository, "terrane");
   assert.match(first.provenance.sourceCommit, /^[a-f0-9]{40}$/);
@@ -97,6 +97,11 @@ test("public contract export is deterministic and covers downstream boundaries",
   assert.equal(first.sync.nonSyncableRecordMappings.some((mapping) => mapping.kind === "secret_material" && mapping.localTables.includes("secrets")), true);
   assert.equal(first.conformance.sourceCheckoutRequired, true);
   assert.equal(first.conformance.commands.includes("node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-contract.json --root ."), true);
+  assert.equal(first.conformance.commands.includes("node --no-warnings tools/export-commands-catalog.mjs"), true);
+  if (first.bridge.catalogVersion) {
+    assert.match(first.bridge.catalogVersion, /^sha256:/);
+    assert.equal(Array.isArray(first.bridge.commandCatalog), true);
+  }
 
   const docs = new Set(first.files.docs.map((file) => file.path));
   const contracts = new Set(first.files.contracts.map((file) => file.path));
@@ -112,7 +117,8 @@ test("public contract export is deterministic and covers downstream boundaries",
   assert.equal(contracts.has("forge/crates/ffi/include/forge_ffi.h"), true);
   assert.equal(fixtures.has("forge/fixtures/e2e/note_taker/manifest.json"), true);
   assert.equal(fixtures.has("forge/fixtures/sync/already_in_sync_noop.json"), true);
-  assert.equal(fixtures.has("forge/examples/notes-lite/manifest.json"), true);
+  assert.equal(fixtures.has("webapps/examples/notes-lite/manifest.json"), true);
+  assert.equal(fixtures.has("forge/fixtures/demo-notes-lite/manifest.json"), true);
   assert.equal(tools.has("forge/crates/ffi/tests/ffi.rs"), true);
   assert.equal(tools.has("tools/export-public-contract.mjs"), true);
   assert.equal(tools.has("tools/verify-public-contract.mjs"), true);

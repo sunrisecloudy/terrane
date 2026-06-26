@@ -85,6 +85,20 @@ pub enum HostCall {
     Time,
     /// `ctx.random.next` — deterministic RNG seam.
     Random,
+    /// `ctx.resource.invoke(kind, args)` — platform resource capture.
+    Resource {
+        kind: String,
+        #[serde(default)]
+        args: serde_json::Value,
+    },
+    /// `ctx.resource.read(asset_id)` — lazy byte retrieval for a run asset.
+    ResourceRead { asset_id: String },
+    /// `ctx.resource.materialize(asset_id, handle, path)` — copy asset into files sandbox.
+    ResourceMaterialize {
+        asset_id: String,
+        handle: String,
+        path: String,
+    },
 }
 
 /// Read vs write intent for a [`HostCall`] resource access.
@@ -114,9 +128,10 @@ pub enum Category {
     Ui,
     Time,
     Random,
+    Resource,
 }
 
-const CATEGORY_COUNT: usize = 5;
+const CATEGORY_COUNT: usize = 6;
 
 impl Category {
     fn as_str(self) -> &'static str {
@@ -126,6 +141,7 @@ impl Category {
             Category::Ui => "ui",
             Category::Time => "time",
             Category::Random => "random",
+            Category::Resource => "resource",
         }
     }
 
@@ -137,6 +153,7 @@ impl Category {
             Category::Ui => 2,
             Category::Time => 3,
             Category::Random => 4,
+            Category::Resource => 5,
         }
     }
 }
@@ -553,6 +570,28 @@ impl CapabilityCheck {
                     ))
                 }
             }
+            HostCall::Resource { kind, .. } => {
+                if self.capabilities.resources.is_empty() {
+                    return Err(resource_capability_required(kind));
+                }
+                if self.capabilities.resources.iter().any(|k| k == kind) {
+                    Ok(())
+                } else {
+                    Err(resource_permission_denied(kind))
+                }
+            }
+            HostCall::ResourceRead { asset_id } => {
+                if self.capabilities.resources.is_empty() {
+                    return Err(resource_capability_required(asset_id));
+                }
+                Ok(())
+            }
+            HostCall::ResourceMaterialize { asset_id, .. } => {
+                if self.capabilities.resources.is_empty() {
+                    return Err(resource_capability_required(asset_id));
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -732,6 +771,9 @@ impl PolicyEngine {
             HostCall::Ui => Category::Ui,
             HostCall::Time => Category::Time,
             HostCall::Random => Category::Random,
+            HostCall::Resource { .. }
+            | HostCall::ResourceRead { .. }
+            | HostCall::ResourceMaterialize { .. } => Category::Resource,
         }
     }
 
@@ -912,7 +954,28 @@ fn revoked_error_for(call: &HostCall) -> CoreError {
         HostCall::Random => {
             CoreError::PermissionDenied("random capability has been revoked".to_string())
         }
+        HostCall::Resource { kind, .. } => CoreError::PermissionDenied(format!(
+            "resource capability has been revoked; cannot invoke {kind:?}"
+        )),
+        HostCall::ResourceRead { asset_id } => CoreError::PermissionDenied(format!(
+            "resource capability has been revoked; cannot read {asset_id:?}"
+        )),
+        HostCall::ResourceMaterialize { asset_id, .. } => CoreError::PermissionDenied(format!(
+            "resource capability has been revoked; cannot materialize {asset_id:?}"
+        )),
     }
+}
+
+fn resource_capability_required(kind: &str) -> CoreError {
+    CoreError::CapabilityRequired(format!(
+        "manifest declares no resource capability; cannot access {kind:?} (add capabilities.resources)"
+    ))
+}
+
+fn resource_permission_denied(kind: &str) -> CoreError {
+    CoreError::PermissionDenied(format!(
+        "resource kind {kind:?} is not listed in capabilities.resources"
+    ))
 }
 
 fn revoked_error(cat: Category, op: Access, resource: &str) -> CoreError {
@@ -1337,6 +1400,7 @@ mod tests {
             Category::Ui,
             Category::Time,
             Category::Random,
+            Category::Resource,
         ];
         ComposedDecisionContext::new(
             WorkspacePolicy::new(all, []),

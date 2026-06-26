@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Forge Command Console</title>
+    <link rel="stylesheet" href="/console/console.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Forge operator surface</p>
+        <h1>Command Console</h1>
+      </div>
+      <div class="status" id="console-status" data-testid="console-status">Loading catalog…</div>
+    </header>
+
+    <section class="controls" aria-label="Console controls">
+      <label>
+        Max tier
+        <select id="tier-filter" data-testid="tier-filter">
+          <option value="public" selected>public</option>
+          <option value="operator">operator</option>
+          <option value="admin">admin</option>
+          <option value="debug">debug</option>
+        </select>
+      </label>
+      <label class="token-field">
+        Bearer token
+        <input id="auth-token" type="password" autocomplete="off" placeholder="Optional for authed server" data-testid="auth-token">
+      </label>
+      <button id="reload-catalog" data-testid="reload-catalog">Reload catalog</button>
+      <button id="drain-events" data-testid="drain-events">Drain events</button>
+    </section>
+
+    <main class="layout">
+      <aside class="sidebar" aria-label="Command catalog">
+        <div class="sidebar-header">
+          <h2>Commands</h2>
+          <span id="catalog-version" class="meta" data-testid="catalog-version"></span>
+        </div>
+        <nav id="command-nav" class="command-nav" data-testid="command-nav"></nav>
+      </aside>
+
+      <section class="workspace" aria-label="Command runner">
+        <div class="workspace-header">
+          <div>
+            <h2 id="selected-command" data-testid="selected-command">Select a command</h2>
+            <p id="selected-summary">Choose a command from the catalog to build its payload.</p>
+            <div id="command-badges" class="badges" data-testid="command-badges"></div>
+          </div>
+        </div>
+
+        <form id="command-form" class="command-form" data-testid="command-form">
+          <div id="schema-form" class="schema-form"></div>
+          <label class="raw-json-field">
+            Payload JSON
+            <textarea id="payload-json" rows="10" spellcheck="false" data-testid="payload-json">{}</textarea>
+          </label>
+          <div class="form-actions">
+            <button type="submit" id="run-command" data-testid="run-command" disabled>Run command</button>
+          </div>
+        </form>
+
+        <section class="panel" aria-label="Bridge response">
+          <div class="panel-header">
+            <h3>CoreResponse</h3>
+            <span id="response-status" class="meta" data-testid="response-status"></span>
+          </div>
+          <pre id="response-json" class="json-output" data-testid="response-json">{}</pre>
+        </section>
+
+        <section class="panel" aria-label="Drained events">
+          <div class="panel-header">
+            <h3>CoreEvents</h3>
+          </div>
+          <pre id="events-json" class="json-output" data-testid="events-json">[]</pre>
+        </section>
+      </section>
+    </main>
+
+    <dialog id="confirm-dialog" data-testid="confirm-dialog">
+      <form method="dialog" class="confirm-form">
+        <h3>Confirm command</h3>
+        <p id="confirm-message"></p>
+        <menu class="confirm-actions">
+          <button value="cancel" type="submit">Cancel</button>
+          <button value="confirm" type="submit" class="danger">Run anyway</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <script src="/console/console.js" defer></script>
+  </body>
+</html>

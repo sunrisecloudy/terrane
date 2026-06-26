@@ -1,0 +1,15 @@
+[
+  {
+    "name": "loads and references resource bridge",
+    "steps": [
+      {
+        "type": "click",
+        "selector": "[data-testid=\"capture-button\"]"
+      }
+    ],
+    "expected": {
+      "textIncludes": "Test Camera",
+      "bridgeCallsInclude": ["resource.invoke", "resource.read", "resource.materialize", "storage.set"]
+    }
+  }
+]

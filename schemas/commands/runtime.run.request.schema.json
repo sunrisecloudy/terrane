@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/runtime.run.request.schema.json",
+  "title": "runtime.run request",
+  "description": "Run an installed applet's entrypoint in record mode. Optional random_seed/time_start must be set together to pin deterministic seams.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "applet_id"
+  ],
+  "properties": {
+    "applet_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input": {
+      "description": "Entrypoint input; defaults to null when omitted."
+    },
+    "random_seed": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional deterministic RNG seed override (must pair with time_start)."
+    },
+    "time_start": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854776000,
+      "description": "Optional deterministic clock start (must fit i64; must pair with random_seed)."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "random_seed"
+        ]
+      },
+      "then": {
+        "required": [
+          "time_start"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "time_start"
+        ]
+      },
+      "then": {
+        "required": [
+          "random_seed"
+        ]
+      }
+    }
+  ]
+}

@@ -11,6 +11,7 @@ use forge_core::WorkspaceCore;
 use forge_domain::{
     ActorContext, CoreCommand, CoreError, CoreEvent, CoreResponse, RequestId, Result, WorkspaceId,
 };
+use include_dir::{include_dir, Dir};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -21,6 +22,15 @@ use std::sync::Mutex;
 
 const AUTH_HEADER: &str = "x-forge-server-token";
 const MAX_HTTP_BODY_BYTES: usize = 1024 * 1024;
+const COMMAND_SCHEMA_ROUTE_PREFIX: &str = "/schemas/commands/";
+
+const CONSOLE_INDEX: &str = include_str!("../static/console/index.html");
+const CONSOLE_JS: &str = include_str!("../static/console/console.js");
+const CONSOLE_CSS: &str = include_str!("../static/console/console.css");
+
+static COMMAND_SCHEMAS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../../schemas/commands");
+static API_DOCS: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../docs/public-api");
+const API_DOCS_ROUTE_PREFIX: &str = "/docs/";
 
 /// Shared server state: one workspace core protected by a mutex so the std HTTP
 /// listener can serve one request at a time without exposing raw SQLite access to
@@ -30,6 +40,7 @@ pub struct ForgeServer {
     trusted_actor: ActorContext,
     workspace_id: WorkspaceId,
     auth_token: Option<String>,
+    console_enabled: bool,
 }
 
 impl ForgeServer {
@@ -41,6 +52,7 @@ impl ForgeServer {
             trusted_actor: ActorContext::owner("forge-server"),
             workspace_id: WorkspaceId::new(workspace_id),
             auth_token: None,
+            console_enabled: true,
         })
     }
 
@@ -52,7 +64,14 @@ impl ForgeServer {
             trusted_actor: ActorContext::owner("forge-server"),
             workspace_id: WorkspaceId::new(workspace_id),
             auth_token: None,
+            console_enabled: true,
         })
+    }
+
+    /// Enable or disable serving the static web command console at `/console`.
+    pub fn serve_console(mut self, enabled: bool) -> Self {
+        self.console_enabled = enabled;
+        self
     }
 
     /// Require a bearer token before HTTP bridge/event requests can touch the core.
@@ -87,8 +106,64 @@ impl ForgeServer {
                     "ok": true,
                     "service": "forge-server",
                     "status": "ok",
+                    "console": self.console_enabled,
+                    "docs": self.console_enabled,
                 }),
             ),
+            ("GET", "/docs" | "/docs/") if self.console_enabled => api_docs_body("index.html")
+                .map(|body| static_response(200, "text/html; charset=utf-8", body))
+                .unwrap_or_else(|| {
+                    json_error(
+                        404,
+                        CoreError::ValidationError(
+                            "API docs not embedded; run tools/build-forge-api-docs.mjs".into(),
+                        ),
+                    )
+                }),
+            ("GET", path)
+                if self.console_enabled && (path == "/docs/styles.css" || path == "/docs/app.js") =>
+            {
+                let file_name = path.strip_prefix(API_DOCS_ROUTE_PREFIX).unwrap_or("");
+                match api_docs_body(file_name) {
+                    Some(body) => {
+                        let content_type = if file_name.ends_with(".css") {
+                            "text/css; charset=utf-8"
+                        } else {
+                            "application/javascript; charset=utf-8"
+                        };
+                        static_response(200, content_type, body)
+                    }
+                    None => json_error(
+                        404,
+                        CoreError::ValidationError(format!("unknown docs asset route {path}")),
+                    ),
+                }
+            }
+            ("GET", "/console" | "/console/") if self.console_enabled => {
+                static_response(200, "text/html; charset=utf-8", CONSOLE_INDEX.as_bytes())
+            }
+            ("GET", "/console/index.html") if self.console_enabled => {
+                static_response(200, "text/html; charset=utf-8", CONSOLE_INDEX.as_bytes())
+            }
+            ("GET", "/console/console.js") if self.console_enabled => {
+                static_response(200, "application/javascript; charset=utf-8", CONSOLE_JS.as_bytes())
+            }
+            ("GET", "/console/console.css") if self.console_enabled => {
+                static_response(200, "text/css; charset=utf-8", CONSOLE_CSS.as_bytes())
+            }
+            ("GET", path)
+                if self.console_enabled && path.starts_with(COMMAND_SCHEMA_ROUTE_PREFIX) =>
+            {
+                match command_schema_body(path) {
+                    Some(body) => {
+                        static_response(200, "application/json; charset=utf-8", body)
+                    }
+                    None => json_error(
+                        404,
+                        CoreError::ValidationError(format!("unknown command schema route {path}")),
+                    ),
+                }
+            }
             ("POST", "/bridge") => match self.authorize(headers) {
                 Ok(()) => self.handle_bridge(body),
                 Err(response) => response,
@@ -337,6 +412,29 @@ fn status_for_error(error: &CoreError) -> u16 {
     }
 }
 
+fn command_schema_body(path: &str) -> Option<&'static [u8]> {
+    let file_name = path.strip_prefix(COMMAND_SCHEMA_ROUTE_PREFIX)?;
+    if file_name.is_empty() || file_name.contains('/') || !file_name.ends_with(".json") {
+        return None;
+    }
+    COMMAND_SCHEMAS
+        .get_file(file_name)
+        .map(|file| file.contents())
+}
+
+fn api_docs_body(file_name: &str) -> Option<&'static [u8]> {
+    if file_name.is_empty() || file_name.contains('/') {
+        return None;
+    }
+    API_DOCS.get_file(file_name).map(|file| file.contents())
+}
+
+fn static_response(status: u16, content_type: &str, body: &[u8]) -> HttpResponse {
+    let mut response = HttpResponse::new(status, body.to_vec());
+    response.headers.insert("content-type".into(), content_type.into());
+    response
+}
+
 fn json_response<T: Serialize>(status: u16, value: &T) -> HttpResponse {
     match serde_json::to_vec(value) {
         Ok(body) => HttpResponse::new(status, body),
@@ -402,6 +500,111 @@ mod tests {
         let body = response.json_value().unwrap();
         assert_eq!(body["ok"], serde_json::json!(true));
         assert_eq!(body["service"], serde_json::json!("forge-server"));
+        assert_eq!(body["console"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn console_assets_are_served_when_enabled() {
+        let server = ForgeServer::in_memory("ws").unwrap().serve_console(true);
+        for (path, content_type) in [
+            ("/console", "text/html"),
+            ("/console/", "text/html"),
+            ("/console/console.js", "application/javascript"),
+            ("/console/console.css", "text/css"),
+            (
+                "/schemas/commands/query.execute.request.schema.json",
+                "application/json",
+            ),
+            (
+                "/schemas/commands/system.describe.request.schema.json",
+                "application/json",
+            ),
+            (
+                "/schemas/commands/applet.install.request.schema.json",
+                "application/json",
+            ),
+        ] {
+            let response = server.handle_http("GET", path, b"");
+            assert_eq!(response.status, 200, "{path}");
+            assert!(
+                response.headers["content-type"].starts_with(content_type),
+                "{} -> {}",
+                path,
+                response.headers["content-type"]
+            );
+            assert!(!response.body.is_empty(), "{path}");
+        }
+    }
+
+    #[test]
+    fn console_and_bridge_system_describe_smoke() {
+        let server = ForgeServer::in_memory("ws").unwrap().serve_console(true);
+
+        let docs = server.handle_http("GET", "/docs", b"");
+        assert_eq!(docs.status, 200);
+        let docs_html = String::from_utf8_lossy(&docs.body);
+        assert!(docs_html.contains("Forge Public API Reference"), "{docs_html}");
+        assert!(docs_html.contains("ctx.db"), "{docs_html}");
+
+        let console = server.handle_http("GET", "/console", b"");
+        assert_eq!(console.status, 200);
+        let console_html = String::from_utf8_lossy(&console.body);
+        assert!(console_html.contains("Command Console"), "{console_html}");
+        assert!(console_html.contains("console.js"), "{console_html}");
+
+        let schema = server.handle_http(
+            "GET",
+            "/schemas/commands/runtime.run.request.schema.json",
+            b"",
+        );
+        assert_eq!(schema.status, 200);
+        let schema_json: serde_json::Value = serde_json::from_slice(&schema.body).unwrap();
+        assert_eq!(
+            schema_json["$id"],
+            serde_json::json!("https://example.local/schemas/commands/runtime.run.request.schema.json")
+        );
+
+        let body = serde_json::to_vec(&owner_command(
+            "system.describe",
+            serde_json::json!({ "tier": "public" }),
+        ))
+        .unwrap();
+        let bridge = server.handle_http("POST", "/bridge", &body);
+        assert_eq!(bridge.status, 200);
+        let body: CoreResponse = serde_json::from_slice(&bridge.body).unwrap();
+        assert!(body.ok, "{:?}", body.error);
+        let commands = body.payload["commands"].as_array().expect("commands array");
+        assert!(commands.iter().any(|entry| entry["name"] == "query.execute"));
+        assert!(commands.iter().any(|entry| entry["name"] == "runtime.run"));
+        assert!(!commands.iter().any(|entry| entry["name"] == "quota.set"));
+    }
+
+    #[test]
+    fn console_assets_are_hidden_when_disabled() {
+        let server = ForgeServer::in_memory("ws").unwrap().serve_console(false);
+        let response = server.handle_http("GET", "/console", b"");
+        assert_eq!(response.status, 404);
+    }
+
+    #[test]
+    fn bridge_returns_system_describe_catalog() {
+        let server = ForgeServer::in_memory("ws").unwrap();
+        let body = serde_json::to_vec(&owner_command(
+            "system.describe",
+            serde_json::json!({ "tier": "public" }),
+        ))
+        .unwrap();
+        let response = server.handle_http("POST", "/bridge", &body);
+        assert_eq!(response.status, 200);
+        let body: CoreResponse = serde_json::from_slice(&response.body).unwrap();
+        assert!(body.ok, "{:?}", body.error);
+        let commands = body.payload["commands"].as_array().expect("commands array");
+        assert!(commands.iter().any(|entry| entry["name"] == "query.execute"));
+        assert!(!commands.iter().any(|entry| entry["name"] == "quota.set"));
+        assert!(body.payload["catalogVersion"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("sha256:"));
     }
 
     #[test]

@@ -38,7 +38,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:1a5eee87c7b148f578fad0481639fe303a80360a98f7e6134574e60bcbc7bff6\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"mapEntries\":[[\"z\",1],[\"m\",3],[\"a\",4]],\"mapKeys\":[\"z\",\"m\",\"a\"],\"setVals\":[3,2,1]}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:1a5eee87c7b148f578fad0481639fe303a80360a98f7e6134574e60bcbc7bff6\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"mapEntries\":[[\"z\",1],[\"m\",3],[\"a\",4]],\"mapKeys\":[\"z\",\"m\",\"a\"],\"setVals\":[3,2,1]}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

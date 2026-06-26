@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/schema.apply_change.request.schema.json",
+  "title": "schema.apply_change request",
+  "description": "Preview schema for schema.apply_change. Apply a schema registry change and optional migration. Full schema pending.",
+  "type": "object"
+}

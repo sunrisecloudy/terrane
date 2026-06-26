@@ -1329,6 +1329,7 @@ mod tests {
             calls: vec![],
             logs: vec![],
             permissions: forge_domain::PermissionSnapshot::default(),
+            resource_assets: std::collections::BTreeMap::new(),
             outcome: forge_domain::RunOutcome::Completed {
                 result: forge_domain::AppResult { ok: true, value: json!(null) },
             },

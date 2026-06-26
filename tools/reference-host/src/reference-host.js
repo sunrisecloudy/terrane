@@ -4,7 +4,7 @@ import { BridgeDispatcher, controlError, controlResponse } from "./bridge-dispat
 import { referenceHostCapabilities } from "./capabilities.js";
 import { CoreEngine } from "./core.js";
 import { bridgeError, errorBody, PlatformError } from "./errors.js";
-import { examplesDir, repoRoot, resolveInside, runtimeWebDir } from "./paths.js";
+import { examplesDir, hostFixturesDir, repoRoot, resolveInside, runtimeWebDir } from "./paths.js";
 import { readPackage, validatePackage } from "./package-validator.js";
 import { PlatformDatabase } from "./platform-database.js";
 import { loadOrCreatePlatformKeypair, publicKeyDescriptor, signPackage, verifyInstalledPackage } from "./signing.js";
@@ -922,12 +922,20 @@ export class ReferenceHost {
         return this.serveRuntimeIndex(res);
       }
 
+      if (req.method === "GET" && url.pathname === "/runtime/app-index.json") {
+        return sendJson(res, 200, this.bundledAppIndex());
+      }
+
       if (req.method === "GET" && url.pathname === "/webapps/examples.json") {
         return sendJson(res, 200, this.exampleManifestList());
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/webapps/examples/")) {
         return this.serveStatic(res, examplesDir, url.pathname.replace("/webapps/examples/", ""));
+      }
+
+      if (req.method === "GET" && url.pathname.startsWith("/runtime/fixtures/")) {
+        return this.serveStatic(res, hostFixturesDir, url.pathname.replace("/runtime/fixtures/", ""));
       }
 
       if (req.method === "GET" && url.pathname.startsWith("/runtime/")) {
@@ -1161,6 +1169,29 @@ export class ReferenceHost {
         };
       })
       .sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  bundledAppIndex() {
+    const apps = fs
+      .readdirSync(examplesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const manifest = JSON.parse(fs.readFileSync(resolveInside(examplesDir, `${entry.name}/manifest.json`), "utf8"));
+        return {
+          id: manifest.id,
+          name: manifest.name,
+          description: manifest.description,
+          version: manifest.version,
+          contentRating: manifest.contentRating ?? {
+            scheme: "app-store",
+            label: "4+",
+            minimumAge: 4,
+            descriptors: [],
+          },
+        };
+      })
+      .sort((a, b) => a.id.localeCompare(b.id));
+    return { source: "reference-host-bundled", apps };
   }
 
   requireControlToken(req) {

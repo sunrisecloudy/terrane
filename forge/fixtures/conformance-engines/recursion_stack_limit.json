@@ -16,7 +16,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:651062a7c9940188a09e9c58c741976c8c5507faa876bd7e6926eea610ffb4e0\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"caught\":true,\"errorName\":\"RangeError\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:651062a7c9940188a09e9c58c741976c8c5507faa876bd7e6926eea610ffb4e0\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"caught\":true,\"errorName\":\"RangeError\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

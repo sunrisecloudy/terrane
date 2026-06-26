@@ -11,6 +11,7 @@ const exampleApps = [
   ["api-dashboard", "api-dashboard-title"],
   ["core-replay-lab", "core-replay-title"],
   ["calendar-planner", "calendar-planner-title"],
+  ["test-camera", "test-camera-title"],
 ];
 
 test("all bundled example apps validate, install, open, snapshot, and smoke-test", async () => {

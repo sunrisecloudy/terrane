@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/workspace.create.request.schema.json",
+  "title": "workspace.create request",
+  "description": "Preview schema for workspace.create. Create a new workspace at a path. Full schema pending.",
+  "type": "object"
+}

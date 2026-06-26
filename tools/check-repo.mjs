@@ -20,6 +20,8 @@ await runCheck("sqlite.migrate", checkSqliteMigrations);
 await runCheck("postgres.static", checkPostgresSql);
 await runCheck("examples.validate", checkExamplePackages);
 await runCheck("examples.canonical", checkCanonicalExamples);
+await runCheck("bundled.apps.parity", checkBundledAppsParity);
+await runCheck("forge.api.docs", checkForgeApiDocs);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("ci.workflow", checkCiWorkflow);
 await runCheck("performance.harness", checkPerformanceHarness);
@@ -268,6 +270,60 @@ function checkCanonicalExamples() {
   }
   const apps = fs.readdirSync(examplesDir).filter((entry) => fs.statSync(path.join(examplesDir, entry)).isDirectory());
   return `webapps/examples apps=${apps.length}`;
+}
+
+function checkBundledAppsParity() {
+  const bundledPath = path.join(repoRoot, "forge", "data", "bundled-apps.json");
+  const webappsExamplesDir = path.join(repoRoot, "webapps", "examples");
+
+  const bundledApps = readJson(bundledPath);
+  if (!Array.isArray(bundledApps) || bundledApps.length === 0) {
+    throw new Error("forge/data/bundled-apps.json must be a non-empty array");
+  }
+
+  const bundledIds = bundledApps.map((entry) => entry.id).sort();
+  const webappIds = listExampleAppIds(webappsExamplesDir);
+
+  if (JSON.stringify(bundledIds) !== JSON.stringify(webappIds)) {
+    throw new Error(
+      `bundled-apps.json IDs must match webapps/examples/: webapps=${webappIds.join(",")} bundled=${bundledIds.join(",")}`,
+    );
+  }
+
+  return `bundled-apps=${bundledIds.length} webapps/examples=${webappIds.length}`;
+}
+
+function checkForgeApiDocs() {
+  const docsDir = path.join(repoRoot, "forge", "docs", "public-api");
+  const required = ["index.html", "styles.css", "app.js"];
+  for (const fileName of required) {
+    const filePath = path.join(docsDir, fileName);
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`missing generated API docs file: forge/docs/public-api/${fileName}`);
+    }
+  }
+
+  const html = fs.readFileSync(path.join(docsDir, "index.html"), "utf8");
+  const commands = readJson(path.join(repoRoot, "forge", "data", "commands.json"));
+  const stable = commands.commands.find((entry) => entry.name === "runtime.run");
+  if (!stable || !html.includes("runtime.run")) {
+    throw new Error("forge/docs/public-api/index.html is stale or missing runtime.run");
+  }
+  if (!html.includes("ctx.db") || !html.includes("Forge Public API Reference")) {
+    throw new Error("forge/docs/public-api/index.html is missing applet API sections");
+  }
+
+  return `forge/docs/public-api files=${required.length}`;
+}
+
+function listExampleAppIds(examplesRoot) {
+  if (!fs.existsSync(examplesRoot)) {
+    throw new Error(`missing examples directory: ${relative(examplesRoot)}`);
+  }
+  return fs
+    .readdirSync(examplesRoot)
+    .filter((entry) => fs.statSync(path.join(examplesRoot, entry)).isDirectory())
+    .sort();
 }
 
 function checkSecurityLint() {

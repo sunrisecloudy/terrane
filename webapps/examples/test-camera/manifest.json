@@ -1,0 +1,60 @@
+{
+  "id": "test-camera",
+  "name": "Test Camera",
+  "version": "0.1.0",
+  "runtimeVersion": "0.1.0",
+  "entry": "index.html",
+  "description": "Camera capture via resource.invoke — mock camera in dev, optional live browser preview.",
+  "contentRating": {
+    "scheme": "app-store",
+    "label": "4+",
+    "minimumAge": 4,
+    "descriptors": []
+  },
+  "permissions": [
+    "storage.read",
+    "storage.write",
+    "resource.invoke",
+    "resource.read",
+    "resource.materialize",
+    "notification.toast",
+    "app.log"
+  ],
+  "storagePrefix": "test-camera:",
+  "dataVersion": 1,
+  "capabilities": {
+    "required": [
+      "storage.read",
+      "storage.write",
+      "resource.invoke",
+      "resource.read",
+      "resource.materialize"
+    ],
+    "optional": [
+      "notification.toast",
+      "app.log"
+    ]
+  },
+  "resourceBudget": {
+    "maxDomNodes": 2000,
+    "maxStorageBytes": 5242880,
+    "maxBridgeCallsPerMinute": 600,
+    "maxNetworkRequestsPerMinute": 60,
+    "maxTimers": 64,
+    "maxLogLinesPerMinute": 120,
+    "maxPackageBytes": 1048576,
+    "maxFileBytes": 524288
+  },
+  "networkPolicy": {
+    "allow": []
+  },
+  "trust": {
+    "level": "bundled",
+    "requiresUserApproval": false
+  },
+  "compatibility": {
+    "mode": "strict",
+    "minimumRuntimeVersion": "0.1.0"
+  },
+  "authorId": "example-fixture"
+}

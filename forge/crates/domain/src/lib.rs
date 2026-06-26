@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
+pub mod catalog;
 pub mod hash;
 pub mod ids;
 pub mod manifest;
@@ -22,6 +23,7 @@ pub mod record;
 pub mod run;
 pub mod webapp_manifest;
 
+pub use catalog::*;
 pub use hash::*;
 pub use ids::*;
 pub use manifest::*;

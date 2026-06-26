@@ -31,7 +31,7 @@ use watch::{load_watch_sessions, WatchSessions};
 #[path = "signing.rs"]
 mod signing;
 #[path = "commands/mod.rs"]
-mod commands;
+pub(crate) mod commands;
 // The command handlers' shared record types live in `commands::applet` (the
 // install handler that mints them); re-export so this facade + the sibling
 // `signing` module (`super::InstallTrust`) keep their existing names.

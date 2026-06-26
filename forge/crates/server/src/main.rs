@@ -16,6 +16,7 @@ fn run() -> Result<(), CoreError> {
     let mut auth_token = std::env::var("TERRANE_FORGE_SERVER_TOKEN")
         .ok()
         .filter(|token| !token.trim().is_empty());
+    let mut console_enabled = true;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -41,9 +42,12 @@ fn run() -> Result<(), CoreError> {
                     CoreError::ValidationError("--auth-token requires a value".into())
                 })?);
             }
+            "--no-console" => {
+                console_enabled = false;
+            }
             "--help" | "-h" => {
                 println!(
-                    "usage: forge-server [--bind 127.0.0.1:8787] [--workspace path] [--workspace-id id] [--auth-token token]"
+                    "usage: forge-server [--bind 127.0.0.1:8787] [--workspace path] [--workspace-id id] [--auth-token token] [--no-console]"
                 );
                 return Ok(());
             }
@@ -66,16 +70,22 @@ fn run() -> Result<(), CoreError> {
         Some(path) => ForgeServer::open(path, workspace_id)?,
         None => ForgeServer::in_memory(workspace_id)?,
     };
+    let server = server.serve_console(console_enabled);
     let server = match auth_token {
         Some(token) => server.require_auth_token(token)?,
         None => server,
     };
     eprintln!(
-        "forge-server listening on http://{bind} ({})",
+        "forge-server listening on http://{bind} ({}{})",
         if bind_requires_auth(&bind) {
             "auth required"
         } else {
             "loopback"
+        },
+        if console_enabled {
+            ", console at /console"
+        } else {
+            ""
         }
     );
     serve_blocking(&bind, &server)

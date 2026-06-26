@@ -13,6 +13,7 @@ use crate::ids::{AppletId, RunId};
 use crate::manifest::Capabilities;
 use crate::{AppResult, CoreError};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// The capability/permission state that was *in effect* when a run was recorded
 /// (prd-merged/01 CR-9, prd-merged/07 SC-8/SC-9; review 009 P1 CR-9 completeness).
@@ -37,6 +38,22 @@ pub struct PermissionSnapshot {
     /// The host-call budget (`max_host_calls`) in effect for this run (SC-2).
     #[serde(default)]
     pub max_host_calls: u64,
+}
+
+/// A captured platform-resource blob keyed by `asset_id` in the run record.
+///
+/// Blobs are stored here (base64 in the serialized record) rather than inline in
+/// `RecordedCall.response` for `resource.invoke`, so camera captures stay off the
+/// QuickJS hot path while remaining replayable (prd-merged/01 CR-8/CR-9).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceAssetBlob {
+    /// Raw bytes, base64-encoded for canonical JSON storage.
+    pub bytes_base64: String,
+    pub content_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 /// One recorded host interaction during a run, in call order.
@@ -87,6 +104,10 @@ pub struct RunRecord {
     /// deserialize so older records (no snapshot) still load.
     #[serde(default)]
     pub permissions: PermissionSnapshot,
+    /// Run-scoped resource blobs keyed by `asset_id` (`resource.invoke` stores
+    /// metadata in `calls`; bytes live here for replay).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resource_assets: BTreeMap<String, ResourceAssetBlob>,
     /// The run's result, or the error that suspended it.
     pub outcome: RunOutcome,
 }
@@ -143,6 +164,7 @@ impl RunRecord {
             calls,
             logs,
             permissions: PermissionSnapshot::default(),
+            resource_assets: BTreeMap::new(),
             outcome,
         };
         record.validate_code_hash()?;
@@ -157,6 +179,16 @@ impl RunRecord {
     #[must_use]
     pub fn with_permissions(mut self, permissions: PermissionSnapshot) -> Self {
         self.permissions = permissions;
+        self
+    }
+
+    /// Attach run-scoped resource blobs captured during `resource.invoke`.
+    #[must_use]
+    pub fn with_resource_assets(
+        mut self,
+        resource_assets: BTreeMap<String, ResourceAssetBlob>,
+    ) -> Self {
+        self.resource_assets = resource_assets;
         self
     }
 
@@ -203,6 +235,7 @@ impl RunRecord {
             "time_start": self.time_start,
             "calls": self.calls,
             "permissions": self.permissions,
+            "resource_assets": self.resource_assets,
             "outcome": self.outcome,
         });
         // serde_json::Value serializes object keys in sorted order, so this is
@@ -294,6 +327,7 @@ mod tests {
             ],
             logs: vec!["hello".into()],
             permissions: PermissionSnapshot::default(),
+            resource_assets: BTreeMap::new(),
             outcome: RunOutcome::Completed {
                 result: AppResult { ok: true, value: serde_json::json!("Hello world") },
             },

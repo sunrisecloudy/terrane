@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/bridge.validate_network_request.response.schema.json",
+  "title": "bridge.validate_network_request response",
+  "description": "Preview schema for bridge.validate_network_request. Phase C bridge: validate a network request envelope. Full schema pending.",
+  "type": "object"
+}

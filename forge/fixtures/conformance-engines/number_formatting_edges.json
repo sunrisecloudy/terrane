@@ -23,7 +23,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:7adc9cf10c7210a23744ae0070c65cc1c19b5e532bd0df04550fcdd1b4356946\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"bigFloat\":\"123456789012345680000\",\"bigIntSafe\":\"9007199254740991\",\"exp\":\"1e+21\",\"negZeroIsZero\":false,\"negZeroStr\":\"0\",\"precision\":\"0.3333333333\",\"smallFloat\":\"0.30000000000000004\",\"toFixed0\":\"3\",\"toFixed2\":\"1.00\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:7adc9cf10c7210a23744ae0070c65cc1c19b5e532bd0df04550fcdd1b4356946\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"bigFloat\":\"123456789012345680000\",\"bigIntSafe\":\"9007199254740991\",\"exp\":\"1e+21\",\"negZeroIsZero\":false,\"negZeroStr\":\"0\",\"precision\":\"0.3333333333\",\"smallFloat\":\"0.30000000000000004\",\"toFixed0\":\"3\",\"toFixed2\":\"1.00\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

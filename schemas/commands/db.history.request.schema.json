@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/db.history.request.schema.json",
+  "title": "db.history request",
+  "description": "Preview schema for db.history. Read a record's change feed (time travel). Full schema pending.",
+  "type": "object"
+}

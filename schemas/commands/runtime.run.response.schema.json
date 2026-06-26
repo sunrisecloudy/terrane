@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.local/schemas/commands/runtime.run.response.schema.json",
+  "title": "runtime.run response",
+  "description": "Run summary, app result, host-call trace surface, UI renders, and quota warnings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "code_hash",
+    "ok",
+    "result",
+    "summary",
+    "host_call_methods",
+    "ui_renders",
+    "quota_warnings"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string"
+    },
+    "code_hash": {
+      "type": "string"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "result": {
+      "description": "AppResult on success ({ ok, value }) or failure envelope ({ error }).",
+      "type": "object",
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "applet_id",
+        "code_hash",
+        "calls",
+        "logs",
+        "completed"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "applet_id": {
+          "type": "string"
+        },
+        "code_hash": {
+          "type": "string"
+        },
+        "calls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "logs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "host_call_methods": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Ordered host-call method names from the recorded trace."
+    },
+    "ui_renders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "description": "Final UI tree from each ui.render host call."
+    },
+    "quota_warnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "collection",
+          "scope",
+          "projected",
+          "limit",
+          "suggestion"
+        ],
+        "properties": {
+          "collection": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "string"
+          },
+          "projected": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "suggestion": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

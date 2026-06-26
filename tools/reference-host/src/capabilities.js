@@ -33,6 +33,9 @@ export const DEFAULT_REFERENCE_HOST_FEATURES = Object.freeze({
   "notebook.sync_pull": true,
   "notebook.sync_push": true,
   "notebook.subscribe": true,
+  "resource.invoke": true,
+  "resource.read": true,
+  "resource.materialize": true,
 });
 
 export function referenceHostCapabilities(options = null) {

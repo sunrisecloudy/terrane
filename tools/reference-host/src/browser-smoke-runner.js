@@ -148,15 +148,25 @@ async function runOneSmokeTest({ client, sessionId, test, failures, timeoutMs })
   }
 
   for (const method of test.expected?.bridgeCallsInclude ?? []) {
+    const called = await waitForBridgeCall(client, sessionId, method, timeoutMs);
+    if (!called) {
+      failures.push({ test: test.name, code: "bridge.call_missing", method });
+    }
+  }
+}
+
+async function waitForBridgeCall(client, sessionId, method, timeoutMs) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
     const called = await evaluateValue(
       client,
       sessionId,
       `Boolean(window.__smokeRuntime && window.__smokeRuntime.calls.some((call) => call.method === ${JSON.stringify(method)}))`,
     );
-    if (!called) {
-      failures.push({ test: test.name, code: "bridge.call_missing", method });
-    }
+    if (called) return true;
+    await delay(25);
   }
+  return false;
 }
 
 async function runSmokeStep(client, sessionId, step) {

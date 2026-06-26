@@ -26,7 +26,10 @@ const PUBLIC_DOCS = [
   "prd-merged/DECISIONS.md",
   "forge/docs/applet-authoring-guide.md",
   "forge/docs/architecture-overview.md",
+  "forge/docs/cli-reference.md",
   "forge/docs/example-applets.md",
+  "forge/docs/http-bridge-reference.md",
+  "forge/docs/public-api-reference.md",
   "forge/spec/commands.md",
   "forge/spec/conformance-vector-format.md",
   "forge/spec/cross-engine-conformance.md",
@@ -44,9 +47,12 @@ const PUBLIC_CONTRACT_FILES = [
   "forge/std/README.md",
   "forge/std/forge-std.d.ts",
   "forge/std/ui-catalog.d.ts",
+  "forge/docs/public-api/index.html",
+  "forge/docs/public-api/styles.css",
+  "forge/docs/public-api/app.js",
 ];
 
-const PUBLIC_DATA_FILES = [
+const PUBLIC_DATA_FILES_BASE = [
   "forge/data/README.md",
   "forge/data/bundled-apps.json",
   "forge/data/mime-types.json",
@@ -64,14 +70,29 @@ const PUBLIC_DATA_FILES = [
   "forge/spec/data-catalog.md",
 ];
 
+function publicDataFiles(root = repoRoot) {
+  const files = [...PUBLIC_DATA_FILES_BASE];
+  const commandsJson = path.join(root, "forge", "data", "commands.json");
+  if (fs.existsSync(commandsJson)) {
+    files.push("forge/data/commands.json");
+  }
+  return files;
+}
+
 const PUBLIC_FIXTURE_DIRS = [
-  "forge/examples",
+  "webapps/examples",
   "forge/fixtures",
 ];
 
 const PUBLIC_TOOL_FILES = [
   "tools/check-repo.mjs",
+  "tools/agent-adapter/catalog-to-tools.mjs",
+  "tools/agent-adapter/execute-tool.mjs",
+  "tools/agent-adapter/test/agent-adapter.test.mjs",
+  "tools/build-forge-api-docs.mjs",
+  "tools/export-commands-catalog.mjs",
   "tools/export-public-contract.mjs",
+  "tools/test/forge-api-docs.test.mjs",
   "tools/package-release.mjs",
   "tools/verify-public-contract.mjs",
   "forge/crates/cli/tests/e2e.rs",
@@ -210,7 +231,31 @@ const NON_SYNC_RECORD_MAPPINGS = [
   },
 ];
 
+function loadCommandCatalog(root) {
+  const catalogPath = path.join(root, "forge", "data", "commands.json");
+  if (!fs.existsSync(catalogPath)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(catalogPath, "utf8"));
+  } catch (error) {
+    throw new Error(`failed to parse ${catalogPath}: ${error.message}`);
+  }
+}
+
+function bridgeMethodsFromCatalog(catalog) {
+  if (!catalog?.commands?.length) {
+    return null;
+  }
+  return catalog.commands
+    .filter((entry) => entry.surface !== "inner" && entry.visibility !== "debug")
+    .map((entry) => entry.name)
+    .sort();
+}
+
 export function buildPublicContract({ root = repoRoot } = {}) {
+  const catalog = loadCommandCatalog(root);
+  const bridgeMethods = bridgeMethodsFromCatalog(catalog) ?? CORE_COMMANDS;
   return {
     $schema: "https://example.local/forge/contracts/public-contract.schema.json",
     schemaVersion: 1,
@@ -242,9 +287,12 @@ export function buildPublicContract({ root = repoRoot } = {}) {
       ],
     },
     bridge: {
-      methods: CORE_COMMANDS,
+      methods: bridgeMethods,
       notebookMethods: [],
       events: RUNTIME_EVENTS,
+      ...(catalog?.catalogVersion
+        ? { catalogVersion: catalog.catalogVersion, commandCatalog: catalog.commands }
+        : {}),
     },
     sync: {
       syncableRecordKinds: SYNCABLE_RECORD_KINDS,
@@ -255,7 +303,7 @@ export function buildPublicContract({ root = repoRoot } = {}) {
     files: {
       docs: describeFiles(root, PUBLIC_DOCS),
       contracts: describeFiles(root, PUBLIC_CONTRACT_FILES),
-      data: describeFiles(root, PUBLIC_DATA_FILES),
+      data: describeFiles(root, publicDataFiles(root)),
       fixtures: describeFiles(root, collectFixtureFiles(root)),
       tools: describeFiles(root, PUBLIC_TOOL_FILES),
     },
@@ -265,6 +313,7 @@ export function buildPublicContract({ root = repoRoot } = {}) {
         "cd forge && cargo test --workspace --locked",
         "cd forge && cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cd forge && cargo run -p forge-cli -- demo",
+        "node --no-warnings tools/export-commands-catalog.mjs",
         "node --no-warnings tools/export-public-contract.mjs --out artifacts/public-contract.json",
         "node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-contract.json --root .",
       ],

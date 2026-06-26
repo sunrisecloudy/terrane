@@ -36,6 +36,7 @@ declare module "@forge/std" {
     storage: Storage;
     net: Net;
     files: Files;
+    resource: Resource;
     ui: Ui;
     time: TimeApi;
     random: RandomApi;
@@ -179,6 +180,59 @@ declare module "@forge/std" {
     path: string;
     written_bytes: number;
     version?: string;
+  }
+
+  /**
+   * Platform resources (camera first). `invoke` returns a handle; bytes stay
+   * host-side until `read` or `materialize`.
+   * PRD refs: CR-3, `forge/spec/resources.md`.
+   */
+  export interface Resource {
+    invoke(kind: string, args?: JsonValue[]): Promise<ResourceInvokeResult>;
+    read(asset_id: string, request?: ResourceReadRequest): Promise<ResourceReadResponse>;
+    materialize(
+      asset_id: string,
+      request: ResourceMaterializeRequest
+    ): Promise<ResourceMaterializeResponse>;
+  }
+
+  export interface ResourceInvokeOptions {
+    facing?: "front" | "back" | "environment" | string;
+    max_bytes?: number;
+    content_type?: string;
+    max_dimension?: number;
+  }
+
+  export interface ResourceInvokeResult {
+    asset_id: string;
+    content_type: string;
+    width?: number;
+    height?: number;
+    size_bytes: number;
+  }
+
+  export interface ResourceReadRequest {
+    [key: string]: JsonValue;
+  }
+
+  export interface ResourceReadResponse {
+    asset_id: string;
+    bytes_base64: string;
+    size_bytes: number;
+    content_type: string;
+  }
+
+  export interface ResourceMaterializeRequest {
+    handle: string;
+    path: string;
+  }
+
+  export interface ResourceMaterializeResponse {
+    asset_id: string;
+    handle: string;
+    path: string;
+    written_bytes: number;
+    content_type: string;
   }
 
   /**

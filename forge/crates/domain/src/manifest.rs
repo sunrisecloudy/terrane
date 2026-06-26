@@ -250,6 +250,10 @@ pub struct Capabilities {
     /// a read/write against this grant before touching the host filesystem.
     #[serde(default)]
     pub files: FilesGrant,
+    /// Platform resource kinds the applet may invoke via `ctx.resource`
+    /// (`camera`, …). Default empty → no resource access.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<String>,
 }
 
 fn is_false(value: &bool) -> bool {

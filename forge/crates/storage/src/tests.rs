@@ -52,6 +52,7 @@
             ],
             logs: vec!["hello".into()],
             permissions: forge_domain::PermissionSnapshot::default(),
+            resource_assets: std::collections::BTreeMap::new(),
             outcome: RunOutcome::Completed {
                 result: AppResult { ok: true, value: serde_json::json!("Hello world") },
             },

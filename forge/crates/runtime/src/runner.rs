@@ -250,7 +250,7 @@ pub fn replay_dispatch(
     let (policy, host_call_cap) = replay_policy(run, manifest, actor)?;
     let mut limits = manifest.limits.clone();
     limits.max_host_calls = host_call_cap;
-    finish_dispatch(
+    finish_dispatch_with_assets(
         program,
         policy,
         limits,
@@ -260,6 +260,7 @@ pub fn replay_dispatch(
         run.time_start,
         recorder,
         bridge,
+        run.resource_assets.clone(),
     )
 }
 
@@ -373,7 +374,7 @@ pub fn replay_notification(
     let (policy, host_call_cap) = replay_policy(run, manifest, actor)?;
     let mut limits = manifest.limits.clone();
     limits.max_host_calls = host_call_cap;
-    finish_drive(
+    finish_drive_with_assets(
         program,
         policy,
         limits,
@@ -382,6 +383,7 @@ pub fn replay_notification(
         run.time_start,
         recorder,
         bridge,
+        run.resource_assets.clone(),
     )
 }
 
@@ -536,7 +538,7 @@ pub fn replay_with_engine(
     let (policy, host_call_cap) = replay_policy(run, manifest, actor)?;
     let mut limits = manifest.limits.clone();
     limits.max_host_calls = host_call_cap;
-    run_main(
+    run_main_with_assets(
         engine,
         program,
         policy,
@@ -546,6 +548,7 @@ pub fn replay_with_engine(
         run.time_start,
         recorder,
         bridge,
+        run.resource_assets.clone(),
     )
 }
 
@@ -684,7 +687,32 @@ fn run_main(
     recorder: RunRecorder,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
-    let mut host = HostContext::with_policy(policy, limits.clone(), recorder, bridge);
+    run_main_with_assets(
+        engine, program, policy, limits, input, seed, time_start, recorder, bridge,
+        std::collections::BTreeMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_main_with_assets(
+    engine: &dyn JsEngine,
+    program: &Program,
+    policy: PolicyEngine,
+    limits: forge_domain::Limits,
+    input: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    recorder: RunRecorder,
+    bridge: &mut dyn HostBridge,
+    replay_resource_assets: std::collections::BTreeMap<String, forge_domain::ResourceAssetBlob>,
+) -> Result<RunRecord> {
+    let mut host = HostContext::with_policy_and_assets(
+        policy,
+        limits.clone(),
+        recorder,
+        bridge,
+        replay_resource_assets,
+    );
     let outcome = engine.run(program, input, &mut host, &limits);
     assemble_record(program, input.clone(), seed, time_start, outcome, host)
 }
@@ -706,7 +734,34 @@ fn finish_dispatch(
     recorder: RunRecorder,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
-    finish_drive(
+    finish_dispatch_with_assets(
+        program,
+        policy,
+        limits,
+        action_ref,
+        payload,
+        seed,
+        time_start,
+        recorder,
+        bridge,
+        std::collections::BTreeMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_dispatch_with_assets(
+    program: &Program,
+    policy: PolicyEngine,
+    limits: forge_domain::Limits,
+    action_ref: &str,
+    payload: &serde_json::Value,
+    seed: u64,
+    time_start: u64,
+    recorder: RunRecorder,
+    bridge: &mut dyn HostBridge,
+    replay_resource_assets: std::collections::BTreeMap<String, forge_domain::ResourceAssetBlob>,
+) -> Result<RunRecord> {
+    finish_drive_with_assets(
         program,
         policy,
         limits,
@@ -715,6 +770,7 @@ fn finish_dispatch(
         time_start,
         recorder,
         bridge,
+        replay_resource_assets,
     )
 }
 
@@ -729,10 +785,41 @@ fn finish_drive(
     recorder: RunRecorder,
     bridge: &mut dyn HostBridge,
 ) -> Result<RunRecord> {
+    finish_drive_with_assets(
+        program,
+        policy,
+        limits,
+        drive,
+        seed,
+        time_start,
+        recorder,
+        bridge,
+        std::collections::BTreeMap::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_drive_with_assets(
+    program: &Program,
+    policy: PolicyEngine,
+    limits: forge_domain::Limits,
+    drive: Drive<'_>,
+    seed: u64,
+    time_start: u64,
+    recorder: RunRecorder,
+    bridge: &mut dyn HostBridge,
+    replay_resource_assets: std::collections::BTreeMap<String, forge_domain::ResourceAssetBlob>,
+) -> Result<RunRecord> {
     // The record's `input` field round-trips whatever the driven entrypoint
     // received (run input / event payload); capture it before `drive` is consumed.
     let record_input = drive.record_input();
-    let mut host = HostContext::with_policy(policy, limits.clone(), recorder, bridge);
+    let mut host = HostContext::with_policy_and_assets(
+        policy,
+        limits.clone(),
+        recorder,
+        bridge,
+        replay_resource_assets,
+    );
     // The UI-dispatch / notification entrypoints use `QuickJsEngine::run_handler`
     // (an inherent method, outside the `JsEngine` trait / cross-engine corpus), so
     // these paths stay on the concrete engine. The `main` path is engine-agnostic
@@ -796,6 +883,7 @@ fn assemble_record(
 ) -> Result<RunRecord> {
     // Capture the evaluated permission snapshot (CR-9) before consuming the host.
     let permissions = host.permission_snapshot();
+    let resource_assets = host.resource_assets();
     // Replay strictness (review 009 P2): a replay that ended without consuming
     // every recorded call diverged, even if no individual call mismatched. A
     // successful run that left calls behind becomes a determinism RuntimeError;
@@ -823,7 +911,8 @@ fn assemble_record(
         logs,
         domain_outcome,
     )?
-    .with_permissions(permissions))
+    .with_permissions(permissions)
+    .with_resource_assets(resource_assets))
 }
 
 /// True if any recorded call captured a policy **denial** — the marked response
@@ -1030,6 +1119,7 @@ mod denial_guard_tests {
                 error: CoreError::PermissionDenied("redirect to private host".into()),
             },
             permissions: PermissionSnapshot::default(),
+            resource_assets: std::collections::BTreeMap::new(),
         };
         assert_eq!(run.permissions, PermissionSnapshot::default());
         assert!(trace_has_denial(&run), "the recorded call is a denial");

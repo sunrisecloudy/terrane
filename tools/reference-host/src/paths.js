@@ -6,6 +6,7 @@ export const repoRoot = path.resolve(hostRoot, "../..");
 export const sqliteMigrationsDir = path.join(repoRoot, "db", "sqlite");
 export const examplesDir = path.join(repoRoot, "webapps", "examples");
 export const runtimeWebDir = path.join(repoRoot, "runtime-web");
+export const hostFixturesDir = path.join(hostRoot, "fixtures");
 
 export function resolveInside(root, candidate) {
   const resolved = path.resolve(root, candidate);

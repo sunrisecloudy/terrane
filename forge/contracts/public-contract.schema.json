@@ -142,6 +142,17 @@
             "$ref": "#/$defs/event"
           },
           "minItems": 1
+        },
+        "catalogVersion": {
+          "type": "string",
+          "pattern": "^sha256:"
+        },
+        "commandCatalog": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/commandDescriptor"
+          },
+          "minItems": 1
         }
       }
     },
@@ -344,6 +355,36 @@
         "minLength": 1
       },
       "uniqueItems": true
+    },
+    "commandDescriptor": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "summary", "surface", "visibility"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "namespace": { "type": "string" },
+        "summary": { "type": "string" },
+        "surface": { "type": "string" },
+        "mutates": { "type": "boolean" },
+        "effectful": { "type": "boolean" },
+        "visibility": { "type": "string" },
+        "required_roles": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "payload_schema": { "type": ["string", "null"] },
+        "response_schema": { "type": ["string", "null"] },
+        "events": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "stability": { "type": "string" },
+        "since": { "type": "string" }
+      }
     }
   }
 }
