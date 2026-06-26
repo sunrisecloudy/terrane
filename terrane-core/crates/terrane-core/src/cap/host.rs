@@ -21,15 +21,25 @@
 //! on replay.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::rc::Rc;
 
-use rquickjs::{CatchResultExt, CaughtError, Context, Function, Object, Runtime, Value};
+use rquickjs::function::Rest;
+use rquickjs::{CatchResultExt, CaughtError, Context, Ctx, Function, IntoJs, Object, Runtime, Value};
 use terrane_domain::{Error, EventRecord, Result};
 
-use super::Capability;
+use super::{Capability, ReadValue, ResourceMethod};
 use crate::{apply, default_registry, namespace_of, Decision, Registry, State};
+
+/// Hand a resource read's result back to JS: a string|null, or an object.
+impl<'js> IntoJs<'js> for ReadValue {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
+        match self {
+            ReadValue::OptString(opt) => opt.into_js(ctx),
+            ReadValue::StringMap(map) => map.into_js(ctx),
+        }
+    }
+}
 
 pub struct HostCapability;
 
@@ -186,18 +196,6 @@ impl RunAccum {
         }
     }
 
-    fn kv_all(&self) -> BTreeMap<String, String> {
-        self.state.kv.data.get(&self.app).cloned().unwrap_or_default()
-    }
-
-    fn kv_get(&self, key: &str) -> Option<String> {
-        self.state
-            .kv
-            .data
-            .get(&self.app)
-            .and_then(|m| m.get(key).cloned())
-    }
-
     fn capture(&mut self, e: Error) {
         if self.first_error.is_none() {
             self.first_error = Some(e);
@@ -239,65 +237,60 @@ fn execute_js(
     ctx.with(|ctx| -> Result<String> {
         let resource = Object::new(ctx.clone()).map_err(js_err)?;
 
-        // kv — installed only if the manifest declared it (capability sandbox).
-        // The set/rm/get bridges take strict strings: a non-string arg is NOT
-        // coerced (that would change app-visible semantics); instead it captures a
-        // typed, attributable error so the run aborts naming the offending call.
-        if resources.iter().any(|r| r == "kv") {
-            let kv = Object::new(ctx.clone()).map_err(js_err)?;
-            {
-                let cell = cell.clone();
-                let set = Function::new(ctx.clone(), move |key: Value, value: Value| {
-                    let mut accum = cell.borrow_mut();
-                    let key = match js_string_arg(&key) {
-                        Ok(k) => k,
-                        Err(t) => return accum.capture(kv_type_error("kv.set", "key", t)),
-                    };
-                    let value = match js_string_arg(&value) {
-                        Ok(v) => v,
-                        Err(t) => return accum.capture(kv_type_error("kv.set", "value", t)),
-                    };
-                    accum.write("kv.set", vec![key, value]);
+        // Install ctx.resource.<ns> for each granted namespace, built from each
+        // capability's declared resource_api() — the SAME declaration the docs are
+        // generated from, so the bridge and the reference cannot drift. Only
+        // namespaces the manifest lists are installed (capability sandbox).
+        let surface: Vec<(&'static str, Vec<ResourceMethod>)> = {
+            let accum = cell.borrow();
+            resources
+                .iter()
+                .filter_map(|ns| {
+                    let cap = accum.registry.get(ns).ok()?;
+                    let api = cap.resource_api();
+                    (!api.is_empty()).then(|| (cap.namespace(), api))
                 })
-                .map_err(js_err)?;
-                kv.set("set", set).map_err(js_err)?;
-            }
-            {
+                .collect()
+        };
+        for (ns, methods) in surface {
+            let obj = Object::new(ctx.clone()).map_err(js_err)?;
+            for method in methods {
+                let call = format!("{ns}.{}", method.name());
+                let params = method.params();
                 let cell = cell.clone();
-                let rm = Function::new(ctx.clone(), move |key: Value| {
-                    let mut accum = cell.borrow_mut();
-                    match js_string_arg(&key) {
-                        Ok(k) => accum.write("kv.rm", vec![k]),
-                        Err(t) => accum.capture(kv_type_error("kv.rm", "key", t)),
+                match method {
+                    // A non-string arg is NOT coerced (that would change app-visible
+                    // semantics); it captures a typed, attributable error so the run
+                    // aborts naming the offending call and parameter.
+                    ResourceMethod::Write { name, .. } => {
+                        let f = Function::new(ctx.clone(), move |args: Rest<Value>| {
+                            match string_args(&call, params, &args.0) {
+                                Ok(strs) => cell.borrow_mut().write(&call, strs),
+                                Err(e) => cell.borrow_mut().capture(e),
+                            }
+                        })
+                        .map_err(js_err)?;
+                        obj.set(name, f).map_err(js_err)?;
                     }
-                })
-                .map_err(js_err)?;
-                kv.set("rm", rm).map_err(js_err)?;
-            }
-            {
-                let cell = cell.clone();
-                let get = Function::new(ctx.clone(), move |key: Value| -> Option<String> {
-                    let mut accum = cell.borrow_mut();
-                    match js_string_arg(&key) {
-                        Ok(k) => accum.kv_get(&k),
-                        Err(t) => {
-                            accum.capture(kv_type_error("kv.get", "key", t));
-                            None
-                        }
+                    ResourceMethod::Read { name, read, .. } => {
+                        let f = Function::new(ctx.clone(), move |args: Rest<Value>| -> ReadValue {
+                            match string_args(&call, params, &args.0) {
+                                Ok(strs) => {
+                                    let accum = cell.borrow();
+                                    read(&accum.state, &accum.app, &strs)
+                                }
+                                Err(e) => {
+                                    cell.borrow_mut().capture(e);
+                                    ReadValue::OptString(None)
+                                }
+                            }
+                        })
+                        .map_err(js_err)?;
+                        obj.set(name, f).map_err(js_err)?;
                     }
-                })
-                .map_err(js_err)?;
-                kv.set("get", get).map_err(js_err)?;
+                }
             }
-            {
-                let cell = cell.clone();
-                let all = Function::new(ctx.clone(), move || -> BTreeMap<String, String> {
-                    cell.borrow().kv_all()
-                })
-                .map_err(js_err)?;
-                kv.set("all", all).map_err(js_err)?;
-            }
-            resource.set("kv", kv).map_err(js_err)?;
+            resource.set(ns, obj).map_err(js_err)?;
         }
 
         let ctx_obj = Object::new(ctx.clone()).map_err(js_err)?;
@@ -585,12 +578,23 @@ fn js_string_arg(v: &Value) -> std::result::Result<String, &'static str> {
     }
 }
 
-/// Build the typed error a kv bridge raises when handed a non-string argument,
-/// naming the call (`kv.set`), the parameter (`key`), and the type it got.
-fn kv_type_error(call: &str, param: &str, got: &str) -> Error {
-    Error::InvalidInput(format!(
-        "{call}: expected string {param}, got {got}"
-    ))
+/// Convert each JS argument to a string with NO coercion, attributing a
+/// non-string to its resource call and parameter name (so the run aborts with a
+/// clear "kv.set: expected string key, got int").
+fn string_args(call: &str, params: &[&str], vals: &[Value]) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(vals.len());
+    for (i, v) in vals.iter().enumerate() {
+        match js_string_arg(v) {
+            Ok(s) => out.push(s),
+            Err(got) => {
+                let param = params.get(i).copied().unwrap_or("arg");
+                return Err(Error::InvalidInput(format!(
+                    "{call}: expected string {param}, got {got}"
+                )));
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Fold a caught JS exception/value into our typed Runtime error (owned String,

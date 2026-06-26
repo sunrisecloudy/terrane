@@ -10,10 +10,11 @@ A Terrane app has two JavaScript halves, each with its own API surface:
 The client talks to its own backend; the backend talks to resources. The UI has
 no direct access to `ctx.resource`.
 
-> **This file is kept current by a test.** `terrane-core/tests/cap/host.rs`
-> introspects the real runtime and fails if the documented `ctx.resource`
-> surface below doesn't match exactly what the engine exposes. Add or remove a
-> resource method in the engine without updating this doc → the build goes red.
+> **The `ctx.resource` reference below is generated** from the capabilities'
+> own declarations, and two tests in `terrane-core/tests/cap/host.rs` keep it
+> honest: one asserts the live runtime installs exactly the declared surface, the
+> other that this doc's generated section matches. Change a resource without
+> regenerating (`UPDATE_DOCS=1 cargo test`) → the build goes red.
 
 ---
 
@@ -43,21 +44,31 @@ A global `ctx` object is injected. `ctx.resource.<namespace>` is present only
 for the namespaces your `manifest.json` lists in `resources` (the sandbox: an
 undeclared resource is simply absent).
 
-### `ctx.resource.kv` — per-app key/value store
+### Resources
 
-App-scoped (you only ever see your own app's data) and synchronous. Writes are
-recorded as events and reproduce deterministically on replay; reads are not
-recorded.
+`ctx.resource.<namespace>` exposes the platform capabilities your backend may
+use — present only for the namespaces your manifest declares in `resources` (the
+sandbox). App-scoped (you only ever see your own app's data) and synchronous.
+**Writes** are recorded as events and reproduce deterministically on replay;
+**reads** are not recorded.
 
-| Method | Kind | Returns |
-| --- | --- | --- |
-| `ctx.resource.kv.set(key, value)` | write | — |
-| `ctx.resource.kv.get(key)` | read | the value, or `null`/`undefined` if unset |
-| `ctx.resource.kv.all()` | read | an object `{ key: value, … }` of every key |
-| `ctx.resource.kv.rm(key)` | write | — |
+The tables below are **generated** from the capabilities' declared resource APIs.
+Don't hand-edit between the markers — a test regenerates them and fails if they
+drift from the runtime.
 
-`key` and `value` must be strings. A missing key reads back as `null`/`undefined`
-— test it with `== null` (which matches both):
+<!-- generated:resource-api:start -->
+#### `ctx.resource.kv`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.kv.set(key, value)` | write |
+| `ctx.resource.kv.get(key)` | read |
+| `ctx.resource.kv.all()` | read |
+| `ctx.resource.kv.rm(key)` | write |
+<!-- generated:resource-api:end -->
+
+For `kv`: `key` and `value` must be strings, and a missing key reads back as
+`null`/`undefined` — test it with `== null` (which matches both):
 
 ```js
 var kv = ctx.resource.kv;

@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_domain::{AppId, Error, EventRecord, Result};
 
-use super::{arg, Capability};
+use super::{arg, Capability, ReadValue, ResourceMethod};
 use crate::{decode_event, encode_event, Decision, State};
 
 /// This capability's slice of State: per-app key/value maps.
@@ -33,6 +33,16 @@ pub struct KvCapability;
 impl Capability for KvCapability {
     fn namespace(&self) -> &'static str {
         "kv"
+    }
+
+    /// The app-scoped key/value surface backends get on `ctx.resource.kv`.
+    fn resource_api(&self) -> Vec<ResourceMethod> {
+        vec![
+            ResourceMethod::Write { name: "set", params: &["key", "value"] },
+            ResourceMethod::Read { name: "get", params: &["key"], read: read_get },
+            ResourceMethod::Read { name: "all", params: &[], read: read_all },
+            ResourceMethod::Write { name: "rm", params: &["key"] },
+        ]
     }
 
     fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
@@ -120,4 +130,15 @@ impl Capability for KvCapability {
             _ => None,
         }
     }
+}
+
+/// `ctx.resource.kv.get(key)` — the value for `key` in `app`'s store, or none.
+fn read_get(state: &State, app: &str, args: &[String]) -> ReadValue {
+    let key = args.first().map(String::as_str).unwrap_or_default();
+    ReadValue::OptString(state.kv.data.get(app).and_then(|m| m.get(key).cloned()))
+}
+
+/// `ctx.resource.kv.all()` — every key/value pair in `app`'s store.
+fn read_all(state: &State, app: &str, _args: &[String]) -> ReadValue {
+    ReadValue::StringMap(state.kv.data.get(app).cloned().unwrap_or_default())
 }

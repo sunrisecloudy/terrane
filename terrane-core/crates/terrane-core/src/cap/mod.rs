@@ -4,6 +4,8 @@
 //! its events, deciding, and folding. Add one here and register it in
 //! [`crate::default_registry`]; nothing else central changes.
 
+use std::collections::BTreeMap;
+
 use terrane_domain::{Error, EventRecord, Result};
 
 use crate::{Decision, State};
@@ -37,6 +39,62 @@ pub trait Capability {
     fn describe(&self, record: &EventRecord) -> Option<String> {
         let _ = record;
         None
+    }
+
+    /// The methods this capability exposes to a backend on `ctx.resource.<ns>`.
+    /// This single declaration drives BOTH the runtime bridge (which installs
+    /// exactly these methods) and the generated API docs — so they cannot drift.
+    /// Default: none (the capability is not a backend resource).
+    fn resource_api(&self) -> Vec<ResourceMethod> {
+        Vec::new()
+    }
+}
+
+/// A value a resource read hands back to the backend JS.
+pub enum ReadValue {
+    /// A string or, if absent, JS `null`/`undefined`.
+    OptString(Option<String>),
+    /// A JS object `{ key: value, … }`.
+    StringMap(BTreeMap<String, String>),
+}
+
+/// A pure read over a capability's State slice for one app: `(state, app, args)`.
+pub type ReadFn = fn(&State, &str, &[String]) -> ReadValue;
+
+/// One method a capability exposes on `ctx.resource.<namespace>`.
+pub enum ResourceMethod {
+    /// A write, forwarded to the command `<namespace>.<name>` (app id prepended,
+    /// args validated by that capability's `decide`).
+    Write {
+        name: &'static str,
+        params: &'static [&'static str],
+    },
+    /// A read, served from the capability's State slice — no event, not recorded.
+    Read {
+        name: &'static str,
+        params: &'static [&'static str],
+        read: ReadFn,
+    },
+}
+
+impl ResourceMethod {
+    pub fn name(&self) -> &'static str {
+        match self {
+            ResourceMethod::Write { name, .. } | ResourceMethod::Read { name, .. } => name,
+        }
+    }
+
+    pub fn params(&self) -> &'static [&'static str] {
+        match self {
+            ResourceMethod::Write { params, .. } | ResourceMethod::Read { params, .. } => params,
+        }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ResourceMethod::Write { .. } => "write",
+            ResourceMethod::Read { .. } => "read",
+        }
     }
 }
 

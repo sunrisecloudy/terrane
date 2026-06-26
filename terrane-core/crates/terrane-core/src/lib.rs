@@ -28,7 +28,7 @@
 //! runs the effect — it only folds the recorded event — so a non-deterministic
 //! call (an HTTP GET) is reproduced from the log, not the network.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -154,6 +154,52 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(cap::model::ModelCapability));
     registry.register(Box::new(cap::host::HostCapability));
     registry
+}
+
+/// Generate the `ctx.resource` reference (a per-namespace method table for every
+/// capability that declares a backend surface) from the capabilities' own
+/// `resource_api` declarations. This is the single source `docs/APP_API.md`'s
+/// resource section is generated from — a test regenerates this and diffs the
+/// doc, so the reference cannot drift from the runtime.
+pub fn resource_api_markdown() -> String {
+    use std::fmt::Write as _;
+    let registry = default_registry();
+    let mut out = String::new();
+    for capability in registry.caps.values() {
+        let api = capability.resource_api();
+        if api.is_empty() {
+            continue;
+        }
+        let ns = capability.namespace();
+        let _ = writeln!(out, "#### `ctx.resource.{ns}`\n");
+        let _ = writeln!(out, "| Method | Kind |");
+        let _ = writeln!(out, "| --- | --- |");
+        for method in &api {
+            let _ = writeln!(
+                out,
+                "| `ctx.resource.{ns}.{}({})` | {} |",
+                method.name(),
+                method.params().join(", "),
+                method.kind()
+            );
+        }
+        let _ = writeln!(out);
+    }
+    out.trim_end().to_string()
+}
+
+/// The full set of `ctx.resource.<ns>.<method>` the capabilities declare — used
+/// to assert the live runtime installs exactly this surface and no more.
+pub fn declared_resource_surface() -> BTreeSet<String> {
+    let registry = default_registry();
+    let mut out = BTreeSet::new();
+    for capability in registry.caps.values() {
+        let ns = capability.namespace();
+        for method in capability.resource_api() {
+            out.insert(format!("ctx.resource.{ns}.{}", method.name()));
+        }
+    }
+    out
 }
 
 /// Offer one recorded event to every capability (broadcast fold).

@@ -253,25 +253,16 @@ fn manifest_decodes_string_escapes() {
     assert_eq!(core.state().kv.data["esc"]["a"], "1");
 }
 
-/// Drift guard: the `ctx.resource.*` surface documented in `docs/APP_API.md` must
-/// match EXACTLY what the runtime installs. Add/remove a resource method (or its
-/// doc) without updating the other → this fails. Mirrors the `terrane_ffi.h`
-/// header-contract test: the doc stays human-written, the code keeps it honest.
+/// The live runtime installs EXACTLY the resource surface the capabilities
+/// declare via `resource_api()` — no more, no less. Catches a bug in the
+/// declaration-driven install loop in `cap/host.rs`.
 #[test]
-fn resource_api_doc_matches_the_runtime() {
-    let doc = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/APP_API.md"),
-    )
-    .expect("docs/APP_API.md exists");
-    let documented = documented_resource_api(&doc);
-    assert!(
-        !documented.is_empty(),
-        "docs/APP_API.md should document ctx.resource.<ns>.<method>(…) calls"
-    );
+fn runtime_resource_surface_matches_declarations() {
+    let declared = terrane_core::declared_resource_surface();
+    assert!(!declared.is_empty(), "kv should declare a resource surface");
 
-    // Grant exactly the documented namespaces, then ask the LIVE runtime what it
-    // actually exposes on ctx.resource.
-    let namespaces: BTreeSet<&str> = documented.iter().filter_map(|m| m.split('.').nth(2)).collect();
+    // Grant exactly the declared namespaces, then introspect the LIVE ctx.resource.
+    let namespaces: BTreeSet<&str> = declared.iter().filter_map(|m| m.split('.').nth(2)).collect();
     let resources_json = namespaces
         .iter()
         .map(|n| format!("\"{n}\""))
@@ -291,7 +282,6 @@ fn resource_api_doc_matches_the_runtime() {
             return out.join("\n");
         }
     "#;
-
     let dir = tempdir().unwrap();
     let src = write_bundle(
         dir.path(),
@@ -314,36 +304,52 @@ fn resource_api_doc_matches_the_runtime() {
         .collect();
 
     assert_eq!(
-        documented, runtime,
-        "docs/APP_API.md ctx.resource surface differs from the runtime.\n\
-         documented-only: {:?}\n runtime-only: {:?}",
-        documented.difference(&runtime).collect::<Vec<_>>(),
-        runtime.difference(&documented).collect::<Vec<_>>(),
+        declared, runtime,
+        "runtime ctx.resource differs from the declared surface.\n\
+         declared-only: {:?}\n runtime-only: {:?}",
+        declared.difference(&runtime).collect::<Vec<_>>(),
+        runtime.difference(&declared).collect::<Vec<_>>(),
     );
 }
 
-/// Extract every `ctx.resource.<ns>.<method>(` call mentioned in the doc.
-fn documented_resource_api(doc: &str) -> BTreeSet<String> {
-    const NEEDLE: &str = "ctx.resource.";
-    let mut out = BTreeSet::new();
-    let mut rest = doc;
-    while let Some(pos) = rest.find(NEEDLE) {
-        let after = &rest[pos + NEEDLE.len()..];
-        rest = after;
-        let ns_len = after
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-            .unwrap_or(after.len());
-        let ns = &after[..ns_len];
-        let Some(tail) = after[ns_len..].strip_prefix('.') else {
-            continue;
-        };
-        let m_len = tail
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(tail.len());
-        let method = &tail[..m_len];
-        if !ns.is_empty() && !method.is_empty() && tail[m_len..].starts_with('(') {
-            out.insert(format!("ctx.resource.{ns}.{method}"));
-        }
+/// The generated `ctx.resource` section between the markers in `docs/APP_API.md`
+/// matches the generator. Change a capability's `resource_api()` and forget to
+/// regenerate → this fails. Regenerate with `UPDATE_DOCS=1 cargo test`.
+#[test]
+fn app_api_doc_resource_section_is_generated() {
+    const START: &str = "<!-- generated:resource-api:start -->";
+    const END: &str = "<!-- generated:resource-api:end -->";
+    let doc_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/APP_API.md");
+    let doc = fs::read_to_string(&doc_path).expect("docs/APP_API.md exists");
+
+    let start = doc.find(START).expect("resource-api start marker") + START.len();
+    let end = doc.find(END).expect("resource-api end marker");
+    assert!(start <= end, "resource-api markers out of order");
+    let generated = terrane_core::resource_api_markdown();
+
+    if std::env::var_os("UPDATE_DOCS").is_some() {
+        let new_doc = format!("{}\n{generated}\n{}", &doc[..start], &doc[end..]);
+        fs::write(&doc_path, new_doc).expect("rewrite docs/APP_API.md");
+        return;
     }
-    out
+
+    // Compare CONTENT, not exact formatting: collapse whitespace and drop table
+    // separator rows, so a markdown formatter reflowing the table can't break the
+    // test, while any real change (a method, signature, or kind) still does.
+    assert_eq!(
+        normalize_md(&doc[start..end]),
+        normalize_md(&generated),
+        "docs/APP_API.md resource section is stale — regenerate with \
+         `UPDATE_DOCS=1 cargo test -p terrane-core --test cap app_api_doc`"
+    );
+}
+
+/// Normalize markdown for content comparison: trim + collapse intra-line
+/// whitespace, drop blank lines and table separator rows (`| --- | --- |`).
+fn normalize_md(md: &str) -> Vec<String> {
+    md.lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .filter(|l| !l.chars().all(|c| matches!(c, '|' | '-' | ':' | ' ')))
+        .collect()
 }
