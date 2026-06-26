@@ -1,0 +1,53 @@
+/* terrane-ffi — C ABI into terrane-core for non-Rust hosts.
+ *
+ * Hand-maintained (cbindgen is not a build dependency); the Rust test
+ * `checked_in_c_header_declares_the_exported_abi` guards against drift.
+ *
+ * Memory: every char* written to out_output/out_error is owned by the caller and
+ * must be freed exactly once with terrane_string_free (never free(3)). The
+ * TerraneHandle* from terrane_open must be closed with terrane_close.
+ */
+#ifndef TERRANE_FFI_H
+#define TERRANE_FFI_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define TERRANE_OK 0
+#define TERRANE_ERR_NULL_ARG 1
+#define TERRANE_ERR_UTF8 2
+#define TERRANE_ERR_DISPATCH 3
+#define TERRANE_ERR_PANIC 4
+#define TERRANE_ERR_INTERNAL 5
+
+typedef struct TerraneHandle TerraneHandle;
+
+/* Open (or create) a workspace at `home` (dir holding log.bin); null/empty uses
+ * the default. Returns a handle, or NULL on failure. */
+TerraneHandle *terrane_open(const char *home);
+
+/* Run an app's JS backend: host.run app [args...]. On success writes the
+ * backend's output string to *out_output and returns TERRANE_OK; on failure
+ * writes a message to *out_error and returns non-zero. */
+int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,
+                     const char *const *argv, char **out_output, char **out_error);
+
+/* Dispatch any command: name [args...]. On success writes committed event kinds
+ * (one per line) to *out_output; on failure writes *out_error. */
+int terrane_dispatch(TerraneHandle *h, const char *name, size_t argc,
+                     const char *const *argv, char **out_output, char **out_error);
+
+/* Free a string returned by this library. Null-safe. */
+void terrane_string_free(char *s);
+
+/* Close a handle from terrane_open. Null-safe. */
+void terrane_close(TerraneHandle *h);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* TERRANE_FFI_H */

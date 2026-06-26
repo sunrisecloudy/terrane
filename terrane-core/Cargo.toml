@@ -4,6 +4,7 @@ members = [
   "crates/terrane-domain",
   "crates/terrane-core",
   "crates/terrane-cli",
+  "crates/terrane-ffi",
 ]
 
 [workspace.package]
