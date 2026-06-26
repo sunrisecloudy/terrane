@@ -1,28 +1,65 @@
-//! The CLI's real [`EffectRunner`]: a minimal, dependency-free HTTP runner.
+//! The CLI's real [`EffectRunner`] — where the engine's effects meet the world.
 //!
-//! It handles plain `http://` URLs only (HTTP/1.0, `Connection: close`) — enough
-//! to prove the architecture point: the GET happens here, at the edge, and its
-//! result is handed back as the `net` capability's recorded event. Replay never
-//! calls this. Swap in a TLS client (e.g. `ureq`) when https is needed.
+//! It performs each [`Effect`] at the edge and hands the result back as the
+//! owning capability's recorded event. Replay never calls this. Two effects so
+//! far: a minimal `http://` GET (`net`) and an agent-CLI call (`model`).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::process::Command;
 
+use terrane_core::cap::model::responded_event;
 use terrane_core::cap::net::fetched_event;
 use terrane_core::{Effect, EffectRunner};
 use terrane_domain::{Error, EventRecord, Result};
 
-pub struct HttpGetRunner;
+pub struct EdgeRunner;
 
-impl EffectRunner for HttpGetRunner {
+impl EffectRunner for EdgeRunner {
     fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>> {
         match effect {
             Effect::HttpGet { app, url } => {
                 let (status, body) = http_get(url)?;
                 Ok(vec![fetched_event(app, url, status, body)?])
             }
+            Effect::ModelCall { app, agent, prompt } => {
+                let (response, exit_code) = run_agent(agent, prompt)?;
+                Ok(vec![responded_event(app, agent, prompt, response, exit_code)?])
+            }
         }
     }
+}
+
+/// Run an agent CLI non-interactively and capture its output.
+/// `claude -p "<prompt>"` (Claude Code print mode) or `codex exec "<prompt>"`.
+fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
+    let mut command = match agent {
+        "claude" => {
+            let mut c = Command::new("claude");
+            c.arg("-p").arg(prompt);
+            c
+        }
+        "codex" => {
+            let mut c = Command::new("codex");
+            c.arg("exec").arg(prompt);
+            c
+        }
+        other => return Err(Error::InvalidInput(format!("unknown agent: {other}"))),
+    };
+
+    let output = command.output().map_err(|e| {
+        Error::Storage(format!("failed to run `{agent}` (is it installed and on PATH?): {e}"))
+    })?;
+    let exit_code = output.status.code().unwrap_or(-1);
+    let mut response = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            response.push_str("\n[stderr] ");
+            response.push_str(stderr.trim_end());
+        }
+    }
+    Ok((response, exit_code))
 }
 
 fn http_get(url: &str) -> Result<(u16, String)> {

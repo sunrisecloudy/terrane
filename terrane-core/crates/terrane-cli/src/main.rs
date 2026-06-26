@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use terrane_core::Core;
 use terrane_domain::Request;
 
-mod net;
+mod edge;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -95,6 +95,21 @@ fn run_state() -> Result<(), String> {
             println!("  {app} {url} → {} ({} bytes)", resp.status, resp.body.len());
         }
     }
+
+    println!("model:");
+    if state.model.turns.is_empty() {
+        println!("  (none)");
+    }
+    for (app, turns) in &state.model.turns {
+        for turn in turns {
+            println!(
+                "  {app} [{}] exit {} ({} chars)",
+                turn.agent,
+                turn.exit_code,
+                turn.response.len()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -122,8 +137,8 @@ fn run_replay() -> Result<(), String> {
     }
 }
 
-fn open() -> Result<Core<net::HttpGetRunner>, String> {
-    Core::open_with(log_path(), net::HttpGetRunner).map_err(|e| e.to_string())
+fn open() -> Result<Core<edge::EdgeRunner>, String> {
+    Core::open_with(log_path(), edge::EdgeRunner).map_err(|e| e.to_string())
 }
 
 fn log_path() -> PathBuf {
@@ -142,7 +157,8 @@ fn print_help() {
          \x20 terrane app remove <id>                          remove an app\n\
          \x20 terrane kv set <app> <key> <value…>              store a value\n\
          \x20 terrane kv rm <app> <key>                        delete a value\n\
-         \x20 terrane net fetch <app> <url>                    GET a url; record it\n\n\
+         \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
+         \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\n\
          Reads & meta:\n\
          \x20 terrane state                  print the whole world\n\
          \x20 terrane log                    print the event log (decoded)\n\

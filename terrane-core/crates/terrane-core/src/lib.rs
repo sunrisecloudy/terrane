@@ -38,7 +38,7 @@ use terrane_domain::{Error, EventRecord, Request, Result};
 
 pub mod cap;
 
-use cap::{app::AppState, kv::KvState, net::NetState, Capability};
+use cap::{app::AppState, kv::KvState, model::ModelState, net::NetState, Capability};
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -48,6 +48,7 @@ pub struct State {
     pub app: AppState,
     pub kv: KvState,
     pub net: NetState,
+    pub model: ModelState,
 }
 
 /// What a Command resolves to. Pure commands commit Events immediately;
@@ -60,9 +61,22 @@ pub enum Decision {
 
 /// A side effect the engine must perform in the outside world. The runner turns
 /// it into the Event(s) that get recorded.
+///
+/// Effects are still a small central enum (they live at the edge and grow slowly,
+/// unlike commands). If they proliferate, make them name-tagged like events with
+/// a runner registry — the same move we made for commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    HttpGet { app: String, url: String },
+    HttpGet {
+        app: String,
+        url: String,
+    },
+    /// Ask an agent CLI (`claude`, `codex`) a prompt; its output is recorded.
+    ModelCall {
+        app: String,
+        agent: String,
+        prompt: String,
+    },
 }
 
 /// Performs effects at the edge. Implementors do the real I/O (or, in tests, a
@@ -137,6 +151,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(cap::app::AppCapability));
     registry.register(Box::new(cap::kv::KvCapability));
     registry.register(Box::new(cap::net::NetCapability));
+    registry.register(Box::new(cap::model::ModelCapability));
     registry
 }
 

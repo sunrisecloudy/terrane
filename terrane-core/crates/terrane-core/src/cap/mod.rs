@@ -10,6 +10,7 @@ use crate::{Decision, State};
 
 pub mod app;
 pub mod kv;
+pub mod model;
 pub mod net;
 
 /// A self-contained slice of engine behaviour.

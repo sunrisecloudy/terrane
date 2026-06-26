@@ -3,6 +3,7 @@
 //! so the engine reads as one thing and its proofs as another.
 
 use tempfile::tempdir;
+use terrane_core::cap::model::responded_event;
 use terrane_core::cap::net::fetched_event;
 use terrane_core::{Core, Effect, EffectRunner};
 use terrane_domain::{Error, EventRecord, Request, Result};
@@ -121,16 +122,23 @@ fn rejects_empty_fields() {
     ));
 }
 
-/// A deterministic stand-in for the network: every GET returns a canned body
-/// derived from the url, so tests never touch the wire.
-struct FakeHttp;
+/// A deterministic stand-in for the edge: canned responses for every effect, so
+/// tests never touch the network or spawn a real agent.
+struct FakeEdge;
 
-impl EffectRunner for FakeHttp {
+impl EffectRunner for FakeEdge {
     fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>> {
         match effect {
             Effect::HttpGet { app, url } => {
                 Ok(vec![fetched_event(app, url, 200, format!("body for {url}"))?])
             }
+            Effect::ModelCall { app, agent, prompt } => Ok(vec![responded_event(
+                app,
+                agent,
+                prompt,
+                format!("{agent} says: {prompt}"),
+                0,
+            )?]),
         }
     }
 }
@@ -140,7 +148,7 @@ fn fetch_effect_is_recorded_then_replays_without_the_runner() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
 
-    let mut core = Core::open_with(&log, FakeHttp).unwrap();
+    let mut core = Core::open_with(&log, FakeEdge).unwrap();
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
     core.dispatch(req("net.fetch", &["notes", "http://example.test/data"]))
         .unwrap();
@@ -157,6 +165,36 @@ fn fetch_effect_is_recorded_then_replays_without_the_runner() {
     let reopened = Core::open(&log).unwrap();
     assert_eq!(reopened.state().net.fetches, core.state().net.fetches);
     assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn model_call_is_recorded_then_replays_without_the_agent() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+
+    let mut core = Core::open_with(&log, FakeEdge).unwrap();
+    core.dispatch(req("app.add", &["asst", "Assistant"])).unwrap();
+    core.dispatch(req("model.ask", &["asst", "claude", "say", "hi"]))
+        .unwrap();
+
+    let turns = &core.state().model.turns["asst"];
+    assert_eq!(turns.len(), 1);
+    assert_eq!(turns[0].agent, "claude");
+    assert_eq!(turns[0].prompt, "say hi");
+    assert_eq!(turns[0].response, "claude says: say hi");
+    assert_eq!(turns[0].exit_code, 0);
+
+    // Reopening with NO runner folds the log and reproduces the transcript —
+    // proof that replay reads the response from the log, not the agent.
+    let reopened = Core::open(&log).unwrap();
+    assert_eq!(reopened.state().model.turns, core.state().model.turns);
+    assert!(core.replay_matches().unwrap());
+
+    // An unknown agent is rejected purely, before any effect.
+    assert!(matches!(
+        core.dispatch(req("model.ask", &["asst", "bard", "hi"])),
+        Err(Error::InvalidInput(_))
+    ));
 }
 
 #[test]
