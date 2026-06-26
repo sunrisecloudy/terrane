@@ -121,6 +121,11 @@ impl Capability for CrdtCapability {
             return Err(Error::AppNotFound(app));
         }
 
+        // `crdt.merge` ingests another replica's update rather than authoring one.
+        if name == "crdt.merge" {
+            return decide_merge(state, app, args);
+        }
+
         // Apply the op to a fork (never to live State), then export just the new
         // delta. `fork()` gives the op a fresh, distinct PeerID — exactly what a
         // CRDT needs: two replicas of the same app must NOT share a peer, or their
@@ -223,6 +228,71 @@ impl Capability for CrdtCapability {
             _ => None,
         }
     }
+}
+
+/// `crdt.merge <app> <hex>` — ingest another replica's exported Loro update.
+/// Validates by importing into a fork (a malformed blob is rejected here, never
+/// committed, so the log can't be poisoned) and dedups (an update that adds
+/// nothing new is a no-op), then records the bytes as an ordinary `crdt.update`
+/// so the merge replays like any other write.
+fn decide_merge(state: &State, app: String, args: &[String]) -> Result<Decision> {
+    let hex = arg(args, 1, "update")?;
+    let bytes = from_hex(&hex)?;
+    let doc = match state.crdt.docs.get(&app) {
+        Some(existing) => existing.fork(),
+        None => LoroDoc::new(),
+    };
+    let before = doc.oplog_vv();
+    doc.import(&bytes)
+        .map_err(|e| Error::InvalidInput(format!("crdt.merge: invalid update: {e}")))?;
+    if doc.oplog_vv() == before {
+        // We already have every op in this update — nothing to record.
+        return Ok(Decision::Commit(vec![]));
+    }
+    Ok(Decision::Commit(vec![encode_event("crdt.update", &Update { app, bytes })?]))
+}
+
+/// Export `app`'s document from `source` as a hex update containing only the ops
+/// `since` lacks (a delta), ready to feed to `crdt.merge` on the `since` replica.
+/// `None` if `source` has no document for the app. This is the outbound half of
+/// sync — a host operation, deliberately NOT on the backend `ctx.resource`.
+pub fn crdt_export_hex(source: &State, app: &str, since: &State) -> Result<Option<String>> {
+    let Some(doc) = source.crdt.docs.get(app) else {
+        return Ok(None);
+    };
+    let from = since
+        .crdt
+        .docs
+        .get(app)
+        .map(|d| d.oplog_vv())
+        .unwrap_or_default();
+    let bytes = doc
+        .export(ExportMode::updates_owned(from))
+        .map_err(|e| Error::Storage(format!("crdt export: {e}")))?;
+    Ok(Some(to_hex(&bytes)))
+}
+
+/// Lower-case hex encoding (the wire form for a Loro update on the command line).
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+fn from_hex(s: &str) -> Result<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return Err(Error::InvalidInput("crdt.merge: odd-length update hex".into()));
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&s[i..i + 2], 16)
+                .map_err(|_| Error::InvalidInput("crdt.merge: invalid update hex".into()))
+        })
+        .collect()
 }
 
 /// Join the trailing args from `from` into one value (so a value may contain

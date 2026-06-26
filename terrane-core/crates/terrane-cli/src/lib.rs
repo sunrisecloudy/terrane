@@ -30,6 +30,11 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["state"] => run_state(),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
+        ["sync", app, "--from", home] => run_sync(app, home),
+        ["sync", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane sync <app> --from <home>".into())
+        }
         [ns, verb, rest @ ..] => run_command(ns, verb, rest),
         [other] => Err(format!("unknown command {other:?} (try `terrane help`)")),
     }
@@ -46,6 +51,7 @@ pub fn run_command(ns: &str, verb: &str, rest: &[&str]) -> Result<(), String> {
 /// → `dispatch("host.run", …)`).
 pub fn dispatch(command: &str, args: &[&str]) -> Result<(), String> {
     let mut core = open()?;
+    ensure_identity(&mut core)?;
     let request = Request::new(command, args.iter().map(|s| s.to_string()).collect());
     let records = core.dispatch(request).map_err(|e| e.to_string())?;
     // A `host.run` returns a backend string — that IS the result, so print it
@@ -59,6 +65,45 @@ pub fn dispatch(command: &str, args: &[&str]) -> Result<(), String> {
                 println!("→ {}", record.kind);
             }
         }
+    }
+    Ok(())
+}
+
+/// Ensure this home has minted its replica identity before it authors anything.
+/// Idempotent — `replica.init` is a no-op once the id exists.
+fn ensure_identity(core: &mut Core<EdgeRunner>) -> Result<(), String> {
+    if core.state().replica.peer.is_none() {
+        core.dispatch(Request::new("replica.init", Vec::new()))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// `sync <app> --from <home>`: pull another replica's edits for one app and merge
+/// them into this one. Reads the other home's log read-only, exports the delta
+/// this home is missing, and folds it in as a `crdt.update`. Conflict-free and
+/// idempotent — re-running once converged is a no-op.
+pub fn run_sync(app: &str, from_home: &str) -> Result<(), String> {
+    let src_log = PathBuf::from(from_home).join("log.bin");
+    let source = Core::open(&src_log).map_err(|e| format!("open --from {from_home}: {e}"))?;
+
+    let mut local = open()?;
+    ensure_identity(&mut local)?;
+
+    let hex = terrane_core::cap::crdt::crdt_export_hex(source.state(), app, local.state())
+        .map_err(|e| e.to_string())?;
+    let Some(hex) = hex else {
+        println!("(nothing to sync: {from_home} has no '{app}' data)");
+        return Ok(());
+    };
+
+    let records = local
+        .dispatch(Request::new("crdt.merge", vec![app.to_string(), hex]))
+        .map_err(|e| e.to_string())?;
+    if records.is_empty() {
+        println!("(already up to date with {from_home})");
+    } else {
+        println!("synced '{app}' from {from_home}");
     }
     Ok(())
 }
@@ -165,6 +210,8 @@ pub fn print_help() {
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane host run <app> [input…]                  run an app's JS backend\n\n\
+         Multi-user:\n\
+         \x20 terrane sync <app> --from <home>   merge another home's edits for an app\n\n\
          Reads & meta:\n\
          \x20 terrane state                  print the whole world\n\
          \x20 terrane log                    print the event log (decoded)\n\
