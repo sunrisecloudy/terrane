@@ -49,6 +49,33 @@ pub fn decide(state: &State, cmd: &Command) -> Result<Vec<Event>> {
             }
             Ok(vec![Event::AppRemoved { id: id.clone() }])
         }
+        Command::KvSet { app, key, value } => {
+            if !state.apps.contains_key(app) {
+                return Err(Error::AppNotFound(app.clone()));
+            }
+            if key.trim().is_empty() {
+                return Err(Error::InvalidInput("key must not be empty".into()));
+            }
+            Ok(vec![Event::KvSet {
+                app: app.clone(),
+                key: key.clone(),
+                value: value.clone(),
+            }])
+        }
+        Command::KvDelete { app, key } => {
+            let missing = state
+                .data
+                .get(app)
+                .map(|kv| !kv.contains_key(key))
+                .unwrap_or(true);
+            if missing {
+                return Err(Error::KeyNotFound(app.clone(), key.clone()));
+            }
+            Ok(vec![Event::KvDeleted {
+                app: app.clone(),
+                key: key.clone(),
+            }])
+        }
     }
 }
 
@@ -67,6 +94,23 @@ pub fn fold(state: &mut State, event: &Event) {
         }
         Event::AppRemoved { id } => {
             state.apps.remove(id);
+            // Removing an app cascades to its key/value resource.
+            state.data.remove(id);
+        }
+        Event::KvSet { app, key, value } => {
+            state
+                .data
+                .entry(app.clone())
+                .or_default()
+                .insert(key.clone(), value.clone());
+        }
+        Event::KvDeleted { app, key } => {
+            if let Some(kv) = state.data.get_mut(app) {
+                kv.remove(key);
+                if kv.is_empty() {
+                    state.data.remove(app);
+                }
+            }
         }
     }
 }
@@ -221,6 +265,54 @@ mod tests {
         // Rejected commands wrote nothing: still exactly one app.
         assert_eq!(core.state().apps.len(), 1);
         assert!(core.replay_matches().unwrap());
+    }
+
+    #[test]
+    fn kv_resource_records_and_cascades() {
+        let dir = tempdir().unwrap();
+        let log = dir.path().join("log.jsonl");
+        let mut core = Core::open(&log).unwrap();
+        core.execute(add("notes", "Notes")).unwrap();
+
+        // Writing to an app that doesn't exist is rejected.
+        assert_eq!(
+            core.execute(Command::KvSet {
+                app: "ghost".into(),
+                key: "k".into(),
+                value: "v".into()
+            }),
+            Err(Error::AppNotFound("ghost".into()))
+        );
+
+        core.execute(Command::KvSet {
+            app: "notes".into(),
+            key: "theme".into(),
+            value: "dark".into(),
+        })
+        .unwrap();
+        assert_eq!(core.state().data["notes"]["theme"], "dark");
+        assert!(core.replay_matches().unwrap());
+
+        // Deleting a missing key errors; deleting a present key works.
+        assert_eq!(
+            core.execute(Command::KvDelete {
+                app: "notes".into(),
+                key: "ghost".into()
+            }),
+            Err(Error::KeyNotFound("notes".into(), "ghost".into()))
+        );
+
+        // Removing the app cascades: its data is gone from a fresh replay too.
+        core.execute(Command::KvSet {
+            app: "notes".into(),
+            key: "lang".into(),
+            value: "en".into(),
+        })
+        .unwrap();
+        core.execute(Command::RemoveApp { id: "notes".into() })
+            .unwrap();
+        assert!(core.state().data.is_empty());
+        assert!(replay(&log).unwrap().data.is_empty());
     }
 
     #[test]

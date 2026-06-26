@@ -32,6 +32,7 @@ fn run(argv: &[&str]) -> Result<(), String> {
             Ok(())
         }
         ["app", rest @ ..] => run_app(rest),
+        ["kv", rest @ ..] => run_kv(rest),
         ["replay"] => run_replay(),
         [other, ..] => Err(format!("unknown command {other:?} (try `terrane help`)")),
     }
@@ -86,6 +87,59 @@ fn run_app(argv: &[&str]) -> Result<(), String> {
             Ok(())
         }
         _ => Err("usage: terrane app <add|list|show|rm> …".into()),
+    }
+}
+
+fn run_kv(argv: &[&str]) -> Result<(), String> {
+    match argv {
+        ["set", app, key, value @ ..] if !value.is_empty() => {
+            let mut core = open()?;
+            core.execute(Command::KvSet {
+                app: (*app).to_string(),
+                key: (*key).to_string(),
+                value: value.join(" "),
+            })
+            .map_err(|e| e.to_string())?;
+            println!("set {app}/{key}");
+            Ok(())
+        }
+        ["set", ..] => Err("usage: terrane kv set <app> <key> <value…>".into()),
+        ["get", app, key] => {
+            let core = open()?;
+            match core.state().data.get(*app).and_then(|kv| kv.get(*key)) {
+                Some(value) => {
+                    println!("{value}");
+                    Ok(())
+                }
+                None => Err(format!("key not found: {app}/{key}")),
+            }
+        }
+        ["list", app] => {
+            let core = open()?;
+            match core.state().data.get(*app) {
+                Some(kv) if !kv.is_empty() => {
+                    for (key, value) in kv {
+                        println!("{key}\t{value}");
+                    }
+                    Ok(())
+                }
+                _ => {
+                    println!("(no data for {app})");
+                    Ok(())
+                }
+            }
+        }
+        ["rm", app, key] => {
+            let mut core = open()?;
+            core.execute(Command::KvDelete {
+                app: (*app).to_string(),
+                key: (*key).to_string(),
+            })
+            .map_err(|e| e.to_string())?;
+            println!("removed {app}/{key}");
+            Ok(())
+        }
+        _ => Err("usage: terrane kv <set|get|list|rm> …".into()),
     }
 }
 
@@ -146,7 +200,11 @@ fn print_help() {
          \x20 terrane app add <id> <name…> [--source <path>]  save an app\n\
          \x20 terrane app list               list saved apps\n\
          \x20 terrane app show <id>          show one app\n\
-         \x20 terrane app rm <id>            remove an app\n\
+         \x20 terrane app rm <id>            remove an app (and its data)\n\
+         \x20 terrane kv set <app> <key> <value…>   store a value for an app\n\
+         \x20 terrane kv get <app> <key>     read a value\n\
+         \x20 terrane kv list <app>          list an app's stored data\n\
+         \x20 terrane kv rm <app> <key>      delete a value\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
          \x20 terrane help                   this message\n\n\
          Catalog: $TERRANE_HOME/log.jsonl (default ./.terrane/)"

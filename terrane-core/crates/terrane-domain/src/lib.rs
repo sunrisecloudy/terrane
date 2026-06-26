@@ -38,6 +38,17 @@ pub enum Command {
     RemoveApp {
         id: AppId,
     },
+    /// Store a value under `key` in `app`'s key/value resource.
+    KvSet {
+        app: AppId,
+        key: String,
+        value: String,
+    },
+    /// Remove `key` from `app`'s key/value resource.
+    KvDelete {
+        app: AppId,
+        key: String,
+    },
 }
 
 /// A fact that has happened. Events are the durable truth: the log is a list of
@@ -54,13 +65,25 @@ pub enum Event {
     AppRemoved {
         id: AppId,
     },
+    KvSet {
+        app: AppId,
+        key: String,
+        value: String,
+    },
+    KvDeleted {
+        app: AppId,
+        key: String,
+    },
 }
 
-/// The whole world the core holds: the catalog of saved apps, keyed and ordered
-/// (BTreeMap keeps iteration deterministic, which keeps replay deterministic).
+/// The whole world the core holds: the catalog of saved apps plus each app's
+/// key/value resource. Keyed and ordered (BTreeMap keeps iteration
+/// deterministic, which keeps replay deterministic).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub apps: BTreeMap<AppId, AppRecord>,
+    #[serde(default)]
+    pub data: BTreeMap<AppId, BTreeMap<String, String>>,
 }
 
 /// Typed errors. No panics on real paths — every failure is one of these.
@@ -68,6 +91,7 @@ pub struct State {
 pub enum Error {
     AppExists(AppId),
     AppNotFound(AppId),
+    KeyNotFound(AppId, String),
     InvalidInput(String),
     Storage(String),
 }
@@ -77,6 +101,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::AppExists(id) => write!(f, "app already exists: {id}"),
             Error::AppNotFound(id) => write!(f, "app not found: {id}"),
+            Error::KeyNotFound(app, key) => write!(f, "key not found: {app}/{key}"),
             Error::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
             Error::Storage(msg) => write!(f, "storage error: {msg}"),
         }
