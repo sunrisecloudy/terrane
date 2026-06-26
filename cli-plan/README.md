@@ -37,14 +37,20 @@ agent tool surface all fall out of it.
 
 ## Status
 
-Planning only. No implementation in this branch yet.
+**Implemented** in this worktree (M1–M6 milestones landed):
+
+| Milestone | What shipped |
+| --- | --- |
+| M1–M3 | Self-describing registry, `system.describe`, generic `forge` CLI |
+| M4 | Contract gate: catalog export, public-contract verify, agent-adapter CI |
+| M5 | Web command console over `/bridge` with schema-driven forms |
+| M6 | Agent adapter projector/executor + reference notes-lite loop |
 
 **Code audit:** 2026-06-26 — `file:line` citations and the command/role tables
 in `01-FINDINGS.md` / `04-COMMAND-CATALOG.md` were verified against the workspace
 in this worktree. Key corrections: **42** `COMMANDS` entries (not ~46);
-`WorkspaceCore::handle` lives in `workspace.rs:986`; public-contract
-`CORE_COMMANDS` drifts from the live registry (F11). Re-verify before coding if
-`forge-core` moves.
+`WorkspaceCore::handle` lives in `workspace.rs:986`; M4 catalog-as-export closes
+the public-contract drift gate (F11). Re-verify before coding if `forge-core` moves.
 
 ## Naming
 
