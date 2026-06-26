@@ -26,6 +26,7 @@ function handle(input) {
         return ks.join(",");
     }
     if (verb === "raw") { kv.set("k", "v1"); kv.set("k", "v2"); return kv.get("k"); }
+    if (verb === "setrm") { kv.set("z", "1"); kv.rm("z"); return "setrm"; }
     return "?";
 }
 "#;
@@ -149,4 +150,104 @@ fn handle_must_return_a_string() {
         .unwrap();
     let result = core.dispatch(req("host.run", &["bad", "go"]));
     assert!(result.is_err(), "non-string handle() return should error");
+}
+
+#[test]
+fn redundant_same_key_set_is_coalesced_within_a_run() {
+    let dir = tempdir().unwrap();
+    let mut core = install_demo(dir.path());
+
+    // `raw` sets "k" twice in one run → only the last set is committed.
+    let records = core.dispatch(req("host.run", &["demo", "raw"])).unwrap();
+    assert_eq!(records.len(), 1, "two sets of one key coalesce to one record");
+    assert_eq!(records[0].kind, "kv.set");
+    assert_eq!(core.state().kv.data["demo"]["k"], "v2");
+
+    // The coalesced log still replays to the identical state.
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn set_then_rm_same_key_cancels_the_set() {
+    let dir = tempdir().unwrap();
+    let mut core = install_demo(dir.path());
+
+    // `setrm` sets "z" then removes it in one run → the set is superseded by the
+    // later rm, so only the delete is committed.
+    let records = core.dispatch(req("host.run", &["demo", "setrm"])).unwrap();
+    assert_eq!(records.len(), 1, "the rm cancels the preceding same-key set");
+    assert_eq!(records[0].kind, "kv.deleted");
+    assert!(!core
+        .state()
+        .kv
+        .data
+        .get("demo")
+        .map(|m| m.contains_key("z"))
+        .unwrap_or(false));
+
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn kv_set_with_non_string_arg_gives_attributable_error() {
+    let dir = tempdir().unwrap();
+    let src = write_bundle(
+        dir.path(),
+        "typed",
+        r#"{ "id": "typed", "name": "Typed", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"function handle(input) { ctx.resource.kv.set(1, "v"); return "ok"; }"#,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["typed", "Typed", "--source", &src]))
+        .unwrap();
+
+    // A non-string key aborts the run with a typed error naming the kv call —
+    // not a generic rquickjs conversion message — and commits nothing.
+    let err = core.dispatch(req("host.run", &["typed", "go"])).unwrap_err();
+    match err {
+        terrane_domain::Error::InvalidInput(msg) => {
+            assert!(msg.contains("kv.set"), "error names the call: {msg}");
+            assert!(msg.contains("key"), "error names the bad param: {msg}");
+        }
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+}
+
+#[test]
+fn manifest_ignores_nested_backend_key() {
+    let dir = tempdir().unwrap();
+    // A nested object carries a decoy "backend"; only the TOP-LEVEL one counts.
+    // A positional scan would pick "DECOY.js" (which does not exist) and fail.
+    let src = write_bundle(
+        dir.path(),
+        "nested",
+        r#"{ "id": "nested", "settings": { "backend": "DECOY.js" }, "backend": "main.js", "resources": ["kv"] }"#,
+        BACKEND,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["nested", "Nested", "--source", &src]))
+        .unwrap();
+
+    core.dispatch(req("host.run", &["nested", "set", "a", "1"]))
+        .unwrap();
+    assert_eq!(core.state().kv.data["nested"]["a"], "1");
+}
+
+#[test]
+fn manifest_decodes_string_escapes() {
+    let dir = tempdir().unwrap();
+    // The resource is written as the JSON escape `v` (built from char 92, a
+    // backslash) which decodes to 'v' → "kv". A raw-substring scan would keep the
+    // literal `kv` and fail to grant the kv resource, so the run would error.
+    let bsl = char::from_u32(92).unwrap();
+    let manifest =
+        format!(r#"{{ "id": "esc", "backend": "main.js", "resources": ["k{bsl}u0076"] }}"#);
+    let src = write_bundle(dir.path(), "esc", &manifest, BACKEND);
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["esc", "Esc", "--source", &src]))
+        .unwrap();
+
+    core.dispatch(req("host.run", &["esc", "set", "a", "1"]))
+        .unwrap();
+    assert_eq!(core.state().kv.data["esc"]["a"], "1");
 }
