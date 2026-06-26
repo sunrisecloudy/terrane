@@ -16,6 +16,7 @@ pub mod host;
 pub mod kv;
 pub mod model;
 pub mod net;
+pub mod replica;
 
 /// A self-contained slice of engine behaviour.
 pub trait Capability {

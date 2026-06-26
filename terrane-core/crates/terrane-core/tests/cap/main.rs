@@ -10,3 +10,4 @@ mod host;
 mod kv;
 mod model;
 mod net;
+mod replica;

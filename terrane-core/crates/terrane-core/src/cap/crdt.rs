@@ -131,6 +131,12 @@ impl Capability for CrdtCapability {
             Some(existing) => existing.fork(),
             None => LoroDoc::new(),
         };
+        // Author under this home's stable replica PeerID when it has minted one
+        // (so all its edits share one peer); otherwise the fork's fresh peer still
+        // keeps the op distinct. Either way the bytes are recorded (Option A).
+        if let Some(peer) = state.replica.peer {
+            let _ = doc.set_peer_id(peer);
+        }
         let before = doc.oplog_vv();
 
         match name {
