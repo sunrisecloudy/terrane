@@ -392,6 +392,139 @@
   color: #334155;
 }
 
+.engine-room-theme-card {
+  gap: 14px;
+}
+
+.engine-room-theme-intro {
+  color: #64748b;
+  font-size: 13px;
+  margin: 0;
+}
+
+.engine-room-theme-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.engine-room-theme-preset {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  color: #334155;
+  display: inline-flex;
+  gap: 8px;
+  min-height: 38px;
+  padding: 4px 10px;
+}
+
+.engine-room-theme-preset.active {
+  border-color: #0f766e;
+  box-shadow: inset 0 0 0 1px #0f766e;
+  color: #0f172a;
+}
+
+.engine-room-theme-swatches {
+  display: inline-flex;
+}
+
+.engine-room-theme-swatch {
+  border: 1px solid rgba(15, 23, 42, 0.15);
+  border-radius: 999px;
+  height: 14px;
+  margin-left: -4px;
+  width: 14px;
+}
+
+.engine-room-theme-swatch:first-child {
+  margin-left: 0;
+}
+
+.engine-room-theme-preset-name {
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.engine-room-theme-colors {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.engine-room-theme-color {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.engine-room-theme-color-input {
+  background: none;
+  block-size: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  cursor: pointer;
+  inline-size: 38px;
+  padding: 2px;
+}
+
+.engine-room-theme-color-label {
+  color: #475569;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.engine-room-theme-preview {
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.engine-room-theme-preview-panel {
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.engine-room-theme-preview-title {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.engine-room-theme-preview-muted {
+  font-size: 13px;
+}
+
+.engine-room-theme-preview-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.engine-room-theme-preview-btn {
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+}
+
+.engine-room-theme-preview-btn.ghost {
+  background: transparent;
+}
+
+.engine-room-theme-actions {
+  display: flex;
+  gap: 8px;
+}
+
 .engine-room-mode .layout {
   display: none;
 }
@@ -488,5 +621,33 @@
 
   .engine-room-tabs {
     justify-content: flex-start;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  .engine-room-theme-intro,
+  .engine-room-theme-color-label {
+    color: #aab4c5;
+  }
+
+  .engine-room-theme-preset {
+    background: #182033;
+    border-color: #334155;
+    color: #e5e7eb;
+  }
+
+  .engine-room-theme-preset.active {
+    border-color: #5eead4;
+    box-shadow: inset 0 0 0 1px #5eead4;
+    color: #ffffff;
+  }
+
+  .engine-room-theme-color-input {
+    border-color: #334155;
+  }
+
+  .engine-room-theme-preview,
+  .engine-room-theme-preview-panel {
+    border-color: #334155;
   }
 }

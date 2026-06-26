@@ -98,9 +98,16 @@
     },
     renderAppList,
     setStatus,
+    theme: window.TerraneTheme || null,
+    applyThemeToActiveApp,
   });
 
   refreshButton.addEventListener("click", loadApps);
+  if (window.TerraneTheme && typeof window.TerraneTheme.subscribe === "function") {
+    window.TerraneTheme.subscribe(function () {
+      applyThemeToActiveApp();
+    });
+  }
   engineRoom.applyPreference();
   if (openEngineRoomButton) {
     openEngineRoomButton.addEventListener("click", engineRoom.showEngineRoom);
@@ -264,6 +271,20 @@
           document.body.classList.toggle("native-host-mode", active);
         }
         return { ok: true, enabled: active };
+      },
+      theme() {
+        return window.TerraneTheme ? window.TerraneTheme.get() : null;
+      },
+      themeTokens() {
+        return currentThemeTokens();
+      },
+      setTheme(next) {
+        if (window.TerraneTheme) window.TerraneTheme.set(next || {});
+        return window.TerraneTheme ? window.TerraneTheme.get() : null;
+      },
+      selectThemePreset(presetId) {
+        if (window.TerraneTheme) window.TerraneTheme.selectPreset(presetId);
+        return window.TerraneTheme ? window.TerraneTheme.get() : null;
       },
     };
   }
@@ -687,7 +708,7 @@
     setStatus(`Mounting ${app.id}`);
 
     const html = rewritePackageResourceUrls(app.id, await fetchText(`/webapps/examples/${app.id}/index.html`));
-    const srcdoc = injectRuntimeBootstrap(app, html);
+    const srcdoc = injectRuntimeBootstrap(app, html, currentThemeTokens());
     const frame = document.createElement("iframe");
     frame.title = app.name;
     frame.dataset.testid = "runtime-app-frame";
@@ -774,12 +795,13 @@
     return `/webapps/examples/${encodeURIComponent(appId)}/${trimmed.replace(/^\.\//, "")}`;
   }
 
-  function injectRuntimeBootstrap(app, html) {
+  function injectRuntimeBootstrap(app, html, themeTokens) {
     const appId = app.id;
     const bootstrap = `<script>
 (function () {
   var runtimeAppId = ${JSON.stringify(appId)};
   var resourceBudget = ${JSON.stringify(app.resourceBudget || {})};
+  var runtimeThemeTokens = ${JSON.stringify(themeTokens || {})};
   var knownEvents = new Set(["runtime.ready", "runtime.suspend", "runtime.resume", "app.error", "app.budget_warning", "app.permission_revoked"]);
   var eventHandlers = new Map();
   var nextId = 1;
@@ -849,6 +871,40 @@
     on: on
   };
   installBudgetGuards();
+  var appliedThemeTokens = [];
+  applyRuntimeTheme(runtimeThemeTokens);
+  // Idempotent against the full token set: tokens dropped from the theme (e.g.
+  // resetting to "system", which sends {}) are removed from the inline root
+  // style so the app falls back to its own :root/prefers-color-scheme values,
+  // instead of being stranded on a stale override that outranks them.
+  function applyRuntimeTheme(tokens) {
+    var root = document.documentElement;
+    if (!root || !root.style || typeof root.style.setProperty !== "function") return;
+    var next = tokens && typeof tokens === "object" ? tokens : {};
+    appliedThemeTokens.forEach(function (name) {
+      var value = next[name];
+      if (typeof value !== "string" || !value) {
+        try {
+          root.style.removeProperty("--" + name);
+        } catch (error) {
+          // Best-effort cleanup of a token that is no longer themed.
+        }
+      }
+    });
+    var applied = [];
+    Object.keys(next).forEach(function (name) {
+      var value = next[name];
+      if (typeof value === "string" && value) {
+        try {
+          root.style.setProperty("--" + name, value);
+          applied.push(name);
+        } catch (error) {
+          // An individual unsupported value must not block the rest of the theme.
+        }
+      }
+    });
+    appliedThemeTokens = applied;
+  }
   window.addEventListener("error", function (event) {
     emitAppError({ code: "app.error", message: event.message || "Unhandled app error" }, "window.error");
   });
@@ -861,6 +917,10 @@
     port = event.ports[0];
     port.onmessage = function (portEvent) {
       var response = portEvent.data;
+      if (response && response.type === "runtime.event" && response.eventName === "runtime.theme_changed") {
+        applyRuntimeTheme(response.payload && response.payload.tokens);
+        return;
+      }
       if (response && response.type === "runtime.event") {
         emit(response.eventName, response.payload || {});
         return;
@@ -1032,6 +1092,23 @@
       }
     };
     targetWindow.postMessage({ type: "runtime.port" }, "*", [channel.port2]);
+  }
+
+  function currentThemeTokens() {
+    try {
+      return window.TerraneTheme ? window.TerraneTheme.resolveTokens() : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  // Push the active theme to the mounted app over its bridge port so a theme
+  // change in the Engine Room re-skins a running app without a reload. The
+  // theme is also baked into the bootstrap at mount, so a fresh mount is themed
+  // before first paint even when no app was open during the change.
+  function applyThemeToActiveApp() {
+    if (!activeMount) return;
+    emitRuntimeEvent(activeMount, "runtime.theme_changed", { tokens: currentThemeTokens() });
   }
 
   function emitRuntimeEvent(mount, eventName, payload) {

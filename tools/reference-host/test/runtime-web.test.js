@@ -9,6 +9,7 @@ import { MessageChannel } from "node:worker_threads";
 const rootDir = path.resolve(import.meta.dirname, "../../..");
 const engineRoomPath = path.join(rootDir, "runtime-web/engine-room.js");
 const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
+const themePath = path.join(rootDir, "runtime-web/theme.js");
 const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
 const generatedAppCsp = "default-src 'none'; script-src 'self' app-runtime:; style-src 'self' app-runtime:; img-src 'self' app-runtime: data: blob:; font-src 'self' app-runtime:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
@@ -796,10 +797,14 @@ test("runtime exposes native host Engine Room view for AppKit sidebar", async ()
     assert.equal(harness.parentWindow.TerraneRuntimeHost.activeAppId(), null);
     assert.equal(harness.document.getElementById("engine-room-status").textContent, "Ready");
     const text = elementText(harness.document.getElementById("engine-room-sections"));
-    assert.match(text, /All 12/);
+    assert.match(text, /All 13/);
     assert.match(text, /Runtime 2/);
+    assert.match(text, /Appearance 1/);
     assert.match(text, /Activity 4/);
     assert.match(text, /Raw JSON/);
+    // The client-only Appearance section renders its theme editor (preset names)
+    // even from a host snapshot that carries no appearance data.
+    assert.match(text, /System default/);
     for (const heading of ["Overview", "Apps", "Storage/DB", "Bridge/API Calls", "Network", "Logs/Telemetry", "Core/Replay", "Permissions/Policy", "Tests/Control", "CRDT", "Sync"]) {
       assert.match(text, new RegExp(heading.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
@@ -1187,9 +1192,129 @@ test("runtime emits app.error when a sandbox posts a bridge request outside its 
   }
 });
 
+test("theme module exposes presets, persists selection, and rejects unsafe values", async () => {
+  const storage = new Map();
+  const harness = createRuntimeHarness({ localStorage: storage });
+  try {
+    await loadRuntime(harness);
+    const api = harness.parentWindow.TerraneTheme;
+    assert.ok(api, "theme module should install window.TerraneTheme");
+    assert.equal(api.get().presetId, "system");
+    assert.equal(Object.keys(api.resolveTokens()).length, 0);
+
+    api.selectPreset("midnight");
+    assert.equal(api.get().presetId, "midnight");
+    assert.equal(api.resolveTokens().bg, "#0c111d");
+    const persisted = JSON.parse(storage.get("terrane.theme.v1"));
+    assert.equal(persisted.presetId, "midnight");
+    assert.equal(persisted.tokens.accent, "#8aa2ff");
+
+    // A single override promotes the theme to "custom" but keeps other tokens.
+    api.setToken("accent", "#ff0000");
+    assert.equal(api.get().presetId, "custom");
+    assert.equal(api.resolveTokens().accent, "#ff0000");
+    assert.equal(api.resolveTokens().bg, "#0c111d");
+
+    // Unsafe values (url(), extra declarations) are rejected at the boundary.
+    api.setToken("accent", "red; background: url(http://evil.test)");
+    assert.equal(api.resolveTokens().accent, "#ff0000");
+    assert.equal(api.isSafeValue("#1a2b3c"), true);
+    assert.equal(api.isSafeValue("rgb(10, 20, 30)"), true);
+    assert.equal(api.isSafeValue("url(http://x)"), false);
+
+    api.reset();
+    assert.equal(api.get().presetId, "system");
+    assert.equal(storage.has("terrane.theme.v1"), false);
+  } finally {
+    harness.close();
+  }
+});
+
+test("Engine Room appearance section persists a preset and a custom colour", async () => {
+  const storage = new Map([["terrane.engineRoom.visible", "true"]]);
+  const harness = createRuntimeHarness({ localStorage: storage });
+  try {
+    await loadRuntime(harness);
+    await vm.runInContext("window.TerraneRuntimeHost.showEngineRoom()", harness.parentContext);
+    await flushAsync();
+
+    const sections = harness.document.getElementById("engine-room-sections");
+    assert.ok(findElementByTestId(sections, "engine-room-appearance"), "appearance theme card should render");
+
+    findElementByTestId(sections, "engine-room-theme-preset-forest").dispatch("click");
+    await flushAsync();
+    assert.equal(JSON.parse(storage.get("terrane.theme.v1")).presetId, "forest");
+    assert.equal(harness.parentWindow.TerraneTheme.resolveTokens().accent, "#0f9d58");
+
+    const accentInput = findElementByTestId(
+      harness.document.getElementById("engine-room-sections"),
+      "engine-room-theme-color-accent",
+    );
+    assert.ok(accentInput, "appearance card should render colour inputs");
+    accentInput.value = "#123456";
+    accentInput.dispatch("change");
+    await flushAsync();
+    assert.equal(harness.parentWindow.TerraneTheme.resolveTokens().accent, "#123456");
+    assert.equal(JSON.parse(storage.get("terrane.theme.v1")).presetId, "custom");
+
+    findElementByTestId(
+      harness.document.getElementById("engine-room-sections"),
+      "engine-room-theme-reset",
+    ).dispatch("click");
+    await flushAsync();
+    assert.equal(harness.parentWindow.TerraneTheme.get().presetId, "system");
+  } finally {
+    harness.close();
+  }
+});
+
+test("mounted app bootstrap bakes in the active theme tokens", async () => {
+  const harness = createRuntimeHarness({ localStorage: new Map() });
+  try {
+    await loadRuntime(harness);
+    harness.parentWindow.TerraneTheme.selectPreset("midnight");
+
+    const frame = await mountAppAtIndex(harness, 0);
+    const bootstrap = extractBootstrapScript(frame.srcdoc);
+    assert.match(bootstrap, /runtimeThemeTokens/);
+    assert.match(bootstrap, /applyRuntimeTheme/);
+    assert.match(bootstrap, /setProperty\("--" \+ name/);
+    assert.match(frame.srcdoc, /"accent":"#8aa2ff"/);
+    assert.match(frame.srcdoc, /"bg":"#0c111d"/);
+  } finally {
+    harness.close();
+  }
+});
+
+test("live theme changes re-skin a mounted app and a downgrade clears stale tokens", async () => {
+  const harness = createRuntimeHarness({ localStorage: new Map() });
+  try {
+    const frame = await mountFirstApp(harness);
+    const style = frame.contentWindow.document.documentElement.style;
+    assert.equal(style.getPropertyValue("--bg"), "");
+
+    // Selecting a preset pushes runtime.theme_changed to the already-mounted app.
+    harness.parentWindow.TerraneTheme.selectPreset("midnight");
+    await flushAsync();
+    assert.equal(style.getPropertyValue("--bg"), "#0c111d");
+    assert.equal(style.getPropertyValue("--accent"), "#8aa2ff");
+
+    // Resetting to system must REMOVE the previously applied tokens, not strand
+    // them — otherwise the running app stays stuck on the old theme.
+    harness.parentWindow.TerraneTheme.reset();
+    await flushAsync();
+    assert.equal(style.getPropertyValue("--bg"), "");
+    assert.equal(style.getPropertyValue("--accent"), "");
+  } finally {
+    harness.close();
+  }
+});
+
 async function loadRuntime(harness) {
+  const themeSource = fs.readFileSync(themePath, "utf8");
   const engineRoomSource = fs.readFileSync(engineRoomPath, "utf8");
   const runtimeSource = fs.readFileSync(runtimePath, "utf8");
+  vm.runInContext(themeSource, harness.parentContext);
   vm.runInContext(engineRoomSource, harness.parentContext);
   vm.runInContext(runtimeSource, harness.parentContext);
 
@@ -1381,8 +1506,23 @@ function createDocument(createFrameWindow) {
 }
 
 function createChildDocument() {
+  // documentElement.style records setProperty/removeProperty so tests can assert
+  // how the injected bootstrap applies (and clears) theme custom properties.
+  const properties = new Map();
   return {
-    documentElement: {},
+    documentElement: {
+      style: {
+        setProperty(name, value) {
+          properties.set(name, value);
+        },
+        removeProperty(name) {
+          properties.delete(name);
+        },
+        getPropertyValue(name) {
+          return properties.has(name) ? properties.get(name) : "";
+        },
+      },
+    },
     getElementsByTagName() {
       return [];
     },
@@ -1399,6 +1539,7 @@ class FakeElement {
     this.disabled = false;
     this.listeners = new Map();
     this.queryChildren = new Map();
+    this.style = {};
     this.tagName = tagName.toUpperCase();
     this._textContent = "";
   }

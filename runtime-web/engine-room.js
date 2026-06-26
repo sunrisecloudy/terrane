@@ -2,6 +2,10 @@
   const engineRoomPreferenceKey = "terrane.engineRoom.visible";
   const engineRoomSectionOrder = [
     { key: "overview", title: "Overview", group: "runtime" },
+    // Client-only section: the theme editor renders from local preferences, not
+    // from a data snapshot, so it is excluded from the snapshot sectionKeys
+    // contract below.
+    { key: "appearance", title: "Appearance", group: "appearance", client: true },
     { key: "apps", title: "Apps", group: "runtime" },
     { key: "database", title: "Storage/DB", group: "data" },
     { key: "storage", title: "Storage Rows", group: "data" },
@@ -17,6 +21,7 @@
   const engineRoomGroups = [
     ["all", "All"],
     ["runtime", "Runtime"],
+    ["appearance", "Appearance"],
     ["data", "Data"],
     ["activity", "Activity"],
     ["policy", "Policy"],
@@ -111,6 +116,19 @@
     networkPolicy: "Network policy",
   };
 
+  // Neutral light palette used to seed colour pickers and the preview when the
+  // active theme leaves a token unset (e.g. the "system" preset), so the editor
+  // always shows a concrete colour even before the user overrides anything.
+  const THEME_PREVIEW_FALLBACK = {
+    accent: "#315efb",
+    bg: "#f6f7fb",
+    panel: "#ffffff",
+    text: "#121826",
+    muted: "#667085",
+    border: "#dde2eb",
+    danger: "#b42318",
+  };
+
   function create(deps) {
     const dom = deps.dom;
     let activeGroup = "all";
@@ -188,6 +206,15 @@
       const grid = deps.element("div", "engine-room-grid");
       let rendered = 0;
       for (const section of engineRoomSectionOrder) {
+        if (section.key === "appearance") {
+          const themeState = readThemeState();
+          if (!themeState) continue;
+          const summaryRows = themeSummaryRows(themeState);
+          if (!matchesActiveView(section, themeFilterValue(themeState), summaryRows)) continue;
+          grid.appendChild(renderThemeCard(section, themeState, summaryRows));
+          rendered += 1;
+          continue;
+        }
         const value = currentSnapshot[section.key] ?? emptySection(section.key);
         const summaryRows = summarizeSection(section.key, value);
         if (!matchesActiveView(section, value, summaryRows)) continue;
@@ -495,6 +522,11 @@
       if (!currentSnapshot) return 0;
       return engineRoomSectionOrder.filter(function (section) {
         if (group !== "all" && section.group !== group) return false;
+        if (section.key === "appearance") {
+          const themeState = readThemeState();
+          if (!themeState) return false;
+          return matchesTextOnly(section, themeFilterValue(themeState), themeSummaryRows(themeState));
+        }
         const value = currentSnapshot[section.key] ?? emptySection(section.key);
         return matchesTextOnly(section, value, summarizeSection(section.key, value));
       }).length;
@@ -806,6 +838,207 @@
       return text.length > max ? `${text.slice(0, max - 1)}…` : text;
     }
 
+    // ----- Appearance / custom theme -----
+
+    function themeApi() {
+      if (deps.theme) return deps.theme;
+      return typeof window !== "undefined" ? window.TerraneTheme || null : null;
+    }
+
+    // A render-ready view of the active theme: the persisted choice plus the
+    // resolved token map. Returns null when no theme module is available so the
+    // Appearance section degrades to hidden rather than throwing.
+    function readThemeState() {
+      const api = themeApi();
+      if (!api) return null;
+      try {
+        return { api, current: api.get(), tokens: api.resolveTokens() };
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function themePresetLabel(state) {
+      if (state.current.presetId === state.api.CUSTOM_PRESET_ID) return "Custom";
+      const preset = state.api.presetById(state.current.presetId);
+      return preset ? preset.name : state.current.presetId;
+    }
+
+    function themeSummaryRows(state) {
+      return [
+        ["Preset", themePresetLabel(state)],
+        ["Accent", state.tokens.accent || "app default"],
+        ["Background", state.tokens.bg || "app default"],
+        ["Custom tokens", Object.keys(state.tokens).length],
+      ];
+    }
+
+    function themeFilterValue(state) {
+      return {
+        keywords: "appearance theme colour color palette dark light accent contrast",
+        preset: state.current.presetId,
+        tokens: state.tokens,
+      };
+    }
+
+    function renderThemeCard(section, state, summaryRows) {
+      const api = state.api;
+      const card = deps.element("article", "engine-room-card engine-room-theme-card");
+      card.setAttribute("data-testid", "engine-room-appearance");
+
+      const header = deps.element("div", "engine-room-card-header");
+      const titleWrap = deps.element("div", "engine-room-card-title");
+      titleWrap.appendChild(deps.element("h3", "", section.title));
+      titleWrap.appendChild(deps.element("span", "engine-room-card-group", groupLabel(section.group)));
+      header.appendChild(titleWrap);
+      const overrides = Object.keys(state.tokens).length > 0;
+      const badges = deps.element("div", "engine-room-card-badges");
+      badges.appendChild(deps.element(
+        "span",
+        `engine-room-state ${overrides ? "active" : "empty"}`,
+        overrides ? "Custom theme" : "App default",
+      ));
+      header.appendChild(badges);
+      card.appendChild(header);
+
+      card.appendChild(deps.element(
+        "p",
+        "engine-room-theme-intro",
+        "Pick a palette or set your own colours. The theme applies to every app you open.",
+      ));
+
+      const facts = deps.element("dl", "engine-room-facts");
+      for (const [label, factValue] of summaryRows) {
+        const row = deps.element("div", "engine-room-fact");
+        row.appendChild(deps.element("dt", "", label));
+        row.appendChild(deps.element("dd", "", String(factValue == null ? "unknown" : factValue)));
+        facts.appendChild(row);
+      }
+      card.appendChild(facts);
+
+      card.appendChild(renderThemePresets(state));
+      card.appendChild(renderThemeColorControls(state));
+      card.appendChild(renderThemePreview(state));
+
+      const actions = deps.element("div", "engine-room-theme-actions");
+      const reset = deps.element("button", "engine-room-tool", "Reset to system default");
+      reset.setAttribute("type", "button");
+      reset.setAttribute("data-testid", "engine-room-theme-reset");
+      reset.addEventListener("click", function () {
+        api.reset();
+        renderSnapshotContent();
+      });
+      actions.appendChild(reset);
+      card.appendChild(actions);
+      return card;
+    }
+
+    function renderThemePresets(state) {
+      const api = state.api;
+      const wrap = deps.element("div", "engine-room-theme-presets");
+      wrap.setAttribute("role", "list");
+      for (const preset of api.presets()) {
+        const active = preset.id === state.current.presetId;
+        const chip = deps.element("button", active ? "engine-room-theme-preset active" : "engine-room-theme-preset");
+        chip.setAttribute("type", "button");
+        chip.setAttribute("role", "listitem");
+        chip.setAttribute("data-testid", `engine-room-theme-preset-${preset.id}`);
+        chip.setAttribute("aria-pressed", active ? "true" : "false");
+        chip.setAttribute("title", preset.description || preset.name);
+        const swatches = deps.element("span", "engine-room-theme-swatches");
+        for (const name of ["accent", "bg", "panel", "text"]) {
+          const dot = deps.element("span", "engine-room-theme-swatch");
+          const value = preset.tokens[name];
+          if (value && dot.style) dot.style.background = value;
+          swatches.appendChild(dot);
+        }
+        chip.appendChild(swatches);
+        chip.appendChild(deps.element("span", "engine-room-theme-preset-name", preset.name));
+        chip.addEventListener("click", function () {
+          api.selectPreset(preset.id);
+          renderSnapshotContent();
+        });
+        wrap.appendChild(chip);
+      }
+      return wrap;
+    }
+
+    function renderThemeColorControls(state) {
+      const api = state.api;
+      const wrap = deps.element("div", "engine-room-theme-colors");
+      for (const token of api.tokens()) {
+        if (!token.editable) continue;
+        const field = deps.element("label", "engine-room-theme-color");
+        field.setAttribute("title", token.hint || token.label);
+        const input = deps.element("input", "engine-room-theme-color-input");
+        input.setAttribute("type", "color");
+        input.setAttribute("data-testid", `engine-room-theme-color-${token.name}`);
+        input.setAttribute("aria-label", `${token.label} colour`);
+        input.value = toHexColor(state.tokens[token.name] || THEME_PREVIEW_FALLBACK[token.name]);
+        // `change` (commit) rather than `input` (per-drag) keeps the native
+        // colour picker open while dragging instead of re-rendering mid-pick.
+        input.addEventListener("change", function (event) {
+          const next = event && event.target && event.target.value != null ? event.target.value : input.value;
+          api.setToken(token.name, next);
+          renderSnapshotContent();
+        });
+        field.appendChild(input);
+        field.appendChild(deps.element("span", "engine-room-theme-color-label", token.label));
+        wrap.appendChild(field);
+      }
+      return wrap;
+    }
+
+    function renderThemePreview(state) {
+      function tok(name) {
+        return state.tokens[name] || THEME_PREVIEW_FALLBACK[name];
+      }
+      const preview = deps.element("div", "engine-room-theme-preview");
+      preview.setAttribute("data-testid", "engine-room-theme-preview");
+      preview.setAttribute("aria-hidden", "true");
+      if (preview.style) {
+        preview.style.background = tok("bg");
+        preview.style.borderColor = tok("border");
+      }
+      const panel = deps.element("div", "engine-room-theme-preview-panel");
+      if (panel.style) {
+        panel.style.background = tok("panel");
+        panel.style.borderColor = tok("border");
+      }
+      const title = deps.element("div", "engine-room-theme-preview-title", "Aa Preview");
+      if (title.style) title.style.color = tok("text");
+      const muted = deps.element("div", "engine-room-theme-preview-muted", "Secondary text");
+      if (muted.style) muted.style.color = tok("muted");
+      const row = deps.element("div", "engine-room-theme-preview-row");
+      const primary = deps.element("span", "engine-room-theme-preview-btn", "Primary");
+      if (primary.style) {
+        primary.style.background = tok("accent");
+        primary.style.color = "#ffffff";
+      }
+      const danger = deps.element("span", "engine-room-theme-preview-btn ghost", "Delete");
+      if (danger.style) {
+        danger.style.color = tok("danger");
+        danger.style.borderColor = tok("border");
+      }
+      row.appendChild(primary);
+      row.appendChild(danger);
+      panel.appendChild(title);
+      panel.appendChild(muted);
+      panel.appendChild(row);
+      preview.appendChild(panel);
+      return preview;
+    }
+
+    function toHexColor(value) {
+      if (typeof value !== "string") return "#000000";
+      const trimmed = value.trim();
+      if (/^#[0-9a-f]{6}$/i.test(trimmed)) return trimmed.toLowerCase();
+      if (/^#[0-9a-f]{3}$/i.test(trimmed)) {
+        return `#${trimmed.slice(1).split("").map(function (char) { return char + char; }).join("").toLowerCase()}`;
+      }
+      return "#000000";
+    }
+
     function setStatus(value) {
       if (dom.status) dom.status.textContent = value;
     }
@@ -825,7 +1058,9 @@
     // Canonical snapshot contract: the section keys (and their collections) the
     // renderer understands. Both the host snapshot and the runtime fallback are
     // expected to conform to this shape.
-    sectionKeys: engineRoomSectionOrder.map(function (section) {
+    sectionKeys: engineRoomSectionOrder.filter(function (section) {
+      return !section.client;
+    }).map(function (section) {
       return section.key;
     }),
     groups: engineRoomGroups.map(function (group) {
