@@ -9,21 +9,51 @@ These examples are the replacement set for the legacy build-free
 the legacy tree during the cutover, but the Forge examples are now executable
 through the core command facade.
 
-| Example | Coverage |
-|---|---|
-| `notes-lite` | DB insert/list plus UI list rendering. |
-| `task-workbench` | DB query, app-scoped storage, workflow-style task state. |
-| `file-transformer` | Sandboxed `ctx.files.write`, DB transform summary, UI status. |
-| `api-dashboard` | Manifest-gated `ctx.net.fetch`, DB request history, UI list. |
-| `core-replay-lab` | Deterministic time/random seams, storage, DB, replay-friendly UI. |
+| Example | Public API coverage | Primary test |
+| --- | --- | --- |
+| `notes-lite` | `ctx.db`, `ctx.ui`, `ctx.time` | `cargo test -p forge-cli --test forge_examples notes-lite` |
+| `task-workbench` | `ctx.db`, `ctx.storage`, structured `ctx.db.query` | `cargo test -p forge-cli --test forge_examples task-workbench` |
+| `file-transformer` | `ctx.files`, `ctx.db`, `ctx.ui` | `cargo test -p forge-cli --test forge_examples file-transformer` |
+| `api-dashboard` | `ctx.net`, `ctx.db`, `ctx.ui` | `cargo test -p forge-cli --test forge_examples api-dashboard` |
+| `core-replay-lab` | `ctx.time`, `ctx.random`, `ctx.storage`, `ctx.db` | `cargo test -p forge-cli --test forge_examples core-replay-lab` |
+| `calendar-planner` | `ctx.db`, `ctx.ui`, agenda storage | `cargo test -p forge-cli --test forge_examples calendar-planner` |
 
-The executable gate is:
+## Executable gates
 
-```text
+Library path (all six apps in one test):
+
+```sh
+cd forge
 cargo test -p forge-cli --test forge_examples --locked
 ```
 
-The test installs every example from disk, injects deterministic mock network and
-filesystem seams where needed, runs it through `WorkspaceCore::handle`, checks
-that it writes expected records and renders UI, then confirms
-`runtime.replay` reports byte-identical replay.
+CLI subprocess path:
+
+```sh
+cd forge
+cargo test -p forge-cli --test bundled_apps_cli_e2e --locked
+```
+
+M0a spine (notes-lite only):
+
+```sh
+cd forge
+cargo run -p forge-cli -- demo
+cargo test -p forge-cli --test e2e --locked
+```
+
+Legacy reference-host smoke (build-free `webapps/examples/*`):
+
+```sh
+node --test --no-warnings tools/reference-host/test/example-load-acceptance.test.js
+```
+
+## HTML reference
+
+The generated public API page links every example with source snippets and test commands:
+
+```sh
+node --no-warnings tools/build-forge-api-docs.mjs
+```
+
+Open `forge/docs/public-api/index.html` locally, or `GET /docs` on `forge-server`.

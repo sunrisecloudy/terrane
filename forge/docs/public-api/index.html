@@ -1,0 +1,757 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Forge Public API Reference</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="hero">
+    <div class="hero-inner">
+      <p class="eyebrow">Terrane Forge v1</p>
+      <h1>Public API Reference</h1>
+      <p class="lede">Applet host surface (<code>@forge/std</code>), 53 core commands, CLI, and HTTP bridge — generated from the live catalog.</p>
+      <div class="hero-meta">
+        <span>Catalog <code>sha256:0b9a087b2a2dd601dbba2258a58adeaa286621705303e9a257368bf55e937aba</code></span>
+        <span>Generated <time datetime="2026-06-26T03:55:51.853Z">2026-06-26T03:55:51.853Z</time></span>
+      </div>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" aria-label="API sections">
+      <label class="search-field">Filter
+        <input id="api-filter" type="search" placeholder="Search commands & APIs…" autocomplete="off">
+      </label>
+      <ul>
+        <li><a href="#overview">Overview</a></li>
+        <li><a href="#applet-api">Applet API</a></li>
+        <li><a href="#core-commands">Core Commands</a></li>
+        <li><a href="#cli">CLI</a></li>
+        <li><a href="#http">HTTP Bridge</a></li>
+        <li><a href="#examples">Examples</a></li>
+        <li><a href="#validation">Validation</a></li>
+      </ul>
+    </nav>
+
+    <main class="content">
+      <section id="overview" class="section">
+        <h2>Overview</h2>
+        <p>Forge exposes one command facade (<code>WorkspaceCore::handle</code>) to every shell, agent, CLI, and HTTP bridge. Generated applets never call that facade directly — they use the typed <code>ctx.*</code> host API declared in <code>forge/std/forge-std.d.ts</code>.</p>
+        <div class="card-grid">
+          <div class="info-card"><h3>Applet authors</h3><p>Import <code>@forge/std</code>, export <code>main(ctx, input)</code>, declare capabilities in <code>manifest.json</code>.</p></div>
+          <div class="info-card"><h3>Operators</h3><p>Use <code>forge run</code>, the web console at <code>/console</code>, or POST <code>/bridge</code>.</p></div>
+          <div class="info-card"><h3>Integrators</h3><p>Pin <code>artifacts/public-contract.json</code> and verify with <code>tools/verify-public-contract.mjs</code>.</p></div>
+        </div>
+      </section>
+
+      <section id="applet-api" class="section">
+        <h2>Applet API (<code>@forge/std</code>)</h2>
+        <p>Source: <code>forge/std/forge-std.d.ts</code>. Only these <code>ctx</code> surfaces are reachable from applet TypeScript.</p>
+        <article class="api-card" id="ctx.db">
+      <h3>Database (`ctx.db`)</h3>
+      <p>Collection-scoped JSON records with deterministic replay.</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>insert(collection, record)</code></td><td><code>Promise&lt;{ id: string }&gt;</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr><tr><td><code>get(collection, id)</code></td><td><code>Promise&lt;DbRecord | null&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr><tr><td><code>list(collection)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr><tr><td><code>query(plan)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr><tr><td><code>query(collection, plan)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr></tbody></table>
+      <pre class="code-block"><code>const id = await ctx.db.insert(&quot;notes&quot;, { title: &quot;Hello&quot; });
+const rows = await ctx.db.list(&quot;notes&quot;);
+const row = await ctx.db.get(&quot;notes&quot;, id);</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples notes-lite</code></p>
+    </article>
+<article class="api-card" id="ctx.storage">
+      <h3>Storage (`ctx.storage`)</h3>
+      <p>Per-applet key/value storage scoped by manifest grants.</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>get(key)</code></td><td><code>Promise&lt;string | null&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr><tr><td><code>set(key, value)</code></td><td><code>Promise&lt;void&gt;</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr><tr><td><code>delete(key)</code></td><td><code>Promise&lt;void&gt;</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr><tr><td><code>list(prefix)</code></td><td><code>Promise&lt;string[]&gt;</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr></tbody></table>
+      <pre class="code-block"><code>await ctx.storage.set(&quot;app/last-run&quot;, runId);
+const value = await ctx.storage.get(&quot;app/last-run&quot;);</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples core-replay-lab</code></p>
+    </article>
+<article class="api-card" id="ctx.net">
+      <h3>Network (`ctx.net`)</h3>
+      <p>Manifest-gated HTTP fetch; replay serves recorded responses.</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>fetch(request)</code></td><td><code>Promise&lt;NetResponse&gt;</code></td><td><a href="#example-api-dashboard">forge/examples/api-dashboard</a></td></tr></tbody></table>
+      <pre class="code-block"><code>const response = await ctx.net.fetch({
+  method: &quot;GET&quot;,
+  url: &quot;https://api.example.com/public/weather&quot;,
+  response_content_type: &quot;application/json&quot;
+});</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples api-dashboard</code></p>
+    </article>
+<article class="api-card" id="ctx.files">
+      <h3>Files (`ctx.files`)</h3>
+      <p>Sandboxed read/write via trusted host handles (never raw paths).</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>read(request)</code></td><td><code>Promise&lt;FileReadResponse&gt;</code></td><td><a href="#example-file-transformer">forge/examples/file-transformer</a></td></tr><tr><td><code>write(request)</code></td><td><code>Promise&lt;FileWriteResponse&gt;</code></td><td><a href="#example-file-transformer">forge/examples/file-transformer</a></td></tr></tbody></table>
+      <pre class="code-block"><code>await ctx.files.write({
+  handle: &quot;workspace_data&quot;,
+  path: &quot;out/summary.txt&quot;,
+  bytes_base64: Buffer.from(&quot;hello&quot;).toString(&quot;base64&quot;),
+  mode: &quot;create_or_truncate&quot;
+});</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples file-transformer</code></p>
+    </article>
+<article class="api-card" id="ctx.ui">
+      <h3>UI (`ctx.ui`)</h3>
+      <p>Declarative component trees rendered by the host.</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>render(tree)</code></td><td><code>void</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr></tbody></table>
+      <pre class="code-block"><code>ctx.ui.render({
+  type: &quot;Stack&quot;,
+  testId: &quot;root&quot;,
+  direction: &quot;v&quot;,
+  children: [
+    { type: &quot;Text&quot;, testId: &quot;title&quot;, text: &quot;Notes&quot;, variant: &quot;title&quot; }
+  ]
+});</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test e2e</code></p>
+    </article>
+<article class="api-card" id="ctx.time">
+      <h3>Time (`ctx.time`)</h3>
+      <p>Deterministic logical clock for replayable runs.</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>now()</code></td><td><code>number</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr></tbody></table>
+      <pre class="code-block"><code>const createdAt = ctx.time.now();</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples notes-lite</code></p>
+    </article>
+<article class="api-card" id="ctx.random">
+      <h3>Random (`ctx.random`)</h3>
+      <p>Seeded deterministic PRNG recorded into the run trace.</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>next()</code></td><td><code>number</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr></tbody></table>
+      <pre class="code-block"><code>const roll = ctx.random.next();</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples core-replay-lab</code></p>
+    </article>
+<article class="api-card" id="main">
+      <h3>Entrypoint (`main`)</h3>
+      <p>Every applet exports async main(ctx, input) returning AppResult.</p>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>main(ctx, input)</code></td><td><code>Promise&lt;AppResult&gt;</code></td><td><a href="#example-*">forge/examples/*</a></td></tr></tbody></table>
+      <pre class="code-block"><code>export async function main(ctx: AppContext, input: unknown): Promise&lt;AppResult&gt; {
+  return { ok: true, value: { received: input } };
+}</code></pre>
+      <p class="meta">Test: <code>cargo test -p forge-cli --test bundled_apps_cli_e2e</code></p>
+    </article>
+      </section>
+
+      <section id="core-commands" class="section">
+        <h2>Core Commands</h2>
+        <p>Source: <code>forge/data/commands.json</code> via <code>system.describe</code>. Inner <code>ctx.*</code> host calls are reference-only and listed under debug describe with <code>include_inner</code>.</p>
+        <section class="ns-section" id="commands-applet">
+        <h3>applet</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="applet.enable" data-summary="Enable a suspended applet.">
+            <td><code class="cmd-name">applet.enable</code></td>
+            <td>Enable a suspended applet.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/applet.enable.request.schema.json">request</a> / <a href="/schemas/commands/applet.enable.response.schema.json">response</a></td>
+          </tr><tr data-name="applet.install" data-summary="Install an applet from a manifest and sources.">
+            <td><code class="cmd-name">applet.install</code></td>
+            <td>Install an applet from a manifest and sources.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-good">stable</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/applet.install.request.schema.json">request</a> / <a href="/schemas/commands/applet.install.response.schema.json">response</a></td>
+          </tr><tr data-name="applet.suspend" data-summary="Suspend an active applet.">
+            <td><code class="cmd-name">applet.suspend</code></td>
+            <td>Suspend an active applet.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/applet.suspend.request.schema.json">request</a> / <a href="/schemas/commands/applet.suspend.response.schema.json">response</a></td>
+          </tr><tr data-name="applet.uninstall" data-summary="Uninstall an applet.">
+            <td><code class="cmd-name">applet.uninstall</code></td>
+            <td>Uninstall an applet.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/applet.uninstall.request.schema.json">request</a> / <a href="/schemas/commands/applet.uninstall.response.schema.json">response</a></td>
+          </tr><tr data-name="applet.upgrade" data-summary="Upgrade an applet to a new version.">
+            <td><code class="cmd-name">applet.upgrade</code></td>
+            <td>Upgrade an applet to a new version.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/applet.upgrade.request.schema.json">request</a> / <a href="/schemas/commands/applet.upgrade.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-audit">
+        <h3>audit</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="audit.query" data-summary="Query the durable security audit log.">
+            <td><code class="cmd-name">audit.query</code></td>
+            <td>Query the durable security audit log.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">admin</span></td>
+            <td>owner, maintainer, auditor</td>
+            <td><a href="/schemas/commands/audit.query.request.schema.json">request</a> / <a href="/schemas/commands/audit.query.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-bridge">
+        <h3>bridge</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="bridge.prepare_session" data-summary="Prepare a bridge runtime session.">
+            <td><code class="cmd-name">bridge.prepare_session</code></td>
+            <td>Prepare a bridge runtime session.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/bridge.prepare_session.request.schema.json">request</a> / <a href="/schemas/commands/bridge.prepare_session.response.schema.json">response</a></td>
+          </tr><tr data-name="bridge.record_call" data-summary="Record a bridge call in durable logs.">
+            <td><code class="cmd-name">bridge.record_call</code></td>
+            <td>Record a bridge call in durable logs.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/bridge.record_call.request.schema.json">request</a> / <a href="/schemas/commands/bridge.record_call.response.schema.json">response</a></td>
+          </tr><tr data-name="bridge.record_core_event" data-summary="Record a core event from the host bridge.">
+            <td><code class="cmd-name">bridge.record_core_event</code></td>
+            <td>Record a core event from the host bridge.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/bridge.record_core_event.request.schema.json">request</a> / <a href="/schemas/commands/bridge.record_core_event.response.schema.json">response</a></td>
+          </tr><tr data-name="bridge.record_crash_recovery" data-summary="Record crash recovery metadata for a bridge session.">
+            <td><code class="cmd-name">bridge.record_crash_recovery</code></td>
+            <td>Record crash recovery metadata for a bridge session.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/bridge.record_crash_recovery.request.schema.json">request</a> / <a href="/schemas/commands/bridge.record_crash_recovery.response.schema.json">response</a></td>
+          </tr><tr data-name="bridge.validate_envelope" data-summary="Validate a bridge envelope against policy.">
+            <td><code class="cmd-name">bridge.validate_envelope</code></td>
+            <td>Validate a bridge envelope against policy.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/bridge.validate_envelope.request.schema.json">request</a> / <a href="/schemas/commands/bridge.validate_envelope.response.schema.json">response</a></td>
+          </tr><tr data-name="bridge.validate_network_request" data-summary="Validate a bridge network request against policy.">
+            <td><code class="cmd-name">bridge.validate_network_request</code></td>
+            <td>Validate a bridge network request against policy.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/bridge.validate_network_request.request.schema.json">request</a> / <a href="/schemas/commands/bridge.validate_network_request.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-control">
+        <h3>control</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="control.backup_content_hash" data-summary="Compute a backup content hash.">
+            <td><code class="cmd-name">control.backup_content_hash</code></td>
+            <td>Compute a backup content hash.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.backup_validate" data-summary="Validate a backup export.">
+            <td><code class="cmd-name">control.backup_validate</code></td>
+            <td>Validate a backup export.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.compare_snapshot" data-summary="Compare two control snapshots.">
+            <td><code class="cmd-name">control.compare_snapshot</code></td>
+            <td>Compare two control snapshots.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.generate_token" data-summary="Generate a control-plane token.">
+            <td><code class="cmd-name">control.generate_token</code></td>
+            <td>Generate a control-plane token.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.json_matches_subset" data-summary="Check JSON subset containment.">
+            <td><code class="cmd-name">control.json_matches_subset</code></td>
+            <td>Check JSON subset containment.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.package_hashes" data-summary="Compute package content hashes.">
+            <td><code class="cmd-name">control.package_hashes</code></td>
+            <td>Compute package content hashes.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.package_validate" data-summary="Validate a control-plane package.">
+            <td><code class="cmd-name">control.package_validate</code></td>
+            <td>Validate a control-plane package.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.sign_payload" data-summary="Sign a control-plane payload.">
+            <td><code class="cmd-name">control.sign_payload</code></td>
+            <td>Sign a control-plane payload.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr><tr data-name="control.verify_signature" data-summary="Verify a control-plane signature.">
+            <td><code class="cmd-name">control.verify_signature</code></td>
+            <td>Verify a control-plane signature.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td>— / —</td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-db">
+        <h3>db</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="db.history" data-summary="Read the change history for a record.">
+            <td><code class="cmd-name">db.history</code></td>
+            <td>Read the change history for a record.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">public</span></td>
+            <td>owner, maintainer, editor, viewer, auditor</td>
+            <td><a href="/schemas/commands/db.history.request.schema.json">request</a> / <a href="/schemas/commands/db.history.response.schema.json">response</a></td>
+          </tr><tr data-name="db.restore" data-summary="Restore a record to a prior version.">
+            <td><code class="cmd-name">db.restore</code></td>
+            <td>Restore a record to a prior version.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, editor</td>
+            <td><a href="/schemas/commands/db.restore.request.schema.json">request</a> / <a href="/schemas/commands/db.restore.response.schema.json">response</a></td>
+          </tr><tr data-name="db.unwatch" data-summary="Cancel a live query subscription.">
+            <td><code class="cmd-name">db.unwatch</code></td>
+            <td>Cancel a live query subscription.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">public</span></td>
+            <td>owner, maintainer, editor, viewer, auditor</td>
+            <td><a href="/schemas/commands/db.unwatch.request.schema.json">request</a> / <a href="/schemas/commands/db.unwatch.response.schema.json">response</a></td>
+          </tr><tr data-name="db.watch" data-summary="Register a live query subscription.">
+            <td><code class="cmd-name">db.watch</code></td>
+            <td>Register a live query subscription.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">public</span></td>
+            <td>owner, maintainer, editor, viewer, auditor</td>
+            <td><a href="/schemas/commands/db.watch.request.schema.json">request</a> / <a href="/schemas/commands/db.watch.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-legacy">
+        <h3>legacy</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="legacy.core_step" data-summary="Legacy host compatibility step for mounted webapps.">
+            <td><code class="cmd-name">legacy.core_step</code></td>
+            <td>Legacy host compatibility step for mounted webapps.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/legacy.core_step.request.schema.json">request</a> / <a href="/schemas/commands/legacy.core_step.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-package">
+        <h3>package</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="package.activate_version" data-summary="Activate a specific webapp package version.">
+            <td><code class="cmd-name">package.activate_version</code></td>
+            <td>Activate a specific webapp package version.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/package.activate_version.request.schema.json">request</a> / <a href="/schemas/commands/package.activate_version.response.schema.json">response</a></td>
+          </tr><tr data-name="package.get_manifest" data-summary="Read the trusted manifest for a mounted webapp.">
+            <td><code class="cmd-name">package.get_manifest</code></td>
+            <td>Read the trusted manifest for a mounted webapp.</td>
+            <td><span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/package.get_manifest.request.schema.json">request</a> / <a href="/schemas/commands/package.get_manifest.response.schema.json">response</a></td>
+          </tr><tr data-name="package.get_permissions" data-summary="Read manifest permissions for a mounted webapp.">
+            <td><code class="cmd-name">package.get_permissions</code></td>
+            <td>Read manifest permissions for a mounted webapp.</td>
+            <td><span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/package.get_permissions.request.schema.json">request</a> / <a href="/schemas/commands/package.get_permissions.response.schema.json">response</a></td>
+          </tr><tr data-name="package.list_versions" data-summary="List installed versions for a webapp package.">
+            <td><code class="cmd-name">package.list_versions</code></td>
+            <td>List installed versions for a webapp package.</td>
+            <td><span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/package.list_versions.request.schema.json">request</a> / <a href="/schemas/commands/package.list_versions.response.schema.json">response</a></td>
+          </tr><tr data-name="package.provision_registry" data-summary="Provision the package registry for a mounted webapp.">
+            <td><code class="cmd-name">package.provision_registry</code></td>
+            <td>Provision the package registry for a mounted webapp.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/package.provision_registry.request.schema.json">request</a> / <a href="/schemas/commands/package.provision_registry.response.schema.json">response</a></td>
+          </tr><tr data-name="package.rollback_version" data-summary="Rollback a webapp package to a prior version.">
+            <td><code class="cmd-name">package.rollback_version</code></td>
+            <td>Rollback a webapp package to a prior version.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/package.rollback_version.request.schema.json">request</a> / <a href="/schemas/commands/package.rollback_version.response.schema.json">response</a></td>
+          </tr><tr data-name="package.set_status" data-summary="Set the lifecycle status for a webapp package.">
+            <td><code class="cmd-name">package.set_status</code></td>
+            <td>Set the lifecycle status for a webapp package.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">legacy</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/package.set_status.request.schema.json">request</a> / <a href="/schemas/commands/package.set_status.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-query">
+        <h3>query</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="query.execute" data-summary="Read records from a collection projection.">
+            <td><code class="cmd-name">query.execute</code></td>
+            <td>Read records from a collection projection.</td>
+            <td><span class="badge badge-good">stable</span> <span class="badge badge-tier">public</span></td>
+            <td>owner, maintainer, editor, viewer, auditor</td>
+            <td><a href="/schemas/commands/query.execute.request.schema.json">request</a> / <a href="/schemas/commands/query.execute.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-quota">
+        <h3>quota</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="quota.auto_quarantine" data-summary="Auto-quarantine a workspace that exceeded quotas.">
+            <td><code class="cmd-name">quota.auto_quarantine</code></td>
+            <td>Auto-quarantine a workspace that exceeded quotas.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">debug</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/quota.auto_quarantine.request.schema.json">request</a> / <a href="/schemas/commands/quota.auto_quarantine.response.schema.json">response</a></td>
+          </tr><tr data-name="quota.set" data-summary="Configure workspace quota policy.">
+            <td><code class="cmd-name">quota.set</code></td>
+            <td>Configure workspace quota policy.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">admin</span></td>
+            <td>owner</td>
+            <td><a href="/schemas/commands/quota.set.request.schema.json">request</a> / <a href="/schemas/commands/quota.set.response.schema.json">response</a></td>
+          </tr><tr data-name="quota.status" data-summary="Report workspace quota usage and limits.">
+            <td><code class="cmd-name">quota.status</code></td>
+            <td>Report workspace quota usage and limits.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, editor, viewer, auditor</td>
+            <td><a href="/schemas/commands/quota.status.request.schema.json">request</a> / <a href="/schemas/commands/quota.status.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-runtime">
+        <h3>runtime</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="runtime.replay" data-summary="Replay a recorded run deterministically.">
+            <td><code class="cmd-name">runtime.replay</code></td>
+            <td>Replay a recorded run deterministically.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, auditor</td>
+            <td><a href="/schemas/commands/runtime.replay.request.schema.json">request</a> / <a href="/schemas/commands/runtime.replay.response.schema.json">response</a></td>
+          </tr><tr data-name="runtime.replay_session" data-summary="Replay an ordered UI dispatch session.">
+            <td><code class="cmd-name">runtime.replay_session</code></td>
+            <td>Replay an ordered UI dispatch session.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, auditor</td>
+            <td><a href="/schemas/commands/runtime.replay_session.request.schema.json">request</a> / <a href="/schemas/commands/runtime.replay_session.response.schema.json">response</a></td>
+          </tr><tr data-name="runtime.run" data-summary="Run an applet entrypoint and record a deterministic run.">
+            <td><code class="cmd-name">runtime.run</code></td>
+            <td>Run an applet entrypoint and record a deterministic run.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-good">stable</span> <span class="badge badge-tier">public</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/runtime.run.request.schema.json">request</a> / <a href="/schemas/commands/runtime.run.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-schema">
+        <h3>schema</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="schema.apply_change" data-summary="Apply a schema change to the workspace.">
+            <td><code class="cmd-name">schema.apply_change</code></td>
+            <td>Apply a schema change to the workspace.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/schema.apply_change.request.schema.json">request</a> / <a href="/schemas/commands/schema.apply_change.response.schema.json">response</a></td>
+          </tr><tr data-name="schema.rebuild_indexes" data-summary="Rebuild expression indexes after schema changes.">
+            <td><code class="cmd-name">schema.rebuild_indexes</code></td>
+            <td>Rebuild expression indexes after schema changes.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/schema.rebuild_indexes.request.schema.json">request</a> / <a href="/schemas/commands/schema.rebuild_indexes.response.schema.json">response</a></td>
+          </tr><tr data-name="schema.validate_compatibility" data-summary="Validate schema compatibility for a proposed change.">
+            <td><code class="cmd-name">schema.validate_compatibility</code></td>
+            <td>Validate schema compatibility for a proposed change.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, editor, auditor</td>
+            <td><a href="/schemas/commands/schema.validate_compatibility.request.schema.json">request</a> / <a href="/schemas/commands/schema.validate_compatibility.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-sync">
+        <h3>sync</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="sync.export" data-summary="Export CRDT chunks for sync.">
+            <td><code class="cmd-name">sync.export</code></td>
+            <td>Export CRDT chunks for sync.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, auditor</td>
+            <td><a href="/schemas/commands/sync.export.request.schema.json">request</a> / <a href="/schemas/commands/sync.export.response.schema.json">response</a></td>
+          </tr><tr data-name="sync.import" data-summary="Import CRDT chunks from a sync peer.">
+            <td><code class="cmd-name">sync.import</code></td>
+            <td>Import CRDT chunks from a sync peer.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer</td>
+            <td><a href="/schemas/commands/sync.import.request.schema.json">request</a> / <a href="/schemas/commands/sync.import.response.schema.json">response</a></td>
+          </tr><tr data-name="sync.trust_peer" data-summary="Trust a sync peer for CRDT exchange.">
+            <td><code class="cmd-name">sync.trust_peer</code></td>
+            <td>Trust a sync peer for CRDT exchange.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">admin</span></td>
+            <td>owner</td>
+            <td><a href="/schemas/commands/sync.trust_peer.request.schema.json">request</a> / <a href="/schemas/commands/sync.trust_peer.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-system">
+        <h3>system</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="system.describe" data-summary="Return the role- and tier-scoped command catalog.">
+            <td><code class="cmd-name">system.describe</code></td>
+            <td>Return the role- and tier-scoped command catalog.</td>
+            <td><span class="badge badge-good">stable</span> <span class="badge badge-tier">public</span></td>
+            <td>owner, maintainer, editor, runner, viewer, auditor, reviewer</td>
+            <td><a href="/schemas/commands/system.describe.request.schema.json">request</a> / <a href="/schemas/commands/system.describe.response.schema.json">response</a></td>
+          </tr><tr data-name="system.trace" data-summary="Return recorded host-call effects for a run.">
+            <td><code class="cmd-name">system.trace</code></td>
+            <td>Return recorded host-call effects for a run.</td>
+            <td><span class="badge badge-good">stable</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, auditor</td>
+            <td><a href="/schemas/commands/system.trace.request.schema.json">request</a> / <a href="/schemas/commands/system.trace.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-ui">
+        <h3>ui</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="ui.dispatch_event" data-summary="Dispatch a UI event into an applet handler.">
+            <td><code class="cmd-name">ui.dispatch_event</code></td>
+            <td>Dispatch a UI event into an applet handler.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-good">stable</span> <span class="badge badge-tier">public</span></td>
+            <td>owner, maintainer, editor, runner</td>
+            <td><a href="/schemas/commands/ui.dispatch_event.request.schema.json">request</a> / <a href="/schemas/commands/ui.dispatch_event.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+<section class="ns-section" id="commands-workspace">
+        <h3>workspace</h3>
+        <table class="command-table"><thead><tr><th>Command</th><th>Summary</th><th>Flags</th><th>Roles</th><th>Schemas</th></tr></thead><tbody><tr data-name="workspace.create" data-summary="Create a new workspace.">
+            <td><code class="cmd-name">workspace.create</code></td>
+            <td>Create a new workspace.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner</td>
+            <td><a href="/schemas/commands/workspace.create.request.schema.json">request</a> / <a href="/schemas/commands/workspace.create.response.schema.json">response</a></td>
+          </tr><tr data-name="workspace.export" data-summary="Export a portable workspace bundle.">
+            <td><code class="cmd-name">workspace.export</code></td>
+            <td>Export a portable workspace bundle.</td>
+            <td><span class="badge badge-default">preview</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, auditor</td>
+            <td><a href="/schemas/commands/workspace.export.request.schema.json">request</a> / <a href="/schemas/commands/workspace.export.response.schema.json">response</a></td>
+          </tr><tr data-name="workspace.import" data-summary="Import a workspace bundle into the target workspace.">
+            <td><code class="cmd-name">workspace.import</code></td>
+            <td>Import a workspace bundle into the target workspace.</td>
+            <td><span class="badge badge-warn">mutates</span> <span class="badge badge-default">preview</span> <span class="badge badge-tier">admin</span></td>
+            <td>owner</td>
+            <td><a href="/schemas/commands/workspace.import.request.schema.json">request</a> / <a href="/schemas/commands/workspace.import.response.schema.json">response</a></td>
+          </tr><tr data-name="workspace.open" data-summary="Open or inspect the current workspace.">
+            <td><code class="cmd-name">workspace.open</code></td>
+            <td>Open or inspect the current workspace.</td>
+            <td><span class="badge badge-good">stable</span> <span class="badge badge-tier">operator</span></td>
+            <td>owner, maintainer, editor, viewer, auditor</td>
+            <td><a href="/schemas/commands/workspace.open.request.schema.json">request</a> / <a href="/schemas/commands/workspace.open.response.schema.json">response</a></td>
+          </tr></tbody></table>
+      </section>
+      </section>
+
+      <section id="cli" class="section">
+        <h2>CLI</h2>
+        <p>Binary: <code>forge</code> from <code>forge-cli</code>. Every outer command is reachable through <code>forge run &lt;name&gt;</code>.</p>
+        <article class="api-card"><h3><code>forge commands</code></h3><p>List catalog commands (tier/namespace filters, --json).</p></article>
+<article class="api-card"><h3><code>forge describe &lt;name&gt;</code></h3><p>Show one command descriptor and schema paths.</p></article>
+<article class="api-card"><h3><code>forge run &lt;name&gt;</code></h3><p>Execute any outer command locally or via --server.</p></article>
+<article class="api-card"><h3><code>forge trace &lt;run_id&gt;</code></h3><p>Read redacted host-call journal via system.trace.</p></article>
+<article class="api-card"><h3><code>forge demo</code></h3><p>M0a spine: install notes-lite, run, replay byte-identically.</p></article>
+<article class="api-card"><h3><code>forge help</code></h3><p>Catalog-generated help grouped by namespace.</p></article>
+      </section>
+
+      <section id="http" class="section">
+        <h2>HTTP Bridge</h2>
+        <p><code>forge-server</code> exposes a narrow JSON HTTP surface over the same core.</p>
+        <table class="method-table"><thead><tr><th>Method</th><th>Path</th><th>Summary</th></tr></thead><tbody><tr><td><code>GET</code></td><td><code>/health</code></td><td>Server liveness and console flag.</td></tr><tr><td><code>GET</code></td><td><code>/docs</code></td><td>This public API reference page.</td></tr><tr><td><code>GET</code></td><td><code>/console</code></td><td>Catalog-driven operator command console.</td></tr><tr><td><code>GET</code></td><td><code>/schemas/commands/*.json</code></td><td>Per-command JSON Schema assets.</td></tr><tr><td><code>POST</code></td><td><code>/bridge</code></td><td>CoreCommand JSON envelope in, CoreResponse out.</td></tr><tr><td><code>POST</code></td><td><code>/events/drain</code></td><td>Drain emitted CoreEvent batch from the workspace.</td></tr></tbody></table>
+      </section>
+
+      <section id="examples" class="section">
+        <h2>Example Applets</h2>
+        <p>All six bundled apps under <code>forge/examples/</code> with library + CLI e2e tests.</p>
+        <article class="example-card" id="example-notes-lite">
+        <h3>Notes Lite <code>notes-lite</code></h3>
+        <p>Create, search, edit, and delete notes using the storage bridge.</p>
+        <p class="meta">Path: <code>forge/examples/notes-lite/</code></p>
+        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+
+type NotesInput = {
+  title?: string;
+};
+
+export async function main(ctx: AppContext, input: NotesInput): Promise&lt;AppResult&gt; {
+  const title = input.title ?? &quot;Untitled&quot;;
+  const createdAt = ctx.time.now();
+
+  // SQLite write: one note record into the `notes` collection.
+  await ctx.db.insert(&quot;notes&quot;, { title, createdAt });
+
+  // Read the notes back so the rendered list reflects committed state.
+  const notes = await ctx.db.list(&quot;notes&quot;);
+
+  // Declarative UI tree: a header + a list of the note titles. The host diffs
+  // this against the previous render and emits a UI patch (the tree-patch link).
+  ctx.ui.render({
+    type: &quot;Stack&quot;,
+    testId: &quot;notes-lite-root&quot;,
+    direction: &quot;v&quot;,
+    gap: &quot;sm&quot;,
+    children: [
+      { type: &quot;Text&quot;, testId: &quot;notes-title&quot;, text: &quot;Notes&quot;, variant: &quot;title&quot; },
+      {
+        type: &quot;List&quot;,
+// ...</code></pre>
+        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples notes-lite</code></p>
+      </article>
+<article class="example-card" id="example-task-workbench">
+        <h3>Task Workbench <code>task-workbench</code></h3>
+        <p>Project/task workflow demo using core.step plus local storage.</p>
+        <p class="meta">Path: <code>forge/examples/task-workbench/</code></p>
+        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+
+type TaskInput = {
+  title?: string;
+  status?: string;
+};
+
+export async function main(ctx: AppContext, input: TaskInput): Promise&lt;AppResult&gt; {
+  const title = input.title ?? &quot;Review Forge migration&quot;;
+  const status = input.status ?? &quot;todo&quot;;
+  const createdAt = ctx.time.now();
+
+  const task = await ctx.db.insert(&quot;tasks&quot;, {
+    title,
+    status,
+    createdAt
+  });
+  await ctx.storage.set(&quot;app/last-task-id&quot;, String(task.id));
+
+  const openTasks = await ctx.db.query(&quot;tasks&quot;, {
+    from: &quot;tasks&quot;,
+    where: [&quot;status&quot;, &quot;=&quot;, status],
+    orderBy: [{ field: &quot;createdAt&quot;, dir: &quot;asc&quot; }]
+  });
+
+  ctx.ui.render({
+    type: &quot;Stack&quot;,
+    testId: &quot;task-workbench-root&quot;,
+// ...</code></pre>
+        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples task-workbench</code></p>
+      </article>
+<article class="example-card" id="example-file-transformer">
+        <h3>File Transformer <code>file-transformer</code></h3>
+        <p>Open a text file, transform content through Forge core, and save output.</p>
+        <p class="meta">Path: <code>forge/examples/file-transformer/</code></p>
+        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+
+type TransformInput = {
+  name?: string;
+  outputPath?: string;
+  bytesBase64?: string;
+};
+
+export async function main(ctx: AppContext, input: TransformInput): Promise&lt;AppResult&gt; {
+  const name = input.name ?? &quot;sample&quot;;
+  const outputPath = input.outputPath ?? &quot;out/sample.txt&quot;;
+  const bytesBase64 = input.bytesBase64 ?? &quot;Rm9yZ2UgZmlsZSB0cmFuc2Zvcm0K&quot;;
+  const write = await ctx.files.write({
+    handle: &quot;workspace_data&quot;,
+    path: outputPath,
+    bytes_base64: bytesBase64,
+    content_type: &quot;text/plain&quot;
+  });
+
+  await ctx.db.insert(&quot;transforms&quot;, {
+    name,
+    outputPath: write.path,
+    writtenBytes: write.written_bytes
+  });
+
+  ctx.ui.render({
+    type: &quot;Stack&quot;,
+    testId: &quot;file-transformer-root&quot;,
+// ...</code></pre>
+        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples file-transformer</code></p>
+      </article>
+<article class="example-card" id="example-api-dashboard">
+        <h3>API Dashboard <code>api-dashboard</code></h3>
+        <p>Network request demo with response table, tiny chart, and saved endpoint history.</p>
+        <p class="meta">Path: <code>forge/examples/api-dashboard/</code></p>
+        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+
+type ApiInput = {
+  path?: string;
+};
+
+export async function main(ctx: AppContext, input: ApiInput): Promise&lt;AppResult&gt; {
+  const path = input.path ?? &quot;weather&quot;;
+  const url = `https://api.example.com/public/${path}`;
+  const response = await ctx.net.fetch({
+    method: &quot;GET&quot;,
+    url,
+    response_content_type: &quot;application/json&quot;
+  });
+
+  await ctx.db.insert(&quot;requests&quot;, {
+    url,
+    status: response.status,
+    contentType: response.content_type ?? &quot;application/json&quot;
+  });
+  const requests = await ctx.db.list(&quot;requests&quot;);
+
+  ctx.ui.render({
+    type: &quot;Stack&quot;,
+    testId: &quot;api-dashboard-root&quot;,
+    direction: &quot;v&quot;,
+    gap: &quot;sm&quot;,
+    children: [
+// ...</code></pre>
+        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples api-dashboard</code></p>
+      </article>
+<article class="example-card" id="example-core-replay-lab">
+        <h3>Core Replay Lab <code>core-replay-lab</code></h3>
+        <p>Send events to Forge core, keep a replay log, and export the fixture.</p>
+        <p class="meta">Path: <code>forge/examples/core-replay-lab/</code></p>
+        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+
+type ReplayInput = {
+  event?: string;
+};
+
+export async function main(ctx: AppContext, input: ReplayInput): Promise&lt;AppResult&gt; {
+  const event = input.event ?? &quot;demo.run&quot;;
+  const logicalTime = ctx.time.now();
+  const sample = ctx.random.next();
+
+  await ctx.storage.set(&quot;app/last-event&quot;, event);
+  await ctx.db.insert(&quot;replay_events&quot;, {
+    event,
+    logicalTime,
+    sample
+  });
+  const events = await ctx.db.list(&quot;replay_events&quot;);
+
+  ctx.ui.render({
+    type: &quot;Stack&quot;,
+    testId: &quot;core-replay-lab-root&quot;,
+    direction: &quot;v&quot;,
+    gap: &quot;sm&quot;,
+    children: [
+      { type: &quot;Text&quot;, testId: &quot;core-replay-lab-title&quot;, text: &quot;Core Replay Lab&quot;, variant: &quot;title&quot; },
+      {
+        type: &quot;List&quot;,
+// ...</code></pre>
+        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples core-replay-lab</code></p>
+      </article>
+<article class="example-card" id="example-calendar-planner">
+        <h3>Calendar Planner <code>calendar-planner</code></h3>
+        <p>Local-first calendar planning with month navigation, agenda storage, and core event logging.</p>
+        <p class="meta">Path: <code>forge/examples/calendar-planner/</code></p>
+        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+
+type CalendarInput = {
+  title?: string;
+  date?: string;
+  start?: string;
+  durationMinutes?: number;
+  notes?: string;
+};
+
+export async function main(ctx: AppContext, input: CalendarInput): Promise&lt;AppResult&gt; {
+  const title = input.title ?? &quot;Planning session&quot;;
+  const date = input.date ?? &quot;2026-06-16&quot;;
+  const start = input.start ?? &quot;09:00&quot;;
+  const durationMinutes = input.durationMinutes ?? 60;
+  const notes = input.notes ?? &quot;&quot;;
+  const createdAt = ctx.time.now();
+
+  const event = await ctx.db.insert(&quot;calendar_events&quot;, {
+    title,
+    date,
+    start,
+    durationMinutes,
+    notes,
+    createdAt
+  });
+  await ctx.storage.set(&quot;app/last-calendar-event-id&quot;, String(event.id));
+// ...</code></pre>
+        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples calendar-planner</code></p>
+      </article>
+      </section>
+
+      <section id="validation" class="section">
+        <h2>Validation</h2>
+        <pre class="code-block"><code>node --no-warnings tools/build-forge-api-docs.mjs
+node --test tools/test/forge-api-docs.test.mjs
+cd forge && cargo test -p forge-cli --test forge_examples --locked
+cd forge && cargo test -p forge-cli --test bundled_apps_cli_e2e --locked
+node --no-warnings tools/export-public-contract.mjs --out artifacts/public-contract.json
+node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-contract.json --root .</code></pre>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

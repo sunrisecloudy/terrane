@@ -185,8 +185,13 @@ Required manifest grants for the example:
 }
 ```
 
+## Public API docs and tests
+
+- HTML reference: `node --no-warnings tools/build-forge-api-docs.mjs` then open `forge/docs/public-api/index.html` or `GET /docs` on `forge-server`.
+- Every bundled example under `forge/examples/` has library and CLI e2e coverage (`forge_examples`, `bundled_apps_cli_e2e`).
+- Contract drift gate: regenerate `artifacts/public-contract.json` after changing `forge-std.d.ts`, schemas, or examples.
+
 ## Current Gaps
 
-- `forge-ui` is still a stub; UI tree diffing/rendering is represented by fixtures and type declarations, not a complete renderer.
-- `forge-core` and `forge-cli` are still thin stubs; end-to-end command wiring is planned next.
-- The broad UI catalog in `forge/std/ui-catalog.d.ts` is a spec surface for upcoming renderer work. The smaller `forge/std/forge-std.d.ts` is the safer current applet authoring target.
+- `forge-ui` renderer coverage is still growing; the broad UI catalog in `forge/std/ui-catalog.d.ts` is a spec surface ahead of full renderer parity.
+- The smaller `forge/std/forge-std.d.ts` remains the safer current applet authoring target.

@@ -26,7 +26,10 @@ const PUBLIC_DOCS = [
   "prd-merged/DECISIONS.md",
   "forge/docs/applet-authoring-guide.md",
   "forge/docs/architecture-overview.md",
+  "forge/docs/cli-reference.md",
   "forge/docs/example-applets.md",
+  "forge/docs/http-bridge-reference.md",
+  "forge/docs/public-api-reference.md",
   "forge/spec/commands.md",
   "forge/spec/conformance-vector-format.md",
   "forge/spec/cross-engine-conformance.md",
@@ -44,6 +47,9 @@ const PUBLIC_CONTRACT_FILES = [
   "forge/std/README.md",
   "forge/std/forge-std.d.ts",
   "forge/std/ui-catalog.d.ts",
+  "forge/docs/public-api/index.html",
+  "forge/docs/public-api/styles.css",
+  "forge/docs/public-api/app.js",
 ];
 
 const PUBLIC_DATA_FILES_BASE = [
@@ -83,8 +89,10 @@ const PUBLIC_TOOL_FILES = [
   "tools/agent-adapter/catalog-to-tools.mjs",
   "tools/agent-adapter/execute-tool.mjs",
   "tools/agent-adapter/test/agent-adapter.test.mjs",
+  "tools/build-forge-api-docs.mjs",
   "tools/export-commands-catalog.mjs",
   "tools/export-public-contract.mjs",
+  "tools/test/forge-api-docs.test.mjs",
   "tools/package-release.mjs",
   "tools/verify-public-contract.mjs",
   "forge/crates/cli/tests/e2e.rs",

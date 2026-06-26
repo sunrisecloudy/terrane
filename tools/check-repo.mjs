@@ -21,6 +21,7 @@ await runCheck("postgres.static", checkPostgresSql);
 await runCheck("examples.validate", checkExamplePackages);
 await runCheck("examples.canonical", checkCanonicalExamples);
 await runCheck("bundled.apps.parity", checkBundledAppsParity);
+await runCheck("forge.api.docs", checkForgeApiDocs);
 await runCheck("spec.security_lint", checkSecurityLint);
 await runCheck("ci.workflow", checkCiWorkflow);
 await runCheck("performance.harness", checkPerformanceHarness);
@@ -297,6 +298,29 @@ function checkBundledAppsParity() {
   }
 
   return `bundled-apps=${bundledIds.length} forge/examples=${forgeIds.length} webapps/examples=${webappIds.length}`;
+}
+
+function checkForgeApiDocs() {
+  const docsDir = path.join(repoRoot, "forge", "docs", "public-api");
+  const required = ["index.html", "styles.css", "app.js"];
+  for (const fileName of required) {
+    const filePath = path.join(docsDir, fileName);
+    if (!fs.existsSync(filePath)) {
+      throw new Error(`missing generated API docs file: forge/docs/public-api/${fileName}`);
+    }
+  }
+
+  const html = fs.readFileSync(path.join(docsDir, "index.html"), "utf8");
+  const commands = readJson(path.join(repoRoot, "forge", "data", "commands.json"));
+  const stable = commands.commands.find((entry) => entry.name === "runtime.run");
+  if (!stable || !html.includes("runtime.run")) {
+    throw new Error("forge/docs/public-api/index.html is stale or missing runtime.run");
+  }
+  if (!html.includes("ctx.db") || !html.includes("Forge Public API Reference")) {
+    throw new Error("forge/docs/public-api/index.html is missing applet API sections");
+  }
+
+  return `forge/docs/public-api files=${required.length}`;
 }
 
 function listExampleAppIds(examplesRoot) {
