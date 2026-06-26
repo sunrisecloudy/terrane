@@ -1,0 +1,121 @@
+//! E2E for `terrane-mcp`: drive the real binary over stdin/stdout with JSON-RPC,
+//! install `todo-cli-collaborate`, then ADD a todo through the MCP `invoke` tool
+//! and READ IT BACK — the multi-app, select-then-act round-trip an MCP client
+//! (e.g. Claude Code) performs.
+
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+use tempfile::tempdir;
+use terrane_core::Core;
+use terrane_domain::Request;
+
+fn app_source() -> String {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/todo-cli-collaborate")
+        .canonicalize()
+        .expect("apps/todo-cli-collaborate exists")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+fn send(stdin: &mut impl Write, json: &str) {
+    stdin.write_all(json.as_bytes()).unwrap();
+    stdin.write_all(b"\n").unwrap();
+    stdin.flush().unwrap();
+}
+
+fn read_line(out: &mut impl BufRead) -> String {
+    let mut line = String::new();
+    out.read_line(&mut line).unwrap();
+    line
+}
+
+#[test]
+fn add_a_todo_through_mcp_and_read_it_back() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    // Install the app into this home (the MCP server will serve it).
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        core.dispatch(Request::new(
+            "app.add",
+            vec![
+                "todo-cli-collaborate".into(),
+                "Todo".into(),
+                "--source".into(),
+                app_source(),
+            ],
+        ))
+        .unwrap();
+    }
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_terrane-mcp"))
+        .env("TERRANE_HOME", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn terrane-mcp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+
+    // initialize handshake.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+    );
+    let init = read_line(&mut out);
+    assert!(init.contains("\"serverInfo\""), "init: {init}");
+    assert!(init.contains("\"id\":1"), "init id echo: {init}");
+
+    // initialized notification — no response expected.
+    send(&mut stdin, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+
+    // tools/list advertises the two tools.
+    send(&mut stdin, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    let tools = read_line(&mut out);
+    assert!(tools.contains("list_apps") && tools.contains("invoke"), "tools/list: {tools}");
+
+    // list_apps → the app is selectable.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_apps","arguments":{}}}"#,
+    );
+    let apps = read_line(&mut out);
+    assert!(apps.contains("todo-cli-collaborate"), "list_apps: {apps}");
+
+    // invoke add — take action on the app.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["buy milk"]}}}"#,
+    );
+    let added = read_line(&mut out);
+    assert!(added.contains("added: buy milk"), "invoke add: {added}");
+    assert!(added.contains("\"isError\":false"), "invoke add not error: {added}");
+
+    // invoke list — READ IT BACK.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"list","args":[]}}}"#,
+    );
+    let listed = read_line(&mut out);
+    assert!(listed.contains("buy milk"), "invoke list (read back): {listed}");
+
+    // Unknown tool is a tool error, not a crash.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"nope","arguments":{}}}"#,
+    );
+    let unknown = read_line(&mut out);
+    assert!(unknown.contains("unknown tool"), "unknown tool: {unknown}");
+
+    // EOF → the server exits cleanly.
+    drop(stdin);
+    let mut rest = String::new();
+    let _ = out.read_to_string(&mut rest);
+    assert!(child.wait().unwrap().success());
+}

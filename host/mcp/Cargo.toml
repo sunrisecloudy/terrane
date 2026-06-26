@@ -1,0 +1,25 @@
+# Standalone workspace: host/mcp is its own Cargo workspace (separate Cargo.lock
+# and target/) like the other hosts, so it isn't entangled with them. It path-
+# depends across the boundary into terrane-core's crates. QuickJS/Loro come
+# transitively through terrane-core (host.run runs an app's JS backend).
+[workspace]
+
+[package]
+name = "terrane-host-mcp"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "terrane-mcp"
+path = "src/main.rs"
+
+[dependencies]
+terrane-api = { path = "../../terrane-core/crates/terrane-api" }
+terrane-cli = { path = "../../terrane-core/crates/terrane-cli" }
+terrane-core = { path = "../../terrane-core/crates/terrane-core" }
+terrane-domain = { path = "../../terrane-core/crates/terrane-domain" }
+nanoserde = { version = "0.2", default-features = false, features = ["json"] }
+
+[dev-dependencies]
+tempfile = "3"
