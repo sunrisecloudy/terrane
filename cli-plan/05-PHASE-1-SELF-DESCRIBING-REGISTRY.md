@@ -59,12 +59,13 @@ role set; `authorize` consults the catalog — fewer places, one truth.)
 
 ### P1.5 — Author per-command schemas
 
-For each outer command, add `schemas/commands/<name>.request.schema.json` and
-`.response.schema.json`. Reuse existing object schemas under `schemas/` via
-`$ref` where the shapes already exist (manifests, records, bridge contracts).
-Start with the highest-traffic commands (`runtime.run`, `query.execute`,
-`applet.install`, `db.*`) and backfill; a missing schema is allowed in `preview`
-stability but blocks `stable`.
+For each of the **42** outer commands in `COMMANDS`, add
+`schemas/commands/<name>.request.schema.json` and `.response.schema.json`. Reuse
+existing object schemas under `schemas/` (23 files today) via `$ref` where shapes
+already exist. **MVP `stable` backfill** (ship before console/agent): `runtime.run`,
+`query.execute`, `applet.install`, `ui.dispatch_event`, `workspace.open`. The
+remaining commands stay `preview` until schemas land; a missing schema blocks
+`stable` but not registry completeness.
 
 ### P1.6 — Tests (the Phase-1 exit gate)
 

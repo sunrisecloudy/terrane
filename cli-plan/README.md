@@ -37,10 +37,14 @@ agent tool surface all fall out of it.
 
 ## Status
 
-Planning only. No implementation in this branch yet. The plan is written against
-the `main` snapshot at branch `plan/unified-cli`; `file:line` citations are
-accurate as of that snapshot and should be re-verified before coding (see the
-memory note on verifying recalled file references).
+Planning only. No implementation in this branch yet.
+
+**Code audit:** 2026-06-26 — `file:line` citations and the command/role tables
+in `01-FINDINGS.md` / `04-COMMAND-CATALOG.md` were verified against the workspace
+in this worktree. Key corrections: **42** `COMMANDS` entries (not ~46);
+`WorkspaceCore::handle` lives in `workspace.rs:986`; public-contract
+`CORE_COMMANDS` drifts from the live registry (F11). Re-verify before coding if
+`forge-core` moves.
 
 ## Naming
 

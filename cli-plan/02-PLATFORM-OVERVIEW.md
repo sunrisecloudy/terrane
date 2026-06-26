@@ -132,10 +132,10 @@ with a tier so each front-end can filter correctly:
 
 | Tier | Examples | CLI | Web console (public) | Agent |
 | --- | --- | --- | --- | --- |
-| `public` | `query.execute`, `runtime.run` | ✅ | ✅ | ✅ |
-| `operator` | `applet.install`, `workspace.export` | ✅ | ✅ (authed) | ✅ (authed) |
-| `admin` | `quota.set`, `audit.query` | ✅ (authed) | 🔒 opt-in | 🔒 opt-in |
-| `debug` | `control.*`, `legacy.core_step` | 🔒 feature-gated | ❌ | ❌ |
+| `public` | `query.execute`, `runtime.run`, `ui.dispatch_event` | ✅ | ✅ | ✅ |
+| `operator` | `applet.install`, `runtime.replay`, `workspace.export` | ✅ | ✅ (authed) | ✅ (authed) |
+| `admin` | `quota.set`, `audit.query`, `sync.trust_peer` | ✅ (authed) | 🔒 opt-in | 🔒 opt-in |
+| `debug` | `bridge.*`, `package.*`, `legacy.core_step`, `control.*` | 🔒 feature-gated | ❌ | ❌ |
 
 Detailed in [10-SECURITY-AND-RBAC.md](10-SECURITY-AND-RBAC.md).
 

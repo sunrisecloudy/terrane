@@ -14,6 +14,9 @@ In-Rust table (authoritative) vs. checked-in `forge/data/commands.json`.
 - **Open:** do we still want `forge/data/commands.json` checked in (generated,
   CI-verified) so JS tools read it without running `system.describe`? Leaning
   yes, generated-and-verified.
+- **Verified 2026-06-26:** the live registry has 42 outer commands; the current
+  `CORE_COMMANDS` export list is missing 13 of them and lists 5 spec-only names
+  with no handler (F11). M4 drift gate is required, not nice-to-have.
 
 ## Q2 — One role table, or two with a cross-check?
 

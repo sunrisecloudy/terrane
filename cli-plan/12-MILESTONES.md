@@ -20,15 +20,17 @@ Phase 2 lands — they can proceed in parallel or in priority order.
   commands; invariant tests.
 - **Exit:** build fails on an undescribed command; role/`authorize` cross-check
   passes; catalog serializes deterministically.
-- **Effort:** the bulk of the work — a few focused days (mechanical but
-  touches every command + the auth refactor).
+- **Effort:** the bulk of the work — registry fold + role-table unification is
+  ~1–2 days; **per-command schema authoring for 42 outer commands** is the long
+  pole (backfill `stable` for MVP commands first; rest stay `preview`).
 
 ### M2 — Discoverable surface (Phase 2)
 
 - `system.describe` with role/tier filtering + stable `catalogVersion`.
+- `system.trace` — read-only `RunRecord` / `RecordedCall` query (see doc `14`).
 - **Exit:** any front-end gets the role-scoped catalog via one command; hash
-  stable.
-- **Effort:** ~1 day.
+  stable; `system.trace` returns redacted run effects without mutation.
+- **Effort:** ~1–2 days (`system.trace` adds a handler over existing journal data).
 
 ### M3 — Generic CLI (Phase 3)
 
@@ -98,6 +100,7 @@ node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-
 | Schema authoring is large | med | `preview` stability + raw-JSON fallback; backfill highest-traffic first |
 | Accidental admin exposure | low | `public`-vs-privileged build test; tier filtering server-side |
 | Console scope creep | med | it is a *renderer*; no command logic allowed in the UI |
+| Contract export already drifts (F11) | **confirmed** | M4 catalog-as-export closes it on day one |
 | Contract churn breaks Premium pin | low | intentional pin refresh per `CLAUDE.md`; drift gate makes it explicit |
 | `control.*`/legacy surface confusion | low | `debug` tier excluded from public surface by default |
 

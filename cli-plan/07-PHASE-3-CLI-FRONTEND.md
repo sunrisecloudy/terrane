@@ -23,6 +23,9 @@ forge run <name> [--payload <json> | --payload - | --file <path>]
                  [--server <url>] [--json] [--dry-run]
         Issue a command and print the CoreResponse.
 
+forge trace <run_id> [--since-seq N] [--method M] [--json]
+        Read inner host-call effects for a run via `system.trace` (doc `14`).
+
 forge demo                       # unchanged M0a spine gate
 forge help | --help | -h         # usage (now generated from the catalog)
 ```
@@ -31,6 +34,10 @@ forge help | --help | -h         # usage (now generated from the catalog)
 
 - **`run` builds the envelope** (`request_id`, `actor`, `workspace_id`, `name`,
   `payload`) — the same shape every shell builds (F5), now in one Rust place.
+  **Default local actor:** reuse the existing demo pattern —
+  `ActorContext::owner("cli")` (`forge/crates/cli/src/lib.rs:194`). `--role` /
+  `--actor` override for local core only; against `--server`, identity is always
+  the server's injected actor (see [10](10-SECURITY-AND-RBAC.md)).
 - **Transport:** default opens a local core directly via `forge-core`
   (persistent path or in-memory with `--in-memory`); `--server <url>` POSTs to
   `/bridge` instead (`forge/crates/server/src/lib.rs:92`). Bearer token via

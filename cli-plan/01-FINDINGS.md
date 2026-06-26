@@ -1,17 +1,19 @@
 # 01 — Findings (the evidence)
 
 This is the audit that justifies the plan. Every claim is backed by a
-`file:line` citation against the `main` snapshot. Re-verify before coding.
+`file:line` citation. **Last verified against the workspace:** 2026-06-26
+(`plan/unified-cli` worktree). Re-verify before coding if `forge-core` moves.
 
 ## F1 — There is exactly one command facade
 
 Every action is a `CoreCommand { request_id, actor, workspace_id, applet_id,
 name, payload }` handled by `WorkspaceCore::handle`.
 
-- Envelope type: `forge/crates/domain/src/lib.rs:138` (name + `serde_json::Value`
+- Envelope type: `forge/crates/domain/src/lib.rs:139` (name + `serde_json::Value`
   payload + actor context + workspace id).
-- Dispatch: `forge/crates/core/src/commands/mod.rs` — `handle` runs the RBAC gate
-  then calls `Registry::dispatch` (`commands/mod.rs:212`).
+- Facade: `WorkspaceCore::handle` at `forge/crates/core/src/workspace.rs:986` —
+  RBAC via `authorize()` then `Registry::dispatch`
+  (`forge/crates/core/src/commands/mod.rs:212`).
 
 **Implication:** there is a single chokepoint to describe and to expose. Nothing
 about "every action" is scattered.
@@ -20,7 +22,7 @@ about "every action" is scattered.
 
 The registry is a `&[(&str, Handler)]` table, not a hand-written match.
 
-- `COMMANDS` table: `forge/crates/core/src/commands/mod.rs:68` — ~46 entries,
+- `COMMANDS` table: `forge/crates/core/src/commands/mod.rs:68` — **42 entries**,
   each `("name", WorkspaceCore::cmd_x)`.
 - Debug-gated `CONTROL_COMMANDS` (feature `control`): `commands/mod.rs:150` — 9
   more entries.
@@ -84,11 +86,11 @@ noted in [13-OPEN-QUESTIONS.md](13-OPEN-QUESTIONS.md)).
 
 ## F6 — The HTTP server already exposes a generic command endpoint
 
-- `POST /bridge` deserializes a `CoreCommand` and calls `core.handle`:
-  `forge/crates/server/src/lib.rs:92`–`135` (server injects its own actor /
-  workspace, ignoring client-supplied identity).
+- `POST /bridge` route: `forge/crates/server/src/lib.rs:92`–`94`; handler
+  deserializes a `CoreCommand`, injects trusted actor/workspace (`:122`–`:123`),
+  and calls `core.handle` (`:128`).
 - `GET /health`: `server/src/lib.rs:84`. `POST /events/drain`:
-  `server/src/lib.rs:96`.
+  `server/src/lib.rs:96`–`:98`.
 - Optional bearer-token auth (`Authorization: Bearer` or `x-forge-server-token`),
   401 with `www-authenticate`: `server/src/lib.rs:157`.
 
@@ -126,10 +128,11 @@ This is the **one real gap**, and everything in the plan builds on closing it.
   schemas: `forge/spec/commands.md` (table of name → request fields → response →
   roles). It explicitly notes "There are no per-command Rust request/response
   structs yet" (`forge/spec/commands.md:52`).
-- The public contract enumerates **command names only**, from hardcoded arrays —
-  no schemas: `tools/export-public-contract.mjs:86`–`121` (`bridge.methods`),
-  `:213`–`243` (`generatedAppBoundary.api` / `ctx.*`). Verify checks hashes/
-  presence, not schema correctness: `tools/verify-public-contract.mjs`.
+- The public contract enumerates **command names only**, from a hardcoded
+  `CORE_COMMANDS` array — no schemas:
+  `tools/export-public-contract.mjs:86`–`121`. The inner `ctx.*` surface is a
+  separate hardcoded list at `:229` (`generatedAppBoundary.api`). Verify checks
+  hashes/presence, not schema correctness: `tools/verify-public-contract.mjs`.
 - Domain `*.schema.json` files exist for *objects* (manifests, records, bridge
   contracts — ~23 files under `schemas/`) but there is **no name → schema
   registry** for commands.
@@ -137,6 +140,25 @@ This is the **one real gap**, and everything in the plan builds on closing it.
 **Implication:** the keystone work (Phase 1, [05](05-PHASE-1-SELF-DESCRIBING-REGISTRY.md))
 is to attach machine-readable metadata to each registry entry and make it the
 single source the CLI, console, agent, *and* the public contract all read.
+
+## F11 — Public contract export drifts from the live registry
+
+The hand-maintained `CORE_COMMANDS` list in `export-public-contract.mjs` does
+**not** match `COMMANDS` today (verified 2026-06-26):
+
+- **In the registry but missing from export** (13): `workspace.create`,
+  `applet.enable`, `legacy.core_step`, `db.watch`, `db.unwatch`, `db.history`,
+  `db.restore`, `quota.auto_quarantine`, and four `package.*` commands
+  (`provision_registry`, `list_versions`, `activate_version`, `rollback_version`,
+  `set_status`).
+- **In export but not in the registry** (5): `permission.request_grant`,
+  `permission.revoke`, `record.put`, `record.patch`, `record.delete` — these
+  appear in `forge/spec/commands.md` as planned CR-A2 commands but have no
+  handler in `forge-core` yet.
+
+**Implication:** the contract drift gate (Phase 11 / M4) is not optional — it
+closes a real gap today. The catalog must become the export source so the
+contract, runtime, and `commands.md` cannot disagree silently.
 
 ## F10 — Dev control planes already prove "arbitrary command invocation"
 
@@ -164,4 +186,5 @@ extension of it.)
 | Generic CLI library functions | ✅ exists | F8 |
 | Generic CLI front-end (argv) | ⚠️ only `demo` | F8 |
 | Machine-readable per-command metadata | ❌ **the gap** | F9 |
+| Contract export matches live registry | ❌ drifts today | F11 |
 | Auto-generated console / agent surface | ❌ depends on the gap | F6, F9 |

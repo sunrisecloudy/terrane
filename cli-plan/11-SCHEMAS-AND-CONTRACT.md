@@ -32,16 +32,19 @@ home, many readers.
 
 ## Wiring into the public contract
 
-Today `tools/export-public-contract.mjs` emits **command names only**, from
-hardcoded arrays (`:86`–`121`), and `verify` checks hashes/presence, not schema
-correctness. The plan upgrades this:
+Today `tools/export-public-contract.mjs` emits **command names only**, from a
+hardcoded `CORE_COMMANDS` array (`:86`–`121`) that **already drifts** from the
+live `COMMANDS` registry ([01-FINDINGS.md](01-FINDINGS.md) F11). `verify` checks
+hashes/presence, not schema correctness. The plan upgrades this:
 
 ### E1 — Export the catalog, not a hand-list
 
-Replace the hardcoded `bridge.methods` array with the **emitted catalog** (names
+Replace the hardcoded `CORE_COMMANDS` array with the **emitted catalog** (names
 + tiers + role sets + schema refs + `catalogVersion`). Source the export from
 `system.describe` output (or the same static table), so the contract and the
-runtime cannot disagree.
+runtime cannot disagree. Planned-but-unimplemented names in `forge/spec/commands.md`
+(e.g. `record.put`, `permission.request_grant`) export only once they have
+registry handlers.
 
 ### E2 — Add a catalog drift gate
 
@@ -54,7 +57,7 @@ metadata.
 ### E3 — Respect the generated-app boundary
 
 The contract already carries `generatedAppBoundary.api` (the `ctx.*` inner
-surface, `:213`). Keep inner vs outer separate in the export: outer commands under
+surface, `:229`). Keep inner vs outer separate in the export: outer commands under
 the command catalog; `ctx.*` under the generated-app boundary. Visibility `debug`
 commands are **excluded** from the public contract entirely.
 

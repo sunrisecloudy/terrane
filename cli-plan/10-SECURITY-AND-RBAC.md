@@ -27,7 +27,7 @@ The catalog adds `visibility` per command so each front-end can filter what it
 
 | Tier | Meaning | CLI | Web console (public build) | Agent (default) |
 | --- | --- | --- | --- | --- |
-| `public` | safe, app-facing reads/runs | ✅ | ✅ | ✅ |
+| `public` | safe, app-facing reads/runs (`query.execute`, `runtime.run`, `ui.dispatch_event`) | ✅ | ✅ | ✅ |
 | `operator` | install/manage/export | ✅ | ✅ (authed) | ✅ (authed) |
 | `admin` | quotas, audit, trust, provisioning | ✅ (authed) | 🔒 opt-in flag | 🔒 opt-in |
 | `debug` | `control.*`, `legacy.core_step`, bridge gates | 🔒 feature-gated | ❌ | ❌ |

@@ -60,22 +60,23 @@ shape (final Rust form decided in [05](05-PHASE-1-SELF-DESCRIBING-REGISTRY.md)):
 
 ## Today's outer commands (to be cataloged)
 
-Derived from `COMMANDS` (`forge/crates/core/src/commands/mod.rs:68`) and roles
-from `auth.rs`. **Roles below are indicative** and must be reconciled against
-`auth.rs` during Phase 1 — this table is the worksheet, not the final truth.
+**42 commands** in `COMMANDS` (`forge/crates/core/src/commands/mod.rs:68`–`:146`)
+plus **9** feature-gated `control.*` entries (`:150`–`:187`). Roles below are
+**verified against `auth.rs`** (2026-06-26); Phase 1 must derive descriptors
+from the unified role table, not re-type these by hand.
 
 ### workspace.*
 
-| Command | Mutates | Vis | Indicative roles |
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
 | `workspace.create` | ✅ | operator | Owner |
-| `workspace.open` | — | operator | Owner, Maintainer |
+| `workspace.open` | — | operator | Owner, Maintainer, Editor, Viewer, Auditor |
 | `workspace.export` | — | operator | Owner, Maintainer, Auditor |
 | `workspace.import` | ✅ | admin | Owner |
 
 ### applet.* (lifecycle)
 
-| Command | Mutates | Vis | Indicative roles |
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
 | `applet.install` | ✅ | operator | Owner, Maintainer |
 | `applet.enable` | ✅ | operator | Owner, Maintainer |
@@ -85,71 +86,82 @@ from `auth.rs`. **Roles below are indicative** and must be reconciled against
 
 ### runtime.* / ui.*
 
-| Command | Mutates | Vis | Indicative roles |
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
 | `runtime.run` | ✅ | public | Owner, Maintainer, Editor, Runner |
-| `runtime.replay` | — | public | Owner, Maintainer, Editor, Runner |
-| `runtime.replay_session` | — | public | Owner, Maintainer, Editor, Runner |
+| `runtime.replay` | — | operator | Owner, Maintainer, Auditor |
+| `runtime.replay_session` | — | operator | Owner, Maintainer, Auditor |
 | `ui.dispatch_event` | ✅ | public | Owner, Maintainer, Editor, Runner |
+
+> **Visibility note:** `runtime.replay*` is oversight/audit (not run-capable
+> roles). Tier `operator`, not `public`, satisfies the Phase-1 invariant that
+> `public` commands are reachable by the broad read/run membership.
 
 ### query.* / db.*
 
-| Command | Mutates | Vis | Indicative roles |
+| Command | Mutates | Vis | Roles (`auth.rs`) + capabilities |
 | --- | --- | --- | --- |
-| `query.execute` | — | public | Owner, Maintainer, Editor, Viewer, Auditor |
-| `db.watch` | — | public | (as `query.execute`) + `db.read:<coll>` |
-| `db.unwatch` | ✅ | public | (idempotent) |
-| `db.history` | — | public | `db.read:<coll>` |
-| `db.restore` | ✅ | operator | `db.write:<coll>` |
+| `query.execute` | — | public | Owner, Maintainer, Editor, Viewer, Auditor + `db.read:<coll>` |
+| `db.watch` | — | public | same roles as `query.execute` + `db.read:<coll>` |
+| `db.unwatch` | ✅ | public | same roles as `query.execute` |
+| `db.history` | — | public | same roles as `query.execute` + `db.read:<coll>` |
+| `db.restore` | ✅ | operator | Owner, Maintainer, Editor + `db.write:<coll>` |
 
 ### schema.*
 
-| Command | Mutates | Vis | Indicative roles |
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
 | `schema.apply_change` | ✅ | operator | Owner, Maintainer |
-| `schema.validate_compatibility` | — | operator | Owner, Maintainer |
+| `schema.validate_compatibility` | — | operator | Owner, Maintainer, Editor, Auditor |
 | `schema.rebuild_indexes` | ✅ | operator | Owner, Maintainer |
 
 ### sync.*
 
-| Command | Mutates | Vis | Indicative roles |
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
 | `sync.trust_peer` | ✅ | admin | Owner |
-| `sync.export` | — | operator | Owner, Maintainer |
+| `sync.export` | — | operator | Owner, Maintainer, Auditor |
 | `sync.import` | ✅ | operator | Owner, Maintainer (per-chunk membership check) |
 
 ### quota.* / audit.*
 
-| Command | Mutates | Vis | Indicative roles |
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
-| `quota.status` | — | operator | Owner, Maintainer, Auditor |
+| `quota.status` | — | operator | Owner, Maintainer, Editor, Viewer, Auditor |
 | `quota.set` | ✅ | admin | Owner |
-| `quota.auto_quarantine` | ✅ | admin | Owner |
-| `audit.query` | — | admin | Owner, Auditor (oversight) |
+| `quota.auto_quarantine` | ✅ | debug | Owner, Maintainer, Editor, Runner (host-runtime group) |
+| `audit.query` | — | admin | Owner, Maintainer, Auditor |
 
 ### package.* (legacy webapp compatibility)
 
-| Command | Mutates | Vis | Notes |
+All seven share the **run-capable host-runtime role set** in `auth.rs:63`–`:76`
+(same as `legacy.core_step` / `bridge.*`). Visibility `debug` — shell-internal,
+not operator CLI surface by default.
+
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
-| `package.get_manifest` | — | operator | legacy stability |
-| `package.get_permissions` | — | operator | legacy |
-| `package.provision_registry` | ✅ | admin | legacy |
-| `package.list_versions` | — | operator | legacy |
-| `package.activate_version` | ✅ | operator | legacy |
-| `package.rollback_version` | ✅ | operator | legacy |
-| `package.set_status` | ✅ | admin | legacy |
+| `package.get_manifest` | — | debug | Owner, Maintainer, Editor, Runner |
+| `package.get_permissions` | — | debug | Owner, Maintainer, Editor, Runner |
+| `package.provision_registry` | ✅ | debug | Owner, Maintainer, Editor, Runner |
+| `package.list_versions` | — | debug | Owner, Maintainer, Editor, Runner |
+| `package.activate_version` | ✅ | debug | Owner, Maintainer, Editor, Runner |
+| `package.rollback_version` | ✅ | debug | Owner, Maintainer, Editor, Runner |
+| `package.set_status` | ✅ | debug | Owner, Maintainer, Editor, Runner |
 
 ### bridge.* (Phase C gates) + legacy
 
-| Command | Mutates | Vis | Notes |
+Host-runtime group (`auth.rs:63`–`:76`): Owner, Maintainer, Editor, Runner.
+Visibility `debug` — internal shell gates, not default CLI/console surface.
+
+| Command | Mutates | Vis | Roles (`auth.rs`) |
 | --- | --- | --- | --- |
-| `bridge.validate_network_request` | — | debug | internal gate |
-| `bridge.validate_envelope` | — | debug | internal gate |
-| `bridge.prepare_session` | ✅ | debug | internal |
-| `bridge.record_call` | ✅ | debug | internal |
-| `bridge.record_core_event` | ✅ | debug | internal |
-| `bridge.record_crash_recovery` | ✅ | debug | internal |
-| `legacy.core_step` | ✅ | debug | v0.4 compat, time-limited |
+| `bridge.validate_network_request` | — | debug | Owner, Maintainer, Editor, Runner |
+| `bridge.validate_envelope` | — | debug | Owner, Maintainer, Editor, Runner |
+| `bridge.prepare_session` | ✅ | debug | Owner, Maintainer, Editor, Runner |
+| `bridge.record_call` | ✅ | debug | Owner, Maintainer, Editor, Runner |
+| `bridge.record_core_event` | ✅ | debug | Owner, Maintainer, Editor, Runner |
+| `bridge.record_crash_recovery` | ✅ | debug | Owner, Maintainer, Editor, Runner |
+| `legacy.core_step` | ✅ | debug | Owner, Maintainer, Editor, Runner |
 
 ### control.* (feature `control`, debug-only)
 
@@ -170,10 +182,18 @@ never targetable by `forge run`. These map to the `HostBridge` methods
 for the two-door decision and how the journal is exposed via `system.trace`.
 
 `ctx.db`, `ctx.net`, `ctx.files`, `ctx.ui`, `ctx.secrets`, `ctx.timetravel`,
-`ctx.future` (and the lower-level `db.*`, `files.*`, `net.fetch`,
-`network.egress`, `random.next` host-calls these resolve to). Enumerated in the
-runtime/host specs and `generatedAppBoundary.api` of the public contract
-(`tools/export-public-contract.mjs:213`).
+`ctx.future` (and the lower-level `HostBridge` methods in
+`forge/crates/runtime/src/bridge.rs:31`–`:196` — `storage_*`, `db_*`, `ui_render`,
+`net_fetch`, `files_write`, `secret_store`, `log`, etc.). The public contract
+lists the high-level `ctx.*` namespaces at
+`tools/export-public-contract.mjs:229` (`generatedAppBoundary.api`).
+
+### Contract export drift (today)
+
+The hand-maintained `CORE_COMMANDS` array in `export-public-contract.mjs:86`–`:121`
+is **out of sync** with `COMMANDS` — see [01-FINDINGS.md](01-FINDINGS.md) F11.
+Phase 11 replaces that list with the emitted catalog so export, registry, and
+`forge/spec/commands.md` converge.
 
 ## Where the catalog data physically lives
 
