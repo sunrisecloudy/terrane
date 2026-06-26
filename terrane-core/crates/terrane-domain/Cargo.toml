@@ -7,3 +7,6 @@ license.workspace = true
 [lib]
 name = "terrane_domain"
 path = "src/lib.rs"
+
+[dependencies]
+serde.workspace = true
