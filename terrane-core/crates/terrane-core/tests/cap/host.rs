@@ -2,6 +2,7 @@
 //! a sandboxed app-scoped `ctx.resource.kv`. Uses tiny inline bundles so the
 //! tests are self-contained (the full todo e2e lives in terrane-cli).
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -250,4 +251,99 @@ fn manifest_decodes_string_escapes() {
     core.dispatch(req("host.run", &["esc", "set", "a", "1"]))
         .unwrap();
     assert_eq!(core.state().kv.data["esc"]["a"], "1");
+}
+
+/// Drift guard: the `ctx.resource.*` surface documented in `docs/APP_API.md` must
+/// match EXACTLY what the runtime installs. Add/remove a resource method (or its
+/// doc) without updating the other → this fails. Mirrors the `terrane_ffi.h`
+/// header-contract test: the doc stays human-written, the code keeps it honest.
+#[test]
+fn resource_api_doc_matches_the_runtime() {
+    let doc = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/APP_API.md"),
+    )
+    .expect("docs/APP_API.md exists");
+    let documented = documented_resource_api(&doc);
+    assert!(
+        !documented.is_empty(),
+        "docs/APP_API.md should document ctx.resource.<ns>.<method>(…) calls"
+    );
+
+    // Grant exactly the documented namespaces, then ask the LIVE runtime what it
+    // actually exposes on ctx.resource.
+    let namespaces: BTreeSet<&str> = documented.iter().filter_map(|m| m.split('.').nth(2)).collect();
+    let resources_json = namespaces
+        .iter()
+        .map(|n| format!("\"{n}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let introspect = r#"
+        function handle(input) {
+            var out = [];
+            var nss = Object.keys(ctx.resource).sort();
+            for (var i = 0; i < nss.length; i++) {
+                var ns = nss[i];
+                var ms = Object.keys(ctx.resource[ns]).sort();
+                for (var j = 0; j < ms.length; j++) {
+                    out.push("ctx.resource." + ns + "." + ms[j]);
+                }
+            }
+            return out.join("\n");
+        }
+    "#;
+
+    let dir = tempdir().unwrap();
+    let src = write_bundle(
+        dir.path(),
+        "introspect",
+        &format!(
+            r#"{{ "id": "introspect", "name": "Introspect", "backend": "main.js", "resources": [{resources_json}] }}"#
+        ),
+        introspect,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["introspect", "Introspect", "--source", &src]))
+        .unwrap();
+    core.dispatch(req("host.run", &["introspect", "list"])).unwrap();
+    let runtime: BTreeSet<String> = core
+        .take_last_output()
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    assert_eq!(
+        documented, runtime,
+        "docs/APP_API.md ctx.resource surface differs from the runtime.\n\
+         documented-only: {:?}\n runtime-only: {:?}",
+        documented.difference(&runtime).collect::<Vec<_>>(),
+        runtime.difference(&documented).collect::<Vec<_>>(),
+    );
+}
+
+/// Extract every `ctx.resource.<ns>.<method>(` call mentioned in the doc.
+fn documented_resource_api(doc: &str) -> BTreeSet<String> {
+    const NEEDLE: &str = "ctx.resource.";
+    let mut out = BTreeSet::new();
+    let mut rest = doc;
+    while let Some(pos) = rest.find(NEEDLE) {
+        let after = &rest[pos + NEEDLE.len()..];
+        rest = after;
+        let ns_len = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+            .unwrap_or(after.len());
+        let ns = &after[..ns_len];
+        let Some(tail) = after[ns_len..].strip_prefix('.') else {
+            continue;
+        };
+        let m_len = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len());
+        let method = &tail[..m_len];
+        if !ns.is_empty() && !method.is_empty() && tail[m_len..].starts_with('(') {
+            out.insert(format!("ctx.resource.{ns}.{method}"));
+        }
+    }
+    out
 }

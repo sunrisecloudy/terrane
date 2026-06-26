@@ -8,7 +8,8 @@ native hosts, FFI, policy, …), we start from the one thing that is actually
 *the system* and add nothing until a real need forces it.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the high-level layer model
-(apps ▸ native host ▸ terrane-core ▸ resources).
+(apps ▸ native host ▸ terrane-core ▸ resources), and [docs/APP_API.md](docs/APP_API.md)
+for the JavaScript API an app's backend and UI get (drift-guarded by a test).
 
 ## The one rule
 
