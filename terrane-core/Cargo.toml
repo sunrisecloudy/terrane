@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/terrane-domain",
+  "crates/terrane-core",
+  "crates/terrane-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+terrane-domain = { path = "crates/terrane-domain" }
+terrane-core = { path = "crates/terrane-core" }
+
+[profile.dev]
+debug = 1
