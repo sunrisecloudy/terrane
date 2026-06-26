@@ -1,0 +1,929 @@
+{
+  "catalogVersion": "sha256:0c73ef387e7b9628bbc338a2abd7e5c996b64e0c143a7a061258941803a32978",
+  "commands": [
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "applet.enable",
+      "namespace": "applet",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Enable a suspended applet.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "applet.install",
+      "namespace": "applet",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "stable",
+      "summary": "Install an applet from a manifest and sources.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "applet.suspend",
+      "namespace": "applet",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Suspend an active applet.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "applet.uninstall",
+      "namespace": "applet",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Uninstall an applet.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "applet.upgrade",
+      "namespace": "applet",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Upgrade an applet to a new version.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "audit.query",
+      "namespace": "audit",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Query the durable security audit log.",
+      "surface": "outer",
+      "visibility": "admin"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "bridge.prepare_session",
+      "namespace": "bridge",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Prepare a bridge runtime session.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "bridge.record_call",
+      "namespace": "bridge",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Record a bridge call in durable logs.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "bridge.record_core_event",
+      "namespace": "bridge",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Record a core event from the host bridge.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "bridge.record_crash_recovery",
+      "namespace": "bridge",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Record crash recovery metadata for a bridge session.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "bridge.validate_envelope",
+      "namespace": "bridge",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Validate a bridge envelope against policy.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "bridge.validate_network_request",
+      "namespace": "bridge",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Validate a bridge network request against policy.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.backup_content_hash",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Compute a backup content hash.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.backup_validate",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Validate a backup export.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.compare_snapshot",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Compare two control snapshots.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.generate_token",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Generate a control-plane token.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.json_matches_subset",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Check JSON subset containment.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.package_hashes",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Compute package content hashes.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.package_validate",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Validate a control-plane package.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.sign_payload",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Sign a control-plane payload.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "control.verify_signature",
+      "namespace": "control",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Verify a control-plane signature.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "db.history",
+      "namespace": "db",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "viewer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Read the change history for a record.",
+      "surface": "outer",
+      "visibility": "public"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "db.restore",
+      "namespace": "db",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Restore a record to a prior version.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "db.unwatch",
+      "namespace": "db",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "viewer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Cancel a live query subscription.",
+      "surface": "outer",
+      "visibility": "public"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "db.watch",
+      "namespace": "db",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "viewer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Register a live query subscription.",
+      "surface": "outer",
+      "visibility": "public"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "legacy.core_step",
+      "namespace": "legacy",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "Legacy host compatibility step for mounted webapps.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "package.activate_version",
+      "namespace": "package",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "Activate a specific webapp package version.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "package.get_manifest",
+      "namespace": "package",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "Read the trusted manifest for a mounted webapp.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "package.get_permissions",
+      "namespace": "package",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "Read manifest permissions for a mounted webapp.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "package.list_versions",
+      "namespace": "package",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "List installed versions for a webapp package.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "package.provision_registry",
+      "namespace": "package",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "Provision the package registry for a mounted webapp.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "package.rollback_version",
+      "namespace": "package",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "Rollback a webapp package to a prior version.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "package.set_status",
+      "namespace": "package",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "legacy",
+      "summary": "Set the lifecycle status for a webapp package.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "query.execute",
+      "namespace": "query",
+      "payload_schema": "schemas/commands/query.execute.request.schema.json",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "viewer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "stable",
+      "summary": "Read records from a collection projection.",
+      "surface": "outer",
+      "visibility": "public"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "quota.auto_quarantine",
+      "namespace": "quota",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Auto-quarantine a workspace that exceeded quotas.",
+      "surface": "outer",
+      "visibility": "debug"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "quota.set",
+      "namespace": "quota",
+      "required_roles": [
+        "owner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Configure workspace quota policy.",
+      "surface": "outer",
+      "visibility": "admin"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "quota.status",
+      "namespace": "quota",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "viewer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Report workspace quota usage and limits.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "runtime.replay",
+      "namespace": "runtime",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Replay a recorded run deterministically.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "runtime.replay_session",
+      "namespace": "runtime",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Replay an ordered UI dispatch session.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "runtime.run",
+      "namespace": "runtime",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "stable",
+      "summary": "Run an applet entrypoint and record a deterministic run.",
+      "surface": "outer",
+      "visibility": "public"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "schema.apply_change",
+      "namespace": "schema",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Apply a schema change to the workspace.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "schema.rebuild_indexes",
+      "namespace": "schema",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Rebuild expression indexes after schema changes.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "schema.validate_compatibility",
+      "namespace": "schema",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Validate schema compatibility for a proposed change.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "sync.export",
+      "namespace": "sync",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Export CRDT chunks for sync.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "sync.import",
+      "namespace": "sync",
+      "required_roles": [
+        "owner",
+        "maintainer"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Import CRDT chunks from a sync peer.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "sync.trust_peer",
+      "namespace": "sync",
+      "required_roles": [
+        "owner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Trust a sync peer for CRDT exchange.",
+      "surface": "outer",
+      "visibility": "admin"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "system.describe",
+      "namespace": "system",
+      "payload_schema": "schemas/commands/system.describe.request.schema.json",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner",
+        "viewer",
+        "auditor",
+        "reviewer"
+      ],
+      "since": "m0a",
+      "stability": "stable",
+      "summary": "Return the role- and tier-scoped command catalog.",
+      "surface": "outer",
+      "visibility": "public"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "system.trace",
+      "namespace": "system",
+      "payload_schema": "schemas/commands/system.trace.request.schema.json",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "stable",
+      "summary": "Return recorded host-call effects for a run.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "ui.dispatch_event",
+      "namespace": "ui",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "runner"
+      ],
+      "since": "m0a",
+      "stability": "stable",
+      "summary": "Dispatch a UI event into an applet handler.",
+      "surface": "outer",
+      "visibility": "public"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "workspace.create",
+      "namespace": "workspace",
+      "required_roles": [
+        "owner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Create a new workspace.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "workspace.export",
+      "namespace": "workspace",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Export a portable workspace bundle.",
+      "surface": "outer",
+      "visibility": "operator"
+    },
+    {
+      "effectful": false,
+      "mutates": true,
+      "name": "workspace.import",
+      "namespace": "workspace",
+      "required_roles": [
+        "owner"
+      ],
+      "since": "m0a",
+      "stability": "preview",
+      "summary": "Import a workspace bundle into the target workspace.",
+      "surface": "outer",
+      "visibility": "admin"
+    },
+    {
+      "effectful": false,
+      "mutates": false,
+      "name": "workspace.open",
+      "namespace": "workspace",
+      "payload_schema": "schemas/commands/workspace.open.request.schema.json",
+      "required_roles": [
+        "owner",
+        "maintainer",
+        "editor",
+        "viewer",
+        "auditor"
+      ],
+      "since": "m0a",
+      "stability": "stable",
+      "summary": "Open or inspect the current workspace.",
+      "surface": "outer",
+      "visibility": "operator"
+    }
+  ],
+  "effectiveRole": "owner",
+  "maxTier": "debug",
+  "roles": [
+    "owner",
+    "maintainer",
+    "editor",
+    "runner",
+    "viewer",
+    "auditor",
+    "reviewer"
+  ],
+  "runtimeVersion": "0.1.0",
+  "tiers": [
+    "public",
+    "operator",
+    "admin",
+    "debug"
+  ]
+}

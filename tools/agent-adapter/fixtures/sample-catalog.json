@@ -1,0 +1,147 @@
+{
+  "catalogVersion": "fixture:sample-catalog",
+  "commands": [
+    {
+      "name": "query.execute",
+      "namespace": "query",
+      "summary": "Execute a read-only collection query.",
+      "surface": "outer",
+      "mutates": false,
+      "effectful": false,
+      "visibility": "public",
+      "required_roles": ["owner", "maintainer", "editor", "viewer", "auditor"],
+      "capabilities": ["db.read:<collection>"],
+      "payload_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["collection"],
+        "properties": {
+          "collection": { "type": "string", "minLength": 1 },
+          "filter": { "type": "object" },
+          "limit": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "response_schema": null,
+      "events": [],
+      "stability": "stable",
+      "since": "m0a"
+    },
+    {
+      "name": "runtime.run",
+      "namespace": "runtime",
+      "summary": "Run an applet deterministically.",
+      "surface": "outer",
+      "mutates": true,
+      "effectful": false,
+      "visibility": "public",
+      "required_roles": ["owner", "maintainer", "editor", "runner"],
+      "capabilities": [],
+      "payload_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["app_id"],
+        "properties": {
+          "app_id": { "type": "string", "minLength": 1 }
+        }
+      },
+      "events": ["ui.patch", "record.changed"],
+      "stability": "stable",
+      "since": "m0a"
+    },
+    {
+      "name": "ui.dispatch_event",
+      "namespace": "ui",
+      "summary": "Dispatch a UI event into a running session.",
+      "surface": "outer",
+      "mutates": true,
+      "effectful": false,
+      "visibility": "public",
+      "required_roles": ["owner", "maintainer", "editor", "runner"],
+      "capabilities": [],
+      "payload_schema": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["session_id", "event"],
+        "properties": {
+          "session_id": { "type": "string", "minLength": 1 },
+          "event": { "type": "object" }
+        }
+      },
+      "events": ["ui.patch"],
+      "stability": "stable",
+      "since": "m0a"
+    },
+    {
+      "name": "applet.install",
+      "namespace": "applet",
+      "summary": "Install an applet from a manifest and sources.",
+      "surface": "outer",
+      "mutates": true,
+      "effectful": false,
+      "visibility": "operator",
+      "required_roles": ["owner", "maintainer"],
+      "capabilities": [],
+      "payload_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "events": ["applet.installed"],
+      "stability": "stable",
+      "since": "m0a"
+    },
+    {
+      "name": "quota.set",
+      "namespace": "quota",
+      "summary": "Configure workspace quota policy.",
+      "surface": "outer",
+      "mutates": true,
+      "effectful": false,
+      "visibility": "admin",
+      "required_roles": ["owner"],
+      "capabilities": [],
+      "payload_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "events": [],
+      "stability": "stable",
+      "since": "m0a"
+    },
+    {
+      "name": "ctx.db.insert",
+      "namespace": "ctx",
+      "summary": "Inner host bridge reference: insert a collection record.",
+      "surface": "inner",
+      "mutates": true,
+      "effectful": false,
+      "visibility": "public",
+      "required_roles": ["owner", "maintainer", "editor", "runner"],
+      "capabilities": ["db.write:<collection>"],
+      "payload_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "events": ["record.changed"],
+      "stability": "stable",
+      "since": "m0a"
+    },
+    {
+      "name": "bridge.record_call",
+      "namespace": "bridge",
+      "summary": "Record a host bridge call for replay.",
+      "surface": "outer",
+      "mutates": true,
+      "effectful": false,
+      "visibility": "debug",
+      "required_roles": ["owner", "maintainer", "editor", "runner"],
+      "capabilities": [],
+      "payload_schema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "events": [],
+      "stability": "stable",
+      "since": "m0a"
+    }
+  ]
+}
