@@ -10,7 +10,7 @@ This document indexes every **generated-app-visible** and **operator-visible** F
 | Core commands | Operators, agents, shells | `forge/data/commands.json` | Core Commands |
 | CLI | Local developers, CI | `forge/crates/cli` | CLI |
 | HTTP bridge | Embedded hosts, web console | `forge/crates/server` | HTTP Bridge |
-| Example applets | Authors learning the API | `forge/examples/*` | Examples |
+| Example apps | Authors learning bridge/runtime patterns | `webapps/examples/*` | Examples |
 
 ## Regenerate the page
 
@@ -26,7 +26,7 @@ Output lands in `forge/docs/public-api/` (`index.html`, `styles.css`, `app.js`).
 - [Applet authoring guide](applet-authoring-guide.md) — how to write `main(ctx, input)` applets
 - [CLI reference](cli-reference.md) — `forge commands`, `describe`, `run`, `trace`, `demo`
 - [HTTP bridge reference](http-bridge-reference.md) — `/bridge`, `/events/drain`, `/schemas/commands/*`
-- [Example applets](example-applets.md) — bundled `forge/examples/*` coverage matrix
+- [Example apps](example-applets.md) — bundled `webapps/examples/*` coverage matrix
 
 ## Contract export
 

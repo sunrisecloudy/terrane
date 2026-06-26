@@ -10,7 +10,7 @@ const rootDir = path.resolve(import.meta.dirname, "../../..");
 const engineRoomPath = path.join(rootDir, "runtime-web/engine-room.js");
 const runtimePath = path.join(rootDir, "runtime-web/runtime.js");
 const themePath = path.join(rootDir, "runtime-web/theme.js");
-const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
+const runtimeExampleAppIds = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner", "test-camera"];
 const generatedAppCsp = "default-src 'none'; script-src 'self' app-runtime:; style-src 'self' app-runtime:; img-src 'self' app-runtime: data: blob:; font-src 'self' app-runtime:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
 test("runtime bridge budget warnings are delivered through AppRuntime.on", async () => {
@@ -976,7 +976,12 @@ test("runtime can mount every bundled app in a sandboxed frame", async () => {
         name: appId,
         description: `${appId} sandbox fixture`,
         storagePrefix: `${appId}:`,
-        permissions: ["storage.read"],
+        permissions: appId === "test-camera"
+          ? ["storage.read", "storage.write", "resource.invoke", "resource.read", "resource.materialize", "notification.toast"]
+          : ["storage.read"],
+        capabilities: appId === "test-camera"
+          ? { required: ["storage.read", "storage.write", "resource.invoke", "resource.read", "resource.materialize"] }
+          : undefined,
         resourceBudget: { maxBridgeCallsPerMinute: 20 },
       },
     ]),
@@ -990,7 +995,9 @@ test("runtime can mount every bundled app in a sandboxed frame", async () => {
       const frame = await mountAppAtIndex(harness, index);
       assert.equal(harness.document.getElementById("active-title").textContent, appId);
       assert.equal(frame.title, appId);
-      assert.equal(frame.attributes.get("sandbox"), "allow-scripts");
+      const expectedSandbox = appId === "test-camera" ? "allow-scripts allow-same-origin" : "allow-scripts";
+      assert.equal(frame.attributes.get("sandbox"), expectedSandbox);
+      assert.equal(frame.attributes.get("allow"), appId === "test-camera" ? "camera" : "");
       assert.equal(frame.attributes.get("csp"), generatedAppCsp);
       assert.equal(frame.srcdoc.includes("<base "), false);
       assert.match(frame.srcdoc, new RegExp(`<link rel="stylesheet" href="/webapps/examples/${appId}/styles\\.css">`));

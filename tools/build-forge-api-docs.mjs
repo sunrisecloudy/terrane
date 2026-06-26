@@ -20,50 +20,50 @@ const APPLET_API = [
     title: "Database (`ctx.db`)",
     summary: "Collection-scoped JSON records with deterministic replay.",
     methods: [
-      { name: "insert(collection, record)", returns: "Promise<{ id: string }>", example: "forge/examples/notes-lite" },
-      { name: "get(collection, id)", returns: "Promise<DbRecord | null>", example: "forge/examples/task-workbench" },
-      { name: "list(collection)", returns: "Promise<DbRecord[]>", example: "forge/examples/notes-lite" },
-      { name: "query(plan)", returns: "Promise<DbRecord[]>", example: "forge/examples/task-workbench" },
-      { name: "query(collection, plan)", returns: "Promise<DbRecord[]>", example: "forge/examples/task-workbench" },
+      { name: "insert(collection, record)", returns: "Promise<{ id: string }>", example: "webapps/examples/notes-lite" },
+      { name: "get(collection, id)", returns: "Promise<DbRecord | null>", example: "webapps/examples/task-workbench" },
+      { name: "list(collection)", returns: "Promise<DbRecord[]>", example: "webapps/examples/notes-lite" },
+      { name: "query(plan)", returns: "Promise<DbRecord[]>", example: "webapps/examples/task-workbench" },
+      { name: "query(collection, plan)", returns: "Promise<DbRecord[]>", example: "webapps/examples/task-workbench" },
     ],
     snippet: `const id = await ctx.db.insert("notes", { title: "Hello" });
 const rows = await ctx.db.list("notes");
 const row = await ctx.db.get("notes", id);`,
-    test: "cargo test -p forge-cli --test forge_examples notes-lite",
+    test: "cargo run -p forge-cli -- demo",
   },
   {
     id: "ctx.storage",
     title: "Storage (`ctx.storage`)",
     summary: "Per-applet key/value storage scoped by manifest grants.",
     methods: [
-      { name: "get(key)", returns: "Promise<string | null>", example: "forge/examples/task-workbench" },
-      { name: "set(key, value)", returns: "Promise<void>", example: "forge/examples/core-replay-lab" },
-      { name: "delete(key)", returns: "Promise<void>", example: "forge/examples/core-replay-lab" },
-      { name: "list(prefix)", returns: "Promise<string[]>", example: "forge/examples/core-replay-lab" },
+      { name: "get(key)", returns: "Promise<string | null>", example: "webapps/examples/task-workbench" },
+      { name: "set(key, value)", returns: "Promise<void>", example: "webapps/examples/core-replay-lab" },
+      { name: "delete(key)", returns: "Promise<void>", example: "webapps/examples/core-replay-lab" },
+      { name: "list(prefix)", returns: "Promise<string[]>", example: "webapps/examples/core-replay-lab" },
     ],
     snippet: `await ctx.storage.set("app/last-run", runId);
 const value = await ctx.storage.get("app/last-run");`,
-    test: "cargo test -p forge-cli --test forge_examples core-replay-lab",
+    test: "node --test tools/reference-host/test/example-load-acceptance.test.js",
   },
   {
     id: "ctx.net",
     title: "Network (`ctx.net`)",
     summary: "Manifest-gated HTTP fetch; replay serves recorded responses.",
-    methods: [{ name: "fetch(request)", returns: "Promise<NetResponse>", example: "forge/examples/api-dashboard" }],
+    methods: [{ name: "fetch(request)", returns: "Promise<NetResponse>", example: "webapps/examples/api-dashboard" }],
     snippet: `const response = await ctx.net.fetch({
   method: "GET",
   url: "https://api.example.com/public/weather",
   response_content_type: "application/json"
 });`,
-    test: "cargo test -p forge-cli --test forge_examples api-dashboard",
+    test: "node --test tools/reference-host/test/example-load-acceptance.test.js",
   },
   {
     id: "ctx.files",
     title: "Files (`ctx.files`)",
     summary: "Sandboxed read/write via trusted host handles (never raw paths).",
     methods: [
-      { name: "read(request)", returns: "Promise<FileReadResponse>", example: "forge/examples/file-transformer" },
-      { name: "write(request)", returns: "Promise<FileWriteResponse>", example: "forge/examples/file-transformer" },
+      { name: "read(request)", returns: "Promise<FileReadResponse>", example: "webapps/examples/file-transformer" },
+      { name: "write(request)", returns: "Promise<FileWriteResponse>", example: "webapps/examples/file-transformer" },
     ],
     snippet: `await ctx.files.write({
   handle: "workspace_data",
@@ -71,13 +71,13 @@ const value = await ctx.storage.get("app/last-run");`,
   bytes_base64: Buffer.from("hello").toString("base64"),
   mode: "create_or_truncate"
 });`,
-    test: "cargo test -p forge-cli --test forge_examples file-transformer",
+    test: "node --test tools/reference-host/test/example-load-acceptance.test.js",
   },
   {
     id: "ctx.ui",
     title: "UI (`ctx.ui`)",
     summary: "Declarative component trees rendered by the host.",
-    methods: [{ name: "render(tree)", returns: "void", example: "forge/examples/notes-lite" }],
+    methods: [{ name: "render(tree)", returns: "void", example: "webapps/examples/notes-lite" }],
     snippet: `ctx.ui.render({
   type: "Stack",
   testId: "root",
@@ -92,27 +92,27 @@ const value = await ctx.storage.get("app/last-run");`,
     id: "ctx.time",
     title: "Time (`ctx.time`)",
     summary: "Deterministic logical clock for replayable runs.",
-    methods: [{ name: "now()", returns: "number", example: "forge/examples/notes-lite" }],
+    methods: [{ name: "now()", returns: "number", example: "webapps/examples/notes-lite" }],
     snippet: "const createdAt = ctx.time.now();",
-    test: "cargo test -p forge-cli --test forge_examples notes-lite",
+    test: "cargo run -p forge-cli -- demo",
   },
   {
     id: "ctx.random",
     title: "Random (`ctx.random`)",
     summary: "Seeded deterministic PRNG recorded into the run trace.",
-    methods: [{ name: "next()", returns: "number", example: "forge/examples/core-replay-lab" }],
+    methods: [{ name: "next()", returns: "number", example: "webapps/examples/core-replay-lab" }],
     snippet: "const roll = ctx.random.next();",
-    test: "cargo test -p forge-cli --test forge_examples core-replay-lab",
+    test: "node --test tools/reference-host/test/example-load-acceptance.test.js",
   },
   {
     id: "main",
     title: "Entrypoint (`main`)",
     summary: "Every applet exports async main(ctx, input) returning AppResult.",
-    methods: [{ name: "main(ctx, input)", returns: "Promise<AppResult>", example: "forge/examples/*" }],
+    methods: [{ name: "main(ctx, input)", returns: "Promise<AppResult>", example: "forge/fixtures/demo-notes-lite" }],
     snippet: `export async function main(ctx: AppContext, input: unknown): Promise<AppResult> {
   return { ok: true, value: { received: input } };
 }`,
-    test: "cargo test -p forge-cli --test bundled_apps_cli_e2e",
+    test: "cargo run -p forge-cli -- demo",
   },
 ];
 
@@ -217,20 +217,20 @@ function renderCommandSection(commands) {
 function renderExamples(apps) {
   return apps
     .map((app) => {
-      const examplePath = `forge/examples/${app.id}/src/main.ts`;
+      const appJsPath = path.join(repoRoot, "webapps/examples", app.id, "app.js");
       let snippet = "";
-      if (fs.existsSync(path.join(repoRoot, examplePath))) {
-        const source = fs.readFileSync(path.join(repoRoot, examplePath), "utf8");
-        const lines = source.split("\n").filter((l) => !l.startsWith("//")).slice(0, 28);
+      if (fs.existsSync(appJsPath)) {
+        const source = fs.readFileSync(appJsPath, "utf8");
+        const lines = source.split("\n").slice(0, 28);
         snippet = lines.join("\n").trim();
         if (source.split("\n").length > 28) snippet += "\n// ...";
       }
       return `<article class="example-card" id="example-${app.id}">
         <h3>${escapeHtml(app.name)} <code>${escapeHtml(app.id)}</code></h3>
         <p>${escapeHtml(app.description)}</p>
-        <p class="meta">Path: <code>forge/examples/${escapeHtml(app.id)}/</code></p>
+        <p class="meta">Path: <code>webapps/examples/${escapeHtml(app.id)}/</code></p>
         <pre class="code-block"><code>${escapeHtml(snippet || "(see example on disk)")}</code></pre>
-        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples ${escapeHtml(app.id)}</code></p>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
       </article>`;
     })
     .join("\n");
@@ -328,7 +328,7 @@ function buildHtml({ catalog, apps }) {
 
       <section id="examples" class="section">
         <h2>Example Applets</h2>
-        <p>All six bundled apps under <code>forge/examples/</code> with library + CLI e2e tests.</p>
+        <p>All bundled apps under <code>webapps/examples/</code> (reference-host validation + smoke/micro tests).</p>
         ${renderExamples(apps)}
       </section>
 
@@ -336,8 +336,8 @@ function buildHtml({ catalog, apps }) {
         <h2>Validation</h2>
         <pre class="code-block"><code>node --no-warnings tools/build-forge-api-docs.mjs
 node --test tools/test/forge-api-docs.test.mjs
-cd forge && cargo test -p forge-cli --test forge_examples --locked
-cd forge && cargo test -p forge-cli --test bundled_apps_cli_e2e --locked
+node --test --no-warnings tools/reference-host/test/package-validator.test.js
+cd forge && cargo run -p forge-cli -- demo
 node --no-warnings tools/export-public-contract.mjs --out artifacts/public-contract.json
 node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-contract.json --root .</code></pre>
       </section>

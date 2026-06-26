@@ -14,7 +14,7 @@
       <p class="lede">Applet host surface (<code>@forge/std</code>), 53 core commands, CLI, and HTTP bridge — generated from the live catalog.</p>
       <div class="hero-meta">
         <span>Catalog <code>sha256:0b9a087b2a2dd601dbba2258a58adeaa286621705303e9a257368bf55e937aba</code></span>
-        <span>Generated <time datetime="2026-06-26T03:55:51.853Z">2026-06-26T03:55:51.853Z</time></span>
+        <span>Generated <time datetime="2026-06-26T04:23:56.768Z">2026-06-26T04:23:56.768Z</time></span>
       </div>
     </div>
   </header>
@@ -52,47 +52,47 @@
         <article class="api-card" id="ctx.db">
       <h3>Database (`ctx.db`)</h3>
       <p>Collection-scoped JSON records with deterministic replay.</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>insert(collection, record)</code></td><td><code>Promise&lt;{ id: string }&gt;</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr><tr><td><code>get(collection, id)</code></td><td><code>Promise&lt;DbRecord | null&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr><tr><td><code>list(collection)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr><tr><td><code>query(plan)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr><tr><td><code>query(collection, plan)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>insert(collection, record)</code></td><td><code>Promise&lt;{ id: string }&gt;</code></td><td><a href="#example-notes-lite">webapps/examples/notes-lite</a></td></tr><tr><td><code>get(collection, id)</code></td><td><code>Promise&lt;DbRecord | null&gt;</code></td><td><a href="#example-task-workbench">webapps/examples/task-workbench</a></td></tr><tr><td><code>list(collection)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-notes-lite">webapps/examples/notes-lite</a></td></tr><tr><td><code>query(plan)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-task-workbench">webapps/examples/task-workbench</a></td></tr><tr><td><code>query(collection, plan)</code></td><td><code>Promise&lt;DbRecord[]&gt;</code></td><td><a href="#example-task-workbench">webapps/examples/task-workbench</a></td></tr></tbody></table>
       <pre class="code-block"><code>const id = await ctx.db.insert(&quot;notes&quot;, { title: &quot;Hello&quot; });
 const rows = await ctx.db.list(&quot;notes&quot;);
 const row = await ctx.db.get(&quot;notes&quot;, id);</code></pre>
-      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples notes-lite</code></p>
+      <p class="meta">Test: <code>cargo run -p forge-cli -- demo</code></p>
     </article>
 <article class="api-card" id="ctx.storage">
       <h3>Storage (`ctx.storage`)</h3>
       <p>Per-applet key/value storage scoped by manifest grants.</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>get(key)</code></td><td><code>Promise&lt;string | null&gt;</code></td><td><a href="#example-task-workbench">forge/examples/task-workbench</a></td></tr><tr><td><code>set(key, value)</code></td><td><code>Promise&lt;void&gt;</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr><tr><td><code>delete(key)</code></td><td><code>Promise&lt;void&gt;</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr><tr><td><code>list(prefix)</code></td><td><code>Promise&lt;string[]&gt;</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>get(key)</code></td><td><code>Promise&lt;string | null&gt;</code></td><td><a href="#example-task-workbench">webapps/examples/task-workbench</a></td></tr><tr><td><code>set(key, value)</code></td><td><code>Promise&lt;void&gt;</code></td><td><a href="#example-core-replay-lab">webapps/examples/core-replay-lab</a></td></tr><tr><td><code>delete(key)</code></td><td><code>Promise&lt;void&gt;</code></td><td><a href="#example-core-replay-lab">webapps/examples/core-replay-lab</a></td></tr><tr><td><code>list(prefix)</code></td><td><code>Promise&lt;string[]&gt;</code></td><td><a href="#example-core-replay-lab">webapps/examples/core-replay-lab</a></td></tr></tbody></table>
       <pre class="code-block"><code>await ctx.storage.set(&quot;app/last-run&quot;, runId);
 const value = await ctx.storage.get(&quot;app/last-run&quot;);</code></pre>
-      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples core-replay-lab</code></p>
+      <p class="meta">Test: <code>node --test tools/reference-host/test/example-load-acceptance.test.js</code></p>
     </article>
 <article class="api-card" id="ctx.net">
       <h3>Network (`ctx.net`)</h3>
       <p>Manifest-gated HTTP fetch; replay serves recorded responses.</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>fetch(request)</code></td><td><code>Promise&lt;NetResponse&gt;</code></td><td><a href="#example-api-dashboard">forge/examples/api-dashboard</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>fetch(request)</code></td><td><code>Promise&lt;NetResponse&gt;</code></td><td><a href="#example-api-dashboard">webapps/examples/api-dashboard</a></td></tr></tbody></table>
       <pre class="code-block"><code>const response = await ctx.net.fetch({
   method: &quot;GET&quot;,
   url: &quot;https://api.example.com/public/weather&quot;,
   response_content_type: &quot;application/json&quot;
 });</code></pre>
-      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples api-dashboard</code></p>
+      <p class="meta">Test: <code>node --test tools/reference-host/test/example-load-acceptance.test.js</code></p>
     </article>
 <article class="api-card" id="ctx.files">
       <h3>Files (`ctx.files`)</h3>
       <p>Sandboxed read/write via trusted host handles (never raw paths).</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>read(request)</code></td><td><code>Promise&lt;FileReadResponse&gt;</code></td><td><a href="#example-file-transformer">forge/examples/file-transformer</a></td></tr><tr><td><code>write(request)</code></td><td><code>Promise&lt;FileWriteResponse&gt;</code></td><td><a href="#example-file-transformer">forge/examples/file-transformer</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>read(request)</code></td><td><code>Promise&lt;FileReadResponse&gt;</code></td><td><a href="#example-file-transformer">webapps/examples/file-transformer</a></td></tr><tr><td><code>write(request)</code></td><td><code>Promise&lt;FileWriteResponse&gt;</code></td><td><a href="#example-file-transformer">webapps/examples/file-transformer</a></td></tr></tbody></table>
       <pre class="code-block"><code>await ctx.files.write({
   handle: &quot;workspace_data&quot;,
   path: &quot;out/summary.txt&quot;,
   bytes_base64: Buffer.from(&quot;hello&quot;).toString(&quot;base64&quot;),
   mode: &quot;create_or_truncate&quot;
 });</code></pre>
-      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples file-transformer</code></p>
+      <p class="meta">Test: <code>node --test tools/reference-host/test/example-load-acceptance.test.js</code></p>
     </article>
 <article class="api-card" id="ctx.ui">
       <h3>UI (`ctx.ui`)</h3>
       <p>Declarative component trees rendered by the host.</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>render(tree)</code></td><td><code>void</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>render(tree)</code></td><td><code>void</code></td><td><a href="#example-notes-lite">webapps/examples/notes-lite</a></td></tr></tbody></table>
       <pre class="code-block"><code>ctx.ui.render({
   type: &quot;Stack&quot;,
   testId: &quot;root&quot;,
@@ -106,25 +106,25 @@ const value = await ctx.storage.get(&quot;app/last-run&quot;);</code></pre>
 <article class="api-card" id="ctx.time">
       <h3>Time (`ctx.time`)</h3>
       <p>Deterministic logical clock for replayable runs.</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>now()</code></td><td><code>number</code></td><td><a href="#example-notes-lite">forge/examples/notes-lite</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>now()</code></td><td><code>number</code></td><td><a href="#example-notes-lite">webapps/examples/notes-lite</a></td></tr></tbody></table>
       <pre class="code-block"><code>const createdAt = ctx.time.now();</code></pre>
-      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples notes-lite</code></p>
+      <p class="meta">Test: <code>cargo run -p forge-cli -- demo</code></p>
     </article>
 <article class="api-card" id="ctx.random">
       <h3>Random (`ctx.random`)</h3>
       <p>Seeded deterministic PRNG recorded into the run trace.</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>next()</code></td><td><code>number</code></td><td><a href="#example-core-replay-lab">forge/examples/core-replay-lab</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>next()</code></td><td><code>number</code></td><td><a href="#example-core-replay-lab">webapps/examples/core-replay-lab</a></td></tr></tbody></table>
       <pre class="code-block"><code>const roll = ctx.random.next();</code></pre>
-      <p class="meta">Test: <code>cargo test -p forge-cli --test forge_examples core-replay-lab</code></p>
+      <p class="meta">Test: <code>node --test tools/reference-host/test/example-load-acceptance.test.js</code></p>
     </article>
 <article class="api-card" id="main">
       <h3>Entrypoint (`main`)</h3>
       <p>Every applet exports async main(ctx, input) returning AppResult.</p>
-      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>main(ctx, input)</code></td><td><code>Promise&lt;AppResult&gt;</code></td><td><a href="#example-*">forge/examples/*</a></td></tr></tbody></table>
+      <table class="method-table"><thead><tr><th>Method</th><th>Returns</th><th>Example</th></tr></thead><tbody><tr><td><code>main(ctx, input)</code></td><td><code>Promise&lt;AppResult&gt;</code></td><td><a href="#example-demo-notes-lite">forge/fixtures/demo-notes-lite</a></td></tr></tbody></table>
       <pre class="code-block"><code>export async function main(ctx: AppContext, input: unknown): Promise&lt;AppResult&gt; {
   return { ok: true, value: { received: input } };
 }</code></pre>
-      <p class="meta">Test: <code>cargo test -p forge-cli --test bundled_apps_cli_e2e</code></p>
+      <p class="meta">Test: <code>cargo run -p forge-cli -- demo</code></p>
     </article>
       </section>
 
@@ -530,214 +530,222 @@ const value = await ctx.storage.get(&quot;app/last-run&quot;);</code></pre>
 
       <section id="examples" class="section">
         <h2>Example Applets</h2>
-        <p>All six bundled apps under <code>forge/examples/</code> with library + CLI e2e tests.</p>
+        <p>All bundled apps under <code>webapps/examples/</code> (reference-host validation + smoke/micro tests).</p>
         <article class="example-card" id="example-notes-lite">
         <h3>Notes Lite <code>notes-lite</code></h3>
         <p>Create, search, edit, and delete notes using the storage bridge.</p>
-        <p class="meta">Path: <code>forge/examples/notes-lite/</code></p>
-        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+        <p class="meta">Path: <code>webapps/examples/notes-lite/</code></p>
+        <pre class="code-block"><code>(function () {
+  const APP_ID = 'notes-lite';
+  const KEY = APP_ID + ':notes';
+  let notes = [];
+  let editingId = null;
 
-type NotesInput = {
-  title?: string;
-};
+  const $ = (id) =&gt; document.getElementById(id);
 
-export async function main(ctx: AppContext, input: NotesInput): Promise&lt;AppResult&gt; {
-  const title = input.title ?? &quot;Untitled&quot;;
-  const createdAt = ctx.time.now();
+  async function call(method, params) {
+    if (window.AppRuntime &amp;&amp; typeof window.AppRuntime.call === 'function') {
+      return window.AppRuntime.call(method, params);
+    }
+    console.warn('Using local mock AppRuntime for Notes Lite');
+    window.__mockStorage = window.__mockStorage || new Map();
+    if (method === 'storage.get') return { value: window.__mockStorage.has(params.key) ? window.__mockStorage.get(params.key) : params.defaultValue };
+    if (method === 'storage.set') { window.__mockStorage.set(params.key, params.value); return { ok: true }; }
+    if (method === 'storage.remove') { window.__mockStorage.delete(params.key); return { ok: true }; }
+    if (method === 'notification.toast' || method === 'app.log') return { ok: true };
+    throw new Error('Unknown mock method ' + method);
+  }
 
-  // SQLite write: one note record into the `notes` collection.
-  await ctx.db.insert(&quot;notes&quot;, { title, createdAt });
+  function escapeText(value) { return String(value == null ? '' : value); }
 
-  // Read the notes back so the rendered list reflects committed state.
-  const notes = await ctx.db.list(&quot;notes&quot;);
-
-  // Declarative UI tree: a header + a list of the note titles. The host diffs
-  // this against the previous render and emits a UI patch (the tree-patch link).
-  ctx.ui.render({
-    type: &quot;Stack&quot;,
-    testId: &quot;notes-lite-root&quot;,
-    direction: &quot;v&quot;,
-    gap: &quot;sm&quot;,
-    children: [
-      { type: &quot;Text&quot;, testId: &quot;notes-title&quot;, text: &quot;Notes&quot;, variant: &quot;title&quot; },
-      {
-        type: &quot;List&quot;,
+  async function load() {
+    const result = await call('storage.get', { key: KEY, defaultValue: [] });
+    notes = Array.isArray(result.value) ? result.value : [];
+    render();
+    await call('app.log', { level: 'info', message: 'Notes Lite loaded', data: { count: notes.length } });
 // ...</code></pre>
-        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples notes-lite</code></p>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
       </article>
 <article class="example-card" id="example-task-workbench">
         <h3>Task Workbench <code>task-workbench</code></h3>
         <p>Project/task workflow demo using core.step plus local storage.</p>
-        <p class="meta">Path: <code>forge/examples/task-workbench/</code></p>
-        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
-
-type TaskInput = {
-  title?: string;
-  status?: string;
-};
-
-export async function main(ctx: AppContext, input: TaskInput): Promise&lt;AppResult&gt; {
-  const title = input.title ?? &quot;Review Forge migration&quot;;
-  const status = input.status ?? &quot;todo&quot;;
-  const createdAt = ctx.time.now();
-
-  const task = await ctx.db.insert(&quot;tasks&quot;, {
-    title,
-    status,
-    createdAt
-  });
-  await ctx.storage.set(&quot;app/last-task-id&quot;, String(task.id));
-
-  const openTasks = await ctx.db.query(&quot;tasks&quot;, {
-    from: &quot;tasks&quot;,
-    where: [&quot;status&quot;, &quot;=&quot;, status],
-    orderBy: [{ field: &quot;createdAt&quot;, dir: &quot;asc&quot; }]
-  });
-
-  ctx.ui.render({
-    type: &quot;Stack&quot;,
-    testId: &quot;task-workbench-root&quot;,
+        <p class="meta">Path: <code>webapps/examples/task-workbench/</code></p>
+        <pre class="code-block"><code>(function(){
+  const APP_ID='task-workbench';
+  const KEY=APP_ID+':tasks';
+  const PAGE_SIZE=40;
+  let tasks=[];
+  let filter='all';
+  let page=0;
+  const $=(id)=&gt;document.getElementById(id);
+  async function call(method, params){
+    if(window.AppRuntime&amp;&amp;typeof window.AppRuntime.call==='function') return window.AppRuntime.call(method, params);
+    window.__mockStorage=window.__mockStorage||new Map();
+    if(method==='storage.get') return {value:window.__mockStorage.has(params.key)?window.__mockStorage.get(params.key):params.defaultValue};
+    if(method==='storage.set'){window.__mockStorage.set(params.key,params.value);return {ok:true};}
+    if(method==='notification.toast'||method==='app.log') return {ok:true};
+    if(method==='core.step') return {ok:true,stateVersion:Date.now(),actions:[{type:'Toast',message:'Mock core accepted '+params.event.type}]};
+    throw new Error('Unknown mock method '+method);
+  }
+  async function load(){ const r=await call('storage.get',{key:KEY,defaultValue:[]}); tasks=Array.isArray(r.value)?r.value:[]; render(); }
+  async function persist(){ await call('storage.set',{key:KEY,value:tasks}); }
+  async function add(){
+    const title=$('title').value.trim();
+    if(!title){ $('title').focus(); return; }
+    const priority=$('priority').value;
+    const core=await call('core.step',{app:APP_ID,event:{type:'CreateTask',payload:{title,priority}}});
+    $('core-output').textContent=JSON.stringify(core,null,2);
+    tasks.unshift({id:'task_'+Date.now(),title,priority,done:false,createdAt:Date.now()}); page=0;
+    $('title').value=''; await persist(); await call('notification.toast',{message:'Task added',level:'success'}); render();
+  }
 // ...</code></pre>
-        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples task-workbench</code></p>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
       </article>
 <article class="example-card" id="example-file-transformer">
         <h3>File Transformer <code>file-transformer</code></h3>
         <p>Open a text file, transform content through Forge core, and save output.</p>
-        <p class="meta">Path: <code>forge/examples/file-transformer/</code></p>
-        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
-
-type TransformInput = {
-  name?: string;
-  outputPath?: string;
-  bytesBase64?: string;
-};
-
-export async function main(ctx: AppContext, input: TransformInput): Promise&lt;AppResult&gt; {
-  const name = input.name ?? &quot;sample&quot;;
-  const outputPath = input.outputPath ?? &quot;out/sample.txt&quot;;
-  const bytesBase64 = input.bytesBase64 ?? &quot;Rm9yZ2UgZmlsZSB0cmFuc2Zvcm0K&quot;;
-  const write = await ctx.files.write({
-    handle: &quot;workspace_data&quot;,
-    path: outputPath,
-    bytes_base64: bytesBase64,
-    content_type: &quot;text/plain&quot;
-  });
-
-  await ctx.db.insert(&quot;transforms&quot;, {
-    name,
-    outputPath: write.path,
-    writtenBytes: write.written_bytes
-  });
-
-  ctx.ui.render({
-    type: &quot;Stack&quot;,
-    testId: &quot;file-transformer-root&quot;,
-// ...</code></pre>
-        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples file-transformer</code></p>
+        <p class="meta">Path: <code>webapps/examples/file-transformer/</code></p>
+        <pre class="code-block"><code>(function(){
+  const APP_ID='file-transformer';
+  const LAST_KEY=APP_ID+':last-output';
+  const $=(id)=&gt;document.getElementById(id);
+  async function call(method,params){
+    if(window.AppRuntime&amp;&amp;typeof window.AppRuntime.call==='function') return window.AppRuntime.call(method,params);
+    if(method==='dialog.openFile') return {files:[{name:'mock.txt',mime:'text/plain',size:11,text:'hello world'}]};
+    if(method==='dialog.saveFile'||method==='notification.toast'||method==='storage.set'||method==='app.log') return {ok:true};
+    if(method==='core.step') return {ok:true,actions:[{type:'TransformText',text:localTransform(params.event.payload.text,params.event.payload.mode)}]};
+    throw new Error('Unknown mock method '+method);
+  }
+  function localTransform(text,mode){ if(mode==='uppercase')return text.toUpperCase(); if(mode==='lowercase')return text.toLowerCase(); if(mode==='reverse-lines')return text.split(/\r?\n/).reverse().join('\n'); if(mode==='word-count'){const words=text.trim()?text.trim().split(/\s+/).length:0;return 'Characters: '+text.length+'\nWords: '+words+'\nLines: '+text.split(/\r?\n/).length;} return text; }
+  function status(obj){ $('status').textContent=typeof obj==='string'?obj:JSON.stringify(obj,null,2); }
+  async function openFile(){ try{ const res=await call('dialog.openFile',{accept:['text/plain','application/json'],multiple:false,maxBytes:5242880}); const file=res.files&amp;&amp;res.files[0]; if(file){$('input').value=String(file.text||''); status({opened:file.name,size:file.size});} }catch(e){status('Open failed: '+e.message);} }
+  async function transform(){ const text=$('input').value; const mode=$('mode').value; const res=await call('core.step',{app:APP_ID,event:{type:'TransformText',payload:{text,mode}}}); const action=res.actions&amp;&amp;res.actions.find(a=&gt;a.text||a.type==='TransformText'); const output=(action&amp;&amp;action.text)||localTransform(text,mode); $('output').value=output; await call('storage.set',{key:LAST_KEY,value:{mode,output,at:Date.now()}}); await call('notification.toast',{message:'Transform complete',level:'success'}); status(res); }
+  async function save(){ const text=$('output').value; if(!text){status('Nothing to save');return;} await call('dialog.saveFile',{suggestedName:'transformed.txt',mime:'text/plain',text}); await call('notification.toast',{message:'Saved output',level:'success'}); }
+  $('open').addEventListener('click',openFile); $('transform').addEventListener('click',transform); $('save').addEventListener('click',save);
+})();</code></pre>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
       </article>
 <article class="example-card" id="example-api-dashboard">
         <h3>API Dashboard <code>api-dashboard</code></h3>
         <p>Network request demo with response table, tiny chart, and saved endpoint history.</p>
-        <p class="meta">Path: <code>forge/examples/api-dashboard/</code></p>
-        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
-
-type ApiInput = {
-  path?: string;
-};
-
-export async function main(ctx: AppContext, input: ApiInput): Promise&lt;AppResult&gt; {
-  const path = input.path ?? &quot;weather&quot;;
-  const url = `https://api.example.com/public/${path}`;
-  const response = await ctx.net.fetch({
-    method: &quot;GET&quot;,
-    url,
-    response_content_type: &quot;application/json&quot;
-  });
-
-  await ctx.db.insert(&quot;requests&quot;, {
-    url,
-    status: response.status,
-    contentType: response.content_type ?? &quot;application/json&quot;
-  });
-  const requests = await ctx.db.list(&quot;requests&quot;);
-
-  ctx.ui.render({
-    type: &quot;Stack&quot;,
-    testId: &quot;api-dashboard-root&quot;,
-    direction: &quot;v&quot;,
-    gap: &quot;sm&quot;,
-    children: [
-// ...</code></pre>
-        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples api-dashboard</code></p>
+        <p class="meta">Path: <code>webapps/examples/api-dashboard/</code></p>
+        <pre class="code-block"><code>(function(){
+  const APP_ID='api-dashboard'; const KEY=APP_ID+':history'; let history=[]; const $=(id)=&gt;document.getElementById(id);
+  async function call(method,params){
+    if(window.AppRuntime&amp;&amp;typeof window.AppRuntime.call==='function') return window.AppRuntime.call(method,params);
+    window.__mockStorage=window.__mockStorage||new Map();
+    if(method==='storage.get') return {value:window.__mockStorage.has(params.key)?window.__mockStorage.get(params.key):params.defaultValue};
+    if(method==='storage.set'){window.__mockStorage.set(params.key,params.value);return {ok:true};}
+    if(method==='notification.toast'||method==='app.log') return {ok:true};
+    if(method==='network.request') return {status:200,headers:{'content-type':'application/json'},bodyText:JSON.stringify({mock:true,url:params.url,time:new Date().toISOString()},null,2)};
+    throw new Error('Unknown mock method '+method);
+  }
+  async function load(){const r=await call('storage.get',{key:KEY,defaultValue:[]}); history=Array.isArray(r.value)?r.value:[]; renderHistory();}
+  async function send(){
+    const url=$('url').value.trim(); const method=$('method').value; const start=performance.now(); $('response').textContent='Loading…';
+    try{ const res=await call('network.request',{url,method,headers:{},body:null,timeoutMs:10000}); const ms=Math.round(performance.now()-start); const body=String(res.bodyText||''); $('status').textContent=String(res.status); $('bytes').textContent=String(body.length); $('duration').textContent=ms+' ms'; $('response').textContent=body.slice(0,5000); history.unshift({url,method,status:res.status,bytes:body.length,ms,at:new Date().toISOString()}); history=history.slice(0,10); await call('storage.set',{key:KEY,value:history}); await call('notification.toast',{message:'Request complete',level:'success'}); renderHistory(); }
+    catch(e){ $('response').textContent='Request failed: '+e.message; await call('notification.toast',{message:'Request failed',level:'error'}); }
+  }
+  function renderHistory(){ const box=$('history'); box.innerHTML=''; if(!history.length){box.textContent='No requests yet.'; return;} for(const h of history){ const row=document.createElement('div'); row.className='row'; const s=document.createElement('b'); s.textContent=String(h.status); const u=document.createElement('span'); u.textContent=h.url; const m=document.createElement('span'); m.textContent=h.ms+' ms'; row.append(s,u,m); box.append(row);} }
+  $('send').addEventListener('click',send); load();
+})();</code></pre>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
       </article>
 <article class="example-card" id="example-core-replay-lab">
         <h3>Core Replay Lab <code>core-replay-lab</code></h3>
         <p>Send events to Forge core, keep a replay log, and export the fixture.</p>
-        <p class="meta">Path: <code>forge/examples/core-replay-lab/</code></p>
-        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
-
-type ReplayInput = {
-  event?: string;
-};
-
-export async function main(ctx: AppContext, input: ReplayInput): Promise&lt;AppResult&gt; {
-  const event = input.event ?? &quot;demo.run&quot;;
-  const logicalTime = ctx.time.now();
-  const sample = ctx.random.next();
-
-  await ctx.storage.set(&quot;app/last-event&quot;, event);
-  await ctx.db.insert(&quot;replay_events&quot;, {
-    event,
-    logicalTime,
-    sample
-  });
-  const events = await ctx.db.list(&quot;replay_events&quot;);
-
-  ctx.ui.render({
-    type: &quot;Stack&quot;,
-    testId: &quot;core-replay-lab-root&quot;,
-    direction: &quot;v&quot;,
-    gap: &quot;sm&quot;,
-    children: [
-      { type: &quot;Text&quot;, testId: &quot;core-replay-lab-title&quot;, text: &quot;Core Replay Lab&quot;, variant: &quot;title&quot; },
-      {
-        type: &quot;List&quot;,
-// ...</code></pre>
-        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples core-replay-lab</code></p>
+        <p class="meta">Path: <code>webapps/examples/core-replay-lab/</code></p>
+        <pre class="code-block"><code>(function(){
+  const APP_ID='core-replay-lab'; const KEY=APP_ID+':events'; let events=[]; const $=(id)=&gt;document.getElementById(id);
+  async function call(method,params){
+    if(window.AppRuntime&amp;&amp;typeof window.AppRuntime.call==='function') return window.AppRuntime.call(method,params);
+    window.__mockStorage=window.__mockStorage||new Map();
+    if(method==='storage.get') return {value:window.__mockStorage.has(params.key)?window.__mockStorage.get(params.key):params.defaultValue};
+    if(method==='storage.set'){window.__mockStorage.set(params.key,params.value);return {ok:true};}
+    if(method==='dialog.saveFile'||method==='notification.toast'||method==='app.log') return {ok:true};
+    if(method==='core.step') return {ok:true,stateVersion:events.length+1,actions:[{type:'Log',message:'Mock handled '+params.event.type}]};
+    throw new Error('Unknown mock method '+method);
+  }
+  async function load(){ const r=await call('storage.get',{key:KEY,defaultValue:[]}); events=Array.isArray(r.value)?r.value:[]; renderLog(); }
+  async function persist(){ await call('storage.set',{key:KEY,value:events}); }
+  function parsePayload(){ try{return JSON.parse($('payload').value||'{}');}catch(e){throw new Error('Payload must be valid JSON: '+e.message);} }
+  async function send(){ try{ const event={type:$('event-type').value,payload:parsePayload(),at:new Date().toISOString()}; const res=await call('core.step',{app:APP_ID,event}); $('output').textContent=JSON.stringify(res,null,2); events.push(event); await persist(); await call('notification.toast',{message:'Event sent',level:'success'}); renderLog(); }catch(e){$('output').textContent=e.message;} }
+  async function replay(){ const outputs=[]; for(const event of events){ outputs.push(await call('core.step',{app:APP_ID,event})); } $('output').textContent=JSON.stringify({replayed:events.length,outputs},null,2); }
+  async function clear(){ events=[]; await persist(); renderLog(); $('output').textContent='Cleared.'; }
+  async function exportLog(){ const text=JSON.stringify({app:APP_ID,events},null,2); await call('dialog.saveFile',{suggestedName:'core-replay-fixture.json',mime:'application/json',text}); await call('notification.toast',{message:'Fixture exported',level:'success'}); }
+  function renderLog(){ const log=$('log'); log.innerHTML=''; if(!events.length){ const li=document.createElement('li'); li.textContent='No events yet.'; log.append(li); return; } events.forEach((e,i)=&gt;{ const li=document.createElement('li'); li.className='event'; li.textContent=(i+1)+'. '+e.type+' '+JSON.stringify(e.payload); log.append(li); }); }
+  $('send').addEventListener('click',send); $('replay').addEventListener('click',replay); $('clear').addEventListener('click',clear); $('export').addEventListener('click',exportLog); load();
+})();</code></pre>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
       </article>
 <article class="example-card" id="example-calendar-planner">
         <h3>Calendar Planner <code>calendar-planner</code></h3>
         <p>Local-first calendar planning with month navigation, agenda storage, and core event logging.</p>
-        <p class="meta">Path: <code>forge/examples/calendar-planner/</code></p>
-        <pre class="code-block"><code>import type { AppContext, AppResult } from &quot;@forge/std&quot;;
+        <p class="meta">Path: <code>webapps/examples/calendar-planner/</code></p>
+        <pre class="code-block"><code>(function () {
+  const APP_ID = &quot;calendar-planner&quot;;
+  const KEY = APP_ID + &quot;:events&quot;;
+  const $ = (id) =&gt; document.getElementById(id);
+  let events = [];
+  let cursor = monthStart(new Date());
+  let selectedDate = toDateKey(new Date());
 
-type CalendarInput = {
-  title?: string;
-  date?: string;
-  start?: string;
-  durationMinutes?: number;
-  notes?: string;
-};
-
-export async function main(ctx: AppContext, input: CalendarInput): Promise&lt;AppResult&gt; {
-  const title = input.title ?? &quot;Planning session&quot;;
-  const date = input.date ?? &quot;2026-06-16&quot;;
-  const start = input.start ?? &quot;09:00&quot;;
-  const durationMinutes = input.durationMinutes ?? 60;
-  const notes = input.notes ?? &quot;&quot;;
-  const createdAt = ctx.time.now();
-
-  const event = await ctx.db.insert(&quot;calendar_events&quot;, {
-    title,
-    date,
-    start,
-    durationMinutes,
-    notes,
-    createdAt
-  });
-  await ctx.storage.set(&quot;app/last-calendar-event-id&quot;, String(event.id));
+  async function call(method, params) {
+    if (window.AppRuntime &amp;&amp; typeof window.AppRuntime.call === &quot;function&quot;) {
+      return window.AppRuntime.call(method, params);
+    }
+    window.__mockStorage = window.__mockStorage || new Map();
+    if (method === &quot;storage.get&quot;) {
+      return { value: window.__mockStorage.has(params.key) ? window.__mockStorage.get(params.key) : params.defaultValue };
+    }
+    if (method === &quot;storage.set&quot;) {
+      window.__mockStorage.set(params.key, params.value);
+      return { ok: true };
+    }
+    if (method === &quot;core.step&quot;) {
+      return {
+        ok: true,
+        stateVersion: Date.now(),
+        actions: [{ type: &quot;Toast&quot;, message: &quot;Mock core accepted &quot; + params.event.type }]
+      };
+    }
+    if (method === &quot;notification.toast&quot; || method === &quot;app.log&quot;) return { ok: true };
 // ...</code></pre>
-        <p class="meta">Tests: <code>cargo test -p forge-cli --test forge_examples calendar-planner</code></p>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
+      </article>
+<article class="example-card" id="example-test-camera">
+        <h3>Test Camera <code>test-camera</code></h3>
+        <p>Camera capture via ctx.resource — invoke, materialize, and record capture metadata.</p>
+        <p class="meta">Path: <code>webapps/examples/test-camera/</code></p>
+        <pre class="code-block"><code>(function () {
+  const APP_ID = &quot;test-camera&quot;;
+  const KEY = APP_ID + &quot;:captures&quot;;
+  const $ = (id) =&gt; document.getElementById(id);
+
+  let captures = [];
+  let previewStream = null;
+
+  async function call(method, params) {
+    if (window.AppRuntime &amp;&amp; typeof window.AppRuntime.call === &quot;function&quot;) {
+      return window.AppRuntime.call(method, params);
+    }
+    window.__mockStorage = window.__mockStorage || new Map();
+    if (method === &quot;storage.get&quot;) {
+      return { value: window.__mockStorage.has(params.key) ? window.__mockStorage.get(params.key) : params.defaultValue };
+    }
+    if (method === &quot;storage.set&quot;) {
+      window.__mockStorage.set(params.key, params.value);
+      return { ok: true };
+    }
+    if (method === &quot;notification.toast&quot; || method === &quot;app.log&quot;) return { ok: true };
+    throw new Error(&quot;Unknown mock method &quot; + method);
+  }
+
+  function setStatus(text) {
+    $(&quot;status&quot;).textContent = text;
+  }
+// ...</code></pre>
+        <p class="meta">Tests: <code>node --test tools/reference-host/test/package-validator.test.js</code></p>
       </article>
       </section>
 
@@ -745,8 +753,8 @@ export async function main(ctx: AppContext, input: CalendarInput): Promise&lt;Ap
         <h2>Validation</h2>
         <pre class="code-block"><code>node --no-warnings tools/build-forge-api-docs.mjs
 node --test tools/test/forge-api-docs.test.mjs
-cd forge && cargo test -p forge-cli --test forge_examples --locked
-cd forge && cargo test -p forge-cli --test bundled_apps_cli_e2e --locked
+node --test --no-warnings tools/reference-host/test/package-validator.test.js
+cd forge && cargo run -p forge-cli -- demo
 node --no-warnings tools/export-public-contract.mjs --out artifacts/public-contract.json
 node --no-warnings tools/verify-public-contract.mjs --contract artifacts/public-contract.json --root .</code></pre>
       </section>

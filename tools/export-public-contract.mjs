@@ -80,7 +80,7 @@ function publicDataFiles(root = repoRoot) {
 }
 
 const PUBLIC_FIXTURE_DIRS = [
-  "forge/examples",
+  "webapps/examples",
   "forge/fixtures",
 ];
 

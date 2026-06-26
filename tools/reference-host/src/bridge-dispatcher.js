@@ -7,6 +7,7 @@ import {
   validateNetworkRequest,
 } from "./forge-core-bridge.js";
 import { NotebookCrdtService } from "./notebook-crdt.js";
+import { ResourceMockStore } from "./resource-mock.js";
 import { id as makeId } from "./util.js";
 
 const METHOD_PERMISSION = new Map([
@@ -29,6 +30,9 @@ const METHOD_PERMISSION = new Map([
   ["notebook.sync_pull", "notebook.sync"],
   ["notebook.sync_push", "notebook.sync"],
   ["notebook.subscribe", "notebook.read"],
+  ["resource.invoke", "resource.invoke"],
+  ["resource.read", "resource.read"],
+  ["resource.materialize", "resource.materialize"],
 ]);
 
 export class BridgeDispatcher {
@@ -40,6 +44,8 @@ export class BridgeDispatcher {
     this.capabilityOverrides = capabilityOverrides;
     this.faults = [];
     this.notebooks = new NotebookCrdtService({ database });
+    /** @type {Map<string, ResourceMockStore>} */
+    this.resourceStores = new Map();
   }
 
   addFault({ appId = null, method, code = "fault_injected", message = "Injected bridge fault", details = {}, once = true } = {}) {
@@ -198,6 +204,18 @@ export class BridgeDispatcher {
       return this.capabilities(context.appId);
     }
 
+    if (method === "resource.invoke") {
+      return this.resourceInvoke(params, context);
+    }
+
+    if (method === "resource.read") {
+      return this.resourceRead(params, context);
+    }
+
+    if (method === "resource.materialize") {
+      return this.resourceMaterialize(params, context);
+    }
+
     throw new PlatformError("unknown_method", `Unknown bridge method: ${method}`, { method });
   }
 
@@ -207,6 +225,45 @@ export class BridgeDispatcher {
       runtimeVersion: this.runtimeVersion,
       featureOverrides: this.capabilityOverrides,
     });
+  }
+
+  resourceStoreForSession(sessionId) {
+    let store = this.resourceStores.get(sessionId);
+    if (!store) {
+      store = new ResourceMockStore();
+      this.resourceStores.set(sessionId, store);
+    }
+    return store;
+  }
+
+  resourceInvoke(params, context) {
+    const kind = params?.kind;
+    if (typeof kind !== "string" || kind.length === 0) {
+      throw new PlatformError("invalid_request", "resource.invoke requires kind", {});
+    }
+    const options = params?.options && typeof params.options === "object" && !Array.isArray(params.options)
+      ? params.options
+      : {};
+    return this.resourceStoreForSession(context.sessionId).invoke(kind, options);
+  }
+
+  resourceRead(params, context) {
+    const assetId = params?.asset_id;
+    if (typeof assetId !== "string" || assetId.length === 0) {
+      throw new PlatformError("invalid_request", "resource.read requires asset_id", {});
+    }
+    return this.resourceStoreForSession(context.sessionId).read(assetId);
+  }
+
+  resourceMaterialize(params, context) {
+    const assetId = params?.asset_id;
+    if (typeof assetId !== "string" || assetId.length === 0) {
+      throw new PlatformError("invalid_request", "resource.materialize requires asset_id", {});
+    }
+    const request = params?.request && typeof params.request === "object" && !Array.isArray(params.request)
+      ? params.request
+      : {};
+    return this.resourceStoreForSession(context.sessionId).materialize(assetId, request);
   }
 
   assertRuntimeCompatibility(context) {

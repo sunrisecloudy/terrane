@@ -1,5 +1,5 @@
 (function () {
-  const FALLBACK_EXAMPLE_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner"];
+  const FALLBACK_EXAMPLE_IDS = ["notes-lite", "task-workbench", "file-transformer", "api-dashboard", "core-replay-lab", "calendar-planner", "test-camera"];
   const appList = document.getElementById("app-list");
   const statusEl = document.getElementById("runtime-status");
   const frameWrap = document.getElementById("app-frame-wrap");
@@ -38,6 +38,9 @@
     ["notebook.sync_pull", "notebook.sync"],
     ["notebook.sync_push", "notebook.sync"],
     ["notebook.subscribe", "notebook.read"],
+    ["resource.invoke", "resource.invoke"],
+    ["resource.read", "resource.read"],
+    ["resource.materialize", "resource.materialize"],
   ]);
   const GENERATED_APP_CSP = "default-src 'none'; script-src 'self' app-runtime:; style-src 'self' app-runtime:; img-src 'self' app-runtime: data: blob:; font-src 'self' app-runtime:; connect-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; require-trusted-types-for 'script'; trusted-types runtime-default;";
 
@@ -58,8 +61,11 @@
   let nextWebView2MountRequestId = 1;
   const usageByApp = new Map();
   const devMockStorageByApp = new Map();
+  const devMockResourceStoresByApp = new Map();
   const devMockCoreVersions = new Map();
   const devMockCoreEvents = [];
+  let devMockCameraJpegBase64 = null;
+  let devMockCameraJpegPromise = null;
   const consoleEntries = [];
   const minuteMs = 60 * 1000;
   const engineRoom = window.TerraneEngineRoom.create({
@@ -173,6 +179,11 @@
     apps = loaded;
     renderAppList();
     renderFreeAppCatalog();
+    if (window.__APP_RUNTIME_DEV_MOCK__ === true) {
+      ensureDevMockCameraJpegBase64().catch(function () {
+        // Best-effort preload for dev-mock camera captures.
+      });
+    }
     setStatus("Ready");
     return apps;
   }
@@ -681,6 +692,20 @@
     }
   }
 
+  function appUsesCamera(app) {
+    const permissions = Array.isArray(app.permissions) ? app.permissions : [];
+    const required = app.capabilities && Array.isArray(app.capabilities.required) ? app.capabilities.required : [];
+    return permissions.includes("resource.invoke") && required.includes("resource.invoke");
+  }
+
+  function frameSandboxForApp(app) {
+    return appUsesCamera(app) ? "allow-scripts allow-same-origin" : "allow-scripts";
+  }
+
+  function frameAllowForApp(app) {
+    return appUsesCamera(app) ? "camera" : "";
+  }
+
   async function mountApp(app) {
     let mountToken;
     try {
@@ -714,8 +739,8 @@
     const frame = document.createElement("iframe");
     frame.title = app.name;
     frame.dataset.testid = "runtime-app-frame";
-    frame.setAttribute("allow", "");
-    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("allow", frameAllowForApp(app));
+    frame.setAttribute("sandbox", frameSandboxForApp(app));
     frame.setAttribute("csp", GENERATED_APP_CSP);
     frame.setAttribute("referrerpolicy", "no-referrer");
 
@@ -1171,14 +1196,14 @@
   }
 
   async function dispatchDevMockBridgeRequest(request, mount) {
-    const result = devMockBridgeResult(request, mount);
+    const result = await devMockBridgeResult(request, mount);
     if (result && result.error) {
       return { id: request.id, ok: false, error: result.error };
     }
     return { id: request.id, ok: true, result: result };
   }
 
-  function devMockBridgeResult(request, mount) {
+  async function devMockBridgeResult(request, mount) {
     const method = request.method;
     const params = request.params || {};
     if (method === "runtime.capabilities") {
@@ -1216,6 +1241,9 @@
           "notebook.sync_pull": true,
           "notebook.sync_push": true,
           "notebook.subscribe": true,
+          "resource.invoke": true,
+          "resource.read": true,
+          "resource.materialize": true,
         },
         limits: {
           maxBodyBytes: 1048576,
@@ -1272,7 +1300,134 @@
       else console.log("[app.log]", mount.appId, params.message);
       return { ok: true };
     }
+    if (method === "resource.invoke") {
+      return devMockResourceInvoke(mount.appId, params);
+    }
+    if (method === "resource.read") {
+      return devMockResourceRead(mount.appId, params);
+    }
+    if (method === "resource.materialize") {
+      return devMockResourceMaterialize(mount.appId, params);
+    }
     return { error: bridgeError("unknown_method", `Unknown bridge method: ${method}`, { method: method }) };
+  }
+
+  function devMockResourceStore(appId) {
+    let store = devMockResourceStoresByApp.get(appId);
+    if (!store) {
+      store = { seq: 0, assets: new Map() };
+      devMockResourceStoresByApp.set(appId, store);
+    }
+    return store;
+  }
+
+  function ensureDevMockCameraJpegBase64() {
+    if (devMockCameraJpegBase64) {
+      return Promise.resolve(devMockCameraJpegBase64);
+    }
+    if (!devMockCameraJpegPromise) {
+      devMockCameraJpegPromise = fetch("/runtime/fixtures/mock-camera.jpg")
+        .then(function (response) {
+          if (!response.ok) {
+            throw new Error("mock-camera.jpg unavailable");
+          }
+          return response.arrayBuffer();
+        })
+        .then(function (buffer) {
+          const bytes = new Uint8Array(buffer);
+          let binary = "";
+          for (let i = 0; i < bytes.length; i += 1) {
+            binary += String.fromCharCode(bytes[i]);
+          }
+          devMockCameraJpegBase64 = btoa(binary);
+          return devMockCameraJpegBase64;
+        })
+        .catch(function () {
+          devMockCameraJpegBase64 = "";
+          return devMockCameraJpegBase64;
+        });
+    }
+    return devMockCameraJpegPromise;
+  }
+
+  async function devMockResourceInvoke(appId, params) {
+    const kind = params && params.kind;
+    if (kind !== "camera") {
+      return { error: bridgeError("invalid_request", `Unsupported resource kind: ${kind}`, { kind: kind }) };
+    }
+    const options = params && params.options && typeof params.options === "object" && !Array.isArray(params.options)
+      ? params.options
+      : {};
+    let jpegBase64 = typeof options.submit_base64 === "string" && options.submit_base64.length > 0
+      ? options.submit_base64
+      : await ensureDevMockCameraJpegBase64();
+    if (!jpegBase64) {
+      return { error: bridgeError("platform_unavailable", "No camera frame or mock JPEG available", {}) };
+    }
+    const sizeBytes = atob(jpegBase64).length;
+    if (Number.isInteger(options.max_bytes) && sizeBytes > options.max_bytes) {
+      return {
+        error: bridgeError("resource_budget_exceeded", "Camera capture exceeds max_bytes", {
+          size_bytes: sizeBytes,
+          max_bytes: options.max_bytes,
+        }),
+      };
+    }
+    const store = devMockResourceStore(appId);
+    const assetId = `res_camera_${store.seq}`;
+    store.seq += 1;
+    const width = Number.isInteger(options.width) ? options.width : 320;
+    const height = Number.isInteger(options.height) ? options.height : 240;
+    const contentType = typeof options.content_type === "string" ? options.content_type : "image/jpeg";
+    store.assets.set(assetId, {
+      bytes_base64: jpegBase64,
+      content_type: contentType,
+      width: width,
+      height: height,
+      size_bytes: sizeBytes,
+    });
+    return {
+      asset_id: assetId,
+      content_type: contentType,
+      width: width,
+      height: height,
+      size_bytes: sizeBytes,
+    };
+  }
+
+  function devMockResourceRead(appId, params) {
+    const assetId = params && params.asset_id;
+    const asset = assetId ? devMockResourceStore(appId).assets.get(assetId) : null;
+    if (!asset) {
+      return { error: bridgeError("invalid_request", `Unknown resource asset: ${assetId}`, { asset_id: assetId }) };
+    }
+    return {
+      asset_id: assetId,
+      content_type: asset.content_type,
+      size_bytes: asset.size_bytes,
+      bytes_base64: asset.bytes_base64,
+    };
+  }
+
+  function devMockResourceMaterialize(appId, params) {
+    const assetId = params && params.asset_id;
+    const asset = assetId ? devMockResourceStore(appId).assets.get(assetId) : null;
+    if (!asset) {
+      return { error: bridgeError("invalid_request", `Unknown resource asset: ${assetId}`, { asset_id: assetId }) };
+    }
+    const request = params && params.request && typeof params.request === "object" && !Array.isArray(params.request)
+      ? params.request
+      : {};
+    const pathValue = typeof request.path === "string" && request.path.length > 0
+      ? request.path
+      : `attachments/${assetId}.jpg`;
+    return {
+      asset_id: assetId,
+      path: pathValue,
+      content_type: asset.content_type,
+      size_bytes: asset.size_bytes,
+      handle: typeof request.handle === "string" ? request.handle : "workspace_data",
+    };
   }
 
   function devMockCoreStep(appId, event) {

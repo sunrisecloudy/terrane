@@ -23,7 +23,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:bd216ee9d20f6fe9b063d88b2b1483a9b416b39c6681845979b4a10618e75749\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"bad\":null,\"empty\":null,\"expo\":1000,\"floatJunk\":3.14,\"hex\":255,\"inf\":\"Infinity\",\"num\":16,\"pad\":42,\"radix2\":5}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:bd216ee9d20f6fe9b063d88b2b1483a9b416b39c6681845979b4a10618e75749\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"bad\":null,\"empty\":null,\"expo\":1000,\"floatJunk\":3.14,\"hex\":255,\"inf\":\"Infinity\",\"num\":16,\"pad\":42,\"radix2\":5}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

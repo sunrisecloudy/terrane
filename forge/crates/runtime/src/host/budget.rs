@@ -44,6 +44,8 @@ pub(super) struct HostBudgets {
     /// categories), so it counts its own calls against the host-call flood cap
     /// (SC-2) here.
     files_calls_used: u64,
+    /// `ctx.resource.*` calls so far (against `Limits::max_host_calls`).
+    resource_calls_used: u64,
 }
 
 impl HostBudgets {
@@ -56,6 +58,7 @@ impl HostBudgets {
             log_calls_used: 0,
             net_calls_used: 0,
             files_calls_used: 0,
+            resource_calls_used: 0,
         }
     }
 
@@ -118,6 +121,18 @@ impl HostBudgets {
         if self.files_calls_used > self.limits.max_host_calls {
             return Err(CoreError::ResourceLimitExceeded(format!(
                 "host-call limit exceeded: max_host_calls = {} reached (ctx.files flood)",
+                self.limits.max_host_calls
+            )));
+        }
+        Ok(())
+    }
+
+    /// Charge one `ctx.resource.*` call against the host-call flood cap (SC-2).
+    pub(super) fn check_resource_call(&mut self) -> Result<()> {
+        self.resource_calls_used = self.resource_calls_used.saturating_add(1);
+        if self.resource_calls_used > self.limits.max_host_calls {
+            return Err(CoreError::ResourceLimitExceeded(format!(
+                "host-call limit exceeded: max_host_calls = {} reached (ctx.resource flood)",
                 self.limits.max_host_calls
             )));
         }

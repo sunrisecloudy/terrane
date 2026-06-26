@@ -769,6 +769,7 @@ mod session_patch_chain_tests {
             calls,
             logs: Vec::new(),
             permissions: forge_domain::PermissionSnapshot::default(),
+            resource_assets: std::collections::BTreeMap::new(),
             outcome: RunOutcome::Completed {
                 result: AppResult { ok: true, value: serde_json::json!(null) },
             },

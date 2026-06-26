@@ -29,6 +29,7 @@ mod files;
 mod host;
 mod net;
 mod recorder;
+mod resource;
 
 pub use bridge::{HostBridge, MemoryHostBridge, NullBridge};
 pub use files::{
@@ -41,6 +42,11 @@ pub use net::{
     NetRequest, NetResponse, SecretStore, SecretValue,
 };
 pub use recorder::{LogicalClock, Mode, RunRecorder, SplitMix64};
+pub use resource::{
+    MockResourceProvider, ResourceCapture, ResourceInvokeOptions, ResourceInvokeResult,
+    ResourceMaterializeRequest, ResourceMaterializeResponse, ResourceProvider, ResourceReadRequest,
+    ResourceReadResponse, ResourceStore, RESOURCE_KIND_CAMERA,
+};
 
 use forge_domain::{AppResult, CoreError};
 

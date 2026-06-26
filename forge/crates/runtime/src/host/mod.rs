@@ -15,9 +15,12 @@
 
 use crate::bridge::HostBridge;
 use crate::recorder::RunRecorder;
+use crate::resource::ResourceStore;
 use forge_domain::{
-    ActorContext, FilesGrant, Limits, Manifest, NetGrant, PermissionSnapshot, Result,
+    ActorContext, FilesGrant, Limits, Manifest, NetGrant, PermissionSnapshot, ResourceAssetBlob,
+    Result,
 };
+use std::collections::BTreeMap;
 use forge_policy::PolicyEngine;
 
 // Low-coupling host-call handlers split into focused submodules. Each adds
@@ -37,6 +40,7 @@ mod files;
 mod log;
 mod net;
 mod policy;
+mod resource;
 mod storage;
 mod time;
 mod ui;
@@ -82,6 +86,8 @@ pub struct HostContext<'b> {
     files_grant: FilesGrant,
     /// Captured log lines (mirrored into the RunRecord).
     logs: Vec<String>,
+    /// Run-scoped resource blobs (`resource.invoke` metadata in calls; bytes here).
+    resource_store: ResourceStore,
 }
 
 impl<'b> HostContext<'b> {
@@ -112,6 +118,17 @@ impl<'b> HostContext<'b> {
         recorder: RunRecorder,
         bridge: &'b mut dyn HostBridge,
     ) -> Self {
+        Self::with_policy_and_assets(policy, limits, recorder, bridge, BTreeMap::new())
+    }
+
+    /// Like [`with_policy`](Self::with_policy), with pre-loaded resource blobs for replay.
+    pub fn with_policy_and_assets(
+        policy: PolicyEngine,
+        limits: Limits,
+        recorder: RunRecorder,
+        bridge: &'b mut dyn HostBridge,
+        replay_resource_assets: BTreeMap<String, ResourceAssetBlob>,
+    ) -> Self {
         // The net allowlist rides on the evaluated permission snapshot's
         // capabilities, so on replay it is the *recorded* grant (built via
         // `PolicyEngine::from_snapshot`), not whatever the live manifest grants
@@ -132,6 +149,7 @@ impl<'b> HostContext<'b> {
             net_allowlist_request_phase,
             files_grant,
             logs: Vec::new(),
+            resource_store: ResourceStore::from_recorded(replay_resource_assets),
         }
     }
 

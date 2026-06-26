@@ -33,12 +33,12 @@ pub const FORGE_WORKSPACE_ENV: &str = "FORGE_WORKSPACE";
 
 /// The notes-lite demo source + manifest, embedded so `forge demo` needs no
 /// filesystem layout at runtime (the binary is self-contained). Kept in lockstep
-/// with `examples/notes-lite/` — the e2e test loads those files from disk and
+/// with `fixtures/demo-notes-lite/` — the unit test loads those files from disk and
 /// asserts they match these embeds, so they cannot drift silently.
 pub const NOTES_LITE_MAIN_TS: &str =
-    include_str!("../../../examples/notes-lite/src/main.ts");
+    include_str!("../../../fixtures/demo-notes-lite/src/main.ts");
 pub const NOTES_LITE_MANIFEST_JSON: &str =
-    include_str!("../../../examples/notes-lite/manifest.json");
+    include_str!("../../../fixtures/demo-notes-lite/manifest.json");
 
 /// Options for opening a local [`WorkspaceCore`].
 #[derive(Debug, Clone)]
@@ -1029,12 +1029,12 @@ mod tests {
         // binary's self-contained demo cannot drift from the published example.
         let disk_ts = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/notes-lite/src/main.ts"
+            "/../../fixtures/demo-notes-lite/src/main.ts"
         ))
         .unwrap();
         let disk_manifest = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/notes-lite/manifest.json"
+            "/../../fixtures/demo-notes-lite/manifest.json"
         ))
         .unwrap();
         assert_eq!(disk_ts, NOTES_LITE_MAIN_TS);

@@ -117,7 +117,8 @@ test("public contract export is deterministic and covers downstream boundaries",
   assert.equal(contracts.has("forge/crates/ffi/include/forge_ffi.h"), true);
   assert.equal(fixtures.has("forge/fixtures/e2e/note_taker/manifest.json"), true);
   assert.equal(fixtures.has("forge/fixtures/sync/already_in_sync_noop.json"), true);
-  assert.equal(fixtures.has("forge/examples/notes-lite/manifest.json"), true);
+  assert.equal(fixtures.has("webapps/examples/notes-lite/manifest.json"), true);
+  assert.equal(fixtures.has("forge/fixtures/demo-notes-lite/manifest.json"), true);
   assert.equal(tools.has("forge/crates/ffi/tests/ffi.rs"), true);
   assert.equal(tools.has("tools/export-public-contract.mjs"), true);
   assert.equal(tools.has("tools/verify-public-contract.mjs"), true);

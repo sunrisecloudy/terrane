@@ -18,6 +18,10 @@ use crate::net::{
     live_network_forbidden, HttpClient, InMemorySecretStore, MockHttpClient, NetRequest,
     NetResponse, SecretStore,
 };
+use crate::resource::{
+    live_resource_forbidden, MockResourceProvider, ResourceCapture, ResourceInvokeOptions,
+    ResourceProvider,
+};
 use forge_domain::Result;
 use std::collections::BTreeMap;
 
@@ -202,6 +206,16 @@ pub trait HostBridge {
     ) -> Result<u64> {
         Err(live_files_forbidden("write"))
     }
+
+    /// `ctx.resource.invoke` live capture (record mode only). Replay serves the
+    /// recorded metadata and never opens the platform camera.
+    fn resource_invoke(
+        &mut self,
+        kind: &str,
+        _options: &ResourceInvokeOptions,
+    ) -> Result<ResourceCapture> {
+        Err(live_resource_forbidden(kind))
+    }
 }
 
 /// The process-wide empty [`FileSystem`] backing the [`HostBridge::file_system`]
@@ -260,6 +274,8 @@ pub struct MemoryHostBridge {
     /// `ctx.db.watch`/`unwatch` are capability-checked + recorded; delivery is the
     /// facade's job (forge-core) and is not modeled here.
     watches: Vec<(String, serde_json::Value)>,
+    /// Injectable platform resource provider for `ctx.resource.invoke`.
+    resource_provider: MockResourceProvider,
 }
 
 // Hand-rolled `Debug` because `Box<dyn HttpClient>` is not `Debug`.
@@ -323,6 +339,12 @@ impl MemoryHostBridge {
     /// roots + seeded files so `ctx.files` reads/writes resolve.
     pub fn with_file_system(mut self, fs: InMemoryFileSystem) -> Self {
         self.file_system = fs;
+        self
+    }
+
+    /// Replace this bridge's platform resource provider (test convenience).
+    pub fn with_resource_provider(mut self, provider: MockResourceProvider) -> Self {
+        self.resource_provider = provider;
         self
     }
 
@@ -498,6 +520,14 @@ impl HostBridge for MemoryHostBridge {
         content_type: Option<&str>,
     ) -> Result<u64> {
         self.file_system.write(handle, rel_path, bytes, content_type)
+    }
+
+    fn resource_invoke(
+        &mut self,
+        kind: &str,
+        options: &ResourceInvokeOptions,
+    ) -> Result<ResourceCapture> {
+        self.resource_provider.invoke(kind, options)
     }
 }
 

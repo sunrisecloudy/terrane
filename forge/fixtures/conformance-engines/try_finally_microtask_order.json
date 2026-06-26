@@ -24,7 +24,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:087174b7cb5f574034a7da0d50bcef6d3210e8455bd08c3d4b1a1cd4fd113561\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"log\":[\"start\",\"try\",\"microtask-A\",\"after-await\",\"finally\",\"microtask-B\",\"end\"],\"r\":\"r\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:087174b7cb5f574034a7da0d50bcef6d3210e8455bd08c3d4b1a1cd4fd113561\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"log\":[\"start\",\"try\",\"microtask-A\",\"after-await\",\"finally\",\"microtask-B\",\"end\"],\"r\":\"r\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

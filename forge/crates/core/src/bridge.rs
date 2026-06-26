@@ -29,8 +29,9 @@
 
 use forge_domain::{CoreError, LogicalTimestamp, Result};
 use forge_runtime::{
-    FileSystem, HostBridge, HttpClient, InMemoryFileSystem, InMemorySecretStore, NetRequest,
-    NetResponse, SecretStore,
+    FileSystem, HostBridge, HttpClient, InMemoryFileSystem, InMemorySecretStore,
+    MockResourceProvider, NetRequest, NetResponse, ResourceCapture, ResourceInvokeOptions,
+    ResourceProvider, SecretStore,
 };
 use forge_storage::{
     AggregateResult, IndexManager, Mutation, Query, QueryResult, QuotaDecision, QuotaScope,
@@ -291,6 +292,9 @@ pub struct StorageHostBridge<'a> {
     /// sandbox filesystem via [`with_file_system`](Self::with_file_system); tests
     /// inject an in-memory one.
     file_system: Box<dyn FileSystem>,
+    /// Injectable platform resource provider for `ctx.resource.invoke` (camera in v1).
+    /// Default [`MockResourceProvider`] keeps CI/demo deterministic without a live camera.
+    resource_provider: MockResourceProvider,
 }
 
 impl<'a> StorageHostBridge<'a> {
@@ -332,6 +336,7 @@ impl<'a> StorageHostBridge<'a> {
             // so every ctx.files op is PermissionDenied until a host/shell injects a
             // real per-applet sandbox filesystem.
             file_system: Box::new(InMemoryFileSystem::new()),
+            resource_provider: MockResourceProvider::default(),
         }
     }
 
@@ -360,6 +365,12 @@ impl<'a> StorageHostBridge<'a> {
     /// or confinement-rejected op never reaches the filesystem).
     pub fn with_file_system(mut self, file_system: Box<dyn FileSystem>) -> Self {
         self.file_system = file_system;
+        self
+    }
+
+    /// Inject the platform resource provider for `ctx.resource.invoke` (tests / demo).
+    pub fn with_resource_provider(mut self, provider: MockResourceProvider) -> Self {
+        self.resource_provider = provider;
         self
     }
 
@@ -919,6 +930,14 @@ impl HostBridge for StorageHostBridge<'_> {
         content_type: Option<&str>,
     ) -> Result<u64> {
         self.file_system.write(handle, rel_path, bytes, content_type)
+    }
+
+    fn resource_invoke(
+        &mut self,
+        kind: &str,
+        options: &ResourceInvokeOptions,
+    ) -> Result<ResourceCapture> {
+        self.resource_provider.invoke(kind, options)
     }
 }
 

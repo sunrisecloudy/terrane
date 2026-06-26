@@ -971,7 +971,7 @@ export class PlatformDatabase {
       record.bridge_call_id,
       record.session_id,
       record.app_id,
-      record.install_id,
+      record.install_id ?? null,
       record.method,
       prettyJson(record.params_json ?? null),
       record.result_json ? prettyJson(record.result_json) : null,

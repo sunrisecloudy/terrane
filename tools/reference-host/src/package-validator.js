@@ -5,7 +5,7 @@ import { canonicalPackageHashes } from "./signing.js";
 import { readJsonFile } from "./util.js";
 
 const REQUIRED_FILES = ["manifest.json", "index.html", "styles.css", "app.js"];
-const OPTIONAL_FILES = new Set(["smoke-tests.json", "README.md"]);
+const OPTIONAL_FILES = new Set(["smoke-tests.json", "README.md", "mock-camera.jpg"]);
 const PLATFORM_GENERATED_FILES = new Set(["signature.json", "install-report.json", "content-hashes.json"]);
 const MAX_PACKAGE_FILES = 32;
 const MAX_MIGRATION_FILES = 16;
@@ -33,6 +33,9 @@ const PERMISSIONS = new Set([
   "notebook.propose",
   "notebook.approve",
   "notebook.sync",
+  "resource.invoke",
+  "resource.read",
+  "resource.materialize",
 ]);
 const NETWORK_POLICY_KEYS = new Set(["allow", "denyPrivateNetwork", "allowCredentials"]);
 const NETWORK_POLICY_ENTRY_KEYS = new Set([
@@ -76,6 +79,9 @@ const METHOD_PERMISSIONS = new Map([
   ["notebook.sync_pull", "notebook.sync"],
   ["notebook.sync_push", "notebook.sync"],
   ["notebook.subscribe", "notebook.read"],
+  ["resource.invoke", "resource.invoke"],
+  ["resource.read", "resource.read"],
+  ["resource.materialize", "resource.materialize"],
 ]);
 const ALLOWED_METHODS = new Set([
   ...METHOD_PERMISSIONS.keys(),

@@ -40,5 +40,12 @@
     "version": "0.1.0",
     "description": "Local-first calendar planning with month navigation, agenda storage, and core event logging.",
     "contentRating": { "minimumAge": 4 }
+  },
+  {
+    "id": "test-camera",
+    "name": "Test Camera",
+    "version": "0.1.0",
+    "description": "Camera capture via ctx.resource — invoke, materialize, and record capture metadata.",
+    "contentRating": { "minimumAge": 4 }
   }
 ]

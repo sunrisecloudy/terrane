@@ -64,7 +64,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:16c3fa0d97d0eacd8b1f68c47ba4f4c90210ac1c54aa07473366fc060825ef58\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"entries\":[[\"2\",5],[\"5\",4],[\"100\",2],[\"first\",1],[\"second\",3],[\"third\",6]],\"forIn\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"],\"keys\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"],\"spread\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"]}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:16c3fa0d97d0eacd8b1f68c47ba4f4c90210ac1c54aa07473366fc060825ef58\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"entries\":[[\"2\",5],[\"5\",4],[\"100\",2],[\"first\",1],[\"second\",3],[\"third\",6]],\"forIn\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"],\"keys\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"],\"spread\":[\"2\",\"5\",\"100\",\"first\",\"second\",\"third\"]}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

@@ -21,7 +21,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:10b167a4d9515b381a54a74bd49a6ffde032276489df5ddf416ae18a43a25ee5\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"codePoint\":128512,\"loneSurrogate\":1,\"nfc\":\"é\",\"nfcLen\":1,\"points\":1,\"units\":2,\"upper\":\"SS\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:10b167a4d9515b381a54a74bd49a6ffde032276489df5ddf416ae18a43a25ee5\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"codePoint\":128512,\"loneSurrogate\":1,\"nfc\":\"é\",\"nfcLen\":1,\"points\":1,\"units\":2,\"upper\":\"SS\"}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":1,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

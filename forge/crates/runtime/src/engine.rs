@@ -759,6 +759,7 @@ fn install_ctx<'js>(
     let random = Object::new(ctx.clone())?;
     let net = Object::new(ctx.clone())?;
     let files = Object::new(ctx.clone())?;
+    let resource = Object::new(ctx.clone())?;
 
     // --- storage.get(key) -> value | null --------------------------------
     {
@@ -1178,6 +1179,136 @@ fn install_ctx<'js>(
         files.set("write", f)?;
     }
 
+    // --- resource.invoke(kind, args?) -> metadata + asset_id ---------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
+                let (kind, invoke_args) = match args.as_slice() {
+                    [kind] => {
+                        let kind = value_to_string(&cx, kind)?;
+                        (kind, serde_json::Value::Null)
+                    }
+                    [kind, invoke_args] => {
+                        let kind = value_to_string(&cx, kind)?;
+                        let invoke_args = QuickJsEngine::js_to_json(&cx, invoke_args.clone())
+                            .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                        (kind, invoke_args)
+                    }
+                    _ => {
+                        return Err(store_and_throw(
+                            &cx,
+                            &host_error,
+                            CoreError::ValidationError(
+                                "ctx.resource.invoke expects (kind) or (kind, args)".into(),
+                            ),
+                        ))
+                    }
+                };
+                let r = unsafe { host.get() }.resource_invoke(kind, invoke_args).and_then(
+                    |resp| {
+                        serde_json::to_value(&resp).map_err(|e| {
+                            CoreError::RuntimeError(format!(
+                                "ctx.resource.invoke response serialize failed: {e}"
+                            ))
+                        })
+                    },
+                );
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        resource.set("invoke", f)?;
+    }
+    // --- resource.read(asset_id, request?) -> bytes ------------------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, args: Rest<Value<'js>>| -> rquickjs::Result<Value<'js>> {
+                let (asset_id, request_json) = match args.as_slice() {
+                    [asset_id] => {
+                        let asset_id = value_to_string(&cx, asset_id)?;
+                        (asset_id, serde_json::Value::Null)
+                    }
+                    [asset_id, request] => {
+                        let asset_id = value_to_string(&cx, asset_id)?;
+                        let request_json = QuickJsEngine::js_to_json(&cx, request.clone())
+                            .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                        (asset_id, request_json)
+                    }
+                    _ => {
+                        return Err(store_and_throw(
+                            &cx,
+                            &host_error,
+                            CoreError::ValidationError(
+                                "ctx.resource.read expects (asset_id) or (asset_id, request)".into(),
+                            ),
+                        ))
+                    }
+                };
+                let request: crate::ResourceReadRequest =
+                    if request_json.is_null() {
+                        crate::ResourceReadRequest::default()
+                    } else {
+                        serde_json::from_value(request_json).map_err(|e| {
+                            store_and_throw(
+                                &cx,
+                                &host_error,
+                                CoreError::ValidationError(format!(
+                                    "ctx.resource.read request invalid: {e}"
+                                )),
+                            )
+                        })?
+                    };
+                let r = unsafe { host.get() }
+                    .resource_read(asset_id, request)
+                    .and_then(|resp| {
+                        serde_json::to_value(&resp).map_err(|e| {
+                            CoreError::RuntimeError(format!(
+                                "ctx.resource.read response serialize failed: {e}"
+                            ))
+                        })
+                    });
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        resource.set("read", f)?;
+    }
+    // --- resource.materialize(asset_id, request) -> files copy -------------
+    {
+        let host_error = host_error.clone();
+        let f = Function::new(
+            ctx.clone(),
+            move |cx: Ctx<'js>, asset_id: Value<'js>, request: Value<'js>| -> rquickjs::Result<Value<'js>> {
+                let asset_id = value_to_string(&cx, &asset_id)?;
+                let request_json = QuickJsEngine::js_to_json(&cx, request)
+                    .map_err(|e| store_and_throw(&cx, &host_error, e))?;
+                let req: crate::ResourceMaterializeRequest =
+                    serde_json::from_value(request_json).map_err(|e| {
+                        store_and_throw(
+                            &cx,
+                            &host_error,
+                            CoreError::ValidationError(format!(
+                                "ctx.resource.materialize request must be {{ handle, path }}: {e}"
+                            )),
+                        )
+                    })?;
+                let r = unsafe { host.get() }
+                    .resource_materialize(asset_id, req)
+                    .and_then(|resp| {
+                        serde_json::to_value(&resp).map_err(|e| {
+                            CoreError::RuntimeError(format!(
+                                "ctx.resource.materialize response serialize failed: {e}"
+                            ))
+                        })
+                    });
+                host_result_to_js(&cx, &host_error, r)
+            },
+        )?;
+        resource.set("materialize", f)?;
+    }
+
     // --- log(line) -> null (top-level ctx.log) ---------------------------
     {
         let host_error = host_error.clone();
@@ -1201,6 +1332,7 @@ fn install_ctx<'js>(
     ctx_obj.set("random", random)?;
     ctx_obj.set("net", net)?;
     ctx_obj.set("files", files)?;
+    ctx_obj.set("resource", resource)?;
     globals.set("ctx", ctx_obj)?;
 
     // Poison dynamic code evaluation at the engine level (review 009 P1, CR-13).

@@ -26,7 +26,7 @@
       },
       "status": "completed"
     },
-    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:c74b3c9383d241de28ae92f12f3be3958adb574cb0f9cfac98bead20fe7815de\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"cbrt\":3,\"clz32\":31,\"fround\":1.100000023841858,\"hypot\":5,\"maxSafe\":9007199254740991,\"randomErrName\":\"Error\",\"randomThrew\":true,\"round\":3,\"roundNeg\":-2,\"sign\":-1,\"sqrt\":1.4142135623730951,\"trunc\":-4}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":9,\"time_start\":100}"
+    "replayFingerprint": "{\"calls\":[],\"code_hash\":\"sha256:c74b3c9383d241de28ae92f12f3be3958adb574cb0f9cfac98bead20fe7815de\",\"input\":{},\"outcome\":{\"result\":{\"ok\":true,\"value\":{\"cbrt\":3,\"clz32\":31,\"fround\":1.100000023841858,\"hypot\":5,\"maxSafe\":9007199254740991,\"randomErrName\":\"Error\",\"randomThrew\":true,\"round\":3,\"roundNeg\":-2,\"sign\":-1,\"sqrt\":1.4142135623730951,\"trunc\":-4}},\"status\":\"completed\"},\"permissions\":{\"can_run\":true,\"capabilities\":{\"db\":{\"read\":[],\"write\":[]},\"files\":{\"read\":[],\"write\":[]},\"net\":[],\"storage\":{\"read\":[],\"write\":[]},\"ui\":true},\"max_host_calls\":100},\"random_seed\":9,\"resource_assets\":{},\"time_start\":100}"
   },
   "input": {},
   "kind": "runtime",

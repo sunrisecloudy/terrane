@@ -34,6 +34,7 @@ agent tool surface all fall out of it.
 | [12-MILESTONES.md](12-MILESTONES.md) | Sequencing, effort, exit criteria, validation commands. |
 | [13-OPEN-QUESTIONS.md](13-OPEN-QUESTIONS.md) | Decisions to lock before/while building. |
 | [14-EFFECT-SURFACE-AND-OBSERVABILITY.md](14-EFFECT-SURFACE-AND-OBSERVABILITY.md) | The two-door decision: should JS host-calls pass through the same door? `system.trace`, agent-via-UI. |
+| [15-CTX-RESOURCE.md](15-CTX-RESOURCE.md) | `ctx.resource` — extensible platform capabilities (camera first); handle-based assets, no inline bytes on `invoke`. |
 
 ## Status
 

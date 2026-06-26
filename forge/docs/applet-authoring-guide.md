@@ -188,7 +188,7 @@ Required manifest grants for the example:
 ## Public API docs and tests
 
 - HTML reference: `node --no-warnings tools/build-forge-api-docs.mjs` then open `forge/docs/public-api/index.html` or `GET /docs` on `forge-server`.
-- Every bundled example under `forge/examples/` has library and CLI e2e coverage (`forge_examples`, `bundled_apps_cli_e2e`).
+- Every bundled webapp under `webapps/examples/` is validated by reference-host package tests and micro/smoke fixtures.
 - Contract drift gate: regenerate `artifacts/public-contract.json` after changing `forge-std.d.ts`, schemas, or examples.
 
 ## Current Gaps
