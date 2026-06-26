@@ -39,7 +39,8 @@ use terrane_domain::{Error, EventRecord, Request, Result};
 pub mod cap;
 
 use cap::{
-    app::AppState, crdt::CrdtState, kv::KvState, model::ModelState, net::NetState, Capability,
+    app::AppState, crdt::CrdtState, kv::KvState, model::ModelState, net::NetState,
+    replica::ReplicaState, Capability,
 };
 
 /// The whole world the core holds: one slice per capability. Capabilities read
@@ -56,6 +57,7 @@ pub struct State {
     pub net: NetState,
     pub model: ModelState,
     pub crdt: CrdtState,
+    pub replica: ReplicaState,
 }
 
 /// What a Command resolves to. Pure commands commit Events immediately;
@@ -84,6 +86,9 @@ pub enum Effect {
         agent: String,
         prompt: String,
     },
+    /// Mint this home's stable replica PeerID from OS entropy. The runner records
+    /// it once as a `replica.initialized` event; replay reads it back.
+    NewReplicaId,
 }
 
 /// Performs effects at the edge. Implementors do the real I/O (or, in tests, a
@@ -158,6 +163,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(cap::app::AppCapability));
     registry.register(Box::new(cap::kv::KvCapability));
     registry.register(Box::new(cap::crdt::CrdtCapability));
+    registry.register(Box::new(cap::replica::ReplicaCapability));
     registry.register(Box::new(cap::net::NetCapability));
     registry.register(Box::new(cap::model::ModelCapability));
     registry.register(Box::new(cap::host::HostCapability));

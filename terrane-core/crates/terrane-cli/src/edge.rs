@@ -1,8 +1,9 @@
 //! The CLI's real [`EffectRunner`] — where the engine's effects meet the world.
 //!
 //! It performs each [`Effect`] at the edge and hands the result back as the
-//! owning capability's recorded event. Replay never calls this. Two effects so
-//! far: a minimal `http://` GET (`net`) and an agent-CLI call (`model`).
+//! owning capability's recorded event. Replay never calls this. Effects so far:
+//! a minimal `http://` GET (`net`), an agent-CLI call (`model`), and minting this
+//! home's replica id from OS entropy (`replica`).
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -10,6 +11,7 @@ use std::process::Command;
 
 use terrane_core::cap::model::responded_event;
 use terrane_core::cap::net::fetched_event;
+use terrane_core::cap::replica::initialized_event;
 use terrane_core::{Effect, EffectRunner};
 use terrane_domain::{Error, EventRecord, Result};
 
@@ -26,8 +28,18 @@ impl EffectRunner for EdgeRunner {
                 let (response, exit_code) = run_agent(agent, prompt)?;
                 Ok(vec![responded_event(app, agent, prompt, response, exit_code)?])
             }
+            Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
         }
     }
+}
+
+/// Mint a fresh replica PeerID from OS entropy. Masked to 53 bits and forced
+/// nonzero — a valid, JS-safe (`Number`-representable) Loro PeerID.
+fn new_peer_id() -> Result<u64> {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| Error::Storage(format!("failed to read OS entropy for replica id: {e}")))?;
+    Ok((u64::from_le_bytes(bytes) & ((1u64 << 53) - 1)) | 1)
 }
 
 /// Run an agent CLI non-interactively and capture its output.

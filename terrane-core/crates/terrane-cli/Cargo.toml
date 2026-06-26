@@ -13,6 +13,7 @@ name = "terrane"
 path = "src/main.rs"
 
 [dependencies]
+getrandom = "0.4.3"
 terrane-core.workspace = true
 terrane-domain.workspace = true
 
