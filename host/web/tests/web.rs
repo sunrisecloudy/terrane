@@ -129,17 +129,22 @@ fn serves_catalog_ui_and_invoke_over_http() {
         "apps: {body}"
     );
 
-    // Shell: wraps the app in host-owned navigation.
+    // Shell: wraps the app in host-owned navigation; the browser loads the
+    // dynamic app list from `/apps`.
     let (status, body) = http(&addr, "GET", "/apps/todo/", None);
     assert_eq!(status, 200, "shell body: {body}");
     assert!(body.contains("Terrane"), "shell brand missing: {body}");
     assert!(
-        body.contains("todo-cli-collaborate"),
-        "app list missing: {body}"
+        body.contains("id=\"app-list\""),
+        "dynamic app list mount missing: {body}"
     );
     assert!(
-        body.contains("/apps/todo/__terrane/frame/"),
-        "frame route missing: {body}"
+        body.contains("fetch(\"/apps\""),
+        "catalog loader missing: {body}"
+    );
+    assert!(
+        body.contains("id=\"app-frame\""),
+        "app frame missing: {body}"
     );
 
     // UI frame: serves the app's index.html with the invoke shim injected.
