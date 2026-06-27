@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pixel Paint</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: Canvas;
+    color: CanvasText;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: minmax(320px, 1fr) 260px;
+    gap: 18px;
+    width: min(980px, calc(100vw - 32px));
+    margin: 0 auto;
+    padding: 22px 0;
+  }
+  main {
+    min-width: 0;
+  }
+  h1 {
+    margin: 0 0 14px;
+    font-size: 20px;
+    font-weight: 650;
+  }
+  .canvas-wrap {
+    width: min(100%, 640px);
+    aspect-ratio: 1;
+    border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+    background:
+      linear-gradient(45deg, #ddd 25%, transparent 25%),
+      linear-gradient(-45deg, #ddd 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #ddd 75%),
+      linear-gradient(-45deg, transparent 75%, #ddd 75%);
+    background-color: #fff;
+    background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    background-size: 16px 16px;
+    touch-action: none;
+  }
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    image-rendering: pixelated;
+    cursor: crosshair;
+  }
+  aside {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    min-width: 0;
+  }
+  .panel {
+    border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .label {
+    display: block;
+    margin-bottom: 8px;
+    color: color-mix(in srgb, CanvasText 70%, transparent);
+    font-size: 12px;
+    font-weight: 650;
+    text-transform: uppercase;
+  }
+  .tools, .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  button {
+    min-height: 34px;
+    border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+    border-radius: 8px;
+    padding: 0 11px;
+    background: ButtonFace;
+    color: ButtonText;
+    font: inherit;
+    cursor: pointer;
+  }
+  button[aria-pressed="true"] {
+    border-color: #0071e3;
+    box-shadow: inset 0 0 0 1px #0071e3;
+  }
+  .swatches {
+    display: grid;
+    grid-template-columns: repeat(6, 32px);
+    gap: 8px;
+  }
+  .swatch {
+    width: 32px;
+    height: 32px;
+    min-height: 32px;
+    padding: 0;
+    border-radius: 8px;
+  }
+  .color-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  input[type="color"] {
+    width: 48px;
+    height: 34px;
+    border: 0;
+    padding: 0;
+    background: transparent;
+  }
+  .status {
+    min-height: 20px;
+    color: color-mix(in srgb, CanvasText 66%, transparent);
+    font-size: 13px;
+  }
+  @media (max-width: 760px) {
+    .app {
+      grid-template-columns: 1fr;
+      width: min(100vw - 24px, 640px);
+      padding: 12px 0;
+    }
+    aside {
+      order: -1;
+    }
+  }
+</style>
+</head>
+<body>
+  <div class="app">
+    <main>
+      <h1>Pixel Paint</h1>
+      <div class="canvas-wrap">
+        <canvas id="canvas" width="64" height="64" aria-label="64 by 64 pixel canvas"></canvas>
+      </div>
+    </main>
+    <aside>
+      <section class="panel">
+        <span class="label">Tool</span>
+        <div class="tools">
+          <button id="brush" type="button" aria-pressed="true">Brush</button>
+          <button id="eraser" type="button" aria-pressed="false">Eraser</button>
+        </div>
+      </section>
+      <section class="panel">
+        <label class="label" for="color">Color</label>
+        <div class="color-row">
+          <input id="color" type="color" value="#111111">
+          <span id="color-value">#111111</span>
+        </div>
+      </section>
+      <section class="panel">
+        <span class="label">Swatches</span>
+        <div id="swatches" class="swatches"></div>
+      </section>
+      <section class="panel">
+        <span class="label">Actions</span>
+        <div class="actions">
+          <button id="clear" type="button">Clear</button>
+          <button id="download" type="button">Download PNG</button>
+        </div>
+      </section>
+      <div id="status" class="status">Loading...</div>
+    </aside>
+  </div>
+
+<script>
+  if (!window.terrane) {
+    var fallbackPixels = {};
+    window.terrane = {
+      invoke: function (verb) {
+        var args = Array.prototype.slice.call(arguments, 1);
+        if (verb === "state") return Promise.resolve(JSON.stringify({ size: 64, pixels: fallbackPixels }));
+        if (verb === "bulk") {
+          JSON.parse(args[0] || "[]").forEach(function (change) {
+            var key = change.x + "," + change.y;
+            if (change.color) fallbackPixels[key] = change.color;
+            else delete fallbackPixels[key];
+          });
+          return Promise.resolve("applied");
+        }
+        if (verb === "clear") {
+          fallbackPixels = {};
+          return Promise.resolve("cleared");
+        }
+        return Promise.resolve("");
+      }
+    };
+  }
+
+  var SIZE = 64;
+  var pixels = {};
+  var pending = {};
+  var drawing = false;
+  var activeTool = "brush";
+  var activeColor = "#111111";
+  var canvas = document.getElementById("canvas");
+  var ctx2d = canvas.getContext("2d");
+  var statusEl = document.getElementById("status");
+  var colorEl = document.getElementById("color");
+  var colorValueEl = document.getElementById("color-value");
+  var brushEl = document.getElementById("brush");
+  var eraserEl = document.getElementById("eraser");
+
+  var palette = [
+    "#111111", "#ffffff", "#ff3b30", "#ff9500", "#ffcc00", "#34c759",
+    "#00c7be", "#007aff", "#5856d6", "#af52de", "#ff2d55", "#8e8e93"
+  ];
+
+  function setStatus(text) {
+    statusEl.textContent = text;
+  }
+
+  function render() {
+    ctx2d.clearRect(0, 0, SIZE, SIZE);
+    ctx2d.fillStyle = "#ffffff";
+    ctx2d.fillRect(0, 0, SIZE, SIZE);
+    Object.keys(pixels).forEach(function (key) {
+      var parts = key.split(",");
+      ctx2d.fillStyle = pixels[key];
+      ctx2d.fillRect(parseInt(parts[0], 10), parseInt(parts[1], 10), 1, 1);
+    });
+  }
+
+  function canvasCell(event) {
+    var rect = canvas.getBoundingClientRect();
+    var x = Math.floor((event.clientX - rect.left) * SIZE / rect.width);
+    var y = Math.floor((event.clientY - rect.top) * SIZE / rect.height);
+    if (x < 0 || y < 0 || x >= SIZE || y >= SIZE) return null;
+    return { x: x, y: y };
+  }
+
+  function paint(event) {
+    var cell = canvasCell(event);
+    if (!cell) return;
+    var key = cell.x + "," + cell.y;
+    var color = activeTool === "eraser" ? "" : activeColor;
+    if (color) pixels[key] = color;
+    else delete pixels[key];
+    pending[key] = { x: cell.x, y: cell.y, color: color };
+    render();
+  }
+
+  function flush() {
+    var changes = Object.keys(pending).map(function (key) { return pending[key]; });
+    pending = {};
+    if (changes.length === 0) return Promise.resolve();
+    setStatus("Saving...");
+    return window.terrane.invoke("bulk", JSON.stringify(changes)).then(function () {
+      setStatus("Saved " + changes.length + " pixel" + (changes.length === 1 ? "" : "s"));
+    }).catch(function (error) {
+      setStatus("Save failed: " + error.message);
+    });
+  }
+
+  function setTool(tool) {
+    activeTool = tool;
+    brushEl.setAttribute("aria-pressed", String(tool === "brush"));
+    eraserEl.setAttribute("aria-pressed", String(tool === "eraser"));
+  }
+
+  function setColor(color) {
+    activeColor = color.toLowerCase();
+    colorEl.value = activeColor;
+    colorValueEl.textContent = activeColor;
+    setTool("brush");
+  }
+
+  function load() {
+    return window.terrane.invoke("state").then(function (json) {
+      var state = JSON.parse(json || "{}");
+      pixels = state.pixels || {};
+      render();
+      setStatus("64 x 64 canvas ready");
+    }).catch(function (error) {
+      setStatus("Load failed: " + error.message);
+    });
+  }
+
+  canvas.addEventListener("pointerdown", function (event) {
+    canvas.setPointerCapture(event.pointerId);
+    drawing = true;
+    paint(event);
+  });
+  canvas.addEventListener("pointermove", function (event) {
+    if (drawing) paint(event);
+  });
+  canvas.addEventListener("pointerup", function (event) {
+    drawing = false;
+    canvas.releasePointerCapture(event.pointerId);
+    flush();
+  });
+  canvas.addEventListener("pointercancel", function () {
+    drawing = false;
+    flush();
+  });
+
+  brushEl.addEventListener("click", function () { setTool("brush"); });
+  eraserEl.addEventListener("click", function () { setTool("eraser"); });
+  colorEl.addEventListener("input", function () { setColor(colorEl.value); });
+
+  document.getElementById("clear").addEventListener("click", function () {
+    pixels = {};
+    pending = {};
+    render();
+    setStatus("Clearing...");
+    window.terrane.invoke("clear").then(function () {
+      setStatus("Canvas cleared");
+    });
+  });
+
+  document.getElementById("download").addEventListener("click", function () {
+    var link = document.createElement("a");
+    link.download = "pixel-paint.png";
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+  });
+
+  palette.forEach(function (color) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "swatch";
+    button.style.backgroundColor = color;
+    button.setAttribute("aria-label", color);
+    button.addEventListener("click", function () { setColor(color); });
+    document.getElementById("swatches").appendChild(button);
+  });
+
+  render();
+  load();
+</script>
+</body>
+</html>

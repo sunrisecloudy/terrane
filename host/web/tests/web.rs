@@ -4,22 +4,36 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use tempfile::tempdir;
 use terrane_core::Core;
 use terrane_domain::Request;
 
-fn app_source(name: &str) -> String {
+fn app_source_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../apps")
         .join(name)
         .canonicalize()
         .unwrap_or_else(|_| panic!("apps/{name} exists"))
-        .to_str()
-        .unwrap()
-        .to_string()
+}
+
+fn app_source(name: &str) -> String {
+    app_source_path(name).to_str().unwrap().to_string()
+}
+
+fn install_from_source(core: &mut Core, id: &str, source: &Path) {
+    core.dispatch(Request::new(
+        "app.add",
+        vec![
+            id.into(),
+            id.into(),
+            "--source".into(),
+            source.to_str().unwrap().to_string(),
+        ],
+    ))
+    .unwrap();
 }
 
 fn install(core: &mut Core, id: &str) {
@@ -28,6 +42,19 @@ fn install(core: &mut Core, id: &str) {
         vec![id.into(), id.into(), "--source".into(), app_source(id)],
     ))
     .unwrap();
+}
+
+fn copy_dir(src: &Path, dest: &Path) {
+    std::fs::create_dir_all(dest).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dest.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).unwrap();
+        }
+    }
 }
 
 /// Minimal blocking HTTP/1.0 client (Connection: close → read to EOF).
@@ -106,7 +133,16 @@ fn serves_catalog_ui_and_invoke_over_http() {
     let (status, body) = http(&addr, "GET", "/apps/todo/", None);
     assert_eq!(status, 200, "ui body: {body}");
     assert!(body.contains("window.terrane"), "shim missing: {body}");
-    assert!(body.contains("APP_ID=\"todo\""), "app id missing: {body}");
+    assert!(body.contains("window.APP_ID"), "app id missing: {body}");
+    assert!(body.contains("\"todo\""), "app id value missing: {body}");
+    assert!(
+        body.contains("__terrane/live-version"),
+        "live reload hook missing: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/apps/todo/__terrane/live-version", None);
+    assert_eq!(status, 200, "live version: {body}");
+    assert!(body.contains("\"version\""), "live version: {body}");
 
     // invoke round-trip on the crdt app.
     let (status, body) = http(
@@ -138,6 +174,40 @@ fn serves_catalog_ui_and_invoke_over_http() {
     // path traversal is refused.
     let (status, _) = http(&addr, "GET", "/apps/todo/../../Cargo.toml", None);
     assert!(status == 403 || status == 404, "traversal status: {status}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn live_version_changes_when_bundle_file_changes() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let app_dir = dir.path().join("todo-source");
+    copy_dir(&app_source_path("todo"), &app_dir);
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install_from_source(&mut core, "todo", &app_dir);
+    }
+
+    let (mut child, addr) = spawn_web(&home);
+
+    let (status, first) = http(&addr, "GET", "/apps/todo/__terrane/live-version", None);
+    assert_eq!(status, 200, "first live version: {first}");
+
+    std::fs::write(
+        app_dir.join("index.html"),
+        "<!doctype html><title>Todo Reloaded</title><h1>Todo Reloaded</h1>",
+    )
+    .unwrap();
+
+    let (status, second) = http(&addr, "GET", "/apps/todo/__terrane/live-version", None);
+    assert_eq!(status, 200, "second live version: {second}");
+    assert_ne!(
+        first, second,
+        "live version should change after app file edit"
+    );
 
     let _ = child.kill();
     let _ = child.wait();
