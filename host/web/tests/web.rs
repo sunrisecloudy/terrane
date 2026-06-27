@@ -134,3 +134,34 @@ fn serves_catalog_ui_and_invoke_over_http() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// Conformance: the running web host serves *every* HTTP route the contract
+/// (`terrane_api::host_contract`) declares. Premium runs the analogous black-box
+/// check against its server to prove it's a superset.
+#[test]
+fn web_host_serves_every_declared_route() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install(&mut core, "todo"); // has a UI, so the UI route resolves
+    }
+    let (mut child, addr) = spawn_web(home);
+
+    for route in terrane_api::host_contract().http_routes {
+        let path = route.path.replace("{id}", "todo");
+        let (status, body) = if route.method == "POST" {
+            http(&addr, "POST", &path, Some(r#"{"verb":"list","args":[]}"#))
+        } else {
+            http(&addr, "GET", &path, None)
+        };
+        assert!(
+            status != 0 && status != 404,
+            "declared route {} {path} not served (status {status}): {body}",
+            route.method
+        );
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
+}

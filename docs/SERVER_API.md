@@ -81,11 +81,33 @@ text — not as a JSON-RPC error — so the model sees them.
 
 ---
 
+## Export & conformance
+
+The full machine-readable contract is generated, not hand-written:
+
+```sh
+terrane contract export                         # the surface (JSON), from the Rust declarations
+node tools/export-public-contract.mjs --out public-contract.json   # + provenance, license, conformance, file hashes
+node tools/verify-public-contract.mjs --contract public-contract.json   # self-check (surface + file hashes)
+```
+
+`public-contract.json` is the artifact `terrane-premium` pins. Its `surface`
+(host routes, MCP tools, capabilities, `ctx.resource`, app contract, sync) comes
+from `terrane contract export` — derived from the `terrane-api`/`terrane-core`
+declarations, so it can't drift (guarded by `terrane-cli/tests/contract.rs`). Its
+`conformance.commands` are what a consumer runs to prove an implementation.
+
 ## Subset rule (terrane ⊆ premium)
 
 Every route and tool above must exist in `terrane-premium` with the same request
 and response shapes. Premium adds hosted concerns (accounts, orgs, billing,
 encrypted sync, marketplace, signing, admin) **on top**; it never removes or
-redefines anything here. The mechanical guarantee is the **conformance suite**:
-the OSS hosts pass it, and premium re-runs the identical suite against the pinned
-`public-contract.json` in its CI.
+redefines anything here. The mechanical guarantees:
+
+- **Drift**: `terrane-cli/tests/contract.rs` asserts the exported surface matches
+  the live declarations; `tools/verify-public-contract.mjs` re-checks it + the
+  contract file hashes.
+- **Behaviour**: the host e2e suites are the conformance tests — e.g.
+  `host/web/tests/web.rs` drives the running server and asserts it serves *every*
+  declared route. Premium re-runs the analogous black-box checks against its
+  server in CI.

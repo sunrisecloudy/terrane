@@ -216,6 +216,51 @@ pub fn declared_resource_surface() -> BTreeSet<String> {
     out
 }
 
+/// One method of a capability's backend `ctx.resource` surface, as structured
+/// data (for the public-contract export).
+pub struct ResourceMethodSurface {
+    pub name: &'static str,
+    pub kind: &'static str,
+    pub params: &'static [&'static str],
+}
+
+/// A capability's declared `ctx.resource.<namespace>` surface.
+pub struct ResourceNamespaceSurface {
+    pub namespace: &'static str,
+    pub methods: Vec<ResourceMethodSurface>,
+}
+
+/// The full `ctx.resource` surface as structured data — every capability that
+/// declares a backend API, with its methods. The structured twin of
+/// [`resource_api_markdown`], for emitting the public contract.
+pub fn resource_surface() -> Vec<ResourceNamespaceSurface> {
+    let registry = default_registry();
+    let mut out = Vec::new();
+    for capability in registry.caps.values() {
+        let api = capability.resource_api();
+        if api.is_empty() {
+            continue;
+        }
+        out.push(ResourceNamespaceSurface {
+            namespace: capability.namespace(),
+            methods: api
+                .iter()
+                .map(|m| ResourceMethodSurface {
+                    name: m.name(),
+                    kind: m.kind(),
+                    params: m.params(),
+                })
+                .collect(),
+        });
+    }
+    out
+}
+
+/// Every registered capability namespace (`app`, `kv`, `crdt`, …), sorted.
+pub fn capability_namespaces() -> Vec<&'static str> {
+    default_registry().caps.values().map(|c| c.namespace()).collect()
+}
+
 /// Offer one recorded event to every capability (broadcast fold).
 pub(crate) fn apply(registry: &Registry, state: &mut State, record: &EventRecord) -> Result<()> {
     for capability in registry.caps.values() {

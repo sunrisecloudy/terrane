@@ -36,6 +36,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["log"] => run_log(),
         ["replay"] => run_replay(),
         ["app", "install", path] => run_install(path),
+        ["contract", "export"] => run_contract_export(),
         ["serve"] => sync::run_serve(DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
@@ -254,6 +255,40 @@ pub fn run_log() -> Result<(), String> {
     Ok(())
 }
 
+/// The public API surface (the Rust-introspectable core of `public-contract.json`),
+/// assembled from the `terrane-api` and `terrane-core` declarations — so it can't
+/// drift from the running system.
+pub fn contract_surface() -> terrane_api::PublicSurface {
+    let resources = terrane_core::resource_surface()
+        .into_iter()
+        .map(|ns| terrane_api::ResourceNamespace {
+            namespace: ns.namespace.to_string(),
+            methods: ns
+                .methods
+                .into_iter()
+                .map(|m| terrane_api::ResourceMethodInfo {
+                    name: m.name.to_string(),
+                    kind: m.kind.to_string(),
+                    params: m.params.iter().map(|p| p.to_string()).collect(),
+                })
+                .collect(),
+        })
+        .collect();
+    let capabilities = terrane_core::capability_namespaces()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    terrane_api::public_surface(capabilities, resources)
+}
+
+/// `contract export` — print [`contract_surface`] as JSON. The
+/// `tools/export-public-contract.mjs` wrapper adds provenance/hashes/conformance.
+pub fn run_contract_export() -> Result<(), String> {
+    use nanoserde::SerJson;
+    println!("{}", contract_surface().serialize_json());
+    Ok(())
+}
+
 pub fn run_replay() -> Result<(), String> {
     let core = open()?;
     if core.replay_matches().map_err(|e| e.to_string())? {
@@ -303,6 +338,7 @@ pub fn print_help() {
          \x20 terrane state                  print the whole world\n\
          \x20 terrane log                    print the event log (decoded)\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
+         \x20 terrane contract export        print the public API contract (JSON)\n\
          \x20 terrane help                   this message\n\n\
          Catalog: $TERRANE_HOME/log.bin (binary event log; default ./.terrane/)"
     );

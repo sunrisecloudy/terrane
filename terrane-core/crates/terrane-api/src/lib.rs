@@ -209,6 +209,84 @@ pub struct HostContract {
     pub mcp_tools: Vec<McpToolEntry>,
 }
 
+// ---------------------------------------------------------------------------
+// Public surface (the Rust-introspectable core of public-contract.json)
+// ---------------------------------------------------------------------------
+
+/// One method of a capability's backend `ctx.resource` surface.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct ResourceMethodInfo {
+    pub name: String,
+    /// `"read"` or `"write"`.
+    pub kind: String,
+    pub params: Vec<String>,
+}
+
+/// A capability's declared `ctx.resource.<namespace>` surface.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct ResourceNamespace {
+    pub namespace: String,
+    pub methods: Vec<ResourceMethodInfo>,
+}
+
+/// How a client runs an app, and how an app self-describes.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct AppContractInfo {
+    /// The reserved backend verb an app implements to self-describe ([`ACTIONS_VERB`]).
+    pub actions_verb: String,
+    /// The invoke contract (verb + string args → string).
+    pub invoke: String,
+}
+
+/// The sync wire surface — what flows between replicas, and over what.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct SyncInfo {
+    /// The recorded event that IS the wire format.
+    pub wire_event: String,
+    pub syncable_event_kinds: Vec<String>,
+    pub transports: Vec<String>,
+}
+
+/// The Rust-introspectable public surface — the authoritative core of the
+/// exported `public-contract.json` that `terrane-premium` pins (the export tool
+/// wraps this with provenance, license, conformance commands, and file hashes).
+/// Everything here is derived from declarations, so it can't drift from the code.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct PublicSurface {
+    pub contract_version: String,
+    pub host: HostContract,
+    pub capabilities: Vec<String>,
+    pub resources: Vec<ResourceNamespace>,
+    pub app: AppContractInfo,
+    pub sync: SyncInfo,
+}
+
+/// Assemble the public surface from the host contract plus the capability and
+/// resource surfaces (which the caller reads from `terrane-core`, since this
+/// crate stays free of that dependency).
+pub fn public_surface(capabilities: Vec<String>, resources: Vec<ResourceNamespace>) -> PublicSurface {
+    PublicSurface {
+        contract_version: CONTRACT_VERSION.to_string(),
+        host: host_contract(),
+        capabilities,
+        resources,
+        app: AppContractInfo {
+            actions_verb: ACTIONS_VERB.to_string(),
+            invoke: "a verb plus its string args runs the app backend and returns a string \
+                     (HTTP POST /apps/{id}/invoke; MCP `invoke` tool; CLI `terrane host run`)"
+                .to_string(),
+        },
+        sync: SyncInfo {
+            wire_event: "crdt.update".to_string(),
+            syncable_event_kinds: vec!["crdt.update".to_string()],
+            transports: vec![
+                "file: terrane sync <app> --from <home>".to_string(),
+                "tcp: terrane serve / terrane sync <app> --peer <addr>".to_string(),
+            ],
+        },
+    }
+}
+
 /// Build the canonical host-API contract summary from the declarations above —
 /// the single place the exported artifact is derived from.
 pub fn host_contract() -> HostContract {
