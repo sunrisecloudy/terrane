@@ -129,8 +129,21 @@ fn serves_catalog_ui_and_invoke_over_http() {
         "apps: {body}"
     );
 
-    // UI: serves the app's index.html with the invoke shim injected.
+    // Shell: wraps the app in host-owned navigation.
     let (status, body) = http(&addr, "GET", "/apps/todo/", None);
+    assert_eq!(status, 200, "shell body: {body}");
+    assert!(body.contains("Terrane"), "shell brand missing: {body}");
+    assert!(
+        body.contains("todo-cli-collaborate"),
+        "app list missing: {body}"
+    );
+    assert!(
+        body.contains("/apps/todo/__terrane/frame/"),
+        "frame route missing: {body}"
+    );
+
+    // UI frame: serves the app's index.html with the invoke shim injected.
+    let (status, body) = http(&addr, "GET", "/apps/todo/__terrane/frame/", None);
     assert_eq!(status, 200, "ui body: {body}");
     assert!(body.contains("window.terrane"), "shim missing: {body}");
     assert!(body.contains("window.APP_ID"), "app id missing: {body}");

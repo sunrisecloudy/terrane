@@ -16,6 +16,7 @@ mod args;
 mod http;
 mod live_reload;
 mod routes;
+mod shell;
 mod shim;
 mod static_files;
 

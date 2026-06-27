@@ -29,11 +29,15 @@ pub fn route(
             version: CONTRACT_VERSION.into(),
         }),
         (Method::Get, ["apps"]) => json_ok(&terrane_host::list_apps(core)),
-        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request),
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
             crate::live_reload::response(core, id)
         }
-        (Method::Get, ["apps", id]) => serve_ui(core, id, "", live_reload),
+        (Method::Get, ["apps", id, "__terrane", "frame"]) => serve_ui(core, id, "", live_reload),
+        (Method::Get, ["apps", id, "__terrane", "frame", rest @ ..]) => {
+            serve_ui(core, id, &rest.join("/"), live_reload)
+        }
+        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request),
+        (Method::Get, ["apps", id]) => crate::shell::response(core, id),
         (Method::Get, ["apps", id, rest @ ..]) => serve_ui(core, id, &rest.join("/"), live_reload),
         _ => json_error(404, "not found"),
     }
