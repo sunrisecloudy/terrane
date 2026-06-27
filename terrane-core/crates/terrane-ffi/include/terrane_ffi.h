@@ -64,6 +64,14 @@ int terrane_preview_invoke(TerraneHandle *h, const char *preview_id,
                            const char *const *argv, char **out_output,
                            char **out_error);
 
+/* Generate a draft app through the core builder capability. On success writes
+ * JSON with id/appId/name/prompt/agent/status/error/files. `agent` may be "" to
+ * use the default builder agent. */
+int terrane_builder_generate(TerraneHandle *h, const char *app_id,
+                             const char *name, const char *prompt,
+                             const char *agent, char **out_output,
+                             char **out_error);
+
 /* Build an app frontend with terrane-app-build. On success writes JSON with the
  * generated dist path and file count. */
 int terrane_build_app(const char *app_dir, char **out_output, char **out_error);

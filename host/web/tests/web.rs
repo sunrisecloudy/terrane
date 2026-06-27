@@ -331,6 +331,28 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
 }
 
 #[test]
+fn builder_generate_route_rejects_invalid_request_before_agent() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (mut child, addr) = spawn_web(home);
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/builder/generate",
+        Some(r#"{"id":"bad/path","name":"Demo","prompt":"make a greeting app","agent":"codex"}"#),
+    );
+    assert_eq!(status, 500, "builder generate should reject early: {body}");
+    assert!(
+        body.contains("unsafe") && body.contains("bad/path"),
+        "builder generate error should come from core validation: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn serves_bmi_calculator_shell_frame_assets_and_backend() {
     let dir = tempdir().unwrap();
     let home = dir.path();

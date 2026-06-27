@@ -14,6 +14,15 @@ struct CreatePreviewRequest {
     files: Vec<PreviewFile>,
 }
 
+#[derive(DeJson)]
+struct BuilderGenerateRequest {
+    id: String,
+    name: String,
+    prompt: String,
+    #[nserde(default)]
+    agent: String,
+}
+
 pub fn route(
     core: &mut terrane_host::HostCore,
     previews: &mut PreviewStore,
@@ -35,6 +44,7 @@ pub fn route(
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
         }),
+        (Method::Post, ["__terrane", "builder", "generate"]) => builder_generate(core, request),
         (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),
         (Method::Get, ["__terrane", "previews", id, "frame"]) => serve_preview(previews, id, ""),
         (Method::Get, ["__terrane", "previews", id, "frame", rest @ ..]) => {
@@ -61,6 +71,29 @@ pub fn route(
             serve_bundle_asset(core, id, &rest.join("/"), live_reload)
         }
         _ => json_error(404, "not found"),
+    }
+}
+
+/// `POST /__terrane/builder/generate` - generate a draft app through core.
+fn builder_generate(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed: BuilderGenerateRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad builder body: {e}")),
+    };
+    match terrane_host::generate_app_json(
+        core,
+        &parsed.id,
+        &parsed.name,
+        &parsed.prompt,
+        Some(&parsed.agent),
+    ) {
+        Ok(json) => Response::from_data(json.into_bytes())
+            .with_header(header("Content-Type", "application/json")),
+        Err(e) => json_error(500, &e),
     }
 }
 

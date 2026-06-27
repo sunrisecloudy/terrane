@@ -9,6 +9,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use terrane_api::{AppSummary, AppsResponse};
+use terrane_core::cap::builder;
 use terrane_core::Core;
 use terrane_domain::{Error, EventRecord, Request};
 
@@ -161,6 +162,40 @@ pub fn invoke_app(
 /// `__actions__` verb.
 pub fn app_actions(core: &mut HostCore, app: &str) -> Result<String, String> {
     invoke_app(core, app, terrane_api::ACTIONS_VERB, &[])
+}
+
+/// Ask the core builder capability to generate a draft app and return the
+/// latest draft as JSON for host bridges.
+pub fn generate_app_json(
+    core: &mut HostCore,
+    app_id: &str,
+    name: &str,
+    prompt: &str,
+    agent: Option<&str>,
+) -> Result<String, String> {
+    let draft_id = app_id.trim();
+    let agent = agent
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(builder::DEFAULT_AGENT);
+    dispatch_on_core(
+        core,
+        "builder.generate",
+        &[
+            draft_id.to_string(),
+            app_id.to_string(),
+            name.to_string(),
+            agent.to_string(),
+            prompt.to_string(),
+        ],
+    )?;
+    let draft = core
+        .state()
+        .builder
+        .drafts
+        .get(draft_id)
+        .ok_or_else(|| format!("builder draft missing after generation: {draft_id}"))?;
+    Ok(builder::draft_json(draft))
 }
 
 pub fn list_apps(core: &HostCore) -> AppsResponse {

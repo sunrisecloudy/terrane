@@ -68,6 +68,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host.e2e-tests
+        GENERATE_INFOPLIST_FILE: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
           - $(SRCROOT)/../../terrane-core/target/release

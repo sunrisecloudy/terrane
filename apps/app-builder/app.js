@@ -5,6 +5,19 @@
         JSON.stringify(localScaffold(id, name, description)),
       );
     },
+    builderGenerate: function (request) {
+      var result = localScaffold(request.id, request.name, request.prompt);
+      return Promise.resolve({
+        id: result.id,
+        appId: result.id,
+        name: result.name,
+        prompt: request.prompt || "",
+        agent: "local",
+        status: "generated",
+        error: "",
+        files: result.files,
+      });
+    },
     preview: function () {
       return Promise.reject(new Error("Preview bridge unavailable"));
     },
@@ -17,10 +30,13 @@
     preview: typeof bridge.preview === "function"
       ? bridge.preview.bind(bridge)
       : fallback.preview,
+    builderGenerate: typeof bridge.builderGenerate === "function"
+      ? bridge.builderGenerate.bind(bridge)
+      : fallback.builderGenerate,
   };
   var idEl = document.getElementById("app-id");
   var nameEl = document.getElementById("app-name");
-  var descEl = document.getElementById("description");
+  var promptEl = document.getElementById("prompt");
   var filesEl = document.getElementById("files");
   var statusEl = document.getElementById("status");
   var previewStatusEl = document.getElementById("preview-status");
@@ -28,7 +44,7 @@
   var generation = 0;
 
   document.getElementById("generate").addEventListener("click", generate);
-  [idEl, nameEl, descEl].forEach(function (el) {
+  [idEl, nameEl, promptEl].forEach(function (el) {
     el.addEventListener("input", function () {
       statusEl.textContent = "Edited";
       previewStatusEl.textContent = "Edited";
@@ -42,12 +58,21 @@
     statusEl.textContent = "Generating...";
     previewStatusEl.textContent = "Waiting";
     previewFrame.removeAttribute("src");
-    terrane.invoke("scaffold", idEl.value, nameEl.value, descEl.value)
-      .then(function (json) {
+    terrane.builderGenerate({
+      id: slug(idEl.value) || "my-app",
+      name: title(nameEl.value, "My App"),
+      prompt: title(promptEl.value, "A local-first Terrane app."),
+      agent: "codex",
+    })
+      .then(function (result) {
         if (ticket !== generation) return null;
-        var result = JSON.parse(json || "{}");
         var files = result.files || [];
         renderFiles(files);
+        if (result.status === "failed") {
+          statusEl.textContent = "Failed: " + (result.error || "builder failed");
+          previewStatusEl.textContent = "Failed";
+          return null;
+        }
         statusEl.textContent = files.length + " files";
         return renderPreview(ticket, files);
       })
@@ -101,11 +126,9 @@
 
   function localScaffold(id, name, description) {
     var cleanId =
-      String(id || "my-app").trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "-")
-        .replace(/^-+|-+$/g, "") || "my-app";
-    var cleanName = String(name || cleanId).trim() || cleanId;
-    var cleanDescription = String(description || "A local-first Terrane app.")
-      .trim();
+      slug(id) || "my-app";
+    var cleanName = title(name, cleanId);
+    var cleanDescription = title(description, "A local-first Terrane app.");
     return {
       id: cleanId,
       name: cleanName,
@@ -200,6 +223,19 @@
         ].join("\n"),
       },
     ];
+  }
+
+  function slug(input) {
+    return String(input || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function title(input, fallback) {
+    var text = String(input || "").trim();
+    return text || fallback;
   }
 
   function escapeJsString(input) {

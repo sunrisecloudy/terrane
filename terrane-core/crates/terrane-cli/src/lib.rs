@@ -115,6 +115,27 @@ pub fn run_state() -> Result<(), String> {
             );
         }
     }
+
+    println!("builder:");
+    if state.builder.drafts.is_empty() {
+        println!("  (none)");
+    }
+    for draft in state.builder.drafts.values() {
+        let status = if draft.error.is_some() {
+            "failed"
+        } else if draft.files.is_empty() {
+            "requested"
+        } else {
+            "generated"
+        };
+        println!(
+            "  {} — {} [{}] {} files",
+            draft.app_id,
+            draft.name,
+            status,
+            draft.files.len()
+        );
+    }
     Ok(())
 }
 
@@ -194,6 +215,7 @@ pub fn print_help() {
          \x20 terrane kv rm <app> <key>                        delete a value\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
+         \x20 terrane builder generate <draft> <app> <name> <codex> <prompt…>\n\
          \x20 terrane host run <app> [input…]                  run an app's JS backend\n\n\
          Multi-user:\n\
          \x20 terrane serve [--addr <addr>]      listen for peers (default 127.0.0.1:7777)\n\

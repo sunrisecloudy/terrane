@@ -398,6 +398,11 @@ const APP_RUNTIME: &str = r#"
     });
     return 'usage: ' + verb + (slots.length ? ' ' + slots.join(' ') : '');
   }
+  function runnerFor(a) {
+    if (typeof a === 'function') return a;
+    if (a && typeof a.run === 'function') return function (args, usage) { return a.run(args, usage); };
+    return null;
+  }
   function describe() {
     var list = Object.keys(actions).map(function (verb) {
       var a = actions[verb];
@@ -410,10 +415,11 @@ const APP_RUNTIME: &str = r#"
     var verb = argv[0] || '';
     if (verb === '__actions__') return describe();
     var a = actions[verb];
-    if (!a || typeof a.run !== 'function') {
+    var run = runnerFor(a);
+    if (!run) {
       return 'unknown verb: ' + verb + ' (try ' + Object.keys(actions).join(' | ') + ')';
     }
-    return a.run(argv.slice(1), function () { return usageFor(verb); });
+    return run(argv.slice(1), function () { return usageFor(verb); });
   };
 })();
 "#;

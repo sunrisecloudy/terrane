@@ -82,6 +82,12 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         previewInvoke(previewId: previewId, verb: verb, args: Self.stringArgs(from: body["args"])),
         replyHandler
       )
+    case "builderGenerate":
+      guard let request = body["request"] as? [String: Any] else {
+        replyHandler(nil, "terrane: malformed builder generate message")
+        return
+      }
+      replyObject(generateDraft(request: request), replyHandler)
     default:
       replyHandler(nil, "terrane: unknown bridge message")
     }
@@ -131,6 +137,34 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
       object["frameUrl"] is String
     else {
       return (false, "terrane_preview_create returned malformed JSON")
+    }
+    return (true, object)
+  }
+
+  private func generateDraft(request: [String: Any]) -> (Bool, Any) {
+    let id = (request["id"] as? String) ?? ""
+    let name = (request["name"] as? String) ?? ""
+    let prompt = (request["prompt"] as? String) ?? ""
+    let agent = (request["agent"] as? String) ?? "codex"
+
+    let (ok, payload) = id.withCString { idC in
+      name.withCString { nameC in
+        prompt.withCString { promptC in
+          agent.withCString { agentC in
+            callBuilderGenerate(appId: idC, name: nameC, prompt: promptC, agent: agentC)
+          }
+        }
+      }
+    }
+    guard ok else {
+      return (false, payload)
+    }
+    guard let object = Self.jsonObject(from: payload),
+      object["id"] is String,
+      object["status"] is String,
+      object["files"] is [Any]
+    else {
+      return (false, "terrane_builder_generate returned malformed JSON")
     }
     return (true, object)
   }
@@ -269,6 +303,18 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return output(rc: rc, out: out, err: err, label: "terrane_preview_read_asset")
   }
 
+  private func callBuilderGenerate(
+    appId: UnsafePointer<CChar>,
+    name: UnsafePointer<CChar>,
+    prompt: UnsafePointer<CChar>,
+    agent: UnsafePointer<CChar>
+  ) -> (Bool, String) {
+    var out: UnsafeMutablePointer<CChar>?
+    var err: UnsafeMutablePointer<CChar>?
+    let rc = terrane_builder_generate(handle, appId, name, prompt, agent, &out, &err)
+    return output(rc: rc, out: out, err: err, label: "terrane_builder_generate")
+  }
+
   private func output(
     rc: Int32,
     out: UnsafeMutablePointer<CChar>?,
@@ -337,6 +383,18 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         },
         preview: function (files) {
           return post({ kind: "preview", files: files });
+        },
+        builderGenerate: function (request) {
+          request = request || {};
+          return post({
+            kind: "builderGenerate",
+            request: {
+              id: String(request.id || ""),
+              name: String(request.name || ""),
+              prompt: String(request.prompt || ""),
+              agent: String(request.agent || "codex")
+            }
+          });
         }
       });
       Object.defineProperty(window, "terrane", {

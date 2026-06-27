@@ -7,10 +7,12 @@
 
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use terrane_core::cap::builder;
 use terrane_core::cap::model::responded_event;
 use terrane_core::cap::net::fetched_event;
 use terrane_core::cap::replica::initialized_event;
@@ -34,6 +36,13 @@ impl EffectRunner for EdgeRunner {
                     app, agent, prompt, response, exit_code,
                 )?])
             }
+            Effect::BuildAppWithAgent {
+                draft_id,
+                app_id,
+                name,
+                agent,
+                prompt,
+            } => run_builder_agent(draft_id, app_id, name, agent, prompt),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
         }
     }
@@ -121,6 +130,173 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
         }
     }
     Ok((response, exit_code))
+}
+
+fn run_builder_agent(
+    draft_id: &str,
+    app_id: &str,
+    name: &str,
+    agent: &str,
+    prompt: &str,
+) -> Result<Vec<EventRecord>> {
+    let mut records = vec![builder::requested_event(
+        draft_id, app_id, name, prompt, agent,
+    )?];
+    let result = (|| -> Result<Vec<builder::BuilderFile>> {
+        let prompt = builder::codex_prompt(app_id, name, prompt);
+        let (response, exit_code) = run_builder_command(agent, &prompt)?;
+        if exit_code != 0 {
+            return Err(Error::Storage(format!(
+                "`{agent}` exited with {exit_code}: {}",
+                response.trim()
+            )));
+        }
+        builder::parse_generated_files(&response, app_id, name)
+    })();
+
+    match result {
+        Ok(files) => records.push(builder::generated_event(draft_id, files)?),
+        Err(e) => records.push(builder::failed_event(draft_id, e.to_string())?),
+    }
+    Ok(records)
+}
+
+fn run_builder_command(agent: &str, prompt: &str) -> Result<(String, i32)> {
+    match agent {
+        "codex" => {
+            let work_dir = builder_work_dir()?;
+            let output = work_dir.join("last-message.txt");
+            let schema = work_dir.join("builder-output.schema.json");
+            std::fs::write(&schema, BUILDER_OUTPUT_SCHEMA).map_err(|e| {
+                Error::Storage(format!(
+                    "failed to write builder output schema {}: {e}",
+                    schema.display()
+                ))
+            })?;
+            let mut c = Command::new("codex");
+            c.args([
+                "exec",
+                "-c",
+                "service_tier=\"fast\"",
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--ignore-rules",
+                "--skip-git-repo-check",
+                "--color",
+                "never",
+            ]);
+            c.arg("--cd").arg(&work_dir);
+            c.arg("--output-schema").arg(&schema);
+            c.arg("--output-last-message").arg(&output);
+            c.arg(prompt);
+            let (stdout, exit_code) = run_capture(&mut c, agent, builder_timeout())?;
+            if exit_code != 0 {
+                return Ok((stdout, exit_code));
+            }
+            let response = std::fs::read_to_string(&output).map_err(|e| {
+                Error::Storage(format!(
+                    "failed to read builder output {}: {e}",
+                    output.display()
+                ))
+            })?;
+            Ok((response, exit_code))
+        }
+        other => Err(Error::InvalidInput(format!(
+            "unknown builder agent: {other}"
+        ))),
+    }
+}
+
+const BUILDER_OUTPUT_SCHEMA: &str = r#"{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["files"],
+  "properties": {
+    "files": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content"],
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" }
+        }
+      }
+    }
+  }
+}
+"#;
+
+fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<(String, i32)> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().map_err(|e| {
+        Error::Storage(format!(
+            "failed to run `{label}` (is it installed and on PATH?): {e}"
+        ))
+    })?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| Error::Storage(format!("failed to capture `{label}` stdout")))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| Error::Storage(format!("failed to capture `{label}` stderr")))?;
+    let stdout_reader = thread::spawn(move || read_pipe(stdout));
+    let stderr_reader = thread::spawn(move || read_pipe(stderr));
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child
+            .try_wait()
+            .map_err(|e| Error::Storage(e.to_string()))?
+        {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
+                return Err(Error::Storage(format!(
+                    "`{label}` timed out after {timeout:?}"
+                )));
+            }
+            None => thread::sleep(Duration::from_millis(25)),
+        }
+    };
+
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| Error::Storage(format!("failed to join `{label}` stdout reader")))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| Error::Storage(format!("failed to join `{label}` stderr reader")))??;
+
+    let exit_code = status.code().unwrap_or(-1);
+    let mut response = String::from_utf8_lossy(&stdout).into_owned();
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&stderr);
+        if !stderr.trim().is_empty() {
+            response.push_str("\n[stderr] ");
+            response.push_str(stderr.trim_end());
+        }
+    }
+    Ok((response, exit_code))
+}
+
+fn builder_work_dir() -> Result<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("terrane-builder-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        Error::Storage(format!(
+            "failed to create builder work dir {}: {e}",
+            dir.display()
+        ))
+    })?;
+    Ok(dir)
 }
 
 fn http_get(url: &str) -> Result<(u16, String)> {
@@ -215,4 +391,13 @@ fn edge_timeout() -> Duration {
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_EDGE_TIMEOUT)
+}
+
+fn builder_timeout() -> Duration {
+    std::env::var("TERRANE_BUILDER_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(180))
 }

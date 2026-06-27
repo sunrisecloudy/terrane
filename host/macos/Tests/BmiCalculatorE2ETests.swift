@@ -90,6 +90,7 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(
       userContent.userScripts[0].source.contains(#"Object.defineProperty(window, "terrane""#))
     XCTAssertTrue(userContent.userScripts[0].source.contains("previewInvoke"))
+    XCTAssertTrue(userContent.userScripts[0].source.contains("builderGenerate"))
 
     bridge.select(app: app)
     let result = bridge.invokeSelectedApp(

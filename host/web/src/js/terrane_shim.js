@@ -1,6 +1,7 @@
 (function () {
   var invokeUrl = __INVOKE_URL_JSON__;
   var previewUrl = __PREVIEW_URL_JSON__;
+  var builderUrl = __BUILDER_URL_JSON__;
 
   window.APP_ID = __APP_ID_JSON__;
   window.terrane = {
@@ -27,6 +28,29 @@
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ files: files || [] }),
+      })
+        .then(function (r) {
+          return r.json();
+        })
+        .then(function (j) {
+          if (j.error) throw new Error(j.error);
+          return j;
+        });
+    };
+  }
+
+  if (builderUrl) {
+    window.terrane.builderGenerate = function (request) {
+      request = request || {};
+      return fetch(builderUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          id: String(request.id || ""),
+          name: String(request.name || ""),
+          prompt: String(request.prompt || ""),
+          agent: String(request.agent || "codex"),
+        }),
       })
         .then(function (r) {
           return r.json();

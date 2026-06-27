@@ -303,6 +303,60 @@ pub unsafe extern "C" fn terrane_preview_invoke(
     finish(code, out_error)
 }
 
+/// Generate a draft app through the core builder capability. On success writes
+/// JSON with `{ id, appId, name, prompt, agent, status, error, files }`.
+///
+/// # Safety
+/// `app_id`, `name`, `prompt`, and `agent` must be valid C strings. `agent` may
+/// be an empty string to use the default builder agent.
+#[no_mangle]
+pub unsafe extern "C" fn terrane_builder_generate(
+    h: *mut TerraneHandle,
+    app_id: *const c_char,
+    name: *const c_char,
+    prompt: *const c_char,
+    agent: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let app_id = match read_str(app_id) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let name = match read_str(name) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let prompt = match read_str(prompt) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let agent = match read_str(agent) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match terrane_host::generate_app_json(&mut core, &app_id, &name, &prompt, Some(&agent)) {
+            Ok(json) => {
+                write_out(out_output, json);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
 /// Build an app frontend using terrane-app-build. On success writes JSON:
 /// `{"dist":"<path>","files":<count>}`.
 ///

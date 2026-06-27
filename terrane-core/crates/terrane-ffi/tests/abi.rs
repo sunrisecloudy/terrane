@@ -161,6 +161,30 @@ unsafe fn call_build_app(app_dir: &Path) -> (i32, Option<String>, Option<String>
     (code, take_c_string(out), take_c_string(err))
 }
 
+unsafe fn call_builder_generate(
+    h: *mut TerraneHandle,
+    app_id: &str,
+    name: &str,
+    prompt: &str,
+) -> (i32, Option<String>, Option<String>) {
+    let app_id = CString::new(app_id).unwrap();
+    let name = CString::new(name).unwrap();
+    let prompt = CString::new(prompt).unwrap();
+    let agent = CString::new("codex").unwrap();
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut err: *mut c_char = ptr::null_mut();
+    let code = terrane_builder_generate(
+        h,
+        app_id.as_ptr(),
+        name.as_ptr(),
+        prompt.as_ptr(),
+        agent.as_ptr(),
+        &mut out,
+        &mut err,
+    );
+    (code, take_c_string(out), take_c_string(err))
+}
+
 #[test]
 fn open_host_run_output_free_round_trip() {
     let dir = tempdir().unwrap();
@@ -354,6 +378,34 @@ fn app_builder_preview_abi_stays_in_memory() {
 }
 
 #[test]
+fn builder_generate_rejects_invalid_request_before_agent() {
+    let dir = tempdir().unwrap();
+    let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+
+    unsafe {
+        let h = terrane_open(home.as_ptr());
+        assert!(!h.is_null(), "open should succeed");
+
+        let (code, out, err) = call_builder_generate(h, "bad/path", "Demo", "make a greeting app");
+        assert_eq!(code, TERRANE_ERR_DISPATCH);
+        assert!(out.is_none());
+        assert!(
+            err.as_deref().unwrap_or_default().contains("unsafe"),
+            "builder_generate err: {err:?}"
+        );
+
+        terrane_close(h);
+    }
+
+    let reopened = Core::open(dir.path().join("log.bin")).unwrap();
+    assert!(
+        reopened.state().builder.drafts.is_empty(),
+        "invalid builder request must fail before recording a draft"
+    );
+    assert!(reopened.replay_matches().unwrap());
+}
+
+#[test]
 fn app_build_abi_builds_react_frontend_to_dist() {
     let dir = tempdir().unwrap();
     let app = dir.path().join("bmi-lite");
@@ -457,6 +509,7 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "int terrane_preview_read_asset(",
         "int terrane_preview_asset(",
         "int terrane_preview_invoke(",
+        "int terrane_builder_generate(",
         "int terrane_build_app(",
         "void terrane_string_free(",
         "void terrane_close(",

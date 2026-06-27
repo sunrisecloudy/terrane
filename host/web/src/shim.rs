@@ -10,6 +10,7 @@ pub fn inject_app_shim(html: &[u8], app_id: &str, live_reload: bool) -> Vec<u8> 
         app_id,
         &format!("/apps/{app_id}/invoke"),
         Some("/__terrane/previews"),
+        Some("/__terrane/builder/generate"),
         live_reload,
     )
 }
@@ -20,6 +21,7 @@ pub fn inject_preview_shim(html: &[u8], preview_id: &str) -> Vec<u8> {
         preview_id,
         &format!("/__terrane/previews/{preview_id}/invoke"),
         None,
+        None,
         false,
     )
 }
@@ -29,6 +31,7 @@ fn inject(
     app_id: &str,
     invoke_url: &str,
     preview_url: Option<&str>,
+    builder_url: Option<&str>,
     live_reload: bool,
 ) -> Vec<u8> {
     let js = TERRANE_SHIM_JS
@@ -37,6 +40,12 @@ fn inject(
         .replace(
             "__PREVIEW_URL_JSON__",
             &preview_url
+                .map(js_string)
+                .unwrap_or_else(|| "null".to_string()),
+        )
+        .replace(
+            "__BUILDER_URL_JSON__",
+            &builder_url
                 .map(js_string)
                 .unwrap_or_else(|| "null".to_string()),
         )

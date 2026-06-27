@@ -242,6 +242,47 @@ fn actions_table_backend_is_synthesized_and_self_describes() {
 }
 
 #[test]
+fn actions_table_accepts_direct_function_entries() {
+    let dir = tempdir().unwrap();
+    let src = write_bundle(
+        dir.path(),
+        "counter",
+        r#"{ "id": "counter", "name": "Counter", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"
+var kv = ctx.resource.kv;
+function readCount() {
+  var raw = kv.get("count");
+  var count = parseInt(String(raw == null ? "0" : raw), 10);
+  return isNaN(count) ? 0 : count;
+}
+function writeCount(count) {
+  kv.set("count", String(count));
+  return String(count);
+}
+var actions = {
+  get: function () { return String(readCount()); },
+  increment: function () { return writeCount(readCount() + 1); },
+  reset: function () { return writeCount(0); }
+};
+"#,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["counter", "Counter", "--source", &src]))
+        .unwrap();
+
+    core.dispatch(req("host.run", &["counter", "reset"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("0"));
+    core.dispatch(req("host.run", &["counter", "increment"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("1"));
+    core.dispatch(req("host.run", &["counter", "get"])).unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("1"));
+
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
 fn redundant_same_key_set_is_coalesced_within_a_run() {
     let dir = tempdir().unwrap();
     let mut core = install_demo(dir.path());

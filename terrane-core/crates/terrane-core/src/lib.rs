@@ -39,8 +39,8 @@ use terrane_domain::{Error, EventRecord, Request, Result};
 pub mod cap;
 
 use cap::{
-    app::AppState, crdt::CrdtState, kv::KvState, model::ModelState, net::NetState,
-    replica::ReplicaState, Capability,
+    app::AppState, builder::BuilderState, crdt::CrdtState, kv::KvState, model::ModelState,
+    net::NetState, replica::ReplicaState, Capability,
 };
 
 /// The whole world the core holds: one slice per capability. Capabilities read
@@ -53,6 +53,7 @@ use cap::{
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
     pub app: AppState,
+    pub builder: BuilderState,
     pub kv: KvState,
     pub net: NetState,
     pub model: ModelState,
@@ -83,6 +84,14 @@ pub enum Effect {
     /// Ask an agent CLI (`claude`, `codex`) a prompt; its output is recorded.
     ModelCall {
         app: String,
+        agent: String,
+        prompt: String,
+    },
+    /// Ask an agent CLI to generate a Terrane app bundle draft.
+    BuildAppWithAgent {
+        draft_id: String,
+        app_id: String,
+        name: String,
         agent: String,
         prompt: String,
     },
@@ -161,6 +170,7 @@ impl Registry {
 pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(cap::app::AppCapability));
+    registry.register(Box::new(cap::builder::BuilderCapability));
     registry.register(Box::new(cap::kv::KvCapability));
     registry.register(Box::new(cap::crdt::CrdtCapability));
     registry.register(Box::new(cap::replica::ReplicaCapability));
