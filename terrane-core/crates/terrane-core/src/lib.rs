@@ -39,8 +39,8 @@ use terrane_domain::{Error, EventRecord, Request, Result};
 pub mod cap;
 
 use cap::{
-    app::AppState, builder::BuilderState, crdt::CrdtState, kv::KvState, model::ModelState,
-    net::NetState, replica::ReplicaState, Capability,
+    app::AppState, builder::BuilderState, codex::CodexState, crdt::CrdtState, kv::KvState,
+    model::ModelState, net::NetState, replica::ReplicaState, Capability,
 };
 
 /// The whole world the core holds: one slice per capability. Capabilities read
@@ -54,6 +54,7 @@ use cap::{
 pub struct State {
     pub app: AppState,
     pub builder: BuilderState,
+    pub codex: CodexState,
     pub kv: KvState,
     pub net: NetState,
     pub model: ModelState,
@@ -95,15 +96,23 @@ pub enum Effect {
         harness: String,
         prompt: String,
     },
+    /// Ask a harness CLI for JavaScript only, then run that JS once in the
+    /// QuickJS backend sandbox with an explicit capability resource allowlist.
+    RunCodexJs {
+        run_id: String,
+        app_id: String,
+        harness: String,
+        prompt: String,
+    },
     /// Mint this home's stable replica PeerID from OS entropy. The runner records
     /// it once as a `replica.initialized` event; replay reads it back.
     NewReplicaId,
 }
 
 /// Performs effects at the edge. Implementors do the real I/O (or, in tests, a
-/// deterministic fake) and return the recorded Event(s).
+/// local I/O implementation) and return the recorded Event(s).
 pub trait EffectRunner {
-    fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>>;
+    fn run(&self, effect: &Effect, state: &State) -> Result<Vec<EventRecord>>;
 }
 
 /// A runner that performs no effects — the default for a core opened without
@@ -112,7 +121,7 @@ pub trait EffectRunner {
 pub struct NoEffects;
 
 impl EffectRunner for NoEffects {
-    fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>> {
+    fn run(&self, effect: &Effect, _state: &State) -> Result<Vec<EventRecord>> {
         Err(Error::InvalidInput(format!(
             "this core has no effect runner; cannot perform {effect:?}"
         )))
@@ -170,6 +179,7 @@ impl Registry {
 pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(cap::app::AppCapability));
+    registry.register(Box::new(cap::build::BuildCapability));
     registry.register(Box::new(cap::builder::BuilderCapability));
     registry.register(Box::new(cap::codex::CodexCapability));
     registry.register(Box::new(cap::kv::KvCapability));
@@ -397,7 +407,7 @@ impl<R: EffectRunner> Core<R> {
         match decision {
             Decision::Commit(records) => self.commit(records),
             Decision::Effect(effect) => {
-                let records = self.runner.run(&effect)?;
+                let records = self.runner.run(&effect, &self.state)?;
                 self.commit(records)
             }
         }

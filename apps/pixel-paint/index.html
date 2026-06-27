@@ -180,33 +180,6 @@
     </div>
 
     <script>
-      if (!window.terrane) {
-        var fallbackPixels = {};
-        window.terrane = {
-          invoke: function (verb) {
-            var args = Array.prototype.slice.call(arguments, 1);
-            if (verb === "state") {
-              return Promise.resolve(
-                JSON.stringify({ size: 64, pixels: fallbackPixels }),
-              );
-            }
-            if (verb === "bulk") {
-              JSON.parse(args[0] || "[]").forEach(function (change) {
-                var key = change.x + "," + change.y;
-                if (change.color) fallbackPixels[key] = change.color;
-                else delete fallbackPixels[key];
-              });
-              return Promise.resolve("applied");
-            }
-            if (verb === "clear") {
-              fallbackPixels = {};
-              return Promise.resolve("cleared");
-            }
-            return Promise.resolve("");
-          },
-        };
-      }
-
       var SIZE = 64;
       var pixels = {};
       var pending = {};
@@ -238,6 +211,13 @@
 
       function setStatus(text) {
         statusEl.textContent = text;
+      }
+
+      function invoke() {
+        if (!window.terrane || typeof window.terrane.invoke !== "function") {
+          return Promise.reject(new Error("Terrane bridge unavailable"));
+        }
+        return window.terrane.invoke.apply(window.terrane, arguments);
       }
 
       function render() {
@@ -286,7 +266,7 @@
         pending = {};
         if (changes.length === 0) return Promise.resolve();
         setStatus("Saving...");
-        return window.terrane.invoke("bulk", JSON.stringify(changes))
+        return invoke("bulk", JSON.stringify(changes))
           .then(function () {
             setStatus(
               "Saved " + changes.length + " pixel" +
@@ -314,7 +294,7 @@
       }
 
       function load() {
-        return window.terrane.invoke("state").then(function (json) {
+        return invoke("state").then(function (json) {
           var state = JSON.parse(json || "{}");
           pixels = state.pixels || {};
           render();
@@ -359,8 +339,10 @@
           pending = {};
           render();
           setStatus("Clearing...");
-          window.terrane.invoke("clear").then(function () {
+          invoke("clear").then(function () {
             setStatus("Canvas cleared");
+          }).catch(function (error) {
+            setStatus("Clear failed: " + error.message);
           });
         },
       );

@@ -1,34 +1,39 @@
 //! Engine tests for the `model` capability — recorded agent calls.
 
 use tempfile::tempdir;
-use terrane_core::Core;
+use terrane_core::cap::model::responded_event;
+use terrane_core::{fold_records_in_memory, Core, State};
 use terrane_domain::Error;
 
-use crate::helpers::{req, FakeEdge};
+use crate::helpers::req;
 
 #[test]
-fn model_call_is_recorded_then_replays_without_the_agent() {
-    let dir = tempdir().unwrap();
-    let log = dir.path().join("log.bin");
+fn responded_event_folds_recorded_agent_response_without_agent() {
+    let mut state = State::default();
+    let records = vec![responded_event("asst", "claude", "say hi", "OK".to_string(), 0).unwrap()];
 
-    let mut core = Core::open_with(&log, FakeEdge).unwrap();
-    core.dispatch(req("app.add", &["asst", "Assistant"]))
-        .unwrap();
-    core.dispatch(req("model.ask", &["asst", "claude", "say", "hi"]))
-        .unwrap();
+    fold_records_in_memory(&mut state, &records).unwrap();
 
-    let turns = &core.state().model.turns["asst"];
+    let turns = &state.model.turns["asst"];
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].agent, "claude");
     assert_eq!(turns[0].prompt, "say hi");
-    assert_eq!(turns[0].response, "claude says: say hi");
+    assert_eq!(turns[0].response, "OK");
     assert_eq!(turns[0].exit_code, 0);
+}
 
-    // Reopening with NO runner folds the log and reproduces the transcript —
-    // proof that replay reads the response from the log, not the agent.
-    let reopened = Core::open(&log).unwrap();
-    assert_eq!(reopened.state().model.turns, core.state().model.turns);
-    assert!(core.replay_matches().unwrap());
+#[test]
+fn model_call_validates_before_effect() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["asst", "Assistant"]))
+        .unwrap();
+
+    assert!(core
+        .dispatch(req("model.ask", &["asst", "claude", "say", "hi"]))
+        .unwrap_err()
+        .to_string()
+        .contains("no effect runner"));
 
     // An unknown agent is rejected purely, before any effect.
     assert!(matches!(

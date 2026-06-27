@@ -87,19 +87,16 @@
     <div id="empty" class="empty" hidden>Nothing to do</div>
 
     <script>
-      // Dev fallback: lets the shell render before/without the native bridge
-      // (e.g. the static-skeleton commit, or opening the file in a browser).
-      if (!window.terrane) {
-        window.terrane = {
-          invoke: function (verb) {
-            return Promise.resolve(verb === "items" ? "[]" : "");
-          },
-        };
-      }
-
       var listEl = document.getElementById("list");
       var emptyEl = document.getElementById("empty");
       var textEl = document.getElementById("text");
+
+      function invoke() {
+        if (!window.terrane || typeof window.terrane.invoke !== "function") {
+          return Promise.reject(new Error("Terrane bridge unavailable"));
+        }
+        return window.terrane.invoke.apply(window.terrane, arguments);
+      }
 
       function render(items) {
         listEl.textContent = "";
@@ -117,7 +114,7 @@
           done.title = "done";
           done.textContent = "✓";
           done.addEventListener("click", function () {
-            window.terrane.invoke("done", String(it.id)).then(refresh);
+            invoke("done", String(it.id)).then(refresh).catch(showError);
           });
           li.appendChild(id);
           li.appendChild(text);
@@ -127,16 +124,22 @@
       }
 
       function refresh() {
-        return window.terrane.invoke("items").then(function (json) {
+        return invoke("items").then(function (json) {
           render(JSON.parse(json || "[]"));
-        });
+        }).catch(showError);
       }
 
       function add() {
         var t = textEl.value.trim();
         if (!t) return;
         textEl.value = "";
-        window.terrane.invoke("add", t).then(refresh);
+        invoke("add", t).then(refresh).catch(showError);
+      }
+
+      function showError(error) {
+        listEl.textContent = "";
+        emptyEl.hidden = false;
+        emptyEl.textContent = error.message || String(error);
       }
 
       document.getElementById("add").addEventListener("click", add);

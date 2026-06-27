@@ -1,43 +1,59 @@
 //! Engine tests for Codex app generation requests.
 
 use tempfile::tempdir;
-use terrane_core::{Core, NoEffects};
+use terrane_core::cap::codex::{
+    js_completed_event, js_failed_event, js_generated_event, js_requested_event,
+    parse_run_js_output,
+};
+use terrane_core::{fold_records_in_memory, Core, NoEffects, State};
 
-use crate::helpers::{req, FakeEdge};
+use crate::helpers::req;
 
 #[test]
-fn codex_generation_records_and_replays_builder_draft_files() {
-    let dir = tempdir().unwrap();
-    let log = dir.path().join("log.bin");
-    let mut core = Core::open_with(&log, FakeEdge).unwrap();
+fn codex_js_events_fold_run_state() {
+    let mut state = State::default();
+    let records = vec![
+        js_requested_event("run-1", "demo", "write files", "codex").unwrap(),
+        js_generated_event(
+            "run-1",
+            r#"function handle(input){ctx.resource.kv.set("file:main.js","ok");return "wrote";}"#,
+        )
+        .unwrap(),
+        js_completed_event("run-1", "wrote").unwrap(),
+    ];
 
-    let records = core
-        .dispatch(req(
-            "codex.generate-app",
-            &["demo", "demo", "Demo", "make a tiny greeting app"],
-        ))
-        .unwrap();
-    assert_eq!(
-        records.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
-        vec!["builder.requested", "builder.generated"]
-    );
+    fold_records_in_memory(&mut state, &records).unwrap();
 
-    let draft = &core.state().builder.drafts["demo"];
-    assert_eq!(draft.app_id, "demo");
-    assert_eq!(draft.name, "Demo");
-    assert_eq!(draft.agent, "codex");
-    assert!(draft.error.is_none());
-    assert!(draft.files.iter().any(|f| f.path == "manifest.json"));
+    let run = &state.codex.runs["run-1"];
+    assert_eq!(run.app_id, "demo");
+    assert_eq!(run.harness, "codex");
+    assert_eq!(run.output.as_deref(), Some("wrote"));
+    assert!(run.js.as_deref().unwrap().contains("ctx.resource.kv.set"));
+    assert!(run.error.is_none());
+}
 
-    let reopened = Core::open(&log).unwrap();
-    assert_eq!(reopened.state().builder.drafts, core.state().builder.drafts);
-    assert!(reopened.replay_matches().unwrap());
+#[test]
+fn codex_js_failed_event_records_error() {
+    let mut state = State::default();
+
+    fold_records_in_memory(
+        &mut state,
+        &[
+            js_requested_event("run-1", "demo", "write files", "codex").unwrap(),
+            js_failed_event("run-1", "syntax error").unwrap(),
+        ],
+    )
+    .unwrap();
+
+    let run = &state.codex.runs["run-1"];
+    assert_eq!(run.error.as_deref(), Some("syntax error"));
+    assert!(run.output.is_none());
 }
 
 #[test]
 fn codex_generation_validates_request_before_effect() {
     let dir = tempdir().unwrap();
-    let mut core = Core::open_with(dir.path().join("log.bin"), FakeEdge).unwrap();
+    let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
 
     assert!(core
         .dispatch(req(
@@ -68,4 +84,46 @@ fn pure_core_rejects_codex_effect_without_runner() {
         .unwrap_err()
         .to_string()
         .contains("no effect runner"));
+}
+
+#[test]
+fn codex_run_js_validates_existing_app_and_prompt_before_effect() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
+
+    assert!(core
+        .dispatch(req("codex.run-js", &["run-1", "missing", "write app"]))
+        .unwrap_err()
+        .to_string()
+        .contains("not found"));
+
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    assert!(core
+        .dispatch(req("codex.run-js", &["bad/path", "demo", "write app"]))
+        .unwrap_err()
+        .to_string()
+        .contains("unsafe"));
+    assert!(core
+        .dispatch(req("codex.run-js", &["run-1", "demo", ""]))
+        .unwrap_err()
+        .to_string()
+        .contains("prompt"));
+    assert!(core
+        .dispatch(req("codex.run-js", &["run-1", "demo", "write app"]))
+        .unwrap_err()
+        .to_string()
+        .contains("no effect runner"));
+}
+
+#[test]
+fn parse_run_js_output_extracts_json_wrapped_javascript() {
+    let js = parse_run_js_output(
+        r#"
+        done:
+        {"js":"function handle(input){return \"ok\";}"}
+        "#,
+    )
+    .unwrap();
+
+    assert_eq!(js, r#"function handle(input){return "ok";}"#);
 }

@@ -1,12 +1,69 @@
 //! Edge-runner timeout coverage for effectful CLI calls.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
 use tempfile::tempdir;
+
+#[test]
+fn net_fetch_records_real_loopback_response() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 256];
+        let _ = stream.read(&mut request);
+        stream
+            .write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 11\r\n\r\nhello local")
+            .unwrap();
+    });
+
+    let home = tempdir().unwrap();
+    let add = Command::new(env!("CARGO_BIN_EXE_terrane"))
+        .args(["app", "add", "web", "Web"])
+        .env("TERRANE_HOME", home.path())
+        .output()
+        .expect("spawn terrane app add");
+    assert!(
+        add.status.success(),
+        "app add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+
+    let fetch = Command::new(env!("CARGO_BIN_EXE_terrane"))
+        .args(["net", "fetch", "web", &format!("http://{addr}/ok")])
+        .env("TERRANE_HOME", home.path())
+        .output()
+        .expect("spawn terrane net fetch");
+
+    assert!(
+        fetch.status.success(),
+        "fetch failed: {}",
+        String::from_utf8_lossy(&fetch.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&fetch.stdout).contains("net.fetched"),
+        "fetch stdout: {}",
+        String::from_utf8_lossy(&fetch.stdout)
+    );
+
+    let state = Command::new(env!("CARGO_BIN_EXE_terrane"))
+        .arg("state")
+        .env("TERRANE_HOME", home.path())
+        .output()
+        .expect("spawn terrane state");
+    assert!(state.status.success(), "state failed");
+    assert!(
+        String::from_utf8_lossy(&state.stdout).contains("/ok -> 200 (11 bytes)"),
+        "state stdout: {}",
+        String::from_utf8_lossy(&state.stdout)
+    );
+
+    server.join().unwrap();
+}
 
 #[test]
 fn net_fetch_times_out_when_peer_never_finishes_response() {

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["js"],
+  "properties": {
+    "js": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A complete JavaScript program to run once in Terrane QuickJS."
+    }
+  }
+}

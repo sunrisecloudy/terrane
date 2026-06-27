@@ -133,6 +133,64 @@ fn undeclared_resource_is_not_installed() {
 }
 
 #[test]
+fn build_resource_compiles_typescript_inside_quickjs() {
+    let dir = tempdir().unwrap();
+    let backend = r#"
+        var build = ctx.resource.build;
+        function handle(input) {
+            var result = JSON.parse(build.compileTs("main.ts", "const value: number = 1; export const next = value + 1;"));
+            if (!result.ok) return result.error;
+            return result.code.indexOf("const value = 1") >= 0 &&
+                   result.code.indexOf("export const next = value + 1") >= 0 &&
+                   result.code.indexOf(": number") < 0 ? "compiled" : result.code;
+        }
+    "#;
+    let src = write_bundle(
+        dir.path(),
+        "build-demo",
+        r#"{ "id": "build-demo", "name": "Build Demo", "backend": "main.js", "resources": ["build"] }"#,
+        backend,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req(
+        "app.add",
+        &["build-demo", "Build Demo", "--source", &src],
+    ))
+    .unwrap();
+
+    let records = core.dispatch(req("host.run", &["build-demo"])).unwrap();
+
+    assert!(records.is_empty());
+    assert_eq!(core.take_last_output().as_deref(), Some("compiled"));
+}
+
+#[test]
+fn backend_cannot_use_eval_or_function_constructor() {
+    let dir = tempdir().unwrap();
+    let backend = r#"
+        function handle(input) {
+            return String(typeof eval) + "," + String(typeof Function);
+        }
+    "#;
+    let src = write_bundle(
+        dir.path(),
+        "no-eval",
+        r#"{ "id": "no-eval", "name": "No Eval", "backend": "main.js", "resources": [] }"#,
+        backend,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["no-eval", "No Eval", "--source", &src]))
+        .unwrap();
+
+    core.dispatch(req("host.run", &["no-eval"])).unwrap();
+
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("undefined,undefined")
+    );
+}
+
+#[test]
 fn failed_run_clears_last_output() {
     let dir = tempdir().unwrap();
     let mut core = install_demo(dir.path());

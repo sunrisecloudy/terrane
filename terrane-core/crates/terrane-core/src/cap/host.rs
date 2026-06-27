@@ -348,6 +348,12 @@ fn execute_js(
         ctx.globals()
             .set("__terrane_app_name", app_name)
             .map_err(js_err)?;
+        ctx.globals()
+            .set("eval", Value::new_undefined(ctx.clone()))
+            .map_err(js_err)?;
+        ctx.globals()
+            .set("Function", Value::new_undefined(ctx.clone()))
+            .map_err(js_err)?;
 
         // Eval the backend as a script (defines globals; reads `ctx`).
         ctx.eval::<(), _>(backend_src.as_bytes())

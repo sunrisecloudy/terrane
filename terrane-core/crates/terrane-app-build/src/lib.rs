@@ -95,6 +95,26 @@ pub fn build_app(options: BuildOptions) -> Result<BuildResult, String> {
     Ok(BuildResult { dist, files })
 }
 
+/// Compile one JS/TS/JSX/TSX module source string without reading or writing an
+/// app directory. This is the sandbox helper exposed to generated backend code
+/// through `ctx.resource.build.compileTs(path, source)`.
+pub fn compile_script_source(logical_path: &str, source: &str) -> Result<String, String> {
+    let logical_path = normalize_manifest_path("path", logical_path)?;
+    if !is_supported_script(&logical_path) {
+        return Err(format!(
+            "path must be a .js, .jsx, .mjs, .ts, or .tsx file: {logical_path}"
+        ));
+    }
+    let module = SourceModule {
+        output_path: output_path_for(&logical_path),
+        logical_path,
+        source: source.to_string(),
+    };
+    let parsed = parse_module(&module)?;
+    reject_unsupported_syntax(&module.logical_path, &parsed)?;
+    compile_module(Path::new("."), &module)
+}
+
 fn read_build_config(app_dir: &Path) -> Result<BuildConfig, String> {
     let manifest_path = app_dir.join("manifest.json");
     let raw = fs::read_to_string(&manifest_path)
@@ -964,6 +984,23 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(names.contains(&"assets/modules/src/main.js"));
         assert!(!names.contains(&"assets/modules/src/types.js"));
+    }
+
+    #[test]
+    fn compile_script_source_compiles_typescript_without_writing_dist() {
+        let out = compile_script_source(
+            "main.ts",
+            r#"
+                type Count = number;
+                const value: Count = 1;
+                export const next = value + 1;
+            "#,
+        )
+        .unwrap();
+
+        assert!(out.contains("const value = 1"));
+        assert!(out.contains("export const next = value + 1"));
+        assert!(!out.contains("type Count"));
     }
 
     #[test]

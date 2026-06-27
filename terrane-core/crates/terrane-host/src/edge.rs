@@ -25,7 +25,7 @@ pub struct EdgeRunner;
 const DEFAULT_EDGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl EffectRunner for EdgeRunner {
-    fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>> {
+    fn run(&self, effect: &Effect, state: &terrane_core::State) -> Result<Vec<EventRecord>> {
         match effect {
             Effect::HttpGet { app, url } => {
                 let (status, body) = http_get(url)?;
@@ -44,6 +44,12 @@ impl EffectRunner for EdgeRunner {
                 harness,
                 prompt,
             } => run_builder_harness(draft_id, app_id, name, harness, prompt),
+            Effect::RunCodexJs {
+                run_id,
+                app_id,
+                harness,
+                prompt,
+            } => run_codex_js(run_id, app_id, harness, prompt, state),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
         }
     }
@@ -145,7 +151,13 @@ fn run_builder_harness(
     )?];
     let result = (|| -> Result<Vec<builder::BuilderFile>> {
         let prompt = codex::app_bundle_prompt(app_id, name, prompt);
-        let (response, exit_code) = run_harness_command(harness, &prompt)?;
+        let (response, exit_code) = run_harness_command(
+            harness,
+            &prompt,
+            codex::APP_BUNDLE_OUTPUT_SCHEMA,
+            "builder-output.schema.json",
+            "last-message.txt",
+        )?;
         if exit_code != 0 {
             return Err(Error::Storage(format!(
                 "`{harness}` exited with {exit_code}: {}",
@@ -162,15 +174,72 @@ fn run_builder_harness(
     Ok(records)
 }
 
-fn run_harness_command(harness: &str, prompt: &str) -> Result<(String, i32)> {
+fn run_codex_js(
+    run_id: &str,
+    app_id: &str,
+    harness: &str,
+    prompt: &str,
+    state: &terrane_core::State,
+) -> Result<Vec<EventRecord>> {
+    let mut records = vec![codex::js_requested_event(run_id, app_id, prompt, harness)?];
+    let result = (|| -> Result<(String, String, Vec<EventRecord>)> {
+        let generated_prompt = codex::run_js_prompt(app_id, prompt);
+        let (response, exit_code) = run_harness_command(
+            harness,
+            &generated_prompt,
+            codex::RUN_JS_OUTPUT_SCHEMA,
+            "codex-run-js.schema.json",
+            "codex-run-js-last-message.txt",
+        )?;
+        if exit_code != 0 {
+            return Err(Error::Storage(format!(
+                "`{harness}` exited with {exit_code}: {}",
+                response.trim()
+            )));
+        }
+        let js = codex::parse_run_js_output(&response)?;
+        let name = state
+            .app
+            .apps
+            .get(app_id)
+            .map(|app| app.name.clone())
+            .ok_or_else(|| Error::AppNotFound(app_id.to_string()))?;
+        let bundle = terrane_core::cap::host::MemoryBackendBundle {
+            source: js.clone(),
+            name,
+            resources: vec!["kv".to_string(), "build".to_string()],
+        };
+        let result =
+            terrane_core::cap::host::run_memory_backend(app_id, &[], &bundle, state.clone())?;
+        Ok((js, result.output, result.records))
+    })();
+
+    match result {
+        Ok((js, output, writes)) => {
+            records.push(codex::js_generated_event(run_id, &js)?);
+            records.extend(writes);
+            records.push(codex::js_completed_event(run_id, &output)?);
+        }
+        Err(e) => records.push(codex::js_failed_event(run_id, e.to_string())?),
+    }
+    Ok(records)
+}
+
+fn run_harness_command(
+    harness: &str,
+    prompt: &str,
+    schema_text: &str,
+    schema_name: &str,
+    output_name: &str,
+) -> Result<(String, i32)> {
     match harness {
         "codex" => {
             let work_dir = builder_work_dir()?;
-            let output = work_dir.join("last-message.txt");
-            let schema = work_dir.join("builder-output.schema.json");
-            std::fs::write(&schema, codex::APP_BUNDLE_OUTPUT_SCHEMA).map_err(|e| {
+            let output = work_dir.join(output_name);
+            let schema = work_dir.join(schema_name);
+            std::fs::write(&schema, schema_text).map_err(|e| {
                 Error::Storage(format!(
-                    "failed to write builder output schema {}: {e}",
+                    "failed to write harness output schema {}: {e}",
                     schema.display()
                 ))
             })?;

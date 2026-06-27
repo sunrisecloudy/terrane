@@ -11,6 +11,7 @@ use terrane_domain::{Error, EventRecord, Result};
 use crate::{Decision, State};
 
 pub mod app;
+pub mod build;
 pub mod builder;
 pub mod codex;
 pub mod crdt;

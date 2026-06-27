@@ -2288,6 +2288,7 @@ dependencies = [
  "nanoserde",
  "rquickjs",
  "tempfile",
+ "terrane-app-build",
  "terrane-domain",
 ]
 

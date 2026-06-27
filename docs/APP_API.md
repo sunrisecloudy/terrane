@@ -96,32 +96,36 @@ APIs. Don't hand-edit between the markers — a test regenerates them and fails 
 they drift from the runtime.
 
 <!-- generated:resource-api:start -->
+#### `ctx.resource.build`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.build.compileTs(path, source)` | read |
 
 #### `ctx.resource.crdt`
 
-| Method                                            | Kind  |
-| ------------------------------------------------- | ----- |
-| `ctx.resource.crdt.mapSet(doc, key, value)`       | write |
-| `ctx.resource.crdt.mapGet(doc, key)`              | read  |
-| `ctx.resource.crdt.mapAll(doc)`                   | read  |
-| `ctx.resource.crdt.mapDel(doc, key)`              | write |
-| `ctx.resource.crdt.listPush(doc, value)`          | write |
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.crdt.mapSet(doc, key, value)` | write |
+| `ctx.resource.crdt.mapGet(doc, key)` | read |
+| `ctx.resource.crdt.mapAll(doc)` | read |
+| `ctx.resource.crdt.mapDel(doc, key)` | write |
+| `ctx.resource.crdt.listPush(doc, value)` | write |
 | `ctx.resource.crdt.listInsert(doc, index, value)` | write |
-| `ctx.resource.crdt.listDel(doc, index)`           | write |
-| `ctx.resource.crdt.listAll(doc)`                  | read  |
-| `ctx.resource.crdt.textInsert(doc, index, text)`  | write |
-| `ctx.resource.crdt.textDel(doc, index, len)`      | write |
-| `ctx.resource.crdt.textGet(doc)`                  | read  |
+| `ctx.resource.crdt.listDel(doc, index)` | write |
+| `ctx.resource.crdt.listAll(doc)` | read |
+| `ctx.resource.crdt.textInsert(doc, index, text)` | write |
+| `ctx.resource.crdt.textDel(doc, index, len)` | write |
+| `ctx.resource.crdt.textGet(doc)` | read |
 
 #### `ctx.resource.kv`
 
-| Method                            | Kind  |
-| --------------------------------- | ----- |
+| Method | Kind |
+| --- | --- |
 | `ctx.resource.kv.set(key, value)` | write |
-| `ctx.resource.kv.get(key)`        | read  |
-| `ctx.resource.kv.all()`           | read  |
-| `ctx.resource.kv.rm(key)`         | write |
-
+| `ctx.resource.kv.get(key)` | read |
+| `ctx.resource.kv.all()` | read |
+| `ctx.resource.kv.rm(key)` | write |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as

@@ -1,0 +1,34 @@
+You are generating code for Terrane's Codex sandbox.
+
+Return JSON only, matching the provided schema. The only value you may produce is
+a JavaScript program string in the "js" field.
+
+The generated JavaScript will run once in Terrane's embedded QuickJS runtime.
+It will not run in a shell. It will not receive filesystem, process, network,
+clock, random, eval, Function, npm, dynamic import, or DOM access.
+
+Available globals:
+- ctx.resource.kv.set(key, value)
+- ctx.resource.kv.get(key)
+- ctx.resource.kv.rm(key)
+- ctx.resource.kv.all()
+- ctx.resource.build.compileTs(path, source)
+
+The JS must define `function handle(input) { ... }` or an `actions` table. It
+must return a string. To produce files, write each file through kv using keys in
+the form `file:<relative-path>` and string contents as values. Example:
+`ctx.resource.kv.set("file:main.js", "function handle(input){return \"ok\";}");`
+
+When producing a Terrane app bundle, `manifest.json` must use this shape:
+`{"id":"<app-id>","name":"<name>","version":"0.1.0","backend":"main.js","ui":"index.html","resources":["kv"]}`.
+Do not use `main`, `displayName`, or other alternate manifest keys in place of
+`backend`, `ui`, and `resources`.
+
+Use `ctx.resource.build.compileTs(path, source)` when you write TypeScript or
+TSX that should be checked or compiled before saving. It returns a JSON string:
+`{"ok":true,"code":"..."}` or `{"ok":false,"error":"..."}`.
+
+Target app id: {{APP_ID_JSON}}
+
+User request:
+{{USER_PROMPT}}

@@ -15,7 +15,7 @@ fn surface_is_derived_from_the_live_declarations() {
 
     // Every registered capability is listed.
     for ns in [
-        "app", "builder", "codex", "kv", "crdt", "net", "model", "host", "replica",
+        "app", "build", "builder", "codex", "kv", "crdt", "net", "model", "host", "replica",
     ] {
         assert!(
             s.capabilities.iter().any(|c| c == ns),
@@ -39,6 +39,15 @@ fn surface_is_derived_from_the_live_declarations() {
         .find(|r| r.namespace == "crdt")
         .expect("crdt resource");
     assert!(crdt.methods.iter().any(|m| m.name == "mapSet"));
+    let build = s
+        .resources
+        .iter()
+        .find(|r| r.namespace == "build")
+        .expect("build resource");
+    assert!(build
+        .methods
+        .iter()
+        .any(|m| m.name == "compileTs" && m.kind == "read"));
 
     // The app + sync contracts.
     assert_eq!(s.app.actions_verb, terrane_api::ACTIONS_VERB);

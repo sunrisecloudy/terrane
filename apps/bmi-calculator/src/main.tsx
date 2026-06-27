@@ -51,21 +51,6 @@ function classify(bmi: number): Category {
   return { key: "obesity", label: "Obesity" };
 }
 
-function localCalculate(heightCm: number, weightKg: number): BmiResult | null {
-  const height = Number(heightCm);
-  const weight = Number(weightKg);
-  if (!(height > 0) || !(weight > 0)) return null;
-
-  const meters = height / 100;
-  const raw = weight / (meters * meters);
-  const category = classify(raw);
-  return {
-    bmi: Math.round(raw * 10) / 10,
-    category: category.label,
-    key: category.key,
-  };
-}
-
 function formatSliderValue(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
@@ -81,18 +66,16 @@ function rangeStyle(fillPercent: number): RangeStyle {
 function BmiCalculator() {
   const [height, setHeight] = useState(defaults.height);
   const [weight, setWeight] = useState(defaults.weight);
-  const [result, setResult] = useState<BmiResult | null>(() =>
-    localCalculate(defaults.height, defaults.weight)
-  );
-  const [status, setStatus] = useState("Ready");
+  const [result, setResult] = useState<BmiResult | null>(null);
+  const [status, setStatus] = useState("Waiting for Terrane");
 
   useEffect(() => {
     let cancelled = false;
 
     async function calculate() {
       if (!window.terrane || typeof window.terrane.invoke !== "function") {
-        setResult(localCalculate(height, weight));
-        setStatus("Ready");
+        setResult(null);
+        setStatus("Terrane bridge unavailable");
         return;
       }
 
@@ -109,8 +92,8 @@ function BmiCalculator() {
         setStatus("Synced with Terrane");
       } catch (_error) {
         if (cancelled) return;
-        setResult(localCalculate(height, weight));
-        setStatus("Using local calculation");
+        setResult(null);
+        setStatus("Terrane invoke failed");
       }
     }
 

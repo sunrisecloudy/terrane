@@ -35,8 +35,8 @@ The sidebar discovers plain HTML UIs from:
 - the app bundle's `Resources/apps/<id>/manifest.json`
 
 `manifest.ui` must point at an existing `.html`/`.htm` file such as `index.html`
-or `dist/index.html`. `react:` entries are intentionally skipped; this host does
-not add a fake React runtime.
+or `dist/index.html`. `react:` entries are intentionally skipped; this host only
+runs compiled app assets.
 
 ## App Builder preview
 

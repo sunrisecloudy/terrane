@@ -136,6 +136,23 @@ pub fn run_state() -> Result<(), String> {
             draft.files.len()
         );
     }
+
+    println!("codex:");
+    if state.codex.runs.is_empty() {
+        println!("  (none)");
+    }
+    for run in state.codex.runs.values() {
+        let status = if run.error.is_some() {
+            "failed"
+        } else if run.output.is_some() {
+            "completed"
+        } else if run.js.is_some() {
+            "generated"
+        } else {
+            "requested"
+        };
+        println!("  {} — {} [{}]", run.id, run.app_id, status);
+    }
     Ok(())
 }
 
@@ -216,6 +233,7 @@ pub fn print_help() {
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane codex generate-app <draft> <app> <name> <prompt…>\n\
+         \x20 terrane codex run-js <run> <app> <prompt…>       generate JS and run it in QuickJS\n\
          \x20 terrane host run <app> [input…]                  run an app's JS backend\n\n\
          Multi-user:\n\
          \x20 terrane serve [--addr <addr>]      listen for peers (default 127.0.0.1:7777)\n\
