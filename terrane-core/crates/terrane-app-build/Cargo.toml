@@ -4,6 +4,21 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[dependencies]
+nanoserde.workspace = true
+swc_core = { version = "68.0.6", default-features = false, features = [
+  "common",
+  "ecma_ast",
+  "ecma_codegen",
+  "ecma_parser",
+  "ecma_transforms_react",
+  "ecma_transforms_typescript",
+  "ecma_visit",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [[bin]]
 name = "terrane-app-build"
 path = "src/main.rs"

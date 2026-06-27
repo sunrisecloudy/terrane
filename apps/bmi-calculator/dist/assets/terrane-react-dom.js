@@ -1,0 +1,12 @@
+const ReactDOMGlobal = window.ReactDOM;
+if (!ReactDOMGlobal) throw new Error('Terrane ReactDOM runtime is missing');
+export default ReactDOMGlobal;
+export const createPortal = ReactDOMGlobal.createPortal;
+export const createRoot = ReactDOMGlobal.createRoot;
+export const findDOMNode = ReactDOMGlobal.findDOMNode;
+export const flushSync = ReactDOMGlobal.flushSync;
+export const hydrate = ReactDOMGlobal.hydrate;
+export const hydrateRoot = ReactDOMGlobal.hydrateRoot;
+export const render = ReactDOMGlobal.render;
+export const unmountComponentAtNode = ReactDOMGlobal.unmountComponentAtNode;
+export const unstable_batchedUpdates = ReactDOMGlobal.unstable_batchedUpdates;

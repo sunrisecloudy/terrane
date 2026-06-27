@@ -6,7 +6,7 @@
   "ui": "dist/index.html",
   "frontend": {
     "tool": "terrane-app-build",
-    "entry": "src/main.jsx",
+    "entry": "src/main.tsx",
     "styles": ["src/app.css"]
   },
   "resources": []
