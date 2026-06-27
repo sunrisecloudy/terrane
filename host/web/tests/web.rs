@@ -111,6 +111,7 @@ fn serves_catalog_ui_and_invoke_over_http() {
     {
         let mut core = Core::open(home.join("log.bin")).unwrap();
         install(&mut core, "todo"); // has a UI
+        install(&mut core, "bmi-calculator"); // React shell UI
         install(&mut core, "todo-cli-collaborate"); // crdt add/list
     }
 
@@ -125,7 +126,9 @@ fn serves_catalog_ui_and_invoke_over_http() {
     let (status, body) = http(&addr, "GET", "/apps", None);
     assert_eq!(status, 200);
     assert!(
-        body.contains("todo-cli-collaborate") && body.contains("\"todo\""),
+        body.contains("todo-cli-collaborate")
+            && body.contains("bmi-calculator")
+            && body.contains("\"todo\""),
         "apps: {body}"
     );
 
@@ -157,6 +160,38 @@ fn serves_catalog_ui_and_invoke_over_http() {
         body.contains("__terrane/live-version"),
         "live reload hook missing: {body}"
     );
+
+    // React UI frame: manifest.ui can opt into the host-provided React shell.
+    let (status, body) = http(&addr, "GET", "/apps/bmi-calculator/__terrane/frame/", None);
+    assert_eq!(status, 200, "react shell body: {body}");
+    assert!(body.contains("window.terrane"), "shim missing: {body}");
+    assert!(
+        body.contains("__terrane/react/react.js")
+            && body.contains("__terrane/react/react-dom.js")
+            && body.contains("__terrane/frame/app.js"),
+        "react shell scripts missing: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/apps/bmi-calculator/__terrane/react/react.js",
+        None,
+    );
+    assert_eq!(status, 200, "react runtime: {body}");
+    assert!(
+        body.contains("window.React") && body.contains("useState"),
+        "react runtime missing API: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/apps/bmi-calculator/__terrane/frame/app.js",
+        None,
+    );
+    assert_eq!(status, 200, "react app js: {body}");
+    assert!(body.contains("BMI Calculator"), "react app missing: {body}");
 
     let (status, body) = http(&addr, "GET", "/apps/todo/__terrane/live-version", None);
     assert_eq!(status, 200, "live version: {body}");

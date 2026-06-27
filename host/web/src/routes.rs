@@ -32,6 +32,9 @@ pub fn route(
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
             crate::live_reload::response(core, id)
         }
+        (Method::Get, ["apps", _id, "__terrane", "react", name]) => {
+            crate::react_shell::runtime_response(name)
+        }
         (Method::Get, ["apps", id, "__terrane", "frame"]) => serve_ui(core, id, "", live_reload),
         (Method::Get, ["apps", id, "__terrane", "frame", rest @ ..]) => {
             serve_ui(core, id, &rest.join("/"), live_reload)
@@ -71,6 +74,13 @@ fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload:
 
     let target = if rel.is_empty() {
         match terrane_host::read_manifest_ui(&source) {
+            Some(ui) if ui.starts_with("react:") => {
+                return crate::react_shell::response(
+                    id,
+                    ui.trim_start_matches("react:"),
+                    live_reload,
+                );
+            }
             Some(ui) => base.join(ui),
             None => return json_error(404, "app has no UI"),
         }

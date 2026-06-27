@@ -15,6 +15,7 @@
 mod args;
 mod http;
 mod live_reload;
+mod react_shell;
 mod routes;
 mod shell;
 mod shim;

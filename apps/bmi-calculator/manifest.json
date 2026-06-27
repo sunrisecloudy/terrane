@@ -1,0 +1,8 @@
+{
+  "id": "bmi-calculator",
+  "name": "BMI Calculator",
+  "version": "0.1.0",
+  "backend": "main.js",
+  "ui": "react:app.js",
+  "resources": []
+}
