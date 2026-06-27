@@ -17,6 +17,8 @@ targets:
   TerraneHost:
     type: application
     platform: macOS
+    supportedDestinations:
+      - macOS
     sources:
       - path: Sources
     settings:
@@ -50,3 +52,62 @@ targets:
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           cd "$SRCROOT/../../terrane-core"
           cargo build -p terrane-ffi --release
+  TerraneHostE2ETests:
+    type: bundle.unit-test
+    platform: macOS
+    supportedDestinations:
+      - macOS
+    sources:
+      - path: Tests
+      - path: Sources/AppCatalog.swift
+      - path: Sources/AppSchemeHandler.swift
+      - path: Sources/TerraneBridge.swift
+      - path: Sources/PreviewSchemeHandler.swift
+      - path: Sources/SourceEditor.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host.e2e-tests
+        LIBRARY_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../../terrane-core/target/release
+        OTHER_LDFLAGS:
+          - $(inherited)
+          - -lterrane_ffi
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../../terrane-core/crates/terrane-ffi/include
+    dependencies:
+      - sdk: WebKit.framework
+      - sdk: AppKit.framework
+    preBuildScripts:
+      - name: "Build terrane-ffi (Rust staticlib)"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          cd "$SRCROOT/../../terrane-core"
+          cargo build -p terrane-ffi --release
+schemes:
+  TerraneHost:
+    build:
+      targets:
+        TerraneHost: all
+    run:
+      config: Debug
+      executable: TerraneHost
+    profile:
+      config: Release
+      executable: TerraneHost
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  TerraneHostE2ETests:
+    build:
+      targets:
+        TerraneHostE2ETests: all
+    test:
+      config: Debug
+      targets:
+        - TerraneHostE2ETests

@@ -16,6 +16,7 @@
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::Mutex;
 
@@ -302,6 +303,49 @@ pub unsafe extern "C" fn terrane_preview_invoke(
     finish(code, out_error)
 }
 
+/// Build an app frontend using terrane-app-build. On success writes JSON:
+/// `{"dist":"<path>","files":<count>}`.
+///
+/// # Safety
+/// `app_dir` must be a valid C string. `out_output`/`out_error` must be valid
+/// pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_build_app(
+    app_dir: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let app_dir = match read_str(app_dir) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        match terrane_app_build::build_app(terrane_app_build::BuildOptions {
+            app_dir: PathBuf::from(app_dir),
+            check_only: false,
+        }) {
+            Ok(result) => {
+                write_out(
+                    out_output,
+                    format!(
+                        "{{\"dist\":\"{}\",\"files\":{}}}",
+                        json_string_content(&result.dist.to_string_lossy()),
+                        result.files.len()
+                    ),
+                );
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
 /// Free a string returned by terrane-ffi. Null-safe; non-null pointers are
 /// single-use.
 ///
@@ -422,4 +466,20 @@ unsafe fn write_out(out: *mut *mut c_char, s: String) {
         Ok(c) => c.into_raw(),
         Err(_) => ptr::null_mut(),
     };
+}
+
+fn json_string_content(input: &str) -> String {
+    let mut out = String::new();
+    for ch in input.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c <= '\u{1f}' => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }

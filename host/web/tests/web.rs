@@ -44,6 +44,14 @@ fn install(core: &mut Core, id: &str) {
     .unwrap();
 }
 
+fn install_named(core: &mut Core, id: &str, name: &str) {
+    core.dispatch(Request::new(
+        "app.add",
+        vec![id.into(), name.into(), "--source".into(), app_source(id)],
+    ))
+    .unwrap();
+}
+
 fn copy_dir(src: &Path, dest: &Path) {
     std::fs::create_dir_all(dest).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
@@ -205,15 +213,21 @@ fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (C
     let mut child = cmd.spawn().expect("spawn terrane-web");
     let stderr = child.stderr.take().unwrap();
     let mut lines = BufReader::new(stderr).lines();
-    // First stderr line: "...serving <home> on http://127.0.0.1:PORT (auth: ...)"
-    let line = lines.next().expect("server prints a startup line").unwrap();
-    let addr = line
-        .split("http://")
-        .nth(1)
-        .and_then(|s| s.split_whitespace().next())
-        .expect("startup line has an address")
-        .to_string();
-    (child, addr)
+    let mut seen = Vec::new();
+    for line in lines.by_ref().take(20) {
+        let line = line.expect("server startup line is readable");
+        if let Some(addr) = line
+            .split("http://")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+        {
+            return (child, addr.to_string());
+        }
+        seen.push(line);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("server did not print a startup address; saw {seen:?}");
 }
 
 #[test]
@@ -317,6 +331,113 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
 }
 
 #[test]
+fn serves_bmi_calculator_shell_frame_assets_and_backend() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install_named(&mut core, "bmi-calculator", "BMI Calculator");
+    }
+
+    let (mut child, addr) = spawn_web(home);
+
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200, "apps: {body}");
+    assert!(
+        body.contains(r#""id":"bmi-calculator""#) && body.contains("BMI Calculator"),
+        "bmi calculator missing from catalog: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/apps/bmi-calculator/", None);
+    assert_eq!(status, 200, "bmi shell: {body}");
+    assert!(body.contains("Terrane"), "shell brand missing: {body}");
+    assert!(
+        body.contains("id=\"desktop-info-button\"")
+            && body.contains("Live code editing uses the Terrane desktop app"),
+        "desktop editing info missing: {body}"
+    );
+    assert!(
+        body.contains("id=\"app-frame\""),
+        "bmi shell iframe missing: {body}"
+    );
+    assert!(
+        body.contains("/apps/\" + encodeURIComponent(currentId) + \"/__terrane/frame/"),
+        "bmi shell frame loader missing: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/apps/bmi-calculator/__terrane/frame/", None);
+    assert_eq!(status, 200, "bmi frame: {body}");
+    assert!(body.contains("window.terrane"), "bmi shim missing: {body}");
+    assert!(
+        body.contains("\"bmi-calculator\""),
+        "bmi app id missing from shim: {body}"
+    );
+    assert!(
+        body.contains("assets/modules/src/main.js"),
+        "bmi compiled module missing from frame: {body}"
+    );
+    assert!(
+        body.contains("assets/react.production.min.js")
+            && body.contains("assets/react-dom.production.min.js"),
+        "bmi react vendor assets missing from frame: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/apps/bmi-calculator/__terrane/frame/assets/app.css",
+        None,
+    );
+    assert_eq!(status, 200, "bmi css: {body}");
+    assert!(
+        body.contains(".bmi-app"),
+        "bmi css missing app styles: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/apps/bmi-calculator/__terrane/frame/assets/modules/src/main.js",
+        None,
+    );
+    assert_eq!(status, 200, "bmi module: {body}");
+    assert!(
+        body.contains("terrane-react-jsx-runtime")
+            && body.contains("terrane.invoke")
+            && body.contains("createRoot"),
+        "bmi module missing compiled React/runtime path: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/apps/bmi-calculator/__terrane/frame/assets/terrane-react-jsx-runtime.js",
+        None,
+    );
+    assert_eq!(status, 200, "bmi jsx runtime wrapper: {body}");
+    assert!(
+        body.contains("ReactGlobal.Fragment") && body.contains("ReactGlobal.createElement"),
+        "bmi jsx runtime wrapper missing React export bridge: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/bmi-calculator/invoke",
+        Some(r#"{"verb":"calculate","args":["180","81"]}"#),
+    );
+    assert_eq!(status, 200, "bmi invoke: {body}");
+    assert!(body.contains(r#"\"bmi\":25"#), "bmi output: {body}");
+    assert!(
+        body.contains(r#"\"category\":\"Overweight\""#),
+        "bmi category: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn serves_catalog_ui_and_invoke_over_http() {
     let dir = tempdir().unwrap();
     let home = dir.path();
@@ -350,6 +471,12 @@ fn serves_catalog_ui_and_invoke_over_http() {
     let (status, body) = http(&addr, "GET", "/apps/todo/", None);
     assert_eq!(status, 200, "shell body: {body}");
     assert!(body.contains("Terrane"), "shell brand missing: {body}");
+    assert!(
+        body.contains("id=\"desktop-info-button\"")
+            && body.contains("setInfoPanelOpen")
+            && body.contains("Terrane desktop app"),
+        "desktop editing info missing: {body}"
+    );
     assert!(
         body.contains("id=\"app-list\""),
         "dynamic app list mount missing: {body}"

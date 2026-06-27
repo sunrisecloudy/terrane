@@ -1,9 +1,10 @@
 # host/macos — Terrane macOS host
 
 A native AppKit + WKWebView app switcher that runs Terrane app UIs and bridges
-them to terrane-core over the [`terrane-ffi`](../../terrane-core/crates/terrane-ffi)
-C ABI. The first non-Rust host; the same shape (FFI + thin shell) is how iOS /
-Android / Windows hosts will work.
+them to terrane-core over the
+[`terrane-ffi`](../../terrane-core/crates/terrane-ffi) C ABI. The first non-Rust
+host; the same shape (FFI + thin shell) is how iOS / Android / Windows hosts
+will work.
 
 ```
 native top bar (plain UI apps)
@@ -33,15 +34,15 @@ The top bar discovers plain HTML UIs from:
 - `$TERRANE_HOME/apps/<id>/manifest.json`
 - the app bundle's `Resources/apps/<id>/manifest.json`
 
-`manifest.ui` must point at an existing `.html`/`.htm` file such as
-`index.html` or `dist/index.html`. `react:` entries are intentionally skipped;
-this host does not add a fake React runtime.
+`manifest.ui` must point at an existing `.html`/`.htm` file such as `index.html`
+or `dist/index.html`. `react:` entries are intentionally skipped; this host does
+not add a fake React runtime.
 
 ## App Builder preview
 
 The injected shim also exposes `window.terrane.preview(files)`. App Builder
-passes generated files to the native bridge, which calls `terrane_preview_create`
-on the same FFI handle and gets back:
+passes generated files to the native bridge, which calls
+`terrane_preview_create` on the same FFI handle and gets back:
 
 ```json
 { "id": "...", "frameUrl": "terrane-preview://<id>/frame/" }
@@ -59,9 +60,9 @@ a temp app bundle or add preview apps to the catalog.
 
 ## Build
 
-Requires `xcodegen` (`brew install xcodegen`), Xcode, and `cargo`. The project is
-defined by `project.yml`; the `.xcodeproj` is generated (gitignored). A pre-build
-phase builds `libterrane_ffi.a` and the target links it.
+Requires `xcodegen` (`brew install xcodegen`), Xcode, and `cargo`. The project
+is defined by `project.yml`; the `.xcodeproj` is generated (gitignored). A
+pre-build phase builds `libterrane_ffi.a` and the target links it.
 
 ```sh
 cd host/macos

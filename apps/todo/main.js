@@ -38,7 +38,9 @@ function readItems() {
     if (isNaN(id)) continue;
     items.push({ id: id, text: all[key] });
   }
-  items.sort(function (a, b) { return a.id - b.id; });
+  items.sort(function (a, b) {
+    return a.id - b.id;
+  });
   return items;
 }
 
@@ -47,7 +49,11 @@ var description = "A simple todo list with a web UI (kv-backed).";
 var actions = {
   add: {
     summary: "Add a todo item.",
-    args: [{ name: "text", required: true, summary: "the item text (may be several words)" }],
+    args: [{
+      name: "text",
+      required: true,
+      summary: "the item text (may be several words)",
+    }],
     returns: 'a confirmation line, e.g. "added #1 buy milk"',
     run: function (args, usage) {
       var text = args.join(" ").trim();
@@ -56,7 +62,7 @@ var actions = {
       kv.set(SEQ_KEY, String(id));
       kv.set(ITEM_PREFIX + id, text);
       return "added #" + id + " " + text;
-    }
+    },
   },
 
   list: {
@@ -66,8 +72,10 @@ var actions = {
     run: function () {
       var items = readItems();
       if (items.length === 0) return "(no todos)";
-      return items.map(function (it) { return "#" + it.id + " " + it.text; }).join("\n");
-    }
+      return items.map(function (it) {
+        return "#" + it.id + " " + it.text;
+      }).join("\n");
+    },
   },
 
   done: {
@@ -81,7 +89,7 @@ var actions = {
       if (kv.get(key) == null) return "no todo #" + id;
       kv.rm(key);
       return "done #" + id;
-    }
+    },
   },
 
   items: {
@@ -90,6 +98,6 @@ var actions = {
     returns: 'a JSON array, e.g. [{"id":1,"text":"buy milk"}]',
     run: function () {
       return JSON.stringify(readItems());
-    }
-  }
+    },
+  },
 };

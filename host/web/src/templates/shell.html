@@ -1,119 +1,227 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Terrane</title>
-<style>
-:root { color-scheme: light dark; }
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  min-height: 100vh;
-  font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: Canvas;
-  color: CanvasText;
-}
-.shell {
-  display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
-  min-height: 100vh;
-}
-.sidebar {
-  border-right: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
-  background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
-  padding: 14px;
-  min-width: 0;
-}
-.brand {
-  margin: 2px 0 14px;
-  font-size: 14px;
-  font-weight: 700;
-}
-.app-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.app-link {
-  display: block;
-  padding: 9px 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  color: inherit;
-  text-decoration: none;
-}
-.app-link span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.app-link small {
-  display: block;
-  margin-top: 2px;
-  color: color-mix(in srgb, CanvasText 55%, transparent);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.app-link:hover {
-  background: color-mix(in srgb, CanvasText 7%, transparent);
-}
-.app-link.selected {
-  border-color: #0071e3;
-  background: color-mix(in srgb, #0071e3 12%, transparent);
-}
-.app-link.disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-.app-empty,
-.app-error {
-  padding: 9px 10px;
-  color: color-mix(in srgb, CanvasText 62%, transparent);
-}
-.stage {
-  min-width: 0;
-  min-height: 100vh;
-  display: grid;
-  grid-template-rows: 0 minmax(0, 1fr);
-}
-.title {
-  width: 1px;
-  height: 1px;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-}
-iframe {
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: Canvas;
-}
-@media (max-width: 760px) {
-  .shell { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
-  .sidebar { border-right: 0; border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
-  .app-list { flex-direction: row; overflow-x: auto; padding-bottom: 2px; }
-  .app-link { min-width: 150px; }
-  .stage { min-height: calc(100vh - 112px); }
-}
-</style>
-</head>
-<body>
-<div class="shell">
-  <nav class="sidebar" aria-label="Apps">
-    <div class="brand">Terrane</div>
-    <div id="app-list" class="app-list" aria-live="polite">Loading apps...</div>
-  </nav>
-  <main class="stage">
-    <h1 id="app-title" class="title">Terrane</h1>
-    <iframe id="app-frame" title="Terrane"></iframe>
-  </main>
-</div>
-<script>
-__APP_SHELL_JS__
-</script>
-</body>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Terrane</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: Canvas;
+        color: CanvasText;
+      }
+      .shell {
+        display: grid;
+        grid-template-columns: 240px minmax(0, 1fr);
+        min-height: 100vh;
+      }
+      .sidebar {
+        border-right: 1px solid
+          color-mix(in srgb, CanvasText 14%, transparent);
+        background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+        padding: 14px;
+        min-width: 0;
+      }
+      .brand {
+        font-size: 14px;
+        font-weight: 700;
+      }
+      .brand-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin: 2px 0 14px;
+      }
+      .desktop-info-button {
+        display: inline-grid;
+        place-items: center;
+        width: 26px;
+        height: 26px;
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        border-radius: 999px;
+        background: Canvas;
+        color: inherit;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+      }
+      .desktop-info-button:hover,
+      .desktop-info-button[aria-expanded="true"] {
+        border-color: #0071e3;
+        background: color-mix(in srgb, #0071e3 12%, Canvas);
+      }
+      .desktop-info-panel {
+        margin: -4px 0 12px;
+        border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+        border-radius: 8px;
+        padding: 10px;
+        background: Canvas;
+      }
+      .desktop-info-panel[hidden] {
+        display: none;
+      }
+      .desktop-info-panel h2 {
+        margin: 0 0 6px;
+        font-size: 13px;
+      }
+      .desktop-info-panel p {
+        margin: 0;
+        color: color-mix(in srgb, CanvasText 66%, transparent);
+        line-height: 1.4;
+      }
+      .desktop-info-close {
+        margin-top: 10px;
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        border-radius: 6px;
+        padding: 5px 9px;
+        background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+        color: inherit;
+        cursor: pointer;
+        font: inherit;
+      }
+      .app-list {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .app-link {
+        display: block;
+        padding: 9px 10px;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        color: inherit;
+        text-decoration: none;
+      }
+      .app-link span {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .app-link small {
+        display: block;
+        margin-top: 2px;
+        color: color-mix(in srgb, CanvasText 55%, transparent);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .app-link:hover {
+        background: color-mix(in srgb, CanvasText 7%, transparent);
+      }
+      .app-link.selected {
+        border-color: #0071e3;
+        background: color-mix(in srgb, #0071e3 12%, transparent);
+      }
+      .app-link.disabled {
+        cursor: default;
+        opacity: 0.55;
+      }
+      .app-empty,
+      .app-error {
+        padding: 9px 10px;
+        color: color-mix(in srgb, CanvasText 62%, transparent);
+      }
+      .stage {
+        min-width: 0;
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: 0 minmax(0, 1fr);
+      }
+      .title {
+        width: 1px;
+        height: 1px;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+      }
+      iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        background: Canvas;
+      }
+      @media (max-width: 760px) {
+        .shell {
+          grid-template-columns: 1fr;
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+        .sidebar {
+          border-right: 0;
+          border-bottom: 1px solid
+            color-mix(in srgb, CanvasText 14%, transparent);
+        }
+        .app-list {
+          flex-direction: row;
+          overflow-x: auto;
+          padding-bottom: 2px;
+        }
+        .app-link {
+          min-width: 150px;
+        }
+        .stage {
+          min-height: calc(100vh - 112px);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <nav class="sidebar" aria-label="Apps">
+        <div class="brand-row">
+          <div class="brand">Terrane</div>
+          <button
+            id="desktop-info-button"
+            class="desktop-info-button"
+            type="button"
+            aria-label="Desktop editing info"
+            aria-controls="desktop-info-panel"
+            aria-expanded="false"
+            title="Desktop editing info"
+          >
+            i
+          </button>
+        </div>
+        <div
+          id="desktop-info-panel"
+          class="desktop-info-panel"
+          role="dialog"
+          aria-labelledby="desktop-info-title"
+          hidden
+        >
+          <h2 id="desktop-info-title">Desktop editing</h2>
+          <p>
+            Live code editing uses the Terrane desktop app, where source files
+            stay local and rebuild on save. This web host runs installed apps.
+          </p>
+          <button
+            id="desktop-info-close"
+            class="desktop-info-close"
+            type="button"
+          >
+            Close
+          </button>
+        </div>
+        <div id="app-list" class="app-list" aria-live="polite">
+          Loading apps...
+        </div>
+      </nav>
+      <main class="stage">
+        <h1 id="app-title" class="title">Terrane</h1>
+        <iframe id="app-frame" title="Terrane"></iframe>
+      </main>
+    </div>
+    <script>
+      __APP_SHELL_JS__;
+    </script>
+  </body>
 </html>

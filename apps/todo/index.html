@@ -1,85 +1,149 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Todo</title>
-<style>
-  :root { color-scheme: light dark; }
-  body { font: 14px -apple-system, system-ui, sans-serif; margin: 0; padding: 24px;
-         background: Canvas; color: CanvasText; }
-  h1 { font-size: 20px; margin: 0 0 16px; }
-  .row { display: flex; gap: 8px; margin-bottom: 16px; }
-  input[type=text] { flex: 1; padding: 8px 10px; border: 1px solid #8884; border-radius: 8px;
-                     font: inherit; background: Field; color: FieldText; }
-  button#add { padding: 8px 14px; border: 0; border-radius: 8px; background: #0071e3; color: #fff;
-               font: inherit; cursor: pointer; }
-  ul { list-style: none; margin: 0; padding: 0; }
-  li { display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-       background: #8881; border-radius: 8px; margin-bottom: 6px; }
-  li .id { color: #8888; font-variant-numeric: tabular-nums; }
-  li .text { flex: 1; }
-  li .done { cursor: pointer; border: 0; background: none; color: #8888; font-size: 18px; padding: 0; }
-  .empty { color: #8888; padding: 12px; }
-</style>
-</head>
-<body>
-  <h1>Todo</h1>
-  <div class="row">
-    <input id="text" type="text" placeholder="Add a todo…" autofocus>
-    <button id="add">Add</button>
-  </div>
-  <ul id="list"></ul>
-  <div id="empty" class="empty" hidden>Nothing to do</div>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Todo</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        font: 14px -apple-system, system-ui, sans-serif;
+        margin: 0;
+        padding: 24px;
+        background: Canvas;
+        color: CanvasText;
+      }
+      h1 {
+        font-size: 20px;
+        margin: 0 0 16px;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      input[type="text"] {
+        flex: 1;
+        padding: 8px 10px;
+        border: 1px solid #8884;
+        border-radius: 8px;
+        font: inherit;
+        background: Field;
+        color: FieldText;
+      }
+      button#add {
+        padding: 8px 14px;
+        border: 0;
+        border-radius: 8px;
+        background: #0071e3;
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+      }
+      ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      li {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        background: #8881;
+        border-radius: 8px;
+        margin-bottom: 6px;
+      }
+      li .id {
+        color: #8888;
+        font-variant-numeric: tabular-nums;
+      }
+      li .text {
+        flex: 1;
+      }
+      li .done {
+        cursor: pointer;
+        border: 0;
+        background: none;
+        color: #8888;
+        font-size: 18px;
+        padding: 0;
+      }
+      .empty {
+        color: #8888;
+        padding: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Todo app test</h1>
+    <div class="row">
+      <input id="text" type="text" placeholder="Add a todo…" autofocus>
+      <button id="add">Add</button>
+    </div>
+    <ul id="list"></ul>
+    <div id="empty" class="empty" hidden>Nothing to do</div>
 
-<script>
-  // Dev fallback: lets the shell render before/without the native bridge
-  // (e.g. the static-skeleton commit, or opening the file in a browser).
-  if (!window.terrane) {
-    window.terrane = { invoke: function (verb) {
-      return Promise.resolve(verb === "items" ? "[]" : "");
-    } };
-  }
+    <script>
+      // Dev fallback: lets the shell render before/without the native bridge
+      // (e.g. the static-skeleton commit, or opening the file in a browser).
+      if (!window.terrane) {
+        window.terrane = {
+          invoke: function (verb) {
+            return Promise.resolve(verb === "items" ? "[]" : "");
+          },
+        };
+      }
 
-  var listEl = document.getElementById("list");
-  var emptyEl = document.getElementById("empty");
-  var textEl = document.getElementById("text");
+      var listEl = document.getElementById("list");
+      var emptyEl = document.getElementById("empty");
+      var textEl = document.getElementById("text");
 
-  function render(items) {
-    listEl.textContent = "";
-    emptyEl.hidden = items.length > 0;
-    items.forEach(function (it) {
-      var li = document.createElement("li");
-      var id = document.createElement("span");
-      id.className = "id"; id.textContent = "#" + it.id;
-      var text = document.createElement("span");
-      text.className = "text"; text.textContent = it.text;
-      var done = document.createElement("button");
-      done.className = "done"; done.title = "done"; done.textContent = "✓";
-      done.addEventListener("click", function () {
-        window.terrane.invoke("done", String(it.id)).then(refresh);
+      function render(items) {
+        listEl.textContent = "";
+        emptyEl.hidden = items.length > 0;
+        items.forEach(function (it) {
+          var li = document.createElement("li");
+          var id = document.createElement("span");
+          id.className = "id";
+          id.textContent = "#" + it.id;
+          var text = document.createElement("span");
+          text.className = "text";
+          text.textContent = it.text;
+          var done = document.createElement("button");
+          done.className = "done";
+          done.title = "done";
+          done.textContent = "✓";
+          done.addEventListener("click", function () {
+            window.terrane.invoke("done", String(it.id)).then(refresh);
+          });
+          li.appendChild(id);
+          li.appendChild(text);
+          li.appendChild(done);
+          listEl.appendChild(li);
+        });
+      }
+
+      function refresh() {
+        return window.terrane.invoke("items").then(function (json) {
+          render(JSON.parse(json || "[]"));
+        });
+      }
+
+      function add() {
+        var t = textEl.value.trim();
+        if (!t) return;
+        textEl.value = "";
+        window.terrane.invoke("add", t).then(refresh);
+      }
+
+      document.getElementById("add").addEventListener("click", add);
+      textEl.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") add();
       });
-      li.appendChild(id); li.appendChild(text); li.appendChild(done);
-      listEl.appendChild(li);
-    });
-  }
-
-  function refresh() {
-    return window.terrane.invoke("items").then(function (json) {
-      render(JSON.parse(json || "[]"));
-    });
-  }
-
-  function add() {
-    var t = textEl.value.trim();
-    if (!t) return;
-    textEl.value = "";
-    window.terrane.invoke("add", t).then(refresh);
-  }
-
-  document.getElementById("add").addEventListener("click", add);
-  textEl.addEventListener("keydown", function (e) { if (e.key === "Enter") add(); });
-  refresh();
-</script>
-</body>
+      refresh();
+    </script>
+  </body>
 </html>

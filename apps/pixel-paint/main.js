@@ -13,7 +13,9 @@ function readPixels() {
   if (raw == null || raw === "") return {};
   try {
     var parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : {};
   } catch (_e) {
     return {};
   }
@@ -59,7 +61,7 @@ var actions = {
     returns: "JSON with size and sparse pixels map.",
     run: function () {
       return JSON.stringify({ size: SIZE, pixels: readPixels() });
-    }
+    },
   },
 
   set: {
@@ -67,7 +69,11 @@ var actions = {
     args: [
       { name: "x", required: true, summary: "x coordinate, 0-63" },
       { name: "y", required: true, summary: "y coordinate, 0-63" },
-      { name: "color", required: true, summary: "hex color like #ff0066, or empty to erase" }
+      {
+        name: "color",
+        required: true,
+        summary: "hex color like #ff0066, or empty to erase",
+      },
     ],
     returns: "a confirmation line.",
     run: function (args, usage) {
@@ -78,12 +84,16 @@ var actions = {
       if (!applyCell(pixels, x, y, color)) return usage();
       writePixels(pixels);
       return "set " + x + "," + y;
-    }
+    },
   },
 
   bulk: {
     summary: "Apply many pixel changes.",
-    args: [{ name: "changes", required: true, summary: "JSON array of {x,y,color}" }],
+    args: [{
+      name: "changes",
+      required: true,
+      summary: "JSON array of {x,y,color}",
+    }],
     returns: "a confirmation with the applied count.",
     run: function (args, usage) {
       var changes;
@@ -104,7 +114,7 @@ var actions = {
       }
       writePixels(pixels);
       return "applied " + applied;
-    }
+    },
   },
 
   clear: {
@@ -114,6 +124,6 @@ var actions = {
     run: function () {
       writePixels({});
       return "cleared";
-    }
-  }
+    },
+  },
 };

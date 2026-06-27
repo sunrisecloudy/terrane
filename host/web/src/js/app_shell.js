@@ -3,12 +3,16 @@
   var list = document.getElementById("app-list");
   var title = document.getElementById("app-title");
   var frame = document.getElementById("app-frame");
+  var infoButton = document.getElementById("desktop-info-button");
+  var infoPanel = document.getElementById("desktop-info-panel");
+  var infoClose = document.getElementById("desktop-info-close");
 
   if (!currentId) {
     showError("No app selected");
     return;
   }
 
+  bindDesktopInfo();
   frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
 
   fetch("/apps", { cache: "no-store" })
@@ -55,7 +59,9 @@
   function appLink(app) {
     var id = app && app.id ? String(app.id) : "";
     var name = app && app.name ? String(app.name) : id || "Unnamed app";
-    var root = app && app.has_ui ? document.createElement("a") : document.createElement("div");
+    var root = app && app.has_ui
+      ? document.createElement("a")
+      : document.createElement("div");
     root.className = "app-link";
     if (id === currentId) {
       root.className += " selected";
@@ -83,6 +89,33 @@
     document.title = pageTitle;
     title.textContent = name;
     frame.title = name;
+  }
+
+  function bindDesktopInfo() {
+    if (!infoButton || !infoPanel) return;
+
+    infoButton.addEventListener("click", function () {
+      setInfoPanelOpen(infoPanel.hidden);
+    });
+
+    if (infoClose) {
+      infoClose.addEventListener("click", function () {
+        setInfoPanelOpen(false);
+        infoButton.focus();
+      });
+    }
+
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !infoPanel.hidden) {
+        setInfoPanelOpen(false);
+        infoButton.focus();
+      }
+    });
+  }
+
+  function setInfoPanelOpen(open) {
+    infoPanel.hidden = !open;
+    infoButton.setAttribute("aria-expanded", open ? "true" : "false");
   }
 
   function showError(message) {

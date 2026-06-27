@@ -2,18 +2,18 @@
 
 A Terrane app has two JavaScript halves, each with its own API surface:
 
-| Half | Runs in | Entry | Can access |
-| --- | --- | --- | --- |
-| **Backend** (server) | the host's QuickJS runtime | `handle(input)` | `ctx.resource.*` |
-| **Client** (UI) | the host's webview | your page's JS | `window.terrane.invoke(...)` |
+| Half                 | Runs in                    | Entry           | Can access                   |
+| -------------------- | -------------------------- | --------------- | ---------------------------- |
+| **Backend** (server) | the host's QuickJS runtime | `handle(input)` | `ctx.resource.*`             |
+| **Client** (UI)      | the host's webview         | your page's JS  | `window.terrane.invoke(...)` |
 
 The client talks to its own backend; the backend talks to resources. The UI has
 no direct access to `ctx.resource`.
 
-> **The `ctx.resource` reference below is generated** from the capabilities'
-> own declarations, and two tests in `terrane-core/tests/cap/host.rs` keep it
-> honest: one asserts the live runtime installs exactly the declared surface, the
-> other that this doc's generated section matches. Change a resource without
+> **The `ctx.resource` reference below is generated** from the capabilities' own
+> declarations, and two tests in `terrane-core/tests/cap/host.rs` keep it
+> honest: one asserts the live runtime installs exactly the declared surface,
+> the other that this doc's generated section matches. Change a resource without
 > regenerating (`UPDATE_DOCS=1 cargo test`) → the build goes red.
 
 ---
@@ -26,9 +26,9 @@ persistence goes through resources. Calls are **synchronous** (no Promises).
 
 A backend is invoked as `handle(input)` where `input` is the verb's string
 argument array. From the CLI: `terrane host run <app> add "buy milk"` →
-`handle(["add", "buy milk"])`. From the UI: `terrane.invoke("add", "buy milk")` →
-the same. `handle` **must return a string**. You can provide `handle` one of two
-ways.
+`handle(["add", "buy milk"])`. From the UI: `terrane.invoke("add", "buy milk")`
+→ the same. `handle` **must return a string**. You can provide `handle` one of
+two ways.
 
 ### Recommended: an `actions` table
 
@@ -46,14 +46,14 @@ var actions = {
     summary: "Add an item.",
     args: [{ name: "text", required: true, summary: "the item text" }],
     returns: 'e.g. "added: buy milk"',
-    run: function (args, usage) {            // args = everything after the verb
+    run: function (args, usage) { // args = everything after the verb
       var text = args.join(" ").trim();
-      if (text === "") return usage();        // usage() → "usage: add <text>"
+      if (text === "") return usage(); // usage() → "usage: add <text>"
       ctx.resource.crdt.listPush("todos", text);
       return "added: " + text;
-    }
+    },
   },
-  list: { summary: "List items.", args: [], run: function () { /* … */ } }
+  list: { summary: "List items.", args: [], run: function () {/* … */} },
 };
 ```
 
@@ -61,7 +61,8 @@ var actions = {
   declared `args` (`<name>` for required, `[name]` optional).
 - The app id and name in `__actions__` come from `manifest.json` — don't repeat
   them. The emitted shape is `terrane_api::AppActions` (`app`, `title`,
-  `description`, `actions: [{ verb, summary, args:[{ name, required, summary }], returns }]`).
+  `description`,
+  `actions: [{ verb, summary, args:[{ name, required, summary }], returns }]`).
 
 ### Low-level: define `handle` yourself
 
@@ -90,35 +91,37 @@ sandbox). App-scoped (you only ever see your own app's data) and synchronous.
 **Writes** are recorded as events and reproduce deterministically on replay;
 **reads** are not recorded.
 
-The tables below are **generated** from the capabilities' declared resource APIs.
-Don't hand-edit between the markers — a test regenerates them and fails if they
-drift from the runtime.
+The tables below are **generated** from the capabilities' declared resource
+APIs. Don't hand-edit between the markers — a test regenerates them and fails if
+they drift from the runtime.
 
 <!-- generated:resource-api:start -->
+
 #### `ctx.resource.crdt`
 
-| Method | Kind |
-| --- | --- |
-| `ctx.resource.crdt.mapSet(doc, key, value)` | write |
-| `ctx.resource.crdt.mapGet(doc, key)` | read |
-| `ctx.resource.crdt.mapAll(doc)` | read |
-| `ctx.resource.crdt.mapDel(doc, key)` | write |
-| `ctx.resource.crdt.listPush(doc, value)` | write |
+| Method                                            | Kind  |
+| ------------------------------------------------- | ----- |
+| `ctx.resource.crdt.mapSet(doc, key, value)`       | write |
+| `ctx.resource.crdt.mapGet(doc, key)`              | read  |
+| `ctx.resource.crdt.mapAll(doc)`                   | read  |
+| `ctx.resource.crdt.mapDel(doc, key)`              | write |
+| `ctx.resource.crdt.listPush(doc, value)`          | write |
 | `ctx.resource.crdt.listInsert(doc, index, value)` | write |
-| `ctx.resource.crdt.listDel(doc, index)` | write |
-| `ctx.resource.crdt.listAll(doc)` | read |
-| `ctx.resource.crdt.textInsert(doc, index, text)` | write |
-| `ctx.resource.crdt.textDel(doc, index, len)` | write |
-| `ctx.resource.crdt.textGet(doc)` | read |
+| `ctx.resource.crdt.listDel(doc, index)`           | write |
+| `ctx.resource.crdt.listAll(doc)`                  | read  |
+| `ctx.resource.crdt.textInsert(doc, index, text)`  | write |
+| `ctx.resource.crdt.textDel(doc, index, len)`      | write |
+| `ctx.resource.crdt.textGet(doc)`                  | read  |
 
 #### `ctx.resource.kv`
 
-| Method | Kind |
-| --- | --- |
+| Method                            | Kind  |
+| --------------------------------- | ----- |
 | `ctx.resource.kv.set(key, value)` | write |
-| `ctx.resource.kv.get(key)` | read |
-| `ctx.resource.kv.all()` | read |
-| `ctx.resource.kv.rm(key)` | write |
+| `ctx.resource.kv.get(key)`        | read  |
+| `ctx.resource.kv.all()`           | read  |
+| `ctx.resource.kv.rm(key)`         | write |
+
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as
@@ -127,8 +130,14 @@ For `kv`: `key` and `value` must be strings, and a missing key reads back as
 ```js
 var kv = ctx.resource.kv;
 function handle(input) {
-  if (input[0] === "add") { kv.set("greeting", input[1]); return "saved"; }
-  if (input[0] === "get") { var v = kv.get("greeting"); return v == null ? "(unset)" : v; }
+  if (input[0] === "add") {
+    kv.set("greeting", input[1]);
+    return "saved";
+  }
+  if (input[0] === "get") {
+    var v = kv.get("greeting");
+    return v == null ? "(unset)" : v;
+  }
   return "?";
 }
 ```
@@ -144,8 +153,14 @@ or an array (`listAll`).
 ```js
 var crdt = ctx.resource.crdt;
 function handle(input) {
-  if (input[0] === "set")  { crdt.mapSet("prefs", input[1], input[2]); return "saved"; }
-  if (input[0] === "todo") { crdt.listPush("todo", input[1]); return crdt.listAll("todo").join(","); }
+  if (input[0] === "set") {
+    crdt.mapSet("prefs", input[1], input[2]);
+    return "saved";
+  }
+  if (input[0] === "todo") {
+    crdt.listPush("todo", input[1]);
+    return crdt.listAll("todo").join(",");
+  }
   return "?";
 }
 ```
@@ -157,11 +172,11 @@ function handle(input) {
 The UI runs in the host's webview. Its only bridge to the platform is:
 
 ```js
-window.terrane.invoke(verb, ...args) // → Promise<string>
+window.terrane.invoke(verb, ...args); // → Promise<string>
 ```
 
-`invoke` calls your **own backend's** `handle([verb, ...args])` and resolves with
-the string it returns (or rejects with an error string). That is the entire
+`invoke` calls your **own backend's** `handle([verb, ...args])` and resolves
+with the string it returns (or rejects with an error string). That is the entire
 client→core surface — the UI never names another app and never touches
 `ctx.resource` directly.
 
@@ -177,14 +192,14 @@ backend works unchanged.
 
 ## Manifest — `manifest.json`
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `id` | string | stable app id (matches the catalog entry) |
-| `name` | string | display name |
-| `version` | string | app version |
-| `backend` | string | backend JS file, e.g. `"main.js"` |
-| `ui` | string (optional) | UI entry file, e.g. `"index.html"`; omit for CLI-only apps |
-| `resources` | string[] | the resource namespaces the backend may use — the sandbox allowlist |
+| Field       | Type              | Meaning                                                             |
+| ----------- | ----------------- | ------------------------------------------------------------------- |
+| `id`        | string            | stable app id (matches the catalog entry)                           |
+| `name`      | string            | display name                                                        |
+| `version`   | string            | app version                                                         |
+| `backend`   | string            | backend JS file, e.g. `"main.js"`                                   |
+| `ui`        | string (optional) | UI entry file, e.g. `"index.html"`; omit for CLI-only apps          |
+| `resources` | string[]          | the resource namespaces the backend may use — the sandbox allowlist |
 
 ```json
 {

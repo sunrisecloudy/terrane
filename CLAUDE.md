@@ -19,7 +19,7 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
   builds a Command and hands it to the core, then renders the result.
 - The core is **deterministic and replayable**: replaying the event log must
   reproduce identical state. Anything that breaks replay-identity is a bug.
-- No sync, server, UI, FFI, native, or policy in the core. Those are *layers*
+- No sync, server, UI, FFI, native, or policy in the core. Those are _layers_
   added later at the edge, only when a concrete need forces them.
 
 ## Layout
@@ -65,8 +65,8 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
   green: `cargo test` and `cargo clippy --all-targets -- -D warnings`.
 - Commit often: small, green, granular. Branch off `main`. Stage your own files
   explicitly — never `git add -A`. Preserve unrelated dirty/untracked work.
-- Mine `legacy/` for hard-won details (CRDT merge, canonicalization,
-  conformance cases) and adopt deliberately — copy, don't depend.
+- Mine `legacy/` for hard-won details (CRDT merge, canonicalization, conformance
+  cases) and adopt deliberately — copy, don't depend.
 
 ## Validation
 

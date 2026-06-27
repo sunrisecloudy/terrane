@@ -2303,6 +2303,7 @@ name = "terrane-ffi"
 version = "0.1.0"
 dependencies = [
  "tempfile",
+ "terrane-app-build",
  "terrane-core",
  "terrane-domain",
  "terrane-host",

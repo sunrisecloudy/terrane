@@ -38,5 +38,5 @@
     };
   }
 
-  __LIVE_RELOAD_SCRIPT__
+  __LIVE_RELOAD_SCRIPT__;
 })();

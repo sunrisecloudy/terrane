@@ -2,7 +2,7 @@
 
 > Terrane is your digital space, truly yours: a local-first home for the apps
 > you keep. AI agents can generate HTML apps cheaply and endlessly — Terrane is
-> where those apps *live, run, and persist*, owned by you, on your own devices.
+> where those apps _live, run, and persist_, owned by you, on your own devices.
 
 This document is the high-level shape. It is intentionally about layers and
 responsibilities, not file paths. Implementation lives in
@@ -42,12 +42,12 @@ below. That indirection is what makes apps portable and safe to run.
 
 ### Where the backend JavaScript runs
 
-The backend runtime *can be anywhere* — the app doesn't care. Today:
+The backend runtime _can be anywhere_ — the app doesn't care. Today:
 
-| Platform                              | Backend JS runtime                          |
-| ------------------------------------- | ------------------------------------------- |
+| Platform                                | Backend JS runtime                          |
+| --------------------------------------- | ------------------------------------------- |
 | macOS · Linux · Windows · iOS · Android | **QuickJS** embedded inside the native host |
-| Web                                   | a **Web Worker** (the host's own JS engine) |
+| Web                                     | a **Web Worker** (the host's own JS engine) |
 
 On native platforms we embed QuickJS so the backend runs in-process, isolated,
 without a third-party heavyweight runtime. On the web we use a Web Worker
@@ -63,7 +63,7 @@ and Web). Its job is narrow:
 - run the app backend (QuickJS, or a Web Worker on web),
 - bridge both into terrane-core.
 
-The host is the *launch hub* — it holds the user's apps and is how the user
+The host is the _launch hub_ — it holds the user's apps and is how the user
 opens and switches between them. It carries no business logic of its own.
 
 ## Layer 3 — terrane-core (the spine)
@@ -77,8 +77,8 @@ Command ▸ terrane-core ▸ [Event] ▸ State          (replaying the log → i
 ```
 
 Apps and hosts issue **Commands**; the core applies them to produce **Events**
-and **State**, and the event log replays deterministically. Effects (anything
-in the Resources layer) are mediated here and recorded, so that replay stays
+and **State**, and the event log replays deterministically. Effects (anything in
+the Resources layer) are mediated here and recorded, so that replay stays
 deterministic even though the resources themselves are not. The CLI (`terrane`)
 is a front door onto this same spine.
 
@@ -96,7 +96,7 @@ app's data when it sees `app.removed`) with no coupling between them.
 
 The app-runtime itself is a capability: **`host`** runs an app's JS backend in
 **QuickJS** (embedded in `terrane-core` via `rquickjs`) over a sandboxed,
-app-scoped `ctx.resource`. It is the one *orchestrating* capability — while the
+app-scoped `ctx.resource`. It is the one _orchestrating_ capability — while the
 backend runs, its `ctx.resource.*` calls re-enter `dispatch`, so an app's writes
 are recorded as ordinary `kv.*` events and replay rebuilds them without ever
 re-running JS (Option A). Hosts stay thin: `host/cli` (`terrane-host`) is the
@@ -104,7 +104,7 @@ first host, and `apps/todo` the first app it runs.
 
 ## Layer 4 — Resources (the capability surface)
 
-What an app is actually allowed to *do*. Apps call these as `ctx.resource.*`;
+What an app is actually allowed to _do_. Apps call these as `ctx.resource.*`;
 the host and core mediate, sandbox, and (where needed) record them:
 
 - **Storage** — a SQLite-backed store and key/value storage.
@@ -135,8 +135,8 @@ you all meet.
 This was captured from a spoken design pass; a few words were ambiguous and I
 made a best guess:
 
-- **"resources"** for the bottom capability layer (you said "result"/"the
-  thing we have") — storage, files, API, model, CLI/agents.
+- **"resources"** for the bottom capability layer (you said "result"/"the thing
+  we have") — storage, files, API, model, CLI/agents.
 - **"launch hub" / native host** for the layer you called the "LAN hub layer."
 - **agent CLIs = Claude and Codex** (heard as "fraud"/"codecs").
 - **QuickJS** as the embedded native backend runtime ("quick JS").

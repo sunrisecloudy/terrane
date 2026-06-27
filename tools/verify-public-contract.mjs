@@ -33,11 +33,15 @@ function fail(message) {
 const fresh = buildPublicContract();
 
 const contractPath = arg("--contract", null);
-const contract = contractPath ? JSON.parse(fs.readFileSync(path.resolve(contractPath), "utf8")) : fresh;
+const contract = contractPath
+  ? JSON.parse(fs.readFileSync(path.resolve(contractPath), "utf8"))
+  : fresh;
 
 // 1. The pinned surface must equal the freshly derived one.
 if (JSON.stringify(contract.surface) !== JSON.stringify(fresh.surface)) {
-  fail("contract.surface is stale — regenerate with tools/export-public-contract.mjs");
+  fail(
+    "contract.surface is stale — regenerate with tools/export-public-contract.mjs",
+  );
 }
 
 // 2. Every listed file must still hash to its recorded value.
@@ -53,5 +57,7 @@ for (const file of contract.files ?? []) {
 
 console.log(
   `ok: terrane public contract verified (contractVersion ${contract.contractVersion}, ` +
-    `${contract.surface.capabilities.length} capabilities, ${contract.files?.length ?? 0} files)`,
+    `${contract.surface.capabilities.length} capabilities, ${
+      contract.files?.length ?? 0
+    } files)`,
 );

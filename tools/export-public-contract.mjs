@@ -34,20 +34,31 @@ export function buildPublicContract() {
   const surfaceJson = execFileSync(
     "cargo",
     ["run", "-q", "-p", "terrane-cli", "--", "contract", "export"],
-    { cwd: path.join(root, "terrane-core"), encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+    {
+      cwd: path.join(root, "terrane-core"),
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    },
   );
   const surface = JSON.parse(surfaceJson);
 
   let sourceCommit = "uncommitted";
   try {
-    sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
   } catch {
     /* not a git checkout */
   }
 
   const files = CONTRACT_FILES.map((rel) => {
     const bytes = fs.readFileSync(path.join(root, rel));
-    return { path: rel, bytes: bytes.length, sha256: crypto.createHash("sha256").update(bytes).digest("hex") };
+    return {
+      path: rel,
+      bytes: bytes.length,
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    };
   });
 
   return {
@@ -78,9 +89,13 @@ export function buildPublicContract() {
 
 // Run as a script (not when imported by the verifier).
 if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const out = path.resolve(arg("--out", path.join(root, "artifacts", "public-contract.json")));
+  const out = path.resolve(
+    arg("--out", path.join(root, "artifacts", "public-contract.json")),
+  );
   const contract = buildPublicContract();
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, JSON.stringify(contract, null, 2) + "\n");
-  console.error(`wrote ${out} (contractVersion ${contract.contractVersion}, ${contract.files.length} files hashed)`);
+  console.error(
+    `wrote ${out} (contractVersion ${contract.contractVersion}, ${contract.files.length} files hashed)`,
+  );
 }

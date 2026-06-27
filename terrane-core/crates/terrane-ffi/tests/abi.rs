@@ -153,6 +153,14 @@ unsafe fn call_preview_invoke(
     (code, take_c_string(out), take_c_string(err))
 }
 
+unsafe fn call_build_app(app_dir: &Path) -> (i32, Option<String>, Option<String>) {
+    let app_dir = CString::new(app_dir.to_str().unwrap()).unwrap();
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut err: *mut c_char = ptr::null_mut();
+    let code = terrane_build_app(app_dir.as_ptr(), &mut out, &mut err);
+    (code, take_c_string(out), take_c_string(err))
+}
+
 #[test]
 fn open_host_run_output_free_round_trip() {
     let dir = tempdir().unwrap();
@@ -346,6 +354,65 @@ fn app_builder_preview_abi_stays_in_memory() {
 }
 
 #[test]
+fn app_build_abi_builds_react_frontend_to_dist() {
+    let dir = tempdir().unwrap();
+    let app = dir.path().join("bmi-lite");
+    fs::create_dir_all(app.join("src")).unwrap();
+    fs::write(
+        app.join("manifest.json"),
+        r#"{
+  "id": "bmi-lite",
+  "name": "BMI Lite",
+  "ui": "dist/index.html",
+  "frontend": {
+    "tool": "terrane-app-build",
+    "entry": "src/main.tsx",
+    "styles": ["src/app.css"]
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(app.join("src/app.css"), ".app { color: #123456; }\n").unwrap();
+    fs::write(
+        app.join("src/main.tsx"),
+        r#"import { createRoot } from "react-dom/client";
+
+type Props = { label: string };
+
+function App(props: Props) {
+  return <main className="app">{props.label}</main>;
+}
+
+createRoot(document.getElementById("root")!).render(<App label="BMI Lite" />);
+"#,
+    )
+    .unwrap();
+
+    unsafe {
+        let (code, out, err) = call_build_app(&app);
+        assert_eq!(code, TERRANE_OK, "build err: {err:?}");
+        let out = out.unwrap();
+        assert!(out.contains(r#""dist":"#), "build output: {out}");
+        assert!(out.contains(r#""files":"#), "build output: {out}");
+        assert!(app.join("dist/index.html").is_file());
+        assert!(app.join("dist/assets/app.css").is_file());
+        assert!(app.join("dist/assets/modules/src/main.js").is_file());
+        assert!(app
+            .join("dist/assets/terrane-react-jsx-runtime.js")
+            .is_file());
+
+        let module = fs::read_to_string(app.join("dist/assets/modules/src/main.js")).unwrap();
+        assert!(
+            module.contains("terrane-react-jsx-runtime")
+                && module.contains("createRoot")
+                && module.contains("BMI Lite"),
+            "module: {module}"
+        );
+    }
+}
+
+#[test]
 fn null_safety_and_single_use_contracts() {
     unsafe {
         // Null handle → typed error, no crash.
@@ -390,6 +457,7 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "int terrane_preview_read_asset(",
         "int terrane_preview_asset(",
         "int terrane_preview_invoke(",
+        "int terrane_build_app(",
         "void terrane_string_free(",
         "void terrane_close(",
         "#define TERRANE_OK 0",

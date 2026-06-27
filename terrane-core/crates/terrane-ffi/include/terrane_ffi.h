@@ -64,6 +64,10 @@ int terrane_preview_invoke(TerraneHandle *h, const char *preview_id,
                            const char *const *argv, char **out_output,
                            char **out_error);
 
+/* Build an app frontend with terrane-app-build. On success writes JSON with the
+ * generated dist path and file count. */
+int terrane_build_app(const char *app_dir, char **out_output, char **out_error);
+
 /* Free a string returned by this library. Null-safe; non-null pointers are
  * single-use and must be freed exactly once. */
 void terrane_string_free(char *s);
