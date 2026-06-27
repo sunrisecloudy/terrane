@@ -8,7 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var webView: WKWebView!
   private var sourceEditor: SourceEditorPanel!
   private var sourceEditorWidthConstraint: NSLayoutConstraint!
-  private var appSwitcher: NSSegmentedControl!
+  private var appSidebar: AppSidebarView!
+  private var appSidebarWidthConstraint: NSLayoutConstraint!
   private var codeButton: NSButton!
   private var bridge: TerraneBridge?
   private var appSchemeHandler: AppSchemeHandler?
@@ -66,21 +67,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func buildContentView() -> NSView {
     let content = NSView()
-    let bar = NSVisualEffectView()
-    bar.material = .headerView
-    bar.blendingMode = .withinWindow
-    bar.state = .active
+    appSidebar = AppSidebarView()
+    appSidebar.translatesAutoresizingMaskIntoConstraints = false
+    appSidebar.onSelect = { [weak self] app in
+      self?.select(app)
+    }
+    appSidebar.onToggleCollapse = { [weak self] in
+      self?.toggleSidebar()
+    }
+
+    let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false
-
-    let title = NSTextField(labelWithString: "Terrane")
-    title.font = .systemFont(ofSize: 13, weight: .semibold)
-    title.setContentHuggingPriority(.required, for: .horizontal)
-    title.translatesAutoresizingMaskIntoConstraints = false
-
-    appSwitcher = NSSegmentedControl(
-      labels: [], trackingMode: .selectOne, target: self, action: #selector(appSwitcherChanged(_:)))
-    appSwitcher.segmentStyle = .rounded
-    appSwitcher.translatesAutoresizingMaskIntoConstraints = false
 
     codeButton = NSButton(title: "Code", target: self, action: #selector(codeButtonChanged(_:)))
     codeButton.setButtonType(.toggle)
@@ -95,33 +92,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ?? SourceEditorSaveResult(message: "Saved.")
     }
 
-    bar.addSubview(title)
-    bar.addSubview(appSwitcher)
     bar.addSubview(codeButton)
+    content.addSubview(appSidebar)
     content.addSubview(bar)
     content.addSubview(webView)
     content.addSubview(sourceEditor)
     webView.translatesAutoresizingMaskIntoConstraints = false
+    appSidebarWidthConstraint = appSidebar.widthAnchor.constraint(equalToConstant: 224)
     sourceEditorWidthConstraint = sourceEditor.widthAnchor.constraint(equalToConstant: 0)
 
     NSLayoutConstraint.activate([
-      bar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+      appSidebar.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+      appSidebar.topAnchor.constraint(equalTo: content.topAnchor),
+      appSidebar.bottomAnchor.constraint(equalTo: content.bottomAnchor),
+      appSidebarWidthConstraint,
+
+      bar.leadingAnchor.constraint(equalTo: appSidebar.trailingAnchor),
       bar.trailingAnchor.constraint(equalTo: content.trailingAnchor),
       bar.topAnchor.constraint(equalTo: content.topAnchor),
       bar.heightAnchor.constraint(equalToConstant: 48),
 
-      title.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
-      title.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-
-      appSwitcher.leadingAnchor.constraint(equalTo: title.trailingAnchor, constant: 14),
-      appSwitcher.trailingAnchor.constraint(
-        lessThanOrEqualTo: codeButton.leadingAnchor, constant: -12),
-      appSwitcher.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
-
       codeButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -16),
       codeButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
 
-      webView.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+      webView.leadingAnchor.constraint(equalTo: appSidebar.trailingAnchor),
       webView.trailingAnchor.constraint(equalTo: sourceEditor.leadingAnchor),
       webView.topAnchor.constraint(equalTo: bar.bottomAnchor),
       webView.bottomAnchor.constraint(equalTo: content.bottomAnchor),
@@ -136,14 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func renderAppSwitcher() {
-    appSwitcher.segmentCount = apps.count
-    appSwitcher.isHidden = apps.isEmpty
-
-    for (index, app) in apps.enumerated() {
-      appSwitcher.setLabel(app.name, forSegment: index)
-      appSwitcher.setWidth(segmentWidth(for: app.name), forSegment: index)
-      appSwitcher.setToolTip(app.id, forSegment: index)
-    }
+    appSidebar.render(apps: apps, selectedAppId: selectedApp?.id)
   }
 
   private func initialApp() -> TerraneApp? {
@@ -170,9 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     bridge?.select(app: app)
     window.title = "\(app.name) - Terrane"
 
-    if let index = apps.firstIndex(of: app) {
-      appSwitcher.selectedSegment = index
-    }
+    appSidebar.select(appId: app.id)
 
     sourceEditor.setApp(app, preferredPath: preferredSourcePath)
     webView.load(
@@ -186,6 +171,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     selectedApp = nil
     bridge?.clearSelection()
     window.title = "Terrane"
+    appSidebar.select(appId: nil)
     sourceEditor?.setApp(nil)
     webView.loadHTMLString(Self.emptyStateHTML, baseURL: nil)
   }
@@ -215,16 +201,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     load(app, preferredSourcePath: preferredSourcePath)
   }
 
-  private func segmentWidth(for title: String) -> CGFloat {
-    min(max(CGFloat(title.count * 8 + 34), 92), 190)
-  }
-
-  @objc private func appSwitcherChanged(_ sender: NSSegmentedControl) {
-    let index = sender.selectedSegment
-    guard apps.indices.contains(index) else { return }
-    select(apps[index])
-  }
-
   @objc private func codeButtonChanged(_ sender: NSButton) {
     let visible = sender.state == .on
     sourceEditor.isHidden = !visible
@@ -232,12 +208,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     window.contentView?.layoutSubtreeIfNeeded()
   }
 
-  private func restoreSelectedSegment() {
-    guard let selectedApp, let index = apps.firstIndex(of: selectedApp) else {
-      appSwitcher.selectedSegment = -1
-      return
+  private func toggleSidebar() {
+    let collapsed = appSidebarWidthConstraint.constant > 100
+    appSidebar.setCollapsed(collapsed)
+    appSidebarWidthConstraint.constant = collapsed ? 76 : 232
+
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0.16
+      window.contentView?.layoutSubtreeIfNeeded()
     }
-    appSwitcher.selectedSegment = index
+  }
+
+  private func restoreSelectedSegment() {
+    appSidebar.select(appId: selectedApp?.id)
   }
 
   /// Workspace home: `$TERRANE_HOME`, else `~/.terrane`. terrane-ffi appends

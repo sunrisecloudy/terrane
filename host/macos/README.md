@@ -7,7 +7,7 @@ host; the same shape (FFI + thin shell) is how iOS / Android / Windows hosts
 will work.
 
 ```
-native top bar (plain UI apps)
+native sidebar (plain UI apps)
    │ selects app id + bundle path
    ▼
 WKWebView (apps/<id>/<manifest.ui> + terrane.invoke shim)
@@ -27,7 +27,7 @@ Every UI action is a `host.run` → recorded `kv.*` → replayable, exactly like
 CLI. The app id is selected by the native shell, so a page can only act as the
 currently loaded app.
 
-The top bar discovers plain HTML UIs from:
+The sidebar discovers plain HTML UIs from:
 
 - `$TERRANE_REPO/apps/<id>/manifest.json`
 - the current working directory's `apps/<id>/manifest.json`
@@ -80,7 +80,7 @@ The app needs to find (a) the workspace log and (b) local app UI bundles:
 - `TERRANE_REPO` — repo root, so it can resolve `apps/<id>/<manifest.ui>`.
 
 ```sh
-# launch with a native top-bar switcher
+# launch with a native sidebar switcher
 TERRANE_HOME=~/.terrane TERRANE_REPO="$PWD/../.." \
   build/Debug/TerraneHost.app/Contents/MacOS/TerraneHost
 

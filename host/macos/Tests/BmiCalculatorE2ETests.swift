@@ -165,6 +165,49 @@ final class BmiCalculatorE2ETests: XCTestCase {
     }
   }
 
+  func testAppSidebarRendersAppsAndTracksSelection() throws {
+    try runOnMainThread {
+      let base = URL(fileURLWithPath: "/tmp/terrane-sidebar-test")
+      let todo = TerraneApp(
+        id: "todo",
+        name: "Todo",
+        directory: base.appendingPathComponent("todo"),
+        uiURL: base.appendingPathComponent("todo/index.html")
+      )
+      let paint = TerraneApp(
+        id: "pixel-paint",
+        name: "Pixel Paint",
+        directory: base.appendingPathComponent("pixel-paint"),
+        uiURL: base.appendingPathComponent("pixel-paint/index.html")
+      )
+
+      let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 224, height: 640))
+      var selected: TerraneApp?
+      sidebar.onSelect = { selected = $0 }
+      sidebar.render(apps: [paint, todo], selectedAppId: "todo")
+      sidebar.layoutSubtreeIfNeeded()
+
+      let buttons = subviews(ofType: AppSidebarButton.self, in: sidebar)
+      XCTAssertEqual(buttons.map(\.title), ["Pixel Paint", "Todo"])
+      XCTAssertEqual(buttons.map(\.toolTip), ["pixel-paint", "todo"])
+      XCTAssertEqual(buttons.map(\.isSelected), [false, true])
+      XCTAssertTrue(buttons.allSatisfy { $0.image != nil })
+
+      sidebar.selectApp(at: 0)
+      XCTAssertEqual(selected?.id, "pixel-paint")
+
+      sidebar.select(appId: "pixel-paint")
+      XCTAssertEqual(buttons.map(\.isSelected), [true, false])
+
+      sidebar.setCollapsed(true)
+      XCTAssertEqual(buttons.map(\.title), ["", ""])
+      XCTAssertEqual(buttons.map(\.toolTip), ["Pixel Paint", "Todo"])
+
+      sidebar.setCollapsed(false)
+      XCTAssertEqual(buttons.map(\.title), ["Pixel Paint", "Todo"])
+    }
+  }
+
   func testSourceSyntaxHighlighterColorsCodeTokens() throws {
     try runOnMainThread {
       let textView = NSTextView()

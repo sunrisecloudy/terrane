@@ -63,6 +63,7 @@ targets:
       - path: Sources/AppSchemeHandler.swift
       - path: Sources/TerraneBridge.swift
       - path: Sources/PreviewSchemeHandler.swift
+      - path: Sources/AppSidebarView.swift
       - path: Sources/SourceEditor.swift
     settings:
       base:
