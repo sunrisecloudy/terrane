@@ -16,3 +16,4 @@ artifacts/
 *.token
 *.tmp
 .forge-wf/
+.terrane/
