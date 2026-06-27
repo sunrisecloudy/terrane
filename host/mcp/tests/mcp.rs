@@ -73,10 +73,16 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     assert!(init.contains("\"id\":1"), "init id echo: {init}");
 
     // initialized notification — no response expected.
-    send(&mut stdin, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    );
 
     // tools/list advertises the three tools (list → discover → act).
-    send(&mut stdin, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+    );
     let tools = read_line(&mut out);
     assert!(
         tools.contains("list_apps") && tools.contains("app_actions") && tools.contains("invoke"),
@@ -114,7 +120,10 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let added = read_line(&mut out);
     assert!(added.contains("added: buy milk"), "invoke add: {added}");
-    assert!(added.contains("\"isError\":false"), "invoke add not error: {added}");
+    assert!(
+        added.contains("\"isError\":false"),
+        "invoke add not error: {added}"
+    );
 
     // invoke list — READ IT BACK.
     send(
@@ -122,7 +131,10 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"list","args":[]}}}"#,
     );
     let listed = read_line(&mut out);
-    assert!(listed.contains("buy milk"), "invoke list (read back): {listed}");
+    assert!(
+        listed.contains("buy milk"),
+        "invoke list (read back): {listed}"
+    );
 
     // Unknown tool is a tool error, not a crash.
     send(
@@ -141,8 +153,14 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["id"]}}}"#,
     );
     let with_id_arg = read_line(&mut out);
-    assert!(with_id_arg.contains("\"id\":7"), "top-level id echoed, not the arg: {with_id_arg}");
-    assert!(with_id_arg.contains("added: id"), "added the literal 'id': {with_id_arg}");
+    assert!(
+        with_id_arg.contains("\"id\":7"),
+        "top-level id echoed, not the arg: {with_id_arg}"
+    );
+    assert!(
+        with_id_arg.contains("added: id"),
+        "added the literal 'id': {with_id_arg}"
+    );
 
     // A nested "id" before the top-level id must not be echoed in its place.
     send(
@@ -150,13 +168,22 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         r#"{"jsonrpc":"2.0","method":"ping","params":{"item":{"id":555}},"id":8}"#,
     );
     let nested = read_line(&mut out);
-    assert!(nested.contains("\"id\":8"), "echoed top-level id 8, not nested 555: {nested}");
+    assert!(
+        nested.contains("\"id\":8"),
+        "echoed top-level id 8, not nested 555: {nested}"
+    );
     assert!(!nested.contains("555"), "nested id leaked: {nested}");
 
     // A string id round-trips verbatim.
-    send(&mut stdin, r#"{"jsonrpc":"2.0","id":"abc-9","method":"tools/list"}"#);
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"abc-9","method":"tools/list"}"#,
+    );
     let strid = read_line(&mut out);
-    assert!(strid.contains("\"id\":\"abc-9\""), "string id echoed: {strid}");
+    assert!(
+        strid.contains("\"id\":\"abc-9\""),
+        "string id echoed: {strid}"
+    );
 
     // EOF → the server exits cleanly.
     drop(stdin);

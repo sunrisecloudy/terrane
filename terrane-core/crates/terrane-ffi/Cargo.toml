@@ -13,7 +13,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [dependencies]
 terrane-core.workspace = true
 terrane-domain.workspace = true
-terrane-cli = { path = "../terrane-cli" }
+terrane-host.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

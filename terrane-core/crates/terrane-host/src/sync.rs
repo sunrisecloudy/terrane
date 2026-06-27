@@ -34,7 +34,8 @@ const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// merge the ops it sends back. Sequential — one connection mutates `core` at a
 /// time. Exposed for in-process tests over a real socket.
 pub fn serve_conn(core: &mut Core<EdgeRunner>, stream: &mut TcpStream) -> Result<(), String> {
-    let app = String::from_utf8(read_frame(stream)?).map_err(|_| "sync: bad app name".to_string())?;
+    let app =
+        String::from_utf8(read_frame(stream)?).map_err(|_| "sync: bad app name".to_string())?;
     let client_vv = read_frame(stream)?;
 
     let delta = crdt_export_from_vv(core.state(), &app, &client_vv).map_err(|e| e.to_string())?;
@@ -50,7 +51,11 @@ pub fn serve_conn(core: &mut Core<EdgeRunner>, stream: &mut TcpStream) -> Result
 
 /// Drive the client side of one sync against `core` over `stream`. Returns
 /// whether we merged anything new. Exposed for in-process tests.
-pub fn sync_conn(core: &mut Core<EdgeRunner>, app: &str, stream: &mut TcpStream) -> Result<bool, String> {
+pub fn sync_conn(
+    core: &mut Core<EdgeRunner>,
+    app: &str,
+    stream: &mut TcpStream,
+) -> Result<bool, String> {
     write_frame(stream, app.as_bytes())?;
     write_frame(stream, &crdt_vv(core.state(), app))?;
 
@@ -62,7 +67,8 @@ pub fn sync_conn(core: &mut Core<EdgeRunner>, app: &str, stream: &mut TcpStream)
         changed = merge(core, app, &server_delta)?;
     }
     // Send the server exactly what it's missing.
-    let our_delta = crdt_export_from_vv(core.state(), app, &server_vv).map_err(|e| e.to_string())?;
+    let our_delta =
+        crdt_export_from_vv(core.state(), app, &server_vv).map_err(|e| e.to_string())?;
     write_frame(stream, &our_delta)?;
     Ok(changed)
 }
@@ -101,7 +107,10 @@ pub fn run_sync_peer(app: &str, addr: &str) -> Result<(), String> {
 /// recorded + replayable). Returns whether it added anything new.
 fn merge(core: &mut Core<EdgeRunner>, app: &str, bytes: &[u8]) -> Result<bool, String> {
     let records = core
-        .dispatch(Request::new("crdt.merge", vec![app.to_string(), to_hex(bytes)]))
+        .dispatch(Request::new(
+            "crdt.merge",
+            vec![app.to_string(), to_hex(bytes)],
+        ))
         .map_err(|e| e.to_string())?;
     Ok(!records.is_empty())
 }

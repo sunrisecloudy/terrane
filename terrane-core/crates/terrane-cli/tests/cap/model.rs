@@ -17,7 +17,13 @@ fn model_e2e_smoke_real() {
 
     let (ok, out, err) = terrane(
         home,
-        &["model", "ask", "asst", "claude", "Reply with exactly the two characters: OK"],
+        &[
+            "model",
+            "ask",
+            "asst",
+            "claude",
+            "Reply with exactly the two characters: OK",
+        ],
     );
     assert!(ok, "agent call failed; stderr: {err}");
     assert!(out.contains("model.responded"), "out: {out}");

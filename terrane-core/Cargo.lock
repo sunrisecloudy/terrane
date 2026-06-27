@@ -1456,12 +1456,12 @@ dependencies = [
 name = "terrane-cli"
 version = "0.1.0"
 dependencies = [
- "getrandom 0.4.3",
  "nanoserde",
  "tempfile",
  "terrane-api",
  "terrane-core",
  "terrane-domain",
+ "terrane-host",
 ]
 
 [[package]]
@@ -1488,7 +1488,18 @@ name = "terrane-ffi"
 version = "0.1.0"
 dependencies = [
  "tempfile",
- "terrane-cli",
+ "terrane-core",
+ "terrane-domain",
+ "terrane-host",
+]
+
+[[package]]
+name = "terrane-host"
+version = "0.1.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "nanoserde",
+ "terrane-api",
  "terrane-core",
  "terrane-domain",
 ]

@@ -40,10 +40,12 @@ int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,
 int terrane_dispatch(TerraneHandle *h, const char *name, size_t argc,
                      const char *const *argv, char **out_output, char **out_error);
 
-/* Free a string returned by this library. Null-safe. */
+/* Free a string returned by this library. Null-safe; non-null pointers are
+ * single-use and must be freed exactly once. */
 void terrane_string_free(char *s);
 
-/* Close a handle from terrane_open. Null-safe. */
+/* Close a handle from terrane_open. Null-safe; non-null handles are single-use
+ * and must be closed exactly once. */
 void terrane_close(TerraneHandle *h);
 
 #ifdef __cplusplus

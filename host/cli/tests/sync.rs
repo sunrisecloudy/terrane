@@ -49,8 +49,14 @@ fn two_homes_converge_after_sync() {
     install(bob, &src);
 
     // Concurrent, offline edits in two separate homes.
-    assert_eq!(host(alice, &["run", APP, "add", "buy milk"]).1.trim(), "added: buy milk");
-    assert_eq!(host(bob, &["run", APP, "add", "walk dog"]).1.trim(), "added: walk dog");
+    assert_eq!(
+        host(alice, &["run", APP, "add", "buy milk"]).1.trim(),
+        "added: buy milk"
+    );
+    assert_eq!(
+        host(bob, &["run", APP, "add", "walk dog"]).1.trim(),
+        "added: walk dog"
+    );
 
     // Before sync each home only sees its own todo.
     assert_eq!(host(alice, &["run", APP, "list"]).1.trim(), "#1 buy milk");

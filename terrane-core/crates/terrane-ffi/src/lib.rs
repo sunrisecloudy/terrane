@@ -9,18 +9,16 @@
 //! - Every returned `char*` (in `out_output` / `out_error`) is Rust-allocated and
 //!   must be freed exactly once with [`terrane_string_free`]; never `free(3)`.
 //! - The [`TerraneHandle`] from [`terrane_open`] must be closed with
-//!   [`terrane_close`]; both `*_free` and `_close` are null-safe and idempotent.
+//!   [`terrane_close`] exactly once. Free/close calls with null pointers are safe
+//!   no-ops.
 //! - No Rust panic ever crosses the boundary: every entry point is wrapped in
 //!   `catch_unwind` and reports [`TERRANE_ERR_PANIC`] instead.
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::PathBuf;
 use std::ptr;
 use std::sync::Mutex;
 
-use terrane_cli::EdgeRunner;
-use terrane_core::Core;
 use terrane_domain::Request;
 
 pub const TERRANE_OK: c_int = 0;
@@ -32,7 +30,7 @@ pub const TERRANE_ERR_INTERNAL: c_int = 5;
 
 /// Opaque handle to an open workspace. Only ever crossed as a pointer.
 pub struct TerraneHandle {
-    inner: Mutex<Core<EdgeRunner>>,
+    inner: Mutex<terrane_host::HostCore>,
 }
 
 /// Open (or create) a workspace at `home` (the dir holding `log.bin`); an empty
@@ -45,16 +43,24 @@ pub struct TerraneHandle {
 pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle {
     let result = catch_unwind(AssertUnwindSafe(|| -> Option<*mut TerraneHandle> {
         let log_path = if home.is_null() {
-            terrane_cli::log_path()
+            return terrane_host::open().ok().map(|core| {
+                Box::into_raw(Box::new(TerraneHandle {
+                    inner: Mutex::new(core),
+                }))
+            });
         } else {
             let s = CStr::from_ptr(home).to_str().ok()?; // bad UTF-8 → fail
             if s.is_empty() {
-                terrane_cli::log_path()
+                return terrane_host::open().ok().map(|core| {
+                    Box::into_raw(Box::new(TerraneHandle {
+                        inner: Mutex::new(core),
+                    }))
+                });
             } else {
-                PathBuf::from(s).join("log.bin")
+                s
             }
         };
-        let core = Core::open_with(log_path, EdgeRunner).ok()?;
+        let core = terrane_host::open_at_home(log_path).ok()?;
         Some(Box::into_raw(Box::new(TerraneHandle {
             inner: Mutex::new(core),
         })))
@@ -93,7 +99,13 @@ pub unsafe extern "C" fn terrane_host_run(
         let mut full = Vec::with_capacity(1 + args.len());
         full.push(app);
         full.append(&mut args);
-        dispatch_request(h, Request::new("host.run", full), true, out_output, out_error)
+        dispatch_request(
+            h,
+            Request::new("host.run", full),
+            true,
+            out_output,
+            out_error,
+        )
     }));
     finish(code, out_error)
 }
@@ -129,10 +141,12 @@ pub unsafe extern "C" fn terrane_dispatch(
     finish(code, out_error)
 }
 
-/// Free a string returned by terrane-ffi. Null-safe.
+/// Free a string returned by terrane-ffi. Null-safe; non-null pointers are
+/// single-use.
 ///
 /// # Safety
-/// `s` must be null or a pointer previously returned by this library.
+/// `s` must be null or a pointer previously returned by this library that has
+/// not already been freed.
 #[no_mangle]
 pub unsafe extern "C" fn terrane_string_free(s: *mut c_char) {
     if s.is_null() {
@@ -141,7 +155,8 @@ pub unsafe extern "C" fn terrane_string_free(s: *mut c_char) {
     let _ = catch_unwind(AssertUnwindSafe(|| drop(CString::from_raw(s))));
 }
 
-/// Close a handle from [`terrane_open`]. Null-safe.
+/// Close a handle from [`terrane_open`]. Null-safe; non-null handles are
+/// single-use.
 ///
 /// # Safety
 /// `h` must be null or a pointer previously returned by [`terrane_open`], not
@@ -171,12 +186,15 @@ unsafe fn dispatch_request(
     };
     // Recover from a poisoned lock (a prior panic) rather than wedging the handle.
     let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
-    match core.dispatch(request) {
-        Ok(records) => {
+    let name = request.name.clone();
+    let args = request.args.clone();
+    match terrane_host::dispatch_on_core(&mut core, &name, &args) {
+        Ok(outcome) => {
             let output = if use_last_output {
-                core.take_last_output().unwrap_or_default()
+                outcome.output.unwrap_or_default()
             } else {
-                records
+                outcome
+                    .records
                     .iter()
                     .map(|r| r.kind.as_str())
                     .collect::<Vec<_>>()

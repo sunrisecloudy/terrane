@@ -127,9 +127,9 @@ pub fn decode_event<E: BorshDeserialize>(record: &EventRecord) -> Result<E> {
 
 /// The namespace of a dotted name (`"app.add"` → `"app"`).
 pub(crate) fn namespace_of(name: &str) -> Result<&str> {
-    name.split_once('.')
-        .map(|(ns, _)| ns)
-        .ok_or_else(|| Error::InvalidInput(format!("command name must be 'namespace.verb': {name}")))
+    name.split_once('.').map(|(ns, _)| ns).ok_or_else(|| {
+        Error::InvalidInput(format!("command name must be 'namespace.verb': {name}"))
+    })
 }
 
 /// A table of capabilities keyed by namespace. Register one to plug in a whole
@@ -258,7 +258,11 @@ pub fn resource_surface() -> Vec<ResourceNamespaceSurface> {
 
 /// Every registered capability namespace (`app`, `kv`, `crdt`, …), sorted.
 pub fn capability_namespaces() -> Vec<&'static str> {
-    default_registry().caps.values().map(|c| c.namespace()).collect()
+    default_registry()
+        .caps
+        .values()
+        .map(|c| c.namespace())
+        .collect()
 }
 
 /// Offer one recorded event to every capability (broadcast fold).
@@ -281,12 +285,20 @@ pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
         Err(e) => return Err(Error::Storage(e.to_string())),
     };
     let mut reader = BufReader::new(file);
-    loop {
+    'records: loop {
         let mut len_buf = [0u8; 4];
-        match reader.read_exact(&mut len_buf) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => return Err(Error::Storage(e.to_string())),
+        let mut got = 0usize;
+        while got < len_buf.len() {
+            match reader.read(&mut len_buf[got..]) {
+                Ok(0) if got == 0 => break 'records,
+                Ok(0) => {
+                    return Err(Error::Storage(format!(
+                        "truncated log record length: got {got} of 4 bytes"
+                    )));
+                }
+                Ok(n) => got += n,
+                Err(e) => return Err(Error::Storage(e.to_string())),
+            }
         }
         let len = u32::from_le_bytes(len_buf) as usize;
         let mut buf = vec![0u8; len];
@@ -413,9 +425,10 @@ impl<R: EffectRunner> Core<R> {
                 .ok()
                 .and_then(|ns| self.registry.get(ns).ok())
                 .and_then(|cap| cap.describe(&record));
-            lines.push(described.unwrap_or_else(|| {
-                format!("{} ({} bytes)", record.kind, record.payload.len())
-            }));
+            lines
+                .push(described.unwrap_or_else(|| {
+                    format!("{} ({} bytes)", record.kind, record.payload.len())
+                }));
         }
         Ok(lines)
     }

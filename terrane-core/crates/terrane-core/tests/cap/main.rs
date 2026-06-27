@@ -8,6 +8,7 @@ mod app;
 mod crdt;
 mod host;
 mod kv;
+mod log;
 mod model;
 mod net;
 mod replica;

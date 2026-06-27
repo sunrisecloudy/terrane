@@ -38,10 +38,24 @@ impl Capability for KvCapability {
     /// The app-scoped key/value surface backends get on `ctx.resource.kv`.
     fn resource_api(&self) -> Vec<ResourceMethod> {
         vec![
-            ResourceMethod::Write { name: "set", params: &["key", "value"] },
-            ResourceMethod::Read { name: "get", params: &["key"], read: read_get },
-            ResourceMethod::Read { name: "all", params: &[], read: read_all },
-            ResourceMethod::Write { name: "rm", params: &["key"] },
+            ResourceMethod::Write {
+                name: "set",
+                params: &["key", "value"],
+            },
+            ResourceMethod::Read {
+                name: "get",
+                params: &["key"],
+                read: read_get,
+            },
+            ResourceMethod::Read {
+                name: "all",
+                params: &[],
+                read: read_all,
+            },
+            ResourceMethod::Write {
+                name: "rm",
+                params: &["key"],
+            },
         ]
     }
 

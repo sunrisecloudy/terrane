@@ -264,7 +264,10 @@ pub struct PublicSurface {
 /// Assemble the public surface from the host contract plus the capability and
 /// resource surfaces (which the caller reads from `terrane-core`, since this
 /// crate stays free of that dependency).
-pub fn public_surface(capabilities: Vec<String>, resources: Vec<ResourceNamespace>) -> PublicSurface {
+pub fn public_surface(
+    capabilities: Vec<String>,
+    resources: Vec<ResourceNamespace>,
+) -> PublicSurface {
     PublicSurface {
         contract_version: CONTRACT_VERSION.to_string(),
         host: host_contract(),
@@ -302,7 +305,11 @@ pub fn host_contract() -> HostContract {
             route("GET", ROUTE_HEALTHZ, "Liveness check."),
             route("GET", ROUTE_APPS, "List installed apps."),
             route("GET", "/apps/{id}/", "Serve an app's UI and assets."),
-            route("POST", "/apps/{id}/invoke", "Run a verb on an app's backend."),
+            route(
+                "POST",
+                "/apps/{id}/invoke",
+                "Run a verb on an app's backend.",
+            ),
         ],
         mcp_tools: mcp_tools()
             .into_iter()

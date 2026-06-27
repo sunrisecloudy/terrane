@@ -31,8 +31,11 @@ fn source_round_trips_through_the_log() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
-    core.dispatch(req("app.add", &["notes", "Notes", "--source", "apps/notes"]))
-        .unwrap();
+    core.dispatch(req(
+        "app.add",
+        &["notes", "Notes", "--source", "apps/notes"],
+    ))
+    .unwrap();
     let reopened = Core::open(&log).unwrap();
     assert_eq!(
         reopened.state().app.apps["notes"].source.as_deref(),

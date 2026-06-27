@@ -3,7 +3,7 @@
 
 use nanoserde::{DeJson, SerJson};
 use terrane_api::{
-    host_contract, mcp_tools, Action, AppActions, AppSummary, AppsResponse, ApiError,
+    host_contract, mcp_tools, Action, ApiError, AppActions, AppSummary, AppsResponse,
     HealthResponse, InvokeRequest, InvokeResponse, TOOL_APP_ACTIONS, TOOL_INVOKE, TOOL_LIST_APPS,
 };
 
@@ -33,22 +33,42 @@ fn invoke_request_parses_real_client_json() {
 
 #[test]
 fn responses_round_trip() {
-    let health = HealthResponse { status: "ok".into(), version: "0.1.0".into() };
+    let health = HealthResponse {
+        status: "ok".into(),
+        version: "0.1.0".into(),
+    };
     assert_eq!(
         HealthResponse::deserialize_json(&health.serialize_json()).unwrap(),
         health
     );
 
     let apps = AppsResponse {
-        apps: vec![AppSummary { id: "todo".into(), name: "Todo".into(), has_ui: true }],
+        apps: vec![AppSummary {
+            id: "todo".into(),
+            name: "Todo".into(),
+            has_ui: true,
+        }],
     };
-    assert_eq!(AppsResponse::deserialize_json(&apps.serialize_json()).unwrap(), apps);
+    assert_eq!(
+        AppsResponse::deserialize_json(&apps.serialize_json()).unwrap(),
+        apps
+    );
 
-    let out = InvokeResponse { output: "added: buy milk".into() };
-    assert_eq!(InvokeResponse::deserialize_json(&out.serialize_json()).unwrap(), out);
+    let out = InvokeResponse {
+        output: "added: buy milk".into(),
+    };
+    assert_eq!(
+        InvokeResponse::deserialize_json(&out.serialize_json()).unwrap(),
+        out
+    );
 
-    let err = ApiError { error: "no such app".into() };
-    assert_eq!(ApiError::deserialize_json(&err.serialize_json()).unwrap(), err);
+    let err = ApiError {
+        error: "no such app".into(),
+    };
+    assert_eq!(
+        ApiError::deserialize_json(&err.serialize_json()).unwrap(),
+        err
+    );
 }
 
 #[test]
@@ -79,8 +99,11 @@ fn host_contract_lists_the_v1_subset() {
     let c = host_contract();
     assert_eq!(c.contract_version, terrane_api::CONTRACT_VERSION);
 
-    let routes: Vec<(&str, &str)> =
-        c.http_routes.iter().map(|r| (r.method.as_str(), r.path.as_str())).collect();
+    let routes: Vec<(&str, &str)> = c
+        .http_routes
+        .iter()
+        .map(|r| (r.method.as_str(), r.path.as_str()))
+        .collect();
     assert_eq!(
         routes,
         vec![
@@ -92,7 +115,10 @@ fn host_contract_lists_the_v1_subset() {
     );
 
     let tool_names: Vec<&str> = c.mcp_tools.iter().map(|t| t.name.as_str()).collect();
-    assert_eq!(tool_names, vec![TOOL_LIST_APPS, TOOL_APP_ACTIONS, TOOL_INVOKE]);
+    assert_eq!(
+        tool_names,
+        vec![TOOL_LIST_APPS, TOOL_APP_ACTIONS, TOOL_INVOKE]
+    );
 
     // The whole contract serializes (this is what the export folds in).
     assert!(c.serialize_json().contains("\"contract_version\""));
@@ -108,6 +134,17 @@ fn app_actions_document_round_trips() {
     assert_eq!(parsed.actions[0].verb, "add");
     assert!(parsed.actions[0].args[0].required);
     // `list` omits the optional fields and still parses.
-    assert_eq!(parsed.actions[1], Action { verb: "list".into(), summary: String::new(), args: vec![], returns: String::new() });
-    assert_eq!(AppActions::deserialize_json(&parsed.serialize_json()).unwrap(), parsed);
+    assert_eq!(
+        parsed.actions[1],
+        Action {
+            verb: "list".into(),
+            summary: String::new(),
+            args: vec![],
+            returns: String::new()
+        }
+    );
+    assert_eq!(
+        AppActions::deserialize_json(&parsed.serialize_json()).unwrap(),
+        parsed
+    );
 }

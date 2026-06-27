@@ -97,7 +97,10 @@ fn serves_catalog_ui_and_invoke_over_http() {
     // catalog
     let (status, body) = http(&addr, "GET", "/apps", None);
     assert_eq!(status, 200);
-    assert!(body.contains("todo-cli-collaborate") && body.contains("\"todo\""), "apps: {body}");
+    assert!(
+        body.contains("todo-cli-collaborate") && body.contains("\"todo\""),
+        "apps: {body}"
+    );
 
     // UI: serves the app's index.html with the invoke shim injected.
     let (status, body) = http(&addr, "GET", "/apps/todo/", None);
@@ -124,7 +127,12 @@ fn serves_catalog_ui_and_invoke_over_http() {
     assert!(body.contains("buy milk"), "invoke list (read back): {body}");
 
     // invoke on a missing app → 404.
-    let (status, _) = http(&addr, "POST", "/apps/ghost/invoke", Some(r#"{"verb":"x","args":[]}"#));
+    let (status, _) = http(
+        &addr,
+        "POST",
+        "/apps/ghost/invoke",
+        Some(r#"{"verb":"x","args":[]}"#),
+    );
     assert_eq!(status, 404);
 
     // path traversal is refused.

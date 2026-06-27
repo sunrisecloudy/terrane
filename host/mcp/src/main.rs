@@ -1,6 +1,6 @@
 //! terrane-mcp — a stdio MCP server exposing this terrane home's apps as tools.
 //!
-//! A thin host over the `terrane_cli`/`terrane-core` spine, like the CLI and web
+//! A thin host over the `terrane-host` spine, like the CLI and web
 //! hosts. It speaks the Model Context Protocol over newline-delimited JSON-RPC on
 //! stdin/stdout so an MCP client (e.g. Claude Code) can **select an app**
 //! (`list_apps`) and **act on it** (`invoke`). Both tools and their shapes are
@@ -14,22 +14,21 @@ use std::io::{BufRead, Write};
 
 use nanoserde::{DeJson, SerJson};
 use terrane_api::{
-    mcp_tools, AppSummary, AppsResponse, ACTIONS_VERB, MCP_PROTOCOL_VERSION, TOOL_APP_ACTIONS,
-    TOOL_INVOKE, TOOL_LIST_APPS,
+    mcp_tools, ACTIONS_VERB, MCP_PROTOCOL_VERSION, TOOL_APP_ACTIONS, TOOL_INVOKE, TOOL_LIST_APPS,
 };
-use terrane_cli::EdgeRunner;
-use terrane_core::Core;
-use terrane_domain::Request;
 
 fn main() {
-    let mut core = match open_core() {
+    let mut core = match terrane_host::open() {
         Ok(core) => core,
         Err(e) => {
             eprintln!("terrane-mcp: {e}");
             std::process::exit(1);
         }
     };
-    eprintln!("terrane-mcp: ready (home {})", terrane_cli::log_path().display());
+    eprintln!(
+        "terrane-mcp: ready (home {})",
+        terrane_host::log_path().display()
+    );
 
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -56,17 +55,6 @@ fn main() {
     }
 }
 
-/// Open the home's core and ensure it has minted its replica identity (so CRDT
-/// apps author under a stable peer).
-fn open_core() -> Result<Core<EdgeRunner>, String> {
-    let mut core = Core::open_with(terrane_cli::log_path(), EdgeRunner).map_err(|e| e.to_string())?;
-    if core.state().replica.peer.is_none() {
-        core.dispatch(Request::new("replica.init", Vec::new()))
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(core)
-}
-
 /// Route one message. Returns the response line, or `None` for notifications
 /// (no `id`) and messages we don't answer.
 ///
@@ -74,7 +62,7 @@ fn open_core() -> Result<Core<EdgeRunner>, String> {
 /// substring scan or whole-message nanoserde: `id` is captured as its exact
 /// source token so it echoes back verbatim whatever its type, and a value we
 /// don't read (a giant `id`, an unusual `params`) can never drop the message.
-fn handle(core: &mut Core<EdgeRunner>, raw: &str) -> Option<String> {
+fn handle(core: &mut terrane_host::HostCore, raw: &str) -> Option<String> {
     let fields = top_level_fields(raw);
     let field = |name: &str| fields.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
 
@@ -137,20 +125,20 @@ struct CallArgs {
 
 /// Handle `tools/call`. `params_raw` is the isolated top-level `params` object,
 /// so nanoserde only ever parses that sub-object (never the whole envelope).
-fn tool_call(core: &mut Core<EdgeRunner>, id: &str, params_raw: &str) -> String {
+fn tool_call(core: &mut terrane_host::HostCore, id: &str, params_raw: &str) -> String {
     let params: CallParams = match DeJson::deserialize_json(params_raw) {
         Ok(params) => params,
         Err(e) => return error(id, -32602, &format!("invalid params: {e}")),
     };
     let args = params.arguments;
     match params.name.as_str() {
-        TOOL_LIST_APPS => tool_text(id, &list_apps(core), false),
+        TOOL_LIST_APPS => tool_text(id, &terrane_host::list_apps(core).serialize_json(), false),
         TOOL_APP_ACTIONS => {
             if args.app.is_empty() {
                 return tool_text(id, "app_actions requires non-empty 'app'", true);
             }
             // The app describes itself via the reserved verb; pass its JSON through.
-            match invoke(core, &args.app, ACTIONS_VERB, &[]) {
+            match terrane_host::invoke_app(core, &args.app, ACTIONS_VERB, &[]) {
                 Ok(output) => tool_text(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }
@@ -159,49 +147,13 @@ fn tool_call(core: &mut Core<EdgeRunner>, id: &str, params_raw: &str) -> String 
             if args.app.is_empty() || args.verb.is_empty() {
                 return tool_text(id, "invoke requires non-empty 'app' and 'verb'", true);
             }
-            match invoke(core, &args.app, &args.verb, &args.args) {
+            match terrane_host::invoke_app(core, &args.app, &args.verb, &args.args) {
                 Ok(output) => tool_text(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }
         }
         other => error(id, -32602, &format!("unknown tool: {other}")),
     }
-}
-
-/// `list_apps` → the catalog as JSON text (so the agent can parse it).
-fn list_apps(core: &mut Core<EdgeRunner>) -> String {
-    let apps: Vec<AppSummary> = core
-        .state()
-        .app
-        .apps
-        .values()
-        .map(|app| AppSummary {
-            id: app.id.clone(),
-            name: app.name.clone(),
-            has_ui: app_has_ui(app.source.as_deref()),
-        })
-        .collect();
-    AppsResponse { apps }.serialize_json()
-}
-
-/// Whether the app's bundle declares a UI (`manifest.ui`).
-fn app_has_ui(source: Option<&str>) -> bool {
-    source
-        .map(std::path::Path::new)
-        .and_then(|dir| terrane_core::cap::host::read_manifest(dir).ok())
-        .map(|m| !m.ui.is_empty())
-        .unwrap_or(false)
-}
-
-/// `invoke` → run `host.run app verb [args…]` and return the backend's string.
-fn invoke(core: &mut Core<EdgeRunner>, app: &str, verb: &str, args: &[String]) -> Result<String, String> {
-    let mut argv = Vec::with_capacity(args.len() + 2);
-    argv.push(app.to_string());
-    argv.push(verb.to_string());
-    argv.extend(args.iter().cloned());
-    core.dispatch(Request::new("host.run", argv))
-        .map_err(|e| e.to_string())?;
-    Ok(core.take_last_output().unwrap_or_default())
 }
 
 // --- JSON-RPC framing helpers -------------------------------------------------
@@ -335,7 +287,9 @@ fn scan_value(bytes: &[u8], start: usize) -> Option<usize> {
         }
         _ => {
             let mut i = start;
-            while i < bytes.len() && !matches!(bytes[i], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r') {
+            while i < bytes.len()
+                && !matches!(bytes[i], b',' | b'}' | b']' | b' ' | b'\t' | b'\n' | b'\r')
+            {
                 i += 1;
             }
             (i > start).then_some(i)

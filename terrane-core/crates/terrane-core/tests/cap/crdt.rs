@@ -54,15 +54,25 @@ fn crdt_list_and_text_replay() {
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
 
     // List: push, insert at a position, delete one.
-    core.dispatch(req("crdt.listPush", &["notes", "todo", "a"])).unwrap();
-    core.dispatch(req("crdt.listPush", &["notes", "todo", "c"])).unwrap();
-    core.dispatch(req("crdt.listInsert", &["notes", "todo", "1", "b"])).unwrap();
-    core.dispatch(req("crdt.listDel", &["notes", "todo", "0"])).unwrap();
+    core.dispatch(req("crdt.listPush", &["notes", "todo", "a"]))
+        .unwrap();
+    core.dispatch(req("crdt.listPush", &["notes", "todo", "c"]))
+        .unwrap();
+    core.dispatch(req("crdt.listInsert", &["notes", "todo", "1", "b"]))
+        .unwrap();
+    core.dispatch(req("crdt.listDel", &["notes", "todo", "0"]))
+        .unwrap();
 
     // Text: insert, then splice in the middle.
-    core.dispatch(req("crdt.textInsert", &["notes", "body", "0", "hello world"])).unwrap();
-    core.dispatch(req("crdt.textInsert", &["notes", "body", "5", " there"])).unwrap();
-    core.dispatch(req("crdt.textDel", &["notes", "body", "0", "5"])).unwrap();
+    core.dispatch(req(
+        "crdt.textInsert",
+        &["notes", "body", "0", "hello world"],
+    ))
+    .unwrap();
+    core.dispatch(req("crdt.textInsert", &["notes", "body", "5", " there"]))
+        .unwrap();
+    core.dispatch(req("crdt.textDel", &["notes", "body", "0", "5"]))
+        .unwrap();
 
     // A bad numeric arg is a clear typed error, not a panic.
     assert!(matches!(
@@ -114,8 +124,10 @@ fn two_app_replicas_merge_with_no_lost_writes() {
     let dir = tempdir().unwrap();
     let make_replica = |sub: &str, item: &str| {
         let mut core = Core::open(dir.path().join(sub).join("log.bin")).unwrap();
-        core.dispatch(req("app.add", &["collab", "Collab"])).unwrap();
-        core.dispatch(req("crdt.listPush", &["collab", "todos", item])).unwrap();
+        core.dispatch(req("app.add", &["collab", "Collab"]))
+            .unwrap();
+        core.dispatch(req("crdt.listPush", &["collab", "todos", item]))
+            .unwrap();
         core
     };
     let alice = make_replica("a", "buy milk");
@@ -140,7 +152,8 @@ fn removing_the_app_drops_its_document() {
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
-    core.dispatch(req("crdt.mapSet", &["notes", "prefs", "theme", "dark"])).unwrap();
+    core.dispatch(req("crdt.mapSet", &["notes", "prefs", "theme", "dark"]))
+        .unwrap();
     assert!(core.state().crdt.docs.contains_key("notes"));
 
     // crdt reacts to app.removed via broadcast fold — no app→crdt coupling.
@@ -181,17 +194,24 @@ fn host_run_drives_crdt_resource_and_replays() {
 
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
-    core.dispatch(req("app.add", &["notes", "Notes", "--source", path(&bundle)]))
-        .unwrap();
+    core.dispatch(req(
+        "app.add",
+        &["notes", "Notes", "--source", path(&bundle)],
+    ))
+    .unwrap();
 
-    core.dispatch(req("host.run", &["notes", "set", "theme", "dark"])).unwrap();
+    core.dispatch(req("host.run", &["notes", "set", "theme", "dark"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("ok"));
-    core.dispatch(req("host.run", &["notes", "get", "theme"])).unwrap();
+    core.dispatch(req("host.run", &["notes", "get", "theme"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("dark"));
 
     // A list grows across runs; reads come back as a real JS array.
-    core.dispatch(req("host.run", &["notes", "push", "a"])).unwrap();
-    core.dispatch(req("host.run", &["notes", "push", "b"])).unwrap();
+    core.dispatch(req("host.run", &["notes", "push", "a"]))
+        .unwrap();
+    core.dispatch(req("host.run", &["notes", "push", "b"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("2"));
     core.dispatch(req("host.run", &["notes", "list"])).unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("a,b"));

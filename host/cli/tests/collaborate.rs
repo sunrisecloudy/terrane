@@ -45,7 +45,14 @@ fn terrane_host_runs_collaborative_todo_backend() {
     assert!(
         host(
             home,
-            &["app", "add", "todo-cli-collaborate", "Todo", "--source", &src]
+            &[
+                "app",
+                "add",
+                "todo-cli-collaborate",
+                "Todo",
+                "--source",
+                &src
+            ]
         )
         .0
     );
@@ -56,7 +63,9 @@ fn terrane_host_runs_collaborative_todo_backend() {
     assert_eq!(out.trim(), "added: buy milk");
 
     assert_eq!(
-        host(home, &["run", "todo-cli-collaborate", "add", "walk dog"]).1.trim(),
+        host(home, &["run", "todo-cli-collaborate", "add", "walk dog"])
+            .1
+            .trim(),
         "added: walk dog"
     );
 

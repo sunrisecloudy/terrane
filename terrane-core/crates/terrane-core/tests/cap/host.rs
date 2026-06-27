@@ -61,16 +61,20 @@ fn host_run_executes_js_records_kv_and_prints_output() {
     let mut core = install_demo(dir.path());
 
     // A write produces exactly one kv.set record and the backend's printed string.
-    let records = core.dispatch(req("host.run", &["demo", "set", "a", "1"])).unwrap();
+    let records = core
+        .dispatch(req("host.run", &["demo", "set", "a", "1"]))
+        .unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, "kv.set");
     assert_eq!(core.take_last_output().as_deref(), Some("ok a"));
     assert_eq!(core.state().kv.data["demo"]["a"], "1");
 
     // Reads (no record).
-    core.dispatch(req("host.run", &["demo", "get", "a"])).unwrap();
+    core.dispatch(req("host.run", &["demo", "get", "a"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("1"));
-    core.dispatch(req("host.run", &["demo", "get", "missing"])).unwrap();
+    core.dispatch(req("host.run", &["demo", "get", "missing"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("(none)"));
 
     // In-run read-after-write: two sets then a get inside ONE run see the latest.
@@ -83,7 +87,8 @@ fn host_run_executes_js_records_kv_and_prints_output() {
     assert!(all.contains("a=1") && all.contains("k=v2"), "all: {all}");
 
     // Remove, then it's gone.
-    core.dispatch(req("host.run", &["demo", "rm", "a"])).unwrap();
+    core.dispatch(req("host.run", &["demo", "rm", "a"]))
+        .unwrap();
     assert!(!core.state().kv.data["demo"].contains_key("a"));
 
     // Option-A: replay rebuilds from kv.* alone; the log has no host.* record.
@@ -131,10 +136,15 @@ fn failed_run_clears_last_output() {
     let mut core = install_demo(dir.path());
 
     // A successful run sets the output; we deliberately do NOT consume it.
-    core.dispatch(req("host.run", &["demo", "set", "b", "2"])).unwrap();
+    core.dispatch(req("host.run", &["demo", "set", "b", "2"]))
+        .unwrap();
     // A subsequent failed run must not leave the stale string behind.
     let _ = core.dispatch(req("host.run", &["ghost", "x"]));
-    assert_eq!(core.take_last_output(), None, "stale output after a failed run");
+    assert_eq!(
+        core.take_last_output(),
+        None,
+        "stale output after a failed run"
+    );
 }
 
 #[test]
@@ -190,14 +200,18 @@ fn actions_table_backend_is_synthesized_and_self_describes() {
         .unwrap();
 
     // Dispatch works with no hand-written handle; reads see prior writes.
-    core.dispatch(req("host.run", &["acts", "set", "hi", "there"])).unwrap();
+    core.dispatch(req("host.run", &["acts", "set", "hi", "there"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("ok"));
     core.dispatch(req("host.run", &["acts", "get"])).unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("hi there"));
 
     // usage() is derived from the action's declared args.
     core.dispatch(req("host.run", &["acts", "set"])).unwrap();
-    assert_eq!(core.take_last_output().as_deref(), Some("usage: set <value>"));
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("usage: set <value>")
+    );
 
     // The unknown-verb help lists the table's keys.
     core.dispatch(req("host.run", &["acts", "frob"])).unwrap();
@@ -207,12 +221,19 @@ fn actions_table_backend_is_synthesized_and_self_describes() {
     );
 
     // __actions__ self-describes, with app id/name pulled from the manifest.
-    core.dispatch(req("host.run", &["acts", "__actions__"])).unwrap();
+    core.dispatch(req("host.run", &["acts", "__actions__"]))
+        .unwrap();
     let out = core.take_last_output().unwrap();
     assert!(out.contains("\"app\":\"acts\""), "id from manifest: {out}");
-    assert!(out.contains("\"title\":\"Acts Demo\""), "name from manifest: {out}");
+    assert!(
+        out.contains("\"title\":\"Acts Demo\""),
+        "name from manifest: {out}"
+    );
     assert!(out.contains("demo actions app"), "description: {out}");
-    assert!(out.contains("\"verb\":\"set\"") && out.contains("\"verb\":\"get\""), "verbs: {out}");
+    assert!(
+        out.contains("\"verb\":\"set\"") && out.contains("\"verb\":\"get\""),
+        "verbs: {out}"
+    );
 
     // Still Option-A: only the kv.* writes were recorded; replay rebuilds it.
     assert!(core.replay_matches().unwrap());
@@ -225,7 +246,11 @@ fn redundant_same_key_set_is_coalesced_within_a_run() {
 
     // `raw` sets "k" twice in one run → only the last set is committed.
     let records = core.dispatch(req("host.run", &["demo", "raw"])).unwrap();
-    assert_eq!(records.len(), 1, "two sets of one key coalesce to one record");
+    assert_eq!(
+        records.len(),
+        1,
+        "two sets of one key coalesce to one record"
+    );
     assert_eq!(records[0].kind, "kv.set");
     assert_eq!(core.state().kv.data["demo"]["k"], "v2");
 
@@ -241,7 +266,11 @@ fn set_then_rm_same_key_cancels_the_set() {
     // `setrm` sets "z" then removes it in one run → the set is superseded by the
     // later rm, so only the delete is committed.
     let records = core.dispatch(req("host.run", &["demo", "setrm"])).unwrap();
-    assert_eq!(records.len(), 1, "the rm cancels the preceding same-key set");
+    assert_eq!(
+        records.len(),
+        1,
+        "the rm cancels the preceding same-key set"
+    );
     assert_eq!(records[0].kind, "kv.deleted");
     assert!(!core
         .state()
@@ -269,7 +298,9 @@ fn kv_set_with_non_string_arg_gives_attributable_error() {
 
     // A non-string key aborts the run with a typed error naming the kv call —
     // not a generic rquickjs conversion message — and commits nothing.
-    let err = core.dispatch(req("host.run", &["typed", "go"])).unwrap_err();
+    let err = core
+        .dispatch(req("host.run", &["typed", "go"]))
+        .unwrap_err();
     match err {
         terrane_domain::Error::InvalidInput(msg) => {
             assert!(msg.contains("kv.set"), "error names the call: {msg}");
@@ -327,7 +358,10 @@ fn runtime_resource_surface_matches_declarations() {
     assert!(!declared.is_empty(), "kv should declare a resource surface");
 
     // Grant exactly the declared namespaces, then introspect the LIVE ctx.resource.
-    let namespaces: BTreeSet<&str> = declared.iter().filter_map(|m| m.split('.').nth(2)).collect();
+    let namespaces: BTreeSet<&str> = declared
+        .iter()
+        .filter_map(|m| m.split('.').nth(2))
+        .collect();
     let resources_json = namespaces
         .iter()
         .map(|n| format!("\"{n}\""))
@@ -357,9 +391,13 @@ fn runtime_resource_surface_matches_declarations() {
         introspect,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
-    core.dispatch(req("app.add", &["introspect", "Introspect", "--source", &src]))
+    core.dispatch(req(
+        "app.add",
+        &["introspect", "Introspect", "--source", &src],
+    ))
+    .unwrap();
+    core.dispatch(req("host.run", &["introspect", "list"]))
         .unwrap();
-    core.dispatch(req("host.run", &["introspect", "list"])).unwrap();
     let runtime: BTreeSet<String> = core
         .take_last_output()
         .unwrap_or_default()
@@ -369,7 +407,8 @@ fn runtime_resource_surface_matches_declarations() {
         .collect();
 
     assert_eq!(
-        declared, runtime,
+        declared,
+        runtime,
         "runtime ctx.resource differs from the declared surface.\n\
          declared-only: {:?}\n runtime-only: {:?}",
         declared.difference(&runtime).collect::<Vec<_>>(),

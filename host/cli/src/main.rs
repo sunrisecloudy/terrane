@@ -1,7 +1,7 @@
 //! terrane-host — the CLI host.
 //!
 //! A superset of the `terrane` binary: every standard command works (delegated
-//! to the `terrane_cli` spine), plus a top-level `run <app> [input…]` that
+//! to the `terrane-cli` adapter), plus a top-level `run <app> [input…]` that
 //! executes an app's JS backend via the core's `host.run`. It is the first
 //! concrete "host" — the same spine a native shell will wrap, minus the UI.
 

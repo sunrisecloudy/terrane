@@ -30,7 +30,10 @@ fn todo_cli_backend_runs_and_replays() {
     let home = dir.path();
     let src = app_source("todo-cli");
 
-    let (ok, out, err) = terrane(home, &["app", "add", "todo-cli", "Todo (CLI)", "--source", &src]);
+    let (ok, out, err) = terrane(
+        home,
+        &["app", "add", "todo-cli", "Todo (CLI)", "--source", &src],
+    );
     assert!(ok, "app add failed: {err}");
     assert!(out.contains("app.added"), "out: {out}");
 
@@ -58,7 +61,10 @@ fn todo_cli_backend_runs_and_replays() {
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
     assert!(log.contains("kv.set todo-cli/seq = 1"), "log: {log}");
-    assert!(log.contains("kv.set todo-cli/item:1 = buy milk"), "log: {log}");
+    assert!(
+        log.contains("kv.set todo-cli/item:1 = buy milk"),
+        "log: {log}"
+    );
     assert!(log.contains("kv.deleted todo-cli/item:1"), "log: {log}");
     assert!(!log.contains("host."), "no host.* in log: {log}");
 
@@ -81,7 +87,11 @@ fn todo_app_items_returns_json() {
 
     let (ok, out, err) = terrane(home, &["host", "run", "todo", "items"]);
     assert!(ok, "items failed: {err}");
-    assert_eq!(out.trim(), r#"[{"id":1,"text":"buy milk"}]"#, "items out: {out}");
+    assert_eq!(
+        out.trim(),
+        r#"[{"id":1,"text":"buy milk"}]"#,
+        "items out: {out}"
+    );
 
     let (ok, _, _) = terrane(home, &["replay"]);
     assert!(ok);
@@ -102,9 +112,23 @@ fn runaway_backend_is_interrupted() {
         r#"{ "id": "loop", "name": "Loop", "backend": "main.js", "resources": ["kv"] }"#,
     )
     .unwrap();
-    fs::write(bundle.join("main.js"), "function handle(input) { while (true) {} }").unwrap();
+    fs::write(
+        bundle.join("main.js"),
+        "function handle(input) { while (true) {} }",
+    )
+    .unwrap();
 
-    let (ok, _, err) = terrane(home, &["app", "add", "loop", "Loop", "--source", bundle.to_str().unwrap()]);
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "app",
+            "add",
+            "loop",
+            "Loop",
+            "--source",
+            bundle.to_str().unwrap(),
+        ],
+    );
     assert!(ok, "app add failed: {err}");
 
     // Short budget so the test is fast; the run must fail, not wedge.

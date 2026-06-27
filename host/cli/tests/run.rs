@@ -37,7 +37,13 @@ fn terrane_host_runs_todo_cli_backend() {
     let home = dir.path();
     let src = todo_cli_source();
 
-    assert!(host(home, &["app", "add", "todo-cli", "Todo (CLI)", "--source", &src]).0);
+    assert!(
+        host(
+            home,
+            &["app", "add", "todo-cli", "Todo (CLI)", "--source", &src]
+        )
+        .0
+    );
 
     let (ok, out, err) = host(home, &["run", "todo-cli", "add", "buy milk"]);
     assert!(ok, "stderr: {err}");

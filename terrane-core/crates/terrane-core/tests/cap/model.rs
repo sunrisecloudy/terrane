@@ -12,7 +12,8 @@ fn model_call_is_recorded_then_replays_without_the_agent() {
     let log = dir.path().join("log.bin");
 
     let mut core = Core::open_with(&log, FakeEdge).unwrap();
-    core.dispatch(req("app.add", &["asst", "Assistant"])).unwrap();
+    core.dispatch(req("app.add", &["asst", "Assistant"]))
+        .unwrap();
     core.dispatch(req("model.ask", &["asst", "claude", "say", "hi"]))
         .unwrap();
 

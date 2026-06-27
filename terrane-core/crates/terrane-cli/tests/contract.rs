@@ -15,18 +15,36 @@ fn surface_is_derived_from_the_live_declarations() {
 
     // Every registered capability is listed.
     for ns in ["app", "kv", "crdt", "net", "model", "host", "replica"] {
-        assert!(s.capabilities.iter().any(|c| c == ns), "missing capability {ns}");
+        assert!(
+            s.capabilities.iter().any(|c| c == ns),
+            "missing capability {ns}"
+        );
     }
 
     // The resource surface carries the declared backend methods.
-    let kv = s.resources.iter().find(|r| r.namespace == "kv").expect("kv resource");
-    assert!(kv.methods.iter().any(|m| m.name == "set" && m.kind == "write"));
-    let crdt = s.resources.iter().find(|r| r.namespace == "crdt").expect("crdt resource");
+    let kv = s
+        .resources
+        .iter()
+        .find(|r| r.namespace == "kv")
+        .expect("kv resource");
+    assert!(kv
+        .methods
+        .iter()
+        .any(|m| m.name == "set" && m.kind == "write"));
+    let crdt = s
+        .resources
+        .iter()
+        .find(|r| r.namespace == "crdt")
+        .expect("crdt resource");
     assert!(crdt.methods.iter().any(|m| m.name == "mapSet"));
 
     // The app + sync contracts.
     assert_eq!(s.app.actions_verb, terrane_api::ACTIONS_VERB);
-    assert!(s.sync.syncable_event_kinds.iter().any(|k| k == "crdt.update"));
+    assert!(s
+        .sync
+        .syncable_event_kinds
+        .iter()
+        .any(|k| k == "crdt.update"));
 
     // It round-trips through JSON (what the export emits and premium parses).
     let back = terrane_api::PublicSurface::deserialize_json(&s.serialize_json()).unwrap();

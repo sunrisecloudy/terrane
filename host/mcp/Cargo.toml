@@ -16,10 +16,10 @@ path = "src/main.rs"
 
 [dependencies]
 terrane-api = { path = "../../terrane-core/crates/terrane-api" }
-terrane-cli = { path = "../../terrane-core/crates/terrane-cli" }
-terrane-core = { path = "../../terrane-core/crates/terrane-core" }
-terrane-domain = { path = "../../terrane-core/crates/terrane-domain" }
+terrane-host = { path = "../../terrane-core/crates/terrane-host" }
 nanoserde = { version = "0.2", default-features = false, features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3"
+terrane-core = { path = "../../terrane-core/crates/terrane-core" }
+terrane-domain = { path = "../../terrane-core/crates/terrane-domain" }

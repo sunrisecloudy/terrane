@@ -99,19 +99,56 @@ impl Capability for CrdtCapability {
     fn resource_api(&self) -> Vec<ResourceMethod> {
         vec![
             // Map — a merging key/value document.
-            ResourceMethod::Write { name: "mapSet", params: &["doc", "key", "value"] },
-            ResourceMethod::Read { name: "mapGet", params: &["doc", "key"], read: read_map_get },
-            ResourceMethod::Read { name: "mapAll", params: &["doc"], read: read_map_all },
-            ResourceMethod::Write { name: "mapDel", params: &["doc", "key"] },
+            ResourceMethod::Write {
+                name: "mapSet",
+                params: &["doc", "key", "value"],
+            },
+            ResourceMethod::Read {
+                name: "mapGet",
+                params: &["doc", "key"],
+                read: read_map_get,
+            },
+            ResourceMethod::Read {
+                name: "mapAll",
+                params: &["doc"],
+                read: read_map_all,
+            },
+            ResourceMethod::Write {
+                name: "mapDel",
+                params: &["doc", "key"],
+            },
             // List — an ordered sequence.
-            ResourceMethod::Write { name: "listPush", params: &["doc", "value"] },
-            ResourceMethod::Write { name: "listInsert", params: &["doc", "index", "value"] },
-            ResourceMethod::Write { name: "listDel", params: &["doc", "index"] },
-            ResourceMethod::Read { name: "listAll", params: &["doc"], read: read_list_all },
+            ResourceMethod::Write {
+                name: "listPush",
+                params: &["doc", "value"],
+            },
+            ResourceMethod::Write {
+                name: "listInsert",
+                params: &["doc", "index", "value"],
+            },
+            ResourceMethod::Write {
+                name: "listDel",
+                params: &["doc", "index"],
+            },
+            ResourceMethod::Read {
+                name: "listAll",
+                params: &["doc"],
+                read: read_list_all,
+            },
             // Text — a collaborative string.
-            ResourceMethod::Write { name: "textInsert", params: &["doc", "index", "text"] },
-            ResourceMethod::Write { name: "textDel", params: &["doc", "index", "len"] },
-            ResourceMethod::Read { name: "textGet", params: &["doc"], read: read_text_get },
+            ResourceMethod::Write {
+                name: "textInsert",
+                params: &["doc", "index", "text"],
+            },
+            ResourceMethod::Write {
+                name: "textDel",
+                params: &["doc", "index", "len"],
+            },
+            ResourceMethod::Read {
+                name: "textGet",
+                params: &["doc"],
+                read: read_text_get,
+            },
         ]
     }
 
@@ -149,12 +186,16 @@ impl Capability for CrdtCapability {
                 let cname = arg(args, 1, "doc")?;
                 let key = arg(args, 2, "key")?;
                 let value = rest(args, 3);
-                doc.get_map(cname.as_str()).insert(key.as_str(), value).map_err(crdt_err)?;
+                doc.get_map(cname.as_str())
+                    .insert(key.as_str(), value)
+                    .map_err(crdt_err)?;
             }
             "crdt.mapDel" => {
                 let cname = arg(args, 1, "doc")?;
                 let key = arg(args, 2, "key")?;
-                doc.get_map(cname.as_str()).delete(key.as_str()).map_err(crdt_err)?;
+                doc.get_map(cname.as_str())
+                    .delete(key.as_str())
+                    .map_err(crdt_err)?;
             }
             "crdt.listPush" => {
                 let cname = arg(args, 1, "doc")?;
@@ -165,24 +206,32 @@ impl Capability for CrdtCapability {
                 let cname = arg(args, 1, "doc")?;
                 let index = index_arg(args, 2, "index")?;
                 let value = rest(args, 3);
-                doc.get_list(cname.as_str()).insert(index, value).map_err(crdt_err)?;
+                doc.get_list(cname.as_str())
+                    .insert(index, value)
+                    .map_err(crdt_err)?;
             }
             "crdt.listDel" => {
                 let cname = arg(args, 1, "doc")?;
                 let index = index_arg(args, 2, "index")?;
-                doc.get_list(cname.as_str()).delete(index, 1).map_err(crdt_err)?;
+                doc.get_list(cname.as_str())
+                    .delete(index, 1)
+                    .map_err(crdt_err)?;
             }
             "crdt.textInsert" => {
                 let cname = arg(args, 1, "doc")?;
                 let index = index_arg(args, 2, "index")?;
                 let text = rest(args, 3);
-                doc.get_text(cname.as_str()).insert(index, &text).map_err(crdt_err)?;
+                doc.get_text(cname.as_str())
+                    .insert(index, &text)
+                    .map_err(crdt_err)?;
             }
             "crdt.textDel" => {
                 let cname = arg(args, 1, "doc")?;
                 let index = index_arg(args, 2, "index")?;
                 let len = index_arg(args, 3, "len")?;
-                doc.get_text(cname.as_str()).delete(index, len).map_err(crdt_err)?;
+                doc.get_text(cname.as_str())
+                    .delete(index, len)
+                    .map_err(crdt_err)?;
             }
             other => return Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
@@ -249,7 +298,10 @@ fn decide_merge(state: &State, app: String, args: &[String]) -> Result<Decision>
         // We already have every op in this update — nothing to record.
         return Ok(Decision::Commit(vec![]));
     }
-    Ok(Decision::Commit(vec![encode_event("crdt.update", &Update { app, bytes })?]))
+    Ok(Decision::Commit(vec![encode_event(
+        "crdt.update",
+        &Update { app, bytes },
+    )?]))
 }
 
 /// Export `app`'s document from `source` as a hex update containing only the ops
@@ -322,7 +374,9 @@ pub fn to_hex(bytes: &[u8]) -> String {
 
 fn from_hex(s: &str) -> Result<Vec<u8>> {
     if !s.len().is_multiple_of(2) {
-        return Err(Error::InvalidInput("crdt.merge: odd-length update hex".into()));
+        return Err(Error::InvalidInput(
+            "crdt.merge: odd-length update hex".into(),
+        ));
     }
     (0..s.len())
         .step_by(2)
@@ -342,8 +396,9 @@ fn rest(args: &[String], from: usize) -> String {
 /// Parse a positional non-negative integer arg (Loro positions/lengths).
 fn index_arg(args: &[String], index: usize, what: &str) -> Result<usize> {
     let s = arg(args, index, what)?;
-    s.parse::<usize>()
-        .map_err(|_| Error::InvalidInput(format!("{what} must be a non-negative integer, got {s:?}")))
+    s.parse::<usize>().map_err(|_| {
+        Error::InvalidInput(format!("{what} must be a non-negative integer, got {s:?}"))
+    })
 }
 
 fn crdt_err(e: LoroError) -> Error {
@@ -376,12 +431,15 @@ fn stringify(v: &LoroValue) -> String {
 fn read_map_get(state: &State, app: &str, args: &[String]) -> ReadValue {
     let cname = args.first().map(String::as_str).unwrap_or_default();
     let key = args.get(1).map(String::as_str).unwrap_or_default();
-    let value = state.crdt.docs.get(app).and_then(|doc| {
-        match doc.get_map(cname).get_deep_value() {
-            LoroValue::Map(m) => m.get(key).and_then(loro_string),
-            _ => None,
-        }
-    });
+    let value =
+        state
+            .crdt
+            .docs
+            .get(app)
+            .and_then(|doc| match doc.get_map(cname).get_deep_value() {
+                LoroValue::Map(m) => m.get(key).and_then(loro_string),
+                _ => None,
+            });
     ReadValue::OptString(value)
 }
 
@@ -417,6 +475,10 @@ fn read_list_all(state: &State, app: &str, args: &[String]) -> ReadValue {
 /// (none only if the app has no document yet).
 fn read_text_get(state: &State, app: &str, args: &[String]) -> ReadValue {
     let cname = args.first().map(String::as_str).unwrap_or_default();
-    let text = state.crdt.docs.get(app).map(|doc| doc.get_text(cname).to_string());
+    let text = state
+        .crdt
+        .docs
+        .get(app)
+        .map(|doc| doc.get_text(cname).to_string());
     ReadValue::OptString(text)
 }

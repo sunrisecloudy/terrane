@@ -20,9 +20,12 @@ pub(crate) struct FakeEdge;
 impl EffectRunner for FakeEdge {
     fn run(&self, effect: &Effect) -> Result<Vec<EventRecord>> {
         match effect {
-            Effect::HttpGet { app, url } => {
-                Ok(vec![fetched_event(app, url, 200, format!("body for {url}"))?])
-            }
+            Effect::HttpGet { app, url } => Ok(vec![fetched_event(
+                app,
+                url,
+                200,
+                format!("body for {url}"),
+            )?]),
             Effect::ModelCall { app, agent, prompt } => Ok(vec![responded_event(
                 app,
                 agent,
@@ -34,7 +37,9 @@ impl EffectRunner for FakeEdge {
             // different peers (real edge uses OS entropy; tests just need unique).
             Effect::NewReplicaId => {
                 static NEXT: AtomicU64 = AtomicU64::new(1);
-                Ok(vec![initialized_event(NEXT.fetch_add(1, Ordering::Relaxed))?])
+                Ok(vec![initialized_event(
+                    NEXT.fetch_add(1, Ordering::Relaxed),
+                )?])
             }
         }
     }

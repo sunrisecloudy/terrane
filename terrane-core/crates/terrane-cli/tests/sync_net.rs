@@ -19,7 +19,8 @@ fn replica_with(path: std::path::PathBuf, item: &str) -> Core<EdgeRunner> {
     let mut core = Core::open_with(path, EdgeRunner).unwrap();
     core.dispatch(req("replica.init", &[])).unwrap();
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
-    core.dispatch(req("crdt.listPush", &["notes", "todos", item])).unwrap();
+    core.dispatch(req("crdt.listPush", &["notes", "todos", item]))
+        .unwrap();
     core
 }
 

@@ -7,6 +7,7 @@ use std::path::Path;
 use std::ptr;
 
 use tempfile::tempdir;
+use terrane_core::{read_log, Core};
 use terrane_ffi::*;
 
 /// A backend exposing `set` and an `items` verb that returns JSON.
@@ -23,6 +24,23 @@ function handle(input) {
 }
 "#;
 
+/// A backend using the CRDT resource, so FFI host.run exercises stable replica
+/// authoring rather than plain kv storage.
+const CRDT_BACKEND: &str = r#"
+var crdt = ctx.resource.crdt;
+function handle(input) {
+    var verb = input[0];
+    if (verb === "set") { crdt.mapSet("prefs", input[1], input[2]); return "ok"; }
+    if (verb === "get") {
+        var v = crdt.mapGet("prefs", input[1]);
+        return v == null ? "(none)" : v;
+    }
+    if (verb === "push") { crdt.listPush("todo", input[1]); return "" + crdt.listAll("todo").length; }
+    if (verb === "list") { return crdt.listAll("todo").join(","); }
+    return "?";
+}
+"#;
+
 fn write_bundle(dir: &Path) -> String {
     let bundle = dir.join("bundle");
     fs::create_dir(&bundle).unwrap();
@@ -32,6 +50,18 @@ fn write_bundle(dir: &Path) -> String {
     )
     .unwrap();
     fs::write(bundle.join("main.js"), BACKEND).unwrap();
+    bundle.to_str().unwrap().to_string()
+}
+
+fn write_crdt_bundle(dir: &Path) -> String {
+    let bundle = dir.join("crdt-bundle");
+    fs::create_dir(&bundle).unwrap();
+    fs::write(
+        bundle.join("manifest.json"),
+        r#"{ "id": "crdt_demo", "name": "CRDT Demo", "backend": "main.js", "resources": ["crdt"] }"#,
+    )
+    .unwrap();
+    fs::write(bundle.join("main.js"), CRDT_BACKEND).unwrap();
     bundle.to_str().unwrap().to_string()
 }
 
@@ -54,7 +84,14 @@ unsafe fn call(
     let argv: Vec<*const c_char> = arg_cs.iter().map(|c| c.as_ptr()).collect();
     let mut out: *mut c_char = ptr::null_mut();
     let mut err: *mut c_char = ptr::null_mut();
-    let code = f(h, head_c.as_ptr(), argv.len(), argv.as_ptr(), &mut out, &mut err);
+    let code = f(
+        h,
+        head_c.as_ptr(),
+        argv.len(),
+        argv.as_ptr(),
+        &mut out,
+        &mut err,
+    );
     let take = |p: *mut c_char| -> Option<String> {
         if p.is_null() {
             None
@@ -95,7 +132,97 @@ fn open_host_run_output_free_round_trip() {
         let (code, out, _) = call(terrane_host_run, h, "demo", &["items"]);
         assert_eq!(code, TERRANE_OK);
         let json = out.unwrap();
-        assert!(json.contains("\"key\":\"x\"") && json.contains("\"value\":\"1\""), "json: {json}");
+        assert!(
+            json.contains("\"key\":\"x\"") && json.contains("\"value\":\"1\""),
+            "json: {json}"
+        );
+
+        terrane_close(h);
+    }
+}
+
+#[test]
+fn open_mints_stable_replica_identity_for_crdt_host_writes() {
+    let dir = tempdir().unwrap();
+    let src = write_crdt_bundle(dir.path());
+    let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let log = dir.path().join("log.bin");
+
+    unsafe {
+        let h = terrane_open(home.as_ptr());
+        assert!(!h.is_null(), "open should succeed");
+
+        let reopened = Core::open(&log).unwrap();
+        let peer = reopened
+            .state()
+            .replica
+            .peer
+            .expect("terrane_open should mint replica identity");
+        assert_eq!(
+            read_log(&log)
+                .unwrap()
+                .iter()
+                .filter(|record| record.kind == "replica.initialized")
+                .count(),
+            1,
+            "identity should be recorded exactly once"
+        );
+
+        let (code, out, err) = call(
+            terrane_dispatch,
+            h,
+            "app.add",
+            &["crdt_demo", "CRDT Demo", "--source", &src],
+        );
+        assert_eq!(code, TERRANE_OK, "app.add err: {err:?}");
+        assert_eq!(out.as_deref(), Some("app.added"));
+
+        let (code, out, err) = call(terrane_host_run, h, "crdt_demo", &["set", "theme", "dark"]);
+        assert_eq!(code, TERRANE_OK, "host_run set err: {err:?}");
+        assert_eq!(out.as_deref(), Some("ok"));
+
+        let (code, out, err) = call(terrane_host_run, h, "crdt_demo", &["push", "a"]);
+        assert_eq!(code, TERRANE_OK, "host_run push a err: {err:?}");
+        assert_eq!(out.as_deref(), Some("1"));
+        let (code, out, err) = call(terrane_host_run, h, "crdt_demo", &["push", "b"]);
+        assert_eq!(code, TERRANE_OK, "host_run push b err: {err:?}");
+        assert_eq!(out.as_deref(), Some("2"));
+
+        terrane_close(h);
+
+        let reopened = Core::open(&log).unwrap();
+        assert_eq!(
+            reopened.state().replica.peer,
+            Some(peer),
+            "peer should persist"
+        );
+        assert!(reopened.state().crdt.docs.contains_key("crdt_demo"));
+        assert!(reopened.replay_matches().unwrap());
+
+        let h = terrane_open(home.as_ptr());
+        assert!(!h.is_null(), "reopen should succeed");
+        let reopened_again = Core::open(&log).unwrap();
+        assert_eq!(
+            reopened_again.state().replica.peer,
+            Some(peer),
+            "reopen must reuse the same home peer"
+        );
+        assert_eq!(
+            read_log(&log)
+                .unwrap()
+                .iter()
+                .filter(|record| record.kind == "replica.initialized")
+                .count(),
+            1,
+            "reopen should not append a second identity event"
+        );
+
+        let (code, out, err) = call(terrane_host_run, h, "crdt_demo", &["get", "theme"]);
+        assert_eq!(code, TERRANE_OK, "host_run get err: {err:?}");
+        assert_eq!(out.as_deref(), Some("dark"));
+        let (code, out, err) = call(terrane_host_run, h, "crdt_demo", &["list"]);
+        assert_eq!(code, TERRANE_OK, "host_run list err: {err:?}");
+        assert_eq!(out.as_deref(), Some("a,b"));
 
         terrane_close(h);
     }
@@ -119,21 +246,30 @@ fn host_run_unknown_app_returns_error_not_panic() {
 }
 
 #[test]
-fn null_safety_and_idempotent_frees() {
+fn null_safety_and_single_use_contracts() {
     unsafe {
         // Null handle → typed error, no crash.
         let mut out: *mut c_char = ptr::null_mut();
         let mut err: *mut c_char = ptr::null_mut();
         let app = CString::new("demo").unwrap();
-        let code = terrane_host_run(ptr::null_mut(), app.as_ptr(), 0, ptr::null(), &mut out, &mut err);
+        let code = terrane_host_run(
+            ptr::null_mut(),
+            app.as_ptr(),
+            0,
+            ptr::null(),
+            &mut out,
+            &mut err,
+        );
         assert_eq!(code, TERRANE_ERR_NULL_ARG);
 
-        // Free/close are null-safe no-ops.
+        // Free/close are null-safe no-ops. Non-null pointers are single-use.
         terrane_string_free(ptr::null_mut());
         terrane_close(ptr::null_mut());
 
         // Null app arg → typed error.
-        let h = terrane_open(ptr::null());
+        let dir = tempdir().unwrap();
+        let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+        let h = terrane_open(home.as_ptr());
         assert!(!h.is_null());
         let code = terrane_host_run(h, ptr::null(), 0, ptr::null(), &mut out, &mut err);
         assert_eq!(code, TERRANE_ERR_NULL_ARG);
@@ -143,10 +279,9 @@ fn null_safety_and_idempotent_frees() {
 
 #[test]
 fn checked_in_c_header_declares_the_exported_abi() {
-    let header = fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("include/terrane_ffi.h"),
-    )
-    .expect("header exists");
+    let header =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("include/terrane_ffi.h"))
+            .expect("header exists");
     for needle in [
         "TerraneHandle *terrane_open(",
         "int terrane_host_run(",

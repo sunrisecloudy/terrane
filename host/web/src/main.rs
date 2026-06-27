@@ -1,6 +1,6 @@
 //! terrane-web — serve a terrane home's apps over HTTP.
 //!
-//! A thin host over the `terrane_cli`/`terrane-core` spine, like the CLI and MCP
+//! A thin host over the `terrane-host` spine, like the CLI and MCP
 //! hosts. It implements the [`terrane_api`] HTTP contract with `tiny_http`
 //! (blocking, single-threaded — one `Core`, one request at a time, which suits
 //! the non-`Send` `Core`). It serves app UIs and accepts invokes, injecting a
@@ -15,13 +15,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 use nanoserde::{DeJson, SerJson};
-use terrane_api::{
-    AppSummary, AppsResponse, ApiError, HealthResponse, InvokeRequest, InvokeResponse,
-    CONTRACT_VERSION,
-};
-use terrane_cli::EdgeRunner;
-use terrane_core::Core;
-use terrane_domain::Request as CoreRequest;
+use terrane_api::{ApiError, HealthResponse, InvokeRequest, InvokeResponse, CONTRACT_VERSION};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 type Resp = Response<Cursor<Vec<u8>>>;
@@ -37,7 +31,7 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut core = match open_core() {
+    let mut core = match terrane_host::open() {
         Ok(core) => core,
         Err(e) => {
             eprintln!("terrane-web: {e}");
@@ -54,9 +48,13 @@ fn main() {
     };
     eprintln!(
         "terrane-web: serving {} on http://{} (auth: {})",
-        terrane_cli::log_path().display(),
+        terrane_host::log_path().display(),
         server.server_addr(),
-        if require_auth { "bearer token" } else { "off (loopback)" }
+        if require_auth {
+            "bearer token"
+        } else {
+            "off (loopback)"
+        }
     );
 
     for mut request in server.incoming_requests() {
@@ -65,16 +63,12 @@ fn main() {
     }
 }
 
-fn open_core() -> Result<Core<EdgeRunner>, String> {
-    let mut core = Core::open_with(terrane_cli::log_path(), EdgeRunner).map_err(|e| e.to_string())?;
-    if core.state().replica.peer.is_none() {
-        core.dispatch(CoreRequest::new("replica.init", Vec::new()))
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(core)
-}
-
-fn route(core: &mut Core<EdgeRunner>, request: &mut Request, require_auth: bool, token: Option<&str>) -> Resp {
+fn route(
+    core: &mut terrane_host::HostCore,
+    request: &mut Request,
+    require_auth: bool,
+    token: Option<&str>,
+) -> Resp {
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
 
@@ -88,7 +82,7 @@ fn route(core: &mut Core<EdgeRunner>, request: &mut Request, require_auth: bool,
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
         }),
-        (Method::Get, ["apps"]) => json_ok(&list_apps(core)),
+        (Method::Get, ["apps"]) => json_ok(&terrane_host::list_apps(core)),
         (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request),
         (Method::Get, ["apps", id]) => serve_ui(core, id, ""),
         (Method::Get, ["apps", id, rest @ ..]) => serve_ui(core, id, &rest.join("/")),
@@ -97,10 +91,7 @@ fn route(core: &mut Core<EdgeRunner>, request: &mut Request, require_auth: bool,
 }
 
 /// `POST /apps/{id}/invoke` — run a verb on the app's backend, return its output.
-fn invoke(core: &mut Core<EdgeRunner>, id: &str, request: &mut Request) -> Resp {
-    if !core.state().app.apps.contains_key(id) {
-        return json_error(404, &format!("no such app: {id}"));
-    }
+fn invoke(core: &mut terrane_host::HostCore, id: &str, request: &mut Request) -> Resp {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return json_error(400, "cannot read request body");
@@ -110,28 +101,23 @@ fn invoke(core: &mut Core<EdgeRunner>, id: &str, request: &mut Request) -> Resp 
         Err(e) => return json_error(400, &format!("bad invoke body: {e}")),
     };
 
-    let mut argv = Vec::with_capacity(parsed.args.len() + 2);
-    argv.push(id.to_string());
-    argv.push(parsed.verb);
-    argv.extend(parsed.args);
-    match core.dispatch(CoreRequest::new("host.run", argv)) {
-        Ok(_) => json_ok(&InvokeResponse {
-            output: core.take_last_output().unwrap_or_default(),
-        }),
-        Err(e) => json_error(500, &e.to_string()),
+    match terrane_host::invoke_app(core, id, &parsed.verb, &parsed.args) {
+        Ok(output) => json_ok(&InvokeResponse { output }),
+        Err(e) if e.starts_with("no such app:") => json_error(404, &e),
+        Err(e) => json_error(500, &e),
     }
 }
 
 /// `GET /apps/{id}/…` — serve the app's UI (with the invoke shim injected) or a
 /// bundle asset. `rel` is the path under the bundle dir (empty = the UI entry).
-fn serve_ui(core: &mut Core<EdgeRunner>, id: &str, rel: &str) -> Resp {
+fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str) -> Resp {
     let Some(source) = core.state().app.apps.get(id).and_then(|a| a.source.clone()) else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };
     let base = Path::new(&source);
 
     let target = if rel.is_empty() {
-        match read_manifest_ui(&source) {
+        match terrane_host::read_manifest_ui(&source) {
             Some(ui) => base.join(ui),
             None => return json_error(404, "app has no UI"),
         }
@@ -154,29 +140,6 @@ fn serve_ui(core: &mut Core<EdgeRunner>, id: &str, rel: &str) -> Resp {
         bytes
     };
     Response::from_data(body).with_header(header("Content-Type", ctype))
-}
-
-fn list_apps(core: &mut Core<EdgeRunner>) -> AppsResponse {
-    let apps = core
-        .state()
-        .app
-        .apps
-        .values()
-        .map(|app| AppSummary {
-            id: app.id.clone(),
-            name: app.name.clone(),
-            has_ui: app.source.as_deref().and_then(read_manifest_ui).is_some(),
-        })
-        .collect();
-    AppsResponse { apps }
-}
-
-/// The app's declared UI entry file (`manifest.ui`), if any.
-fn read_manifest_ui(source: &str) -> Option<String> {
-    terrane_core::cap::host::read_manifest(Path::new(source))
-        .ok()
-        .map(|m| m.ui)
-        .filter(|ui| !ui.is_empty())
 }
 
 /// Canonicalize `target` and confirm it stays within `base` — rejects `..`,
@@ -251,7 +214,10 @@ fn json_ok<T: SerJson>(value: &T) -> Resp {
 }
 
 fn json_error(code: u16, message: &str) -> Resp {
-    let body = ApiError { error: message.to_string() }.serialize_json();
+    let body = ApiError {
+        error: message.to_string(),
+    }
+    .serialize_json();
     Response::from_data(body.into_bytes())
         .with_status_code(code)
         .with_header(header("Content-Type", "application/json"))

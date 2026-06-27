@@ -26,7 +26,9 @@ use std::rc::Rc;
 
 use nanoserde::DeJson;
 use rquickjs::function::Rest;
-use rquickjs::{CatchResultExt, CaughtError, Context, Ctx, Function, IntoJs, Object, Runtime, Value};
+use rquickjs::{
+    CatchResultExt, CaughtError, Context, Ctx, Function, IntoJs, Object, Runtime, Value,
+};
 use terrane_domain::{Error, EventRecord, Result};
 
 use super::{Capability, ReadValue, ResourceMethod};
@@ -175,17 +177,22 @@ impl RunAccum {
         args.insert(0, self.app.clone());
         // The kv key (args[1] after app-scoping) drives coalescing; non-kv writes
         // never coalesce.
-        let coalesce_key = name.starts_with("kv.").then(|| args.get(1).cloned()).flatten();
+        let coalesce_key = name
+            .starts_with("kv.")
+            .then(|| args.get(1).cloned())
+            .flatten();
         let is_set = name == "kv.set";
         let result = (|| -> Result<()> {
-            let decision = self
-                .registry
-                .get(namespace_of(name)?)?
-                .decide(&self.state, name, &args)?;
+            let decision =
+                self.registry
+                    .get(namespace_of(name)?)?
+                    .decide(&self.state, name, &args)?;
             let records = match decision {
                 Decision::Commit(records) => records,
                 Decision::Effect(_) => {
-                    return Err(Error::Runtime(format!("{name}: effects not allowed in a backend")))
+                    return Err(Error::Runtime(format!(
+                        "{name}: effects not allowed in a backend"
+                    )))
                 }
             };
             for record in &records {
@@ -244,7 +251,9 @@ fn execute_js(
     rt.set_max_stack_size(512 * 1024);
     rt.set_memory_limit(64 * 1024 * 1024);
     let deadline = std::time::Instant::now() + backend_budget();
-    rt.set_interrupt_handler(Some(Box::new(move || std::time::Instant::now() >= deadline)));
+    rt.set_interrupt_handler(Some(Box::new(move || {
+        std::time::Instant::now() >= deadline
+    })));
     let ctx = Context::full(&rt).map_err(js_err)?;
 
     ctx.with(|ctx| -> Result<String> {
@@ -276,13 +285,14 @@ fn execute_js(
                     // semantics); it captures a typed, attributable error so the run
                     // aborts naming the offending call and parameter.
                     ResourceMethod::Write { name, .. } => {
-                        let f = Function::new(ctx.clone(), move |args: Rest<Value>| {
-                            match string_args(&call, params, &args.0) {
+                        let f =
+                            Function::new(ctx.clone(), move |args: Rest<Value>| match string_args(
+                                &call, params, &args.0,
+                            ) {
                                 Ok(strs) => cell.borrow_mut().write(&call, strs),
                                 Err(e) => cell.borrow_mut().capture(e),
-                            }
-                        })
-                        .map_err(js_err)?;
+                            })
+                            .map_err(js_err)?;
                         obj.set(name, f).map_err(js_err)?;
                     }
                     ResourceMethod::Read { name, read, .. } => {
@@ -311,8 +321,12 @@ fn execute_js(
         ctx.globals().set("ctx", ctx_obj).map_err(js_err)?;
         // The app's id/name (from the manifest), so an `actions`-style backend can
         // self-describe without repeating them.
-        ctx.globals().set("__terrane_app_id", app_id).map_err(js_err)?;
-        ctx.globals().set("__terrane_app_name", app_name).map_err(js_err)?;
+        ctx.globals()
+            .set("__terrane_app_id", app_id)
+            .map_err(js_err)?;
+        ctx.globals()
+            .set("__terrane_app_name", app_name)
+            .map_err(js_err)?;
 
         // Eval the backend as a script (defines globals; reads `ctx`).
         ctx.eval::<(), _>(backend_src.as_bytes())
@@ -326,7 +340,9 @@ fn execute_js(
 
         // Call global handle(input); it must return a string.
         let handle: Function = ctx.globals().get("handle").map_err(|_| {
-            Error::Runtime("backend defines neither a `handle` function nor an `actions` table".into())
+            Error::Runtime(
+                "backend defines neither a `handle` function nor an `actions` table".into(),
+            )
         })?;
         let result: Value = handle.call((input,)).catch(&ctx).map_err(caught_to_err)?;
         result
