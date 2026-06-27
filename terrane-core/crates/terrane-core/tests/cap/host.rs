@@ -153,6 +153,71 @@ fn handle_must_return_a_string() {
     assert!(result.is_err(), "non-string handle() return should error");
 }
 
+/// A backend that declares an `actions` table (no hand-written `handle`): the
+/// runtime synthesizes dispatch, `__actions__`, usage, and the unknown-verb help.
+const ACTIONS_BACKEND: &str = r#"
+var kv = ctx.resource.kv;
+var description = "demo actions app";
+var actions = {
+  set: {
+    summary: "Store the greeting.",
+    args: [{ name: "value", required: true }],
+    run: function (args, usage) {
+      if (args.length === 0) return usage();
+      kv.set("greeting", args.join(" "));
+      return "ok";
+    }
+  },
+  get: {
+    summary: "Read the greeting.",
+    args: [],
+    run: function () { var v = kv.get("greeting"); return v == null ? "(none)" : v; }
+  }
+};
+"#;
+
+#[test]
+fn actions_table_backend_is_synthesized_and_self_describes() {
+    let dir = tempdir().unwrap();
+    let src = write_bundle(
+        dir.path(),
+        "acts",
+        r#"{ "id": "acts", "name": "Acts Demo", "backend": "main.js", "resources": ["kv"] }"#,
+        ACTIONS_BACKEND,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["acts", "Acts Demo", "--source", &src]))
+        .unwrap();
+
+    // Dispatch works with no hand-written handle; reads see prior writes.
+    core.dispatch(req("host.run", &["acts", "set", "hi", "there"])).unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("ok"));
+    core.dispatch(req("host.run", &["acts", "get"])).unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("hi there"));
+
+    // usage() is derived from the action's declared args.
+    core.dispatch(req("host.run", &["acts", "set"])).unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("usage: set <value>"));
+
+    // The unknown-verb help lists the table's keys.
+    core.dispatch(req("host.run", &["acts", "frob"])).unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("unknown verb: frob (try set | get)")
+    );
+
+    // __actions__ self-describes, with app id/name pulled from the manifest.
+    core.dispatch(req("host.run", &["acts", "__actions__"])).unwrap();
+    let out = core.take_last_output().unwrap();
+    assert!(out.contains("\"app\":\"acts\""), "id from manifest: {out}");
+    assert!(out.contains("\"title\":\"Acts Demo\""), "name from manifest: {out}");
+    assert!(out.contains("demo actions app"), "description: {out}");
+    assert!(out.contains("\"verb\":\"set\"") && out.contains("\"verb\":\"get\""), "verbs: {out}");
+
+    // Still Option-A: only the kv.* writes were recorded; replay rebuilds it.
+    assert!(core.replay_matches().unwrap());
+}
+
 #[test]
 fn redundant_same_key_set_is_coalesced_within_a_run() {
     let dir = tempdir().unwrap();

@@ -1,9 +1,9 @@
 // Todo backend — CLI-only variant (apps/todo-cli).
 //
-// Same storage model as apps/todo, but with no UI: just the text verbs a CLI
-// host drives (`add` / `list` / `done`). apps/todo adds an `items` JSON verb and
-// an index.html on top of this. Keeping a UI-free app gives the CLI tests a
-// clean target that never depends on the UI layer.
+// Same storage model as apps/todo (one kv key per fact, so each mutation is one
+// recorded kv.* event), but no UI: just the text verbs a CLI host drives. The app
+// is a `description` + an `actions` table; the runtime synthesizes `handle`,
+// `__actions__`, usage, and the unknown-verb help from it.
 //
 //   seq        -> highest id ever allocated, as a decimal string
 //   item:<id>  -> the todo text for that id
@@ -17,89 +17,66 @@ var ITEM_PREFIX = "item:";
 function readSeq() {
   var raw = kv.get(SEQ_KEY);
   if (raw == null) {
-    // missing key reads back as null/undefined
-    return 0;
+    return 0; // missing key reads back as null/undefined
   }
   var n = parseInt(raw, 10);
-  if (isNaN(n) || n < 0) {
-    return 0;
-  }
-  return n;
+  return isNaN(n) || n < 0 ? 0 : n;
 }
 
-// Collect every live todo as [{ id: number, text: string }, …], sorted by id.
+// Every live todo as [{ id, text }, …], sorted by id.
 function readItems() {
   var all = kv.all();
   var items = [];
   for (var key in all) {
-    if (!Object.prototype.hasOwnProperty.call(all, key)) {
-      continue;
-    }
-    if (key.indexOf(ITEM_PREFIX) !== 0) {
-      continue;
-    }
+    if (!Object.prototype.hasOwnProperty.call(all, key)) continue;
+    if (key.indexOf(ITEM_PREFIX) !== 0) continue;
     var id = parseInt(key.slice(ITEM_PREFIX.length), 10);
-    if (isNaN(id)) {
-      continue;
-    }
+    if (isNaN(id)) continue;
     items.push({ id: id, text: all[key] });
   }
-  items.sort(function (a, b) {
-    return a.id - b.id;
-  });
+  items.sort(function (a, b) { return a.id - b.id; });
   return items;
 }
 
-function add(args) {
-  var text = args.join(" ").trim();
-  if (text === "") {
-    return "usage: todo add <text…>";
-  }
-  var id = readSeq() + 1;
-  kv.set(SEQ_KEY, String(id));
-  kv.set(ITEM_PREFIX + id, text);
-  return "added #" + id + " " + text;
-}
+var description = "A simple todo list (kv-backed; last-writer-wins).";
 
-function list() {
-  var items = readItems();
-  if (items.length === 0) {
-    return "(no todos)";
-  }
-  var lines = [];
-  for (var i = 0; i < items.length; i++) {
-    lines.push("#" + items[i].id + " " + items[i].text);
-  }
-  return lines.join("\n");
-}
+var actions = {
+  add: {
+    summary: "Add a todo item.",
+    args: [{ name: "text", required: true, summary: "the item text (may be several words)" }],
+    returns: 'a confirmation line, e.g. "added #1 buy milk"',
+    run: function (args, usage) {
+      var text = args.join(" ").trim();
+      if (text === "") return usage();
+      var id = readSeq() + 1;
+      kv.set(SEQ_KEY, String(id));
+      kv.set(ITEM_PREFIX + id, text);
+      return "added #" + id + " " + text;
+    }
+  },
 
-function done(args) {
-  var raw = args.length > 0 ? args[0] : "";
-  var id = parseInt(raw, 10);
-  if (isNaN(id)) {
-    return "usage: todo done <id>";
-  }
-  var key = ITEM_PREFIX + id;
-  if (kv.get(key) == null) {
-    return "no todo #" + id;
-  }
-  kv.rm(key);
-  return "done #" + id;
-}
+  list: {
+    summary: "List every todo with its id.",
+    args: [],
+    returns: 'newline-separated "#<id> <text>" lines, or "(no todos)"',
+    run: function () {
+      var items = readItems();
+      if (items.length === 0) return "(no todos)";
+      return items.map(function (it) { return "#" + it.id + " " + it.text; }).join("\n");
+    }
+  },
 
-// Entry point. `input` is the verb's argument array, e.g. ["add","buy","milk"].
-function handle(input) {
-  var args = input || [];
-  var verb = args.length > 0 ? args[0] : "";
-  var rest = args.slice(1);
-  switch (verb) {
-    case "add":
-      return add(rest);
-    case "list":
-      return list();
-    case "done":
-      return done(rest);
-    default:
-      return "unknown verb: " + verb + " (try add | list | done)";
+  done: {
+    summary: "Remove a todo by its id.",
+    args: [{ name: "id", required: true, summary: "the #id shown by `list`" }],
+    returns: 'a confirmation line, e.g. "done #1"',
+    run: function (args, usage) {
+      var id = parseInt(args[0], 10);
+      if (isNaN(id)) return usage();
+      var key = ITEM_PREFIX + id;
+      if (kv.get(key) == null) return "no todo #" + id;
+      kv.rm(key);
+      return "done #" + id;
+    }
   }
-}
+};

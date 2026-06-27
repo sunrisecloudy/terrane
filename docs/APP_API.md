@@ -24,45 +24,57 @@ The backend runs in an embedded QuickJS once per `host.run` invocation. Each run
 is a **fresh context** — no JavaScript state survives between runs, so all
 persistence goes through resources. Calls are **synchronous** (no Promises).
 
-### Entry point
+A backend is invoked as `handle(input)` where `input` is the verb's string
+argument array. From the CLI: `terrane host run <app> add "buy milk"` →
+`handle(["add", "buy milk"])`. From the UI: `terrane.invoke("add", "buy milk")` →
+the same. `handle` **must return a string**. You can provide `handle` one of two
+ways.
+
+### Recommended: an `actions` table
+
+Declare an `actions` object — each entry keeps its description **and** its
+handler together — and the runtime synthesizes the rest: verb dispatch, the
+`__actions__` self-description (so agents can **discover** the app — the MCP
+`app_actions` tool), per-action `usage()`, and the unknown-verb help. One source
+of truth: add an entry and it's both runnable and discoverable.
+
+```js
+var description = "A CRDT-backed todo list."; // optional one-liner
+
+var actions = {
+  add: {
+    summary: "Add an item.",
+    args: [{ name: "text", required: true, summary: "the item text" }],
+    returns: 'e.g. "added: buy milk"',
+    run: function (args, usage) {            // args = everything after the verb
+      var text = args.join(" ").trim();
+      if (text === "") return usage();        // usage() → "usage: add <text>"
+      ctx.resource.crdt.listPush("todos", text);
+      return "added: " + text;
+    }
+  },
+  list: { summary: "List items.", args: [], run: function () { /* … */ } }
+};
+```
+
+- `run(args, usage)` returns a **string**. `usage()` is built from the action's
+  declared `args` (`<name>` for required, `[name]` optional).
+- The app id and name in `__actions__` come from `manifest.json` — don't repeat
+  them. The emitted shape is `terrane_api::AppActions` (`app`, `title`,
+  `description`, `actions: [{ verb, summary, args:[{ name, required, summary }], returns }]`).
+
+### Low-level: define `handle` yourself
+
+If you'd rather control everything (or don't want self-description), define a
+global `handle(input)` directly; the runtime leaves it untouched and never
+synthesizes one.
 
 ```js
 function handle(input) {
-  // input is the argument array, e.g. ["add", "buy milk"]
-  // return a string (printed by a CLI host, or resolved to the UI)
+  var verb = (input || [])[0];
+  // … dispatch yourself; return a string …
 }
 ```
-
-- `input` is an array of string arguments. From the CLI:
-  `terrane host run <app> add "buy milk"` → `handle(["add", "buy milk"])`. From
-  the UI: `terrane.invoke("add", "buy milk")` → `handle(["add", "buy milk"])`.
-- `handle` **must return a string** (returning anything else is an error).
-
-### Self-description (`__actions__`) — optional but recommended
-
-A backend may handle the reserved verb `__actions__` and return a JSON document
-describing the actions it supports. Hosts use it to let an agent **discover** an
-app before driving it (the MCP `app_actions` tool, and the basis for generated
-clients). Apps that don't implement it just fall through to their normal
-unknown-verb handling.
-
-```js
-if (verb === "__actions__") {
-  return JSON.stringify({
-    app: "todo-cli-collaborate",
-    title: "Collaborative Todo",
-    description: "A CRDT-backed todo list.",
-    actions: [
-      { verb: "add",  summary: "Add an item.",          args: [{ name: "text",   required: true }] },
-      { verb: "list", summary: "List items.",            args: [] },
-      { verb: "done", summary: "Remove an item by no.",  args: [{ name: "number", required: true }] }
-    ]
-  });
-}
-```
-
-The shape is `terrane_api::AppActions` (`app`, `title?`, `description?`,
-`actions: [{ verb, summary?, args?: [{ name, required?, summary? }], returns? }]`).
 
 ### `ctx`
 

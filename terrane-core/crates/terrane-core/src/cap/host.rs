@@ -89,7 +89,14 @@ pub(crate) fn run(
         first_error: None,
     }));
 
-    let output = execute_js(&bundle.source, &bundle.resources, input, cell.clone());
+    let output = execute_js(
+        &bundle.source,
+        &bundle.resources,
+        input,
+        cell.clone(),
+        app,
+        &bundle.name,
+    );
 
     // Sole ownership again now that the Context/Runtime (and their closures) dropped.
     let accum = Rc::try_unwrap(cell)
@@ -220,14 +227,18 @@ fn backend_budget() -> std::time::Duration {
 
 /// Build a QuickJS context, install the sandboxed app-scoped resources the
 /// bundle *declared* (only those — undeclared capabilities are simply absent
-/// from `ctx.resource`), eval the backend script (which defines globals `ctx`
-/// and `handle`), then call `handle(input)` and return its String. A wall-clock
-/// interrupt handler bounds CPU so a runaway loop can't wedge the host.
+/// from `ctx.resource`), eval the backend script, synthesize `handle` from an
+/// `actions` table if the backend declared one, then call `handle(input)` and
+/// return its String. `app_id`/`app_name` (from the manifest) feed an
+/// `actions`-style backend's self-description. A wall-clock interrupt handler
+/// bounds CPU so a runaway loop can't wedge the host.
 fn execute_js(
     backend_src: &str,
     resources: &[String],
     input: &[String],
     cell: Rc<RefCell<RunAccum>>,
+    app_id: &str,
+    app_name: &str,
 ) -> Result<String> {
     let rt = Runtime::new().map_err(js_err)?;
     rt.set_max_stack_size(512 * 1024);
@@ -298,17 +309,25 @@ fn execute_js(
         let ctx_obj = Object::new(ctx.clone()).map_err(js_err)?;
         ctx_obj.set("resource", resource).map_err(js_err)?;
         ctx.globals().set("ctx", ctx_obj).map_err(js_err)?;
+        // The app's id/name (from the manifest), so an `actions`-style backend can
+        // self-describe without repeating them.
+        ctx.globals().set("__terrane_app_id", app_id).map_err(js_err)?;
+        ctx.globals().set("__terrane_app_name", app_name).map_err(js_err)?;
 
         // Eval the backend as a script (defines globals; reads `ctx`).
         ctx.eval::<(), _>(backend_src.as_bytes())
             .catch(&ctx)
             .map_err(caught_to_err)?;
+        // Synthesize `handle` from an `actions` table if the backend didn't define
+        // its own (a no-op when it did).
+        ctx.eval::<(), _>(APP_RUNTIME.as_bytes())
+            .catch(&ctx)
+            .map_err(caught_to_err)?;
 
         // Call global handle(input); it must return a string.
-        let handle: Function = ctx
-            .globals()
-            .get("handle")
-            .map_err(|_| Error::Runtime("backend defines no callable `handle`".into()))?;
+        let handle: Function = ctx.globals().get("handle").map_err(|_| {
+            Error::Runtime("backend defines neither a `handle` function nor an `actions` table".into())
+        })?;
         let result: Value = handle.call((input,)).catch(&ctx).map_err(caught_to_err)?;
         result
             .as_string()
@@ -322,10 +341,51 @@ fn execute_js(
     })
 }
 
-/// A loaded app bundle: the backend JS source + the resource namespaces it is
-/// allowed to reach (its declared sandbox surface).
+/// The app-framework prelude, eval'd right after the backend. If the backend
+/// declared an `actions` table instead of its own `handle`, it synthesizes
+/// `handle` from it: verb dispatch, the `__actions__` self-description (merging
+/// the app id/name from the manifest), per-action `usage()`, and the unknown-verb
+/// help — all derived from the one table, so they can't drift. A backend that
+/// defines its own `handle` is left untouched (full control).
+const APP_RUNTIME: &str = r#"
+(function () {
+  if (typeof handle === 'function') return;
+  if (typeof actions !== 'object' || actions === null) return;
+  var ID = (typeof __terrane_app_id === 'string') ? __terrane_app_id : '';
+  var NAME = (typeof __terrane_app_name === 'string') ? __terrane_app_name : '';
+  var DESC = (typeof description === 'string') ? description : '';
+  function usageFor(verb) {
+    var a = actions[verb];
+    var slots = (a && a.args ? a.args : []).map(function (x) {
+      return x.required ? '<' + x.name + '>' : '[' + x.name + ']';
+    });
+    return 'usage: ' + verb + (slots.length ? ' ' + slots.join(' ') : '');
+  }
+  function describe() {
+    var list = Object.keys(actions).map(function (verb) {
+      var a = actions[verb];
+      return { verb: verb, summary: a.summary || '', args: a.args || [], returns: a.returns || '' };
+    });
+    return JSON.stringify({ app: ID, title: NAME, description: DESC, actions: list });
+  }
+  globalThis.handle = function (input) {
+    var argv = input || [];
+    var verb = argv[0] || '';
+    if (verb === '__actions__') return describe();
+    var a = actions[verb];
+    if (!a || typeof a.run !== 'function') {
+      return 'unknown verb: ' + verb + ' (try ' + Object.keys(actions).join(' | ') + ')';
+    }
+    return a.run(argv.slice(1), function () { return usageFor(verb); });
+  };
+})();
+"#;
+
+/// A loaded app bundle: the backend JS source, the resource namespaces it is
+/// allowed to reach (its declared sandbox surface), and its display name.
 struct Bundle {
     source: String,
+    name: String,
     resources: Vec<String>,
 }
 
@@ -343,6 +403,7 @@ fn load_bundle(source: &str) -> Result<Bundle> {
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))?;
         Ok(Bundle {
             source,
+            name: manifest.name,
             resources: manifest.resources,
         })
     } else {
@@ -350,6 +411,7 @@ fn load_bundle(source: &str) -> Result<Bundle> {
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", path.display())))?;
         Ok(Bundle {
             source,
+            name: String::new(),
             resources: vec!["kv".to_string()],
         })
     }
