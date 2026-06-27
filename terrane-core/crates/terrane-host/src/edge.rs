@@ -13,6 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use terrane_core::cap::builder;
+use terrane_core::cap::codex;
 use terrane_core::cap::model::responded_event;
 use terrane_core::cap::net::fetched_event;
 use terrane_core::cap::replica::initialized_event;
@@ -36,13 +37,13 @@ impl EffectRunner for EdgeRunner {
                     app, agent, prompt, response, exit_code,
                 )?])
             }
-            Effect::BuildAppWithAgent {
+            Effect::GenerateAppWithHarness {
                 draft_id,
                 app_id,
                 name,
-                agent,
+                harness,
                 prompt,
-            } => run_builder_agent(draft_id, app_id, name, agent, prompt),
+            } => run_builder_harness(draft_id, app_id, name, harness, prompt),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
         }
     }
@@ -132,22 +133,22 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
     Ok((response, exit_code))
 }
 
-fn run_builder_agent(
+fn run_builder_harness(
     draft_id: &str,
     app_id: &str,
     name: &str,
-    agent: &str,
+    harness: &str,
     prompt: &str,
 ) -> Result<Vec<EventRecord>> {
     let mut records = vec![builder::requested_event(
-        draft_id, app_id, name, prompt, agent,
+        draft_id, app_id, name, prompt, harness,
     )?];
     let result = (|| -> Result<Vec<builder::BuilderFile>> {
-        let prompt = builder::codex_prompt(app_id, name, prompt);
-        let (response, exit_code) = run_builder_command(agent, &prompt)?;
+        let prompt = codex::app_bundle_prompt(app_id, name, prompt);
+        let (response, exit_code) = run_harness_command(harness, &prompt)?;
         if exit_code != 0 {
             return Err(Error::Storage(format!(
-                "`{agent}` exited with {exit_code}: {}",
+                "`{harness}` exited with {exit_code}: {}",
                 response.trim()
             )));
         }
@@ -161,13 +162,13 @@ fn run_builder_agent(
     Ok(records)
 }
 
-fn run_builder_command(agent: &str, prompt: &str) -> Result<(String, i32)> {
-    match agent {
+fn run_harness_command(harness: &str, prompt: &str) -> Result<(String, i32)> {
+    match harness {
         "codex" => {
             let work_dir = builder_work_dir()?;
             let output = work_dir.join("last-message.txt");
             let schema = work_dir.join("builder-output.schema.json");
-            std::fs::write(&schema, BUILDER_OUTPUT_SCHEMA).map_err(|e| {
+            std::fs::write(&schema, codex::APP_BUNDLE_OUTPUT_SCHEMA).map_err(|e| {
                 Error::Storage(format!(
                     "failed to write builder output schema {}: {e}",
                     schema.display()
@@ -190,7 +191,7 @@ fn run_builder_command(agent: &str, prompt: &str) -> Result<(String, i32)> {
             c.arg("--output-schema").arg(&schema);
             c.arg("--output-last-message").arg(&output);
             c.arg(prompt);
-            let (stdout, exit_code) = run_capture(&mut c, agent, builder_timeout())?;
+            let (stdout, exit_code) = run_capture(&mut c, harness, builder_timeout())?;
             if exit_code != 0 {
                 return Ok((stdout, exit_code));
             }
@@ -202,33 +203,9 @@ fn run_builder_command(agent: &str, prompt: &str) -> Result<(String, i32)> {
             })?;
             Ok((response, exit_code))
         }
-        other => Err(Error::InvalidInput(format!(
-            "unknown builder agent: {other}"
-        ))),
+        other => Err(Error::InvalidInput(format!("unknown harness: {other}"))),
     }
 }
-
-const BUILDER_OUTPUT_SCHEMA: &str = r#"{
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["files"],
-  "properties": {
-    "files": {
-      "type": "array",
-      "minItems": 4,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["path", "content"],
-        "properties": {
-          "path": { "type": "string" },
-          "content": { "type": "string" }
-        }
-      }
-    }
-  }
-}
-"#;
 
 fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<(String, i32)> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());

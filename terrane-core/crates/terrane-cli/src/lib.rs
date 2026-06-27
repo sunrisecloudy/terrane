@@ -215,7 +215,7 @@ pub fn print_help() {
          \x20 terrane kv rm <app> <key>                        delete a value\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
-         \x20 terrane builder generate <draft> <app> <name> <codex> <prompt…>\n\
+         \x20 terrane codex generate-app <draft> <app> <name> <prompt…>\n\
          \x20 terrane host run <app> [input…]                  run an app's JS backend\n\n\
          Multi-user:\n\
          \x20 terrane serve [--addr <addr>]      listen for peers (default 127.0.0.1:7777)\n\

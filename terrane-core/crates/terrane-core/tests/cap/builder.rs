@@ -1,83 +1,70 @@
-//! Engine tests for the `builder` capability.
+//! Engine tests for replayable builder draft state.
 
 use tempfile::tempdir;
-use terrane_core::{Core, NoEffects};
+use terrane_core::cap::builder::{failed_event, generated_event, requested_event, BuilderFile};
+use terrane_core::{fold_records_in_memory, Core, NoEffects, State};
 
-use crate::helpers::{req, FakeEdge};
+use crate::helpers::req;
 
 #[test]
-fn builder_generation_records_and_replays_draft_files() {
-    let dir = tempdir().unwrap();
-    let log = dir.path().join("log.bin");
-    let mut core = Core::open_with(&log, FakeEdge).unwrap();
+fn builder_records_fold_into_draft_state() {
+    let mut state = State::default();
+    let records = vec![
+        requested_event("draft-1", "demo", "Demo", "make a tiny app", "codex").unwrap(),
+        generated_event(
+            "draft-1",
+            vec![BuilderFile {
+                path: "manifest.json".into(),
+                content: r#"{"id":"demo","name":"Demo","version":"0.1.0","backend":"main.js","ui":"index.html","resources":[]}"#.into(),
+            }],
+        )
+        .unwrap(),
+    ];
 
-    let records = core
-        .dispatch(req(
-            "builder.generate",
-            &["demo", "demo", "Demo", "codex", "make a tiny greeting app"],
-        ))
-        .unwrap();
-    assert_eq!(
-        records.iter().map(|r| r.kind.as_str()).collect::<Vec<_>>(),
-        vec!["builder.requested", "builder.generated"]
-    );
+    fold_records_in_memory(&mut state, &records).unwrap();
 
-    let draft = &core.state().builder.drafts["demo"];
+    let draft = &state.builder.drafts["draft-1"];
     assert_eq!(draft.app_id, "demo");
     assert_eq!(draft.name, "Demo");
     assert_eq!(draft.agent, "codex");
     assert!(draft.error.is_none());
     assert!(draft.files.iter().any(|f| f.path == "manifest.json"));
-
-    let reopened = Core::open(&log).unwrap();
-    assert_eq!(reopened.state().builder.drafts, core.state().builder.drafts);
-    assert!(reopened.replay_matches().unwrap());
 }
 
 #[test]
-fn builder_generation_validates_request_before_effect() {
-    let dir = tempdir().unwrap();
-    let mut core = Core::open_with(dir.path().join("log.bin"), FakeEdge).unwrap();
+fn builder_failed_event_clears_files_and_records_error() {
+    let mut state = State::default();
+    let records = vec![
+        requested_event("draft-1", "demo", "Demo", "make a tiny app", "codex").unwrap(),
+        generated_event(
+            "draft-1",
+            vec![BuilderFile {
+                path: "manifest.json".into(),
+                content: "{}".into(),
+            }],
+        )
+        .unwrap(),
+        failed_event("draft-1", "harness exited 1").unwrap(),
+    ];
 
-    assert!(core
-        .dispatch(req(
-            "builder.generate",
-            &["bad/path", "demo", "Demo", "codex", "make app"],
-        ))
-        .unwrap_err()
-        .to_string()
-        .contains("unsafe"));
+    fold_records_in_memory(&mut state, &records).unwrap();
 
-    assert!(core
-        .dispatch(req(
-            "builder.generate",
-            &["demo", "demo", "Demo", "claude", "make app"],
-        ))
-        .unwrap_err()
-        .to_string()
-        .contains("unsupported"));
-
-    assert!(core
-        .dispatch(req(
-            "builder.generate",
-            &["demo", "demo", "Demo", "codex", ""],
-        ))
-        .unwrap_err()
-        .to_string()
-        .contains("prompt"));
+    let draft = &state.builder.drafts["draft-1"];
+    assert!(draft.files.is_empty());
+    assert_eq!(draft.error.as_deref(), Some("harness exited 1"));
 }
 
 #[test]
-fn pure_core_rejects_builder_effect_without_runner() {
+fn builder_namespace_has_no_generation_commands() {
     let dir = tempdir().unwrap();
     let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
 
     assert!(core
         .dispatch(req(
-            "builder.generate",
-            &["demo", "demo", "Demo", "codex", "make app"],
+            "builder.generate-app",
+            &["demo", "demo", "Demo", "make app"]
         ))
         .unwrap_err()
         .to_string()
-        .contains("no effect runner"));
+        .contains("unknown command"));
 }

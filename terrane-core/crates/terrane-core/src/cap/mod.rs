@@ -12,6 +12,7 @@ use crate::{Decision, State};
 
 pub mod app;
 pub mod builder;
+pub mod codex;
 pub mod crdt;
 pub mod host;
 pub mod kv;

@@ -66,7 +66,7 @@ int terrane_preview_invoke(TerraneHandle *h, const char *preview_id,
 
 /* Generate a draft app through the core builder capability. On success writes
  * JSON with id/appId/name/prompt/agent/status/error/files. `agent` may be "" to
- * use the default builder agent. */
+ * use the default app-generation harness. */
 int terrane_builder_generate(TerraneHandle *h, const char *app_id,
                              const char *name, const char *prompt,
                              const char *agent, char **out_output,

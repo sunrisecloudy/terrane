@@ -308,7 +308,7 @@ pub unsafe extern "C" fn terrane_preview_invoke(
 ///
 /// # Safety
 /// `app_id`, `name`, `prompt`, and `agent` must be valid C strings. `agent` may
-/// be an empty string to use the default builder agent.
+/// be an empty string to use the default app-generation harness.
 #[no_mangle]
 pub unsafe extern "C" fn terrane_builder_generate(
     h: *mut TerraneHandle,

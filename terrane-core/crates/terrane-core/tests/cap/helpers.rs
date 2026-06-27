@@ -34,14 +34,14 @@ impl EffectRunner for FakeEdge {
                 format!("{agent} says: {prompt}"),
                 0,
             )?]),
-            Effect::BuildAppWithAgent {
+            Effect::GenerateAppWithHarness {
                 draft_id,
                 app_id,
                 name,
-                agent,
+                harness,
                 prompt,
             } => Ok(vec![
-                requested_event(draft_id, app_id, name, prompt, agent)?,
+                requested_event(draft_id, app_id, name, prompt, harness)?,
                 generated_event(
                     draft_id,
                     vec![

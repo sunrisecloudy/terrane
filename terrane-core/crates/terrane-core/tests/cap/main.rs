@@ -6,6 +6,7 @@ mod helpers;
 
 mod app;
 mod builder;
+mod codex;
 mod crdt;
 mod host;
 mod kv;

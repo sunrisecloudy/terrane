@@ -87,12 +87,12 @@ pub enum Effect {
         agent: String,
         prompt: String,
     },
-    /// Ask an agent CLI to generate a Terrane app bundle draft.
-    BuildAppWithAgent {
+    /// Ask a harness CLI to generate a Terrane app bundle draft.
+    GenerateAppWithHarness {
         draft_id: String,
         app_id: String,
         name: String,
-        agent: String,
+        harness: String,
         prompt: String,
     },
     /// Mint this home's stable replica PeerID from OS entropy. The runner records
@@ -171,6 +171,7 @@ pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(cap::app::AppCapability));
     registry.register(Box::new(cap::builder::BuilderCapability));
+    registry.register(Box::new(cap::codex::CodexCapability));
     registry.register(Box::new(cap::kv::KvCapability));
     registry.register(Box::new(cap::crdt::CrdtCapability));
     registry.register(Box::new(cap::replica::ReplicaCapability));

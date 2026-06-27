@@ -9,7 +9,6 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use terrane_api::{AppSummary, AppsResponse};
-use terrane_core::cap::builder;
 use terrane_core::Core;
 use terrane_domain::{Error, EventRecord, Request};
 
@@ -174,18 +173,20 @@ pub fn generate_app_json(
     agent: Option<&str>,
 ) -> Result<String, String> {
     let draft_id = app_id.trim();
-    let agent = agent
+    let harness = agent
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(builder::DEFAULT_AGENT);
+        .unwrap_or("codex");
+    if harness != "codex" {
+        return Err(format!("unsupported app-generation harness: {harness}"));
+    }
     dispatch_on_core(
         core,
-        "builder.generate",
+        "codex.generate-app",
         &[
             draft_id.to_string(),
             app_id.to_string(),
             name.to_string(),
-            agent.to_string(),
             prompt.to_string(),
         ],
     )?;
@@ -195,7 +196,7 @@ pub fn generate_app_json(
         .drafts
         .get(draft_id)
         .ok_or_else(|| format!("builder draft missing after generation: {draft_id}"))?;
-    Ok(builder::draft_json(draft))
+    Ok(terrane_core::cap::builder::draft_json(draft))
 }
 
 pub fn list_apps(core: &HostCore) -> AppsResponse {
