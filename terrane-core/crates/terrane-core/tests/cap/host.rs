@@ -7,7 +7,9 @@ use std::fs;
 use std::path::Path;
 
 use tempfile::tempdir;
-use terrane_core::Core;
+use terrane_core::cap::app::AppRecord;
+use terrane_core::cap::host::{run_memory_backend, MemoryBackendBundle};
+use terrane_core::{fold_records_in_memory, Core, State};
 
 use crate::helpers::req;
 
@@ -414,6 +416,40 @@ fn runtime_resource_surface_matches_declarations() {
         declared.difference(&runtime).collect::<Vec<_>>(),
         runtime.difference(&declared).collect::<Vec<_>>(),
     );
+}
+
+#[test]
+fn memory_backend_run_returns_records_for_caller_owned_fold() {
+    let mut state = State::default();
+    state.app.apps.insert(
+        "preview-demo".to_string(),
+        AppRecord {
+            id: "preview-demo".to_string(),
+            name: "Preview Demo".to_string(),
+            source: None,
+        },
+    );
+    let bundle = MemoryBackendBundle {
+        source: BACKEND.to_string(),
+        name: "Preview Demo".to_string(),
+        resources: vec!["kv".to_string()],
+    };
+
+    let result = run_memory_backend(
+        "preview-demo",
+        &["set".to_string(), "a".to_string(), "1".to_string()],
+        &bundle,
+        state.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(result.output, "ok a");
+    assert_eq!(result.records.len(), 1);
+    assert_eq!(result.records[0].kind, "kv.set");
+    assert!(!state.kv.data.contains_key("preview-demo"));
+
+    fold_records_in_memory(&mut state, &result.records).unwrap();
+    assert_eq!(state.kv.data["preview-demo"]["a"], "1");
 }
 
 /// The generated `ctx.resource` section between the markers in `docs/APP_API.md`

@@ -15,7 +15,7 @@ function calculate(heightCm, weightKg) {
   };
 }
 
-var description = "A React-powered BMI calculator.";
+var description = "A Rust-built React BMI calculator with a metric calculation action.";
 
 var actions = {
   calculate: {

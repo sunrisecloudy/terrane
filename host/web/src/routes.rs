@@ -2,14 +2,21 @@ use std::path::Path;
 
 use nanoserde::DeJson;
 use terrane_api::{HealthResponse, InvokeRequest, InvokeResponse, CONTRACT_VERSION};
+use terrane_host::{PreviewFile, PreviewStore};
 use tiny_http::{Method, Request, Response};
 
 use crate::http::{authorized, header, json_error, json_ok, Resp};
-use crate::shim::inject_shim;
+use crate::shim::{inject_app_shim, inject_preview_shim};
 use crate::static_files::{content_type, safe_within};
+
+#[derive(DeJson)]
+struct CreatePreviewRequest {
+    files: Vec<PreviewFile>,
+}
 
 pub fn route(
     core: &mut terrane_host::HostCore,
+    previews: &mut PreviewStore,
     request: &mut Request,
     require_auth: bool,
     token: Option<&str>,
@@ -28,24 +35,94 @@ pub fn route(
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
         }),
+        (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),
+        (Method::Get, ["__terrane", "previews", id, "frame"]) => serve_preview(previews, id, ""),
+        (Method::Get, ["__terrane", "previews", id, "frame", rest @ ..]) => {
+            serve_preview(previews, id, &rest.join("/"))
+        }
+        (Method::Post, ["__terrane", "previews", id, "invoke"]) => {
+            invoke_preview(previews, id, request)
+        }
+        (Method::Get | Method::Post, ["__terrane", "previews", ..]) => json_error(404, "not found"),
         (Method::Get, ["apps"]) => json_ok(&terrane_host::list_apps(core)),
         (Method::Post, ["mcp"]) => mcp(core, request),
         (Method::Get, ["mcp"]) => json_error(405, "method not allowed"),
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
             crate::live_reload::response(core, id)
         }
-        (Method::Get, ["apps", _id, "__terrane", "react", name]) => {
-            crate::react_shell::runtime_response(name)
-        }
         (Method::Get, ["apps", id, "__terrane", "frame"]) => serve_ui(core, id, "", live_reload),
         (Method::Get, ["apps", id, "__terrane", "frame", rest @ ..]) => {
             serve_ui(core, id, &rest.join("/"), live_reload)
         }
+        (Method::Get, ["apps", _id, "__terrane", ..]) => json_error(404, "not found"),
         (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request),
         (Method::Get, ["apps", id]) => crate::shell::response(core, id),
-        (Method::Get, ["apps", id, rest @ ..]) => serve_ui(core, id, &rest.join("/"), live_reload),
+        (Method::Get, ["apps", id, rest @ ..]) => {
+            serve_bundle_asset(core, id, &rest.join("/"), live_reload)
+        }
         _ => json_error(404, "not found"),
     }
+}
+
+/// `POST /__terrane/previews` - create an in-memory app preview from files.
+fn create_preview(
+    core: &terrane_host::HostCore,
+    previews: &mut PreviewStore,
+    request: &mut Request,
+) -> Resp {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed: CreatePreviewRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad preview body: {e}")),
+    };
+
+    match previews.create_preview(parsed.files, core.state()) {
+        Ok(mut response) => {
+            response.frame_url = format!("/__terrane/previews/{}/frame/", response.id);
+            json_ok(&response)
+        }
+        Err(e) => json_error(400, &e),
+    }
+}
+
+/// `POST /__terrane/previews/{id}/invoke` - run the generated preview backend.
+fn invoke_preview(previews: &mut PreviewStore, id: &str, request: &mut Request) -> Resp {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed: InvokeRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad invoke body: {e}")),
+    };
+
+    match previews.invoke_backend(id, &parsed.verb, &parsed.args) {
+        Ok(output) => json_ok(&InvokeResponse { output }),
+        Err(e) if e.starts_with("no such preview:") => json_error(404, &e),
+        Err(e) => json_error(500, &e),
+    }
+}
+
+/// `GET /__terrane/previews/{id}/frame/...` - serve generated UI/assets.
+fn serve_preview(previews: &PreviewStore, id: &str, rel: &str) -> Resp {
+    let asset = match previews.read_asset(id, rel) {
+        Ok(asset) => asset,
+        Err(e) if e.starts_with("no such preview:") => return json_error(404, &e),
+        Err(e) if e.contains("absolute paths") || e.contains("parent-dir") => {
+            return json_error(403, &e)
+        }
+        Err(e) => return json_error(404, &e),
+    };
+    let content_type = asset.content_type;
+    let body = if content_type.starts_with("text/html") {
+        inject_preview_shim(asset.content.as_bytes(), id)
+    } else {
+        asset.content.into_bytes()
+    };
+    Response::from_data(body).with_header(header("Content-Type", &content_type))
 }
 
 /// `POST /mcp` — MCP JSON-RPC over HTTP, backed by the shared host MCP module.
@@ -92,23 +169,39 @@ fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload:
     };
     let base = Path::new(&source);
 
+    let Some(ui) = terrane_host::read_manifest_ui(&source) else {
+        return json_error(404, "app has no UI");
+    };
+    let entry = base.join(ui);
     let target = if rel.is_empty() {
-        match terrane_host::read_manifest_ui(&source) {
-            Some(ui) if ui.starts_with("react:") => {
-                return crate::react_shell::response(
-                    id,
-                    ui.trim_start_matches("react:"),
-                    live_reload,
-                );
-            }
-            Some(ui) => base.join(ui),
-            None => return json_error(404, "app has no UI"),
-        }
+        entry
     } else {
-        base.join(rel)
+        entry.parent().unwrap_or(base).join(rel)
     };
 
-    let Some(safe) = safe_within(base, &target) else {
+    serve_file(id, base, &target, live_reload)
+}
+
+/// `GET /apps/{id}/{rel}` — serve a direct bundle asset path rooted at the app
+/// source directory. This keeps `/apps/{id}/dist/...` useful for built bundles
+/// while the iframe route resolves relative to `manifest.ui`'s directory.
+fn serve_bundle_asset(
+    core: &mut terrane_host::HostCore,
+    id: &str,
+    rel: &str,
+    live_reload: bool,
+) -> Resp {
+    let Some(source) = core.state().app.apps.get(id).and_then(|a| a.source.clone()) else {
+        return json_error(404, &format!("no such app (or no bundle): {id}"));
+    };
+    let base = Path::new(&source);
+    let target = base.join(rel);
+
+    serve_file(id, base, &target, live_reload)
+}
+
+fn serve_file(id: &str, base: &Path, target: &Path, live_reload: bool) -> Resp {
+    let Some(safe) = safe_within(base, target) else {
         return json_error(403, "forbidden");
     };
     let Ok(bytes) = std::fs::read(&safe) else {
@@ -117,7 +210,7 @@ fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload:
 
     let ctype = content_type(&safe);
     let body = if ctype.starts_with("text/html") {
-        inject_shim(&bytes, id, live_reload)
+        inject_app_shim(&bytes, id, live_reload)
     } else {
         bytes
     };

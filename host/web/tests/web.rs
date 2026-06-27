@@ -57,6 +57,53 @@ fn copy_dir(src: &Path, dest: &Path) {
     }
 }
 
+fn write_built_react_fixture(root: &Path) -> PathBuf {
+    let app_dir = root.join("built-react");
+    std::fs::create_dir_all(app_dir.join("dist/assets")).unwrap();
+    std::fs::write(
+        app_dir.join("manifest.json"),
+        r#"{
+  "id": "built-react",
+  "name": "Built React",
+  "version": "0.1.0",
+  "backend": "main.js",
+  "ui": "dist/index.html",
+  "resources": []
+}
+"#,
+    )
+    .unwrap();
+    std::fs::write(app_dir.join("main.js"), "export default async () => '';\n").unwrap();
+    std::fs::write(
+        app_dir.join("dist/index.html"),
+        r#"<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Built React Fixture</title>
+  <link rel="stylesheet" href="./assets/index.css">
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module" src="./assets/index.js"></script>
+</body>
+</html>
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app_dir.join("dist/assets/index.js"),
+        "document.body.dataset.builtReact = 'loaded';\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app_dir.join("dist/assets/index.css"),
+        "body { font-family: system-ui; }\n",
+    )
+    .unwrap();
+    app_dir
+}
+
 /// Minimal blocking HTTP/1.0 client (Connection: close → read to EOF).
 fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
     http_with_headers(addr, method, path, body, &[])
@@ -98,6 +145,49 @@ fn http_with_headers(
     (status, body)
 }
 
+fn preview_body(files: &[(&str, &str)]) -> String {
+    let files = files
+        .iter()
+        .map(|(path, content)| {
+            format!(
+                r#"{{"path":"{}","content":"{}"}}"#,
+                json_escape(path),
+                json_escape(content)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(r#"{{"files":[{files}]}}"#)
+}
+
+fn json_escape(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn json_string_field(body: &str, field: &str) -> String {
+    let key = format!(r#""{field}":""#);
+    let start = body
+        .find(&key)
+        .unwrap_or_else(|| panic!("missing field {field} in {body}"))
+        + key.len();
+    let rest = &body[start..];
+    let end = rest
+        .find('"')
+        .unwrap_or_else(|| panic!("unterminated field {field} in {body}"));
+    rest[..end].to_string()
+}
+
 /// Spawn terrane-web on an ephemeral port; return (child, addr) once it's bound.
 fn spawn_web(home: &std::path::Path) -> (Child, String) {
     spawn_web_with(home, "127.0.0.1:0", None)
@@ -127,13 +217,114 @@ fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (C
 }
 
 #[test]
+fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (mut child, addr) = spawn_web(home);
+
+    let create = preview_body(&[
+        (
+            "manifest.json",
+            r#"{"id":"hello-preview","name":"Hello Preview","backend":"main.js","ui":"index.html","resources":[]}"#,
+        ),
+        (
+            "main.js",
+            r#"var actions = {
+  hello: {
+    summary: "Return a greeting.",
+    args: [],
+    returns: "a greeting line.",
+    run: function () {
+      return "Hello from Preview";
+    }
+  }
+};
+"#,
+        ),
+        (
+            "index.html",
+            r#"<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body><h1>Hello Preview</h1></body>
+</html>
+"#,
+        ),
+        ("style.css", "body { color: rgb(1 2 3); }\n"),
+    ]);
+
+    let (status, body) = http(&addr, "POST", "/__terrane/previews", Some(&create));
+    assert_eq!(status, 200, "create preview: {body}");
+    let preview_id = json_string_field(&body, "id");
+    let frame_url = json_string_field(&body, "frameUrl");
+    assert!(
+        frame_url == format!("/__terrane/previews/{preview_id}/frame/"),
+        "frameUrl: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", &frame_url, None);
+    assert_eq!(status, 200, "preview frame: {body}");
+    assert!(
+        body.contains("window.terrane"),
+        "preview shim missing: {body}"
+    );
+    assert!(
+        body.contains(&format!("/__terrane/previews/{preview_id}/invoke")),
+        "preview invoke route missing: {body}"
+    );
+    assert!(
+        !body.contains(&format!("/apps/{preview_id}/invoke")),
+        "preview frame should not use installed-app invoke route: {body}"
+    );
+    assert!(
+        body.contains("var previewUrl = null;"),
+        "preview frames should disable nested preview creation: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        &format!("/__terrane/previews/{preview_id}/frame/style.css"),
+        None,
+    );
+    assert_eq!(status, 200, "preview style: {body}");
+    assert!(body.contains("rgb(1 2 3)"), "preview style: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/previews/{preview_id}/invoke"),
+        Some(r#"{"verb":"hello","args":[]}"#),
+    );
+    assert_eq!(status, 200, "preview invoke: {body}");
+    assert!(
+        body.contains("Hello from Preview"),
+        "preview invoke output: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200, "apps after preview: {body}");
+    assert!(
+        !body.contains(&preview_id) && !body.contains("hello-preview"),
+        "preview leaked into /apps: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn serves_catalog_ui_and_invoke_over_http() {
     let dir = tempdir().unwrap();
     let home = dir.path();
+    let built_react = write_built_react_fixture(dir.path());
     {
         let mut core = Core::open(home.join("log.bin")).unwrap();
         install(&mut core, "todo"); // has a UI
-        install(&mut core, "bmi-calculator"); // React shell UI
+        install_from_source(&mut core, "built-react", &built_react); // built React UI
         install(&mut core, "todo-cli-collaborate"); // crdt add/list
     }
 
@@ -149,7 +340,7 @@ fn serves_catalog_ui_and_invoke_over_http() {
     assert_eq!(status, 200);
     assert!(
         body.contains("todo-cli-collaborate")
-            && body.contains("bmi-calculator")
+            && body.contains("built-react")
             && body.contains("\"todo\""),
         "apps: {body}"
     );
@@ -172,6 +363,62 @@ fn serves_catalog_ui_and_invoke_over_http() {
         "app frame missing: {body}"
     );
 
+    // Private in-memory preview routes: create a generated bundle, serve the
+    // iframe HTML/assets, inject the preview invoke shim, and invoke its backend.
+    let preview_body = r#"{"files":[{"path":"manifest.json","content":"{\"id\":\"web-demo\",\"name\":\"Web Demo\",\"version\":\"0.1.0\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[]}"},{"path":"main.js","content":"var actions={hello:{summary:\"Return a greeting.\",args:[],returns:\"a greeting line.\",run:function(){return \"Hello from web preview\";}}};"},{"path":"index.html","content":"<!doctype html><html><head><title>Web Demo</title><link rel=\"stylesheet\" href=\"style.css\"></head><body><button id=\"hello\">Hello</button></body></html>"},{"path":"style.css","content":"body { color: rgb(1, 2, 3); }"}]}"#;
+    let (status, body) = http(&addr, "POST", "/__terrane/previews", Some(preview_body));
+    assert_eq!(status, 200, "create preview: {body}");
+    assert!(
+        body.contains(r#""id":"preview-web-demo-1""#)
+            && body.contains(r#""frameUrl":"/__terrane/previews/preview-web-demo-1/frame/""#),
+        "create preview body: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/__terrane/previews/preview-web-demo-1/frame/",
+        None,
+    );
+    assert_eq!(status, 200, "preview frame: {body}");
+    assert!(
+        body.contains("window.terrane"),
+        "preview shim missing: {body}"
+    );
+    assert!(
+        body.contains("/__terrane/previews/preview-web-demo-1/invoke"),
+        "preview invoke route missing: {body}"
+    );
+    assert!(body.contains("Web Demo"), "preview HTML missing: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/__terrane/previews/preview-web-demo-1/frame/style.css",
+        None,
+    );
+    assert_eq!(status, 200, "preview css: {body}");
+    assert!(body.contains("rgb(1, 2, 3)"), "preview css: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/previews/preview-web-demo-1/invoke",
+        Some(r#"{"verb":"hello","args":[]}"#),
+    );
+    assert_eq!(status, 200, "preview invoke: {body}");
+    assert!(
+        body.contains("Hello from web preview"),
+        "preview invoke body: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200);
+    assert!(
+        !body.contains("preview-web-demo-1"),
+        "preview app must stay out of catalog: {body}"
+    );
+
     // UI frame: serves the app's index.html with the invoke shim injected.
     let (status, body) = http(&addr, "GET", "/apps/todo/__terrane/frame/", None);
     assert_eq!(status, 200, "ui body: {body}");
@@ -183,37 +430,55 @@ fn serves_catalog_ui_and_invoke_over_http() {
         "live reload hook missing: {body}"
     );
 
-    // React UI frame: manifest.ui can opt into the host-provided React shell.
-    let (status, body) = http(&addr, "GET", "/apps/bmi-calculator/__terrane/frame/", None);
-    assert_eq!(status, 200, "react shell body: {body}");
+    // Built React frame: manifest.ui points at dist/index.html, and frame
+    // assets resolve relative to that built entry directory.
+    let (status, body) = http(&addr, "GET", "/apps/built-react/__terrane/frame/", None);
+    assert_eq!(status, 200, "built react frame body: {body}");
     assert!(body.contains("window.terrane"), "shim missing: {body}");
     assert!(
-        body.contains("__terrane/react/react.js")
-            && body.contains("__terrane/react/react-dom.js")
-            && body.contains("__terrane/frame/app.js"),
-        "react shell scripts missing: {body}"
+        body.contains("\"built-react\""),
+        "app id value missing: {body}"
     );
-
-    let (status, body) = http(
-        &addr,
-        "GET",
-        "/apps/bmi-calculator/__terrane/react/react.js",
-        None,
-    );
-    assert_eq!(status, 200, "react runtime: {body}");
     assert!(
-        body.contains("window.React") && body.contains("useState"),
-        "react runtime missing API: {body}"
+        body.contains("__terrane/live-version"),
+        "live reload hook missing: {body}"
+    );
+    assert!(
+        body.contains("Built React Fixture") && body.contains("./assets/index.js"),
+        "built frame missing bundled asset references: {body}"
     );
 
     let (status, body) = http(
         &addr,
         "GET",
-        "/apps/bmi-calculator/__terrane/frame/app.js",
+        "/apps/built-react/__terrane/frame/assets/index.js",
         None,
     );
-    assert_eq!(status, 200, "react app js: {body}");
-    assert!(body.contains("BMI Calculator"), "react app missing: {body}");
+    assert_eq!(status, 200, "built react asset: {body}");
+    assert!(
+        body.contains("dataset.builtReact"),
+        "built react asset missing: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/apps/built-react/dist/assets/index.css",
+        None,
+    );
+    assert_eq!(status, 200, "direct built asset: {body}");
+    assert!(
+        body.contains("system-ui"),
+        "direct built asset missing: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "GET",
+        "/apps/built-react/__terrane/react/react.js",
+        None,
+    );
+    assert_eq!(status, 404, "removed react runtime route: {body}");
 
     let (status, body) = http(&addr, "GET", "/apps/todo/__terrane/live-version", None);
     assert_eq!(status, 200, "live version: {body}");

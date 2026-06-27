@@ -3,6 +3,11 @@
   "name": "BMI Calculator",
   "version": "0.1.0",
   "backend": "main.js",
-  "ui": "react:app.js",
+  "ui": "dist/index.html",
+  "frontend": {
+    "tool": "terrane-app-build",
+    "entry": "src/main.jsx",
+    "styles": ["src/app.css"]
+  },
   "resources": []
 }

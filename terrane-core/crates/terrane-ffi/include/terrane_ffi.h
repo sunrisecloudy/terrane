@@ -40,6 +40,30 @@ int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,
 int terrane_dispatch(TerraneHandle *h, const char *name, size_t argc,
                      const char *const *argv, char **out_output, char **out_error);
 
+/* Create an in-memory App Builder preview from JSON:
+ * {"files":[{"path":"manifest.json","content":"..."}, ...]}.
+ * On success writes {"id":"...","frameUrl":"terrane-preview://<id>/frame/"}.
+ */
+int terrane_preview_create(TerraneHandle *h, const char *files_json,
+                           char **out_output, char **out_error);
+
+/* Read a preview asset. Empty path resolves to manifest.ui; non-empty path is
+ * resolved relative to manifest.ui's parent. On success writes JSON with
+ * content and contentType. */
+int terrane_preview_read_asset(TerraneHandle *h, const char *preview_id,
+                               const char *path, char **out_output,
+                               char **out_error);
+int terrane_preview_asset(TerraneHandle *h, const char *preview_id,
+                          const char *path, char **out_output,
+                          char **out_error);
+
+/* Invoke a preview backend verb with string args. On success writes the
+ * backend's returned output string. */
+int terrane_preview_invoke(TerraneHandle *h, const char *preview_id,
+                           const char *verb, size_t argc,
+                           const char *const *argv, char **out_output,
+                           char **out_error);
+
 /* Free a string returned by this library. Null-safe; non-null pointers are
  * single-use and must be freed exactly once. */
 void terrane_string_free(char *s);

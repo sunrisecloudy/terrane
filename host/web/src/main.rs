@@ -15,7 +15,6 @@
 mod args;
 mod http;
 mod live_reload;
-mod react_shell;
 mod routes;
 mod shell;
 mod shim;
@@ -62,9 +61,11 @@ fn main() {
         if args.live_reload { "on" } else { "off" }
     );
 
+    let mut previews = terrane_host::PreviewStore::new();
     for mut request in server.incoming_requests() {
         let response = routes::route(
             &mut core,
+            &mut previews,
             &mut request,
             require_auth,
             token.as_deref(),

@@ -64,11 +64,22 @@ impl Capability for HostCapability {
     }
 }
 
-/// The outcome of a backend run: the `kv.*` records it produced (to commit) and
-/// the string it returned (for the host to print).
-pub(crate) struct RunResult {
-    pub(crate) records: Vec<EventRecord>,
-    pub(crate) output: String,
+/// The outcome of a backend run: the resource-write records it produced and the
+/// string it returned. Callers choose whether to commit the records to the real
+/// log or fold them into a private in-memory [`State`](crate::State).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunResult {
+    pub records: Vec<EventRecord>,
+    pub output: String,
+}
+
+/// A memory-backed backend bundle: the JS source, display name, and declared
+/// resource namespaces. This is the preview/test twin of an on-disk bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryBackendBundle {
+    pub source: String,
+    pub name: String,
+    pub resources: Vec<String>,
 }
 
 /// Run an app's JS backend once. `source` is the app's bundle dir (or a direct
@@ -82,7 +93,17 @@ pub(crate) fn run(
     base_state: State,
 ) -> Result<RunResult> {
     let bundle = load_bundle(source)?;
+    run_memory_backend(app, input, &bundle, base_state)
+}
 
+/// Run a memory-backed backend once. No disk reads are performed and no event
+/// log is appended; the returned records remain the caller's responsibility.
+pub fn run_memory_backend(
+    app: &str,
+    input: &[String],
+    bundle: &MemoryBackendBundle,
+    base_state: State,
+) -> Result<RunResult> {
     let cell = Rc::new(RefCell::new(RunAccum {
         app: app.to_string(),
         state: base_state,
@@ -399,25 +420,19 @@ const APP_RUNTIME: &str = r#"
 
 /// A loaded app bundle: the backend JS source, the resource namespaces it is
 /// allowed to reach (its declared sandbox surface), and its display name.
-struct Bundle {
-    source: String,
-    name: String,
-    resources: Vec<String>,
-}
-
 /// Load the bundle for an app whose `source` is either the bundle directory
 /// (containing manifest.json + the backend file) or a direct `.js` path. A
 /// directory's resources come from `manifest.resources` (absent → none, least
 /// privilege); a direct `.js` has no manifest, so it gets the dev default of all
 /// currently-known resources.
-fn load_bundle(source: &str) -> Result<Bundle> {
+fn load_bundle(source: &str) -> Result<MemoryBackendBundle> {
     let path = Path::new(source);
     if path.is_dir() {
         let manifest = read_manifest(path)?;
         let js_path = path.join(&manifest.backend);
         let source = std::fs::read_to_string(&js_path)
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))?;
-        Ok(Bundle {
+        Ok(MemoryBackendBundle {
             source,
             name: manifest.name,
             resources: manifest.resources,
@@ -425,7 +440,7 @@ fn load_bundle(source: &str) -> Result<Bundle> {
     } else {
         let source = std::fs::read_to_string(path)
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", path.display())))?;
-        Ok(Bundle {
+        Ok(MemoryBackendBundle {
             source,
             name: String::new(),
             resources: vec!["kv".to_string()],

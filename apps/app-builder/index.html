@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>App Builder</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="builder">
+    <section class="hero">
+      <div>
+        <h1>App Builder</h1>
+        <p>Create a starter Terrane app bundle from a name, id, and purpose.</p>
+      </div>
+      <button id="generate" type="button">Generate</button>
+    </section>
+
+    <section class="panel form" aria-label="App details">
+      <label>
+        <span>App id</span>
+        <input id="app-id" type="text" value="my-app" autocomplete="off">
+      </label>
+      <label>
+        <span>Name</span>
+        <input id="app-name" type="text" value="My App" autocomplete="off">
+      </label>
+      <label class="wide">
+        <span>Description</span>
+        <textarea id="description" rows="3">A local-first Terrane app.</textarea>
+      </label>
+    </section>
+
+    <section class="workspace">
+      <section class="panel output-panel">
+        <div class="output-head">
+          <h2>Generated files</h2>
+          <span id="status">Ready</span>
+        </div>
+        <div id="files" class="files"></div>
+      </section>
+
+      <section class="panel preview-panel">
+        <div class="output-head">
+          <h2>Preview</h2>
+          <span id="preview-status">Waiting</span>
+        </div>
+        <iframe id="preview-frame" title="Generated app preview"></iframe>
+      </section>
+    </section>
+  </main>
+<script src="app.js"></script>
+</body>
+</html>

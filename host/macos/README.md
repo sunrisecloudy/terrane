@@ -1,15 +1,19 @@
 # host/macos — Terrane macOS host
 
-A native AppKit + WKWebView app that runs a Terrane app's UI and bridges it to
-terrane-core over the [`terrane-ffi`](../../terrane-core/crates/terrane-ffi) C
-ABI. The first non-Rust host; the same shape (FFI + thin shell) is how iOS /
+A native AppKit + WKWebView app switcher that runs Terrane app UIs and bridges
+them to terrane-core over the [`terrane-ffi`](../../terrane-core/crates/terrane-ffi)
+C ABI. The first non-Rust host; the same shape (FFI + thin shell) is how iOS /
 Android / Windows hosts will work.
 
 ```
-WKWebView (apps/<id>/index.html + terrane.invoke shim)
-   │ window.webkit.messageHandlers.terrane.postMessage({verb, args})
+native top bar (plain UI apps)
+   │ selects app id + bundle path
+   ▼
+WKWebView (apps/<id>/<manifest.ui> + terrane.invoke shim)
+   │ window.webkit.messageHandlers.terrane.postMessage({kind:"invoke", verb, args})
    ▼
 TerraneBridge (WKScriptMessageHandlerWithReply)
+   │ terrane_dispatch(app.add, id, name, --source, path) if needed
    │ terrane_host_run(handle, app, argv)        ← terrane-ffi C ABI
    ▼
 libterrane_ffi.a  ──▶  terrane-core: dispatch("host.run", …)
@@ -19,7 +23,39 @@ WKWebView re-renders
 ```
 
 Every UI action is a `host.run` → recorded `kv.*` → replayable, exactly like the
-CLI. The app id is fixed at launch, so a page can only act as its own app.
+CLI. The app id is selected by the native shell, so a page can only act as the
+currently loaded app.
+
+The top bar discovers plain HTML UIs from:
+
+- `$TERRANE_REPO/apps/<id>/manifest.json`
+- the current working directory's `apps/<id>/manifest.json`
+- `$TERRANE_HOME/apps/<id>/manifest.json`
+- the app bundle's `Resources/apps/<id>/manifest.json`
+
+`manifest.ui` must point at an existing `.html`/`.htm` file such as
+`index.html` or `dist/index.html`. `react:` entries are intentionally skipped;
+this host does not add a fake React runtime.
+
+## App Builder preview
+
+The injected shim also exposes `window.terrane.preview(files)`. App Builder
+passes generated files to the native bridge, which calls `terrane_preview_create`
+on the same FFI handle and gets back:
+
+```json
+{ "id": "...", "frameUrl": "terrane-preview://<id>/frame/" }
+```
+
+The returned URL is loaded in an iframe through `PreviewSchemeHandler`, a
+`WKURLSchemeHandler` registered for `terrane-preview` before the `WKWebView` is
+created. Requests for `terrane-preview://<id>/frame/` and
+`terrane-preview://<id>/frame/<asset>` call `terrane_preview_read_asset`; when
+preview documents call `terrane.invoke(verb, ...args)`, the shim detects the
+`terrane-preview:` protocol and routes to `terrane_preview_invoke`.
+
+Preview state lives in Rust behind the FFI handle. The macOS host does not write
+a temp app bundle or add preview apps to the catalog.
 
 ## Build
 
@@ -37,17 +73,17 @@ xcodebuild -project Terrane.xcodeproj -scheme TerraneHost -configuration Debug \
 
 ## Run
 
-The app needs to find (a) the workspace log and (b) the app's UI bundle:
+The app needs to find (a) the workspace log and (b) local app UI bundles:
 
 - `TERRANE_HOME` — the workspace dir (holds `log.bin`); default `~/.terrane`.
-- `TERRANE_REPO` — repo root, so it can resolve `apps/<id>/index.html`.
+- `TERRANE_REPO` — repo root, so it can resolve `apps/<id>/<manifest.ui>`.
 
 ```sh
-# register the app once (any TERRANE_HOME)
-( cd ../../terrane-core && TERRANE_HOME=~/.terrane \
-    cargo run -q -p terrane-cli -- app add todo Todo --source "$PWD/../apps/todo" )
+# launch with a native top-bar switcher
+TERRANE_HOME=~/.terrane TERRANE_REPO="$PWD/../.." \
+  build/Debug/TerraneHost.app/Contents/MacOS/TerraneHost
 
-# launch the todo app
+# optionally select an initial app
 TERRANE_HOME=~/.terrane TERRANE_REPO="$PWD/../.." \
   build/Debug/TerraneHost.app/Contents/MacOS/TerraneHost todo
 ```

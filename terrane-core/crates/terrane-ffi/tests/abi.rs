@@ -92,16 +92,65 @@ unsafe fn call(
         &mut out,
         &mut err,
     );
-    let take = |p: *mut c_char| -> Option<String> {
-        if p.is_null() {
-            None
-        } else {
-            let s = CStr::from_ptr(p).to_str().unwrap().to_string();
-            terrane_string_free(p);
-            Some(s)
-        }
-    };
-    (code, take(out), take(err))
+    (code, take_c_string(out), take_c_string(err))
+}
+
+unsafe fn take_c_string(p: *mut c_char) -> Option<String> {
+    if p.is_null() {
+        None
+    } else {
+        let s = CStr::from_ptr(p).to_str().unwrap().to_string();
+        terrane_string_free(p);
+        Some(s)
+    }
+}
+
+unsafe fn call_preview_create(
+    h: *mut TerraneHandle,
+    files_json: &str,
+) -> (i32, Option<String>, Option<String>) {
+    let files = CString::new(files_json).unwrap();
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut err: *mut c_char = ptr::null_mut();
+    let code = terrane_preview_create(h, files.as_ptr(), &mut out, &mut err);
+    (code, take_c_string(out), take_c_string(err))
+}
+
+unsafe fn call_preview_read_asset(
+    h: *mut TerraneHandle,
+    id: &str,
+    path: &str,
+) -> (i32, Option<String>, Option<String>) {
+    let id = CString::new(id).unwrap();
+    let path = CString::new(path).unwrap();
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut err: *mut c_char = ptr::null_mut();
+    let code = terrane_preview_asset(h, id.as_ptr(), path.as_ptr(), &mut out, &mut err);
+    (code, take_c_string(out), take_c_string(err))
+}
+
+unsafe fn call_preview_invoke(
+    h: *mut TerraneHandle,
+    id: &str,
+    verb: &str,
+    args: &[&str],
+) -> (i32, Option<String>, Option<String>) {
+    let id = CString::new(id).unwrap();
+    let verb = CString::new(verb).unwrap();
+    let arg_cs: Vec<CString> = args.iter().map(|a| CString::new(*a).unwrap()).collect();
+    let argv: Vec<*const c_char> = arg_cs.iter().map(|c| c.as_ptr()).collect();
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut err: *mut c_char = ptr::null_mut();
+    let code = terrane_preview_invoke(
+        h,
+        id.as_ptr(),
+        verb.as_ptr(),
+        argv.len(),
+        argv.as_ptr(),
+        &mut out,
+        &mut err,
+    );
+    (code, take_c_string(out), take_c_string(err))
 }
 
 #[test]
@@ -246,6 +295,57 @@ fn host_run_unknown_app_returns_error_not_panic() {
 }
 
 #[test]
+fn app_builder_preview_abi_stays_in_memory() {
+    let dir = tempdir().unwrap();
+    let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let log = dir.path().join("log.bin");
+    let files_json = r#"{"files":[{"path":"manifest.json","content":"{\"id\":\"demo\",\"name\":\"Demo\",\"ui\":\"ui/index.html\",\"backend\":\"main.js\",\"resources\":[\"kv\"]}"},{"path":"ui/index.html","content":"<script src=\"client.js\"></script>"},{"path":"ui/client.js","content":"console.log(\"hi\")"},{"path":"main.js","content":"var kv=ctx.resource.kv;function handle(input){if(input[0]===\"set\"){kv.set(input[1],input[2]);return \"ok\";}if(input[0]===\"get\"){var v=kv.get(input[1]);return v==null?\"(none)\":v;}return \"?\";}"}]}"#;
+
+    unsafe {
+        let h = terrane_open(home.as_ptr());
+        assert!(!h.is_null(), "open should succeed");
+        let before = read_log(&log).unwrap();
+
+        let (code, out, err) = call_preview_create(h, files_json);
+        assert_eq!(code, TERRANE_OK, "preview create err: {err:?}");
+        let json = out.unwrap();
+        assert!(json.contains(r#""id":"preview-demo-1""#), "json: {json}");
+        assert!(
+            json.contains(r#""frameUrl":"terrane-preview://preview-demo-1/frame/""#),
+            "json: {json}"
+        );
+
+        let (code, out, err) = call_preview_read_asset(h, "preview-demo-1", "");
+        assert_eq!(code, TERRANE_OK, "preview asset err: {err:?}");
+        let asset = out.unwrap();
+        assert!(
+            asset.contains(r#""contentType":"text/html; charset=utf-8""#),
+            "asset: {asset}"
+        );
+        assert!(asset.contains("client.js"), "asset: {asset}");
+
+        let (code, out, err) = call_preview_invoke(h, "preview-demo-1", "set", &["answer", "42"]);
+        assert_eq!(code, TERRANE_OK, "preview set err: {err:?}");
+        assert_eq!(out.as_deref(), Some("ok"));
+
+        let (code, out, err) = call_preview_invoke(h, "preview-demo-1", "get", &["answer"]);
+        assert_eq!(code, TERRANE_OK, "preview get err: {err:?}");
+        assert_eq!(out.as_deref(), Some("42"));
+
+        let after = read_log(&log).unwrap();
+        assert_eq!(after, before, "preview must not append to the real log");
+        assert!(
+            after
+                .iter()
+                .all(|r| r.kind != "app.added" && r.kind != "kv.set"),
+            "preview must not install or persist writes: {after:?}"
+        );
+
+        terrane_close(h);
+    }
+}
+
+#[test]
 fn null_safety_and_single_use_contracts() {
     unsafe {
         // Null handle → typed error, no crash.
@@ -286,6 +386,10 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "TerraneHandle *terrane_open(",
         "int terrane_host_run(",
         "int terrane_dispatch(",
+        "int terrane_preview_create(",
+        "int terrane_preview_read_asset(",
+        "int terrane_preview_asset(",
+        "int terrane_preview_invoke(",
         "void terrane_string_free(",
         "void terrane_close(",
         "#define TERRANE_OK 0",

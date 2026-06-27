@@ -31,6 +31,7 @@ pub const TERRANE_ERR_INTERNAL: c_int = 5;
 /// Opaque handle to an open workspace. Only ever crossed as a pointer.
 pub struct TerraneHandle {
     inner: Mutex<terrane_host::HostCore>,
+    previews: Mutex<terrane_host::PreviewStore>,
 }
 
 /// Open (or create) a workspace at `home` (the dir holding `log.bin`); an empty
@@ -46,6 +47,7 @@ pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle
             return terrane_host::open().ok().map(|core| {
                 Box::into_raw(Box::new(TerraneHandle {
                     inner: Mutex::new(core),
+                    previews: Mutex::new(terrane_host::PreviewStore::new()),
                 }))
             });
         } else {
@@ -54,6 +56,7 @@ pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle
                 return terrane_host::open().ok().map(|core| {
                     Box::into_raw(Box::new(TerraneHandle {
                         inner: Mutex::new(core),
+                        previews: Mutex::new(terrane_host::PreviewStore::new()),
                     }))
                 });
             } else {
@@ -63,6 +66,7 @@ pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle
         let core = terrane_host::open_at_home(log_path).ok()?;
         Some(Box::into_raw(Box::new(TerraneHandle {
             inner: Mutex::new(core),
+            previews: Mutex::new(terrane_host::PreviewStore::new()),
         })))
     }));
     result.ok().flatten().unwrap_or(ptr::null_mut())
@@ -137,6 +141,163 @@ pub unsafe extern "C" fn terrane_dispatch(
             Err(code) => return code,
         };
         dispatch_request(h, Request::new(name, args), false, out_output, out_error)
+    }));
+    finish(code, out_error)
+}
+
+/// Create an in-memory App Builder preview from a JSON files payload. On success
+/// writes `{"id":"...","frameUrl":"terrane-preview://<id>/frame/"}`.
+///
+/// # Safety
+/// `files_json` must be a valid C string. `out_output`/`out_error` must be
+/// valid pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_preview_create(
+    h: *mut TerraneHandle,
+    files_json: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let files_json = match read_str(files_json) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let base_state = {
+            let core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+            core.state().clone()
+        };
+        let mut previews = handle.previews.lock().unwrap_or_else(|e| e.into_inner());
+        match previews.create_preview_json_from_json(&files_json, &base_state) {
+            Ok(json) => {
+                write_out(out_output, json);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
+/// Read an in-memory preview asset by preview id and frame-relative path. An
+/// empty `path` returns `manifest.ui`. On success writes JSON with `content` and
+/// `contentType`.
+///
+/// # Safety
+/// `preview_id` and `path` must be valid C strings. `out_output`/`out_error`
+/// must be valid pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_preview_read_asset(
+    h: *mut TerraneHandle,
+    preview_id: *const c_char,
+    path: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let preview_id = match read_str(preview_id) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let path = match read_str(path) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let previews = handle.previews.lock().unwrap_or_else(|e| e.into_inner());
+        match previews.read_asset_json(&preview_id, &path) {
+            Ok(json) => {
+                write_out(out_output, json);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
+/// Read an in-memory preview asset by preview id and frame-relative path.
+/// Alias kept short for native hosts and docs.
+///
+/// # Safety
+/// Same as [`terrane_preview_read_asset`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_preview_asset(
+    h: *mut TerraneHandle,
+    preview_id: *const c_char,
+    path: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    terrane_preview_read_asset(h, preview_id, path, out_output, out_error)
+}
+
+/// Invoke an in-memory preview backend. On success writes the backend's returned
+/// output string. Preview writes fold into preview State only; no event log is
+/// appended.
+///
+/// # Safety
+/// `preview_id`, `verb`, and each `argv[i]` must be valid C strings; `argv`
+/// must point to `argc` elements (or be null when `argc == 0`).
+/// `out_output`/`out_error` must be valid pointers to write a `char*` into (or
+/// null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_preview_invoke(
+    h: *mut TerraneHandle,
+    preview_id: *const c_char,
+    verb: *const c_char,
+    argc: usize,
+    argv: *const *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let preview_id = match read_str(preview_id) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let verb = match read_str(verb) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let args = match read_argv(argc, argv) {
+            Ok(a) => a,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut previews = handle.previews.lock().unwrap_or_else(|e| e.into_inner());
+        match previews.invoke_backend(&preview_id, &verb, &args) {
+            Ok(output) => {
+                write_out(out_output, output);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
     }));
     finish(code, out_error)
 }

@@ -273,6 +273,16 @@ pub(crate) fn apply(registry: &Registry, state: &mut State, record: &EventRecord
     Ok(())
 }
 
+/// Fold records into a caller-owned State without appending them to any log.
+/// Preview and test surfaces use this after a memory-backed backend run.
+pub fn fold_records_in_memory(state: &mut State, records: &[EventRecord]) -> Result<()> {
+    let registry = default_registry();
+    for record in records {
+        apply(&registry, state, record)?;
+    }
+    Ok(())
+}
+
 /// Read every [`EventRecord`] from the log, in order. The log is a flat sequence
 /// of length-prefixed borsh records: a little-endian `u32` byte length followed
 /// by that many bytes of one borsh-encoded `EventRecord`. A missing log is an

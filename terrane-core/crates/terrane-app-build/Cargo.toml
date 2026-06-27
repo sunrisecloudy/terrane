@@ -1,0 +1,9 @@
+[package]
+name = "terrane-app-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "terrane-app-build"
+path = "src/main.rs"

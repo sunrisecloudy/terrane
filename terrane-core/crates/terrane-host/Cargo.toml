@@ -14,3 +14,6 @@ nanoserde = { workspace = true }
 terrane-api = { path = "../terrane-api" }
 terrane-core.workspace = true
 terrane-domain.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

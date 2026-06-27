@@ -14,9 +14,11 @@ use terrane_domain::{Error, EventRecord, Request};
 
 pub mod edge;
 pub mod mcp;
+pub mod preview;
 pub mod sync;
 
 pub use edge::EdgeRunner;
+pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 pub use sync::{serve_conn, sync_conn};
 
 pub type HostCore = Core<EdgeRunner>;
