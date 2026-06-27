@@ -73,29 +73,31 @@ impl Capability for CodexCapability {
     fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
         match name {
             "codex.generate-app" => {
-                let draft_id = builder::validate_id(&arg(args, 0, "draft id")?, "draft id")?;
-                let app_id = builder::validate_id(&arg(args, 1, "app id")?, "app id")?;
-                let name = non_empty(arg(args, 2, "app name")?, "app name")?;
-                let prompt = non_empty(args.get(3..).unwrap_or_default().join(" "), "prompt")?;
+                let parsed = parse_harness_args(args, 4)?;
+                let draft_id = builder::validate_id(&parsed.required[0], "draft id")?;
+                let app_id = builder::validate_id(&parsed.required[1], "app id")?;
+                let name = non_empty(parsed.required[2].clone(), "app name")?;
+                let prompt = non_empty(parsed.tail, "prompt")?;
                 Ok(Decision::Effect(Effect::GenerateAppWithHarness {
                     draft_id,
                     app_id,
                     name,
-                    harness: DEFAULT_HARNESS.to_string(),
+                    harness: parsed.harness,
                     prompt,
                 }))
             }
             "codex.run-js" => {
-                let run_id = builder::validate_id(&arg(args, 0, "run id")?, "run id")?;
-                let app_id = builder::validate_id(&arg(args, 1, "app id")?, "app id")?;
+                let parsed = parse_harness_args(args, 3)?;
+                let run_id = builder::validate_id(&parsed.required[0], "run id")?;
+                let app_id = builder::validate_id(&parsed.required[1], "app id")?;
                 if !state.app.apps.contains_key(&app_id) {
                     return Err(Error::AppNotFound(app_id));
                 }
-                let prompt = non_empty(args.get(2..).unwrap_or_default().join(" "), "prompt")?;
+                let prompt = non_empty(parsed.tail, "prompt")?;
                 Ok(Decision::Effect(Effect::RunCodexJs {
                     run_id,
                     app_id,
-                    harness: DEFAULT_HARNESS.to_string(),
+                    harness: parsed.harness,
                     prompt,
                 }))
             }
@@ -205,6 +207,49 @@ pub fn parse_run_js_output(raw: &str) -> Result<String> {
     let payload = RunJsPayload::deserialize_json(json)
         .map_err(|e| Error::InvalidInput(format!("codex run-js output JSON: {e}")))?;
     non_empty(payload.js, "generated js")
+}
+
+struct ParsedHarnessArgs {
+    harness: String,
+    required: Vec<String>,
+    tail: String,
+}
+
+fn parse_harness_args(args: &[String], required_count: usize) -> Result<ParsedHarnessArgs> {
+    let mut harness = DEFAULT_HARNESS.to_string();
+    let mut rest = args;
+    if matches!(args.first().map(String::as_str), Some("--harness")) {
+        harness = supported_harness(arg(args, 1, "harness")?)?;
+        rest = args.get(2..).unwrap_or_default();
+    }
+    if rest.len() < required_count {
+        return Err(Error::InvalidInput(format!(
+            "missing {}",
+            match required_count {
+                4 => "draft id, app id, app name, or prompt",
+                3 => "run id, app id, or prompt",
+                _ => "required argument",
+            }
+        )));
+    }
+    let required = rest[..required_count - 1].to_vec();
+    let tail = rest[required_count - 1..].join(" ");
+    Ok(ParsedHarnessArgs {
+        harness,
+        required,
+        tail,
+    })
+}
+
+fn supported_harness(raw: String) -> Result<String> {
+    let harness = raw.trim();
+    match harness {
+        "codex" | "claude" | "claude-code" | "opencode" => Ok(harness.to_string()),
+        "" => Err(Error::InvalidInput("harness must not be empty".into())),
+        other => Err(Error::InvalidInput(format!(
+            "unsupported harness: {other}; expected codex, claude-code, claude, or opencode"
+        ))),
+    }
 }
 
 pub fn js_requested_event(

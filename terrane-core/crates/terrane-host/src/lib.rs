@@ -177,13 +177,12 @@ pub fn generate_app_json(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or("codex");
-    if harness != "codex" {
-        return Err(format!("unsupported app-generation harness: {harness}"));
-    }
     dispatch_on_core(
         core,
         "codex.generate-app",
         &[
+            "--harness".to_string(),
+            harness.to_string(),
             draft_id.to_string(),
             app_id.to_string(),
             name.to_string(),

@@ -87,6 +87,43 @@ fn pure_core_rejects_codex_effect_without_runner() {
 }
 
 #[test]
+fn codex_generation_accepts_supported_harness_flag() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
+
+    assert!(core
+        .dispatch(req(
+            "codex.generate-app",
+            &[
+                "--harness",
+                "claude-code",
+                "demo",
+                "demo",
+                "Demo",
+                "make app"
+            ],
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("no effect runner"));
+}
+
+#[test]
+fn codex_rejects_unsupported_harness() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
+
+    assert!(core
+        .dispatch(req(
+            "codex.generate-app",
+            &["--harness", "other", "demo", "demo", "Demo", "make app"],
+        ))
+        .unwrap_err()
+        .to_string()
+        .contains("unsupported harness"));
+}
+
+#[test]
 fn codex_run_js_validates_existing_app_and_prompt_before_effect() {
     let dir = tempdir().unwrap();
     let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
@@ -110,6 +147,14 @@ fn codex_run_js_validates_existing_app_and_prompt_before_effect() {
         .contains("prompt"));
     assert!(core
         .dispatch(req("codex.run-js", &["run-1", "demo", "write app"]))
+        .unwrap_err()
+        .to_string()
+        .contains("no effect runner"));
+    assert!(core
+        .dispatch(req(
+            "codex.run-js",
+            &["--harness", "opencode", "run-2", "demo", "write app"],
+        ))
         .unwrap_err()
         .to_string()
         .contains("no effect runner"));

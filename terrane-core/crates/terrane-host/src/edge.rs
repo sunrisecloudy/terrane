@@ -272,8 +272,55 @@ fn run_harness_command(
             })?;
             Ok((response, exit_code))
         }
+        "claude" | "claude-code" => {
+            let mut c = Command::new("claude");
+            c.args([
+                "-p",
+                "--no-session-persistence",
+                "--tools",
+                "",
+                "--output-format",
+                "json",
+                "--json-schema",
+                schema_text,
+            ]);
+            c.arg(prompt);
+            let (stdout, exit_code) = run_capture(&mut c, harness, builder_timeout())?;
+            if exit_code == 0 {
+                Ok((extract_structured_output(&stdout)?, exit_code))
+            } else {
+                Ok((stdout, exit_code))
+            }
+        }
+        "opencode" => {
+            let work_dir = builder_work_dir()?;
+            let mut c = Command::new("opencode");
+            c.args(["run", "--pure"]);
+            c.arg("--dir").arg(&work_dir);
+            c.arg(prompt);
+            run_capture(&mut c, harness, builder_timeout())
+        }
         other => Err(Error::InvalidInput(format!("unknown harness: {other}"))),
     }
+}
+
+fn extract_structured_output(raw: &str) -> Result<String> {
+    let envelope: serde_json::Value = serde_json::from_str(raw.trim())
+        .map_err(|e| Error::InvalidInput(format!("claude output was not valid JSON: {e}")))?;
+    let structured = envelope.get("structured_output").ok_or_else(|| {
+        Error::InvalidInput("claude output did not contain structured_output".into())
+    })?;
+    if structured.is_null() {
+        return Err(Error::InvalidInput(
+            "claude structured_output was null".into(),
+        ));
+    }
+    if !structured.is_object() {
+        return Err(Error::InvalidInput(
+            "claude structured_output was not a JSON object".into(),
+        ));
+    }
+    Ok(structured.to_string())
 }
 
 fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<(String, i32)> {

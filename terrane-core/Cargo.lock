@@ -2316,6 +2316,7 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "nanoserde",
+ "serde_json",
  "tempfile",
  "terrane-api",
  "terrane-core",
