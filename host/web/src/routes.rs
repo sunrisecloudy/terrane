@@ -29,6 +29,8 @@ pub fn route(
             version: CONTRACT_VERSION.into(),
         }),
         (Method::Get, ["apps"]) => json_ok(&terrane_host::list_apps(core)),
+        (Method::Post, ["mcp"]) => mcp(core, request),
+        (Method::Get, ["mcp"]) => json_error(405, "method not allowed"),
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
             crate::live_reload::response(core, id)
         }
@@ -40,6 +42,24 @@ pub fn route(
         (Method::Get, ["apps", id]) => crate::shell::response(core, id),
         (Method::Get, ["apps", id, rest @ ..]) => serve_ui(core, id, &rest.join("/"), live_reload),
         _ => json_error(404, "not found"),
+    }
+}
+
+/// `POST /mcp` — MCP JSON-RPC over HTTP, backed by the shared host MCP module.
+fn mcp(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
+    if !origin_allowed(request) {
+        return json_error(403, "forbidden origin");
+    }
+
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+
+    match terrane_host::mcp::handle_json_rpc(core, &body) {
+        Some(response) => Response::from_data(response.into_bytes())
+            .with_header(header("Content-Type", "application/json")),
+        None => Response::from_string("").with_status_code(202),
     }
 }
 
@@ -92,4 +112,56 @@ fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload:
         bytes
     };
     Response::from_data(body).with_header(header("Content-Type", ctype))
+}
+
+fn origin_allowed(request: &Request) -> bool {
+    let Some(origin) = header_value(request, "Origin") else {
+        return true;
+    };
+    let Some(origin_host) = origin_host(origin) else {
+        return false;
+    };
+    if is_loopback_host(origin_host) {
+        return true;
+    }
+    header_value(request, "Host")
+        .and_then(host_without_port)
+        .is_some_and(|host| host.eq_ignore_ascii_case(origin_host))
+}
+
+fn header_value<'a>(request: &'a Request, field: &str) -> Option<&'a str> {
+    request
+        .headers()
+        .iter()
+        .find(|h| h.field.to_string().eq_ignore_ascii_case(field))
+        .map(|h| h.value.as_str())
+}
+
+fn origin_host(origin: &str) -> Option<&str> {
+    let after_scheme = origin.split_once("://")?.1;
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|s| !s.is_empty())?;
+    host_without_port(authority)
+}
+
+fn host_without_port(authority: &str) -> Option<&str> {
+    let authority = authority
+        .rsplit_once('@')
+        .map(|(_, h)| h)
+        .unwrap_or(authority);
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split_once(']').map(|(host, _)| host);
+    }
+    authority
+        .split_once(':')
+        .map(|(host, _)| host)
+        .or(Some(authority))
+        .filter(|host| !host.is_empty())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let host = host.trim_matches(|c| c == '[' || c == ']');
+    matches!(host, "::1" | "localhost") || host.starts_with("127.")
 }
