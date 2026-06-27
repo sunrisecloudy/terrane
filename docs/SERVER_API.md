@@ -60,7 +60,13 @@ act on it**. Tools:
 | Tool | Input | Returns |
 | --- | --- | --- |
 | `list_apps` | `{}` | the installed apps (id, name, has_ui) |
+| `app_actions` | `{ app }` | the app's actions (verbs + args), as the app declares them |
 | `invoke` | `{ app, verb, args[] }` | the backend's output string |
+
+The intended order is **list → discover → act**: `list_apps` to find an app,
+`app_actions` to learn its verbs, `invoke` to run one. `app_actions` calls the
+app's reserved `__actions__` verb (see the App API), so the action list is the
+app's own — not hard-coded in the host.
 
 ```jsonc
 // tools/call → invoke

@@ -38,6 +38,32 @@ function handle(input) {
   the UI: `terrane.invoke("add", "buy milk")` → `handle(["add", "buy milk"])`.
 - `handle` **must return a string** (returning anything else is an error).
 
+### Self-description (`__actions__`) — optional but recommended
+
+A backend may handle the reserved verb `__actions__` and return a JSON document
+describing the actions it supports. Hosts use it to let an agent **discover** an
+app before driving it (the MCP `app_actions` tool, and the basis for generated
+clients). Apps that don't implement it just fall through to their normal
+unknown-verb handling.
+
+```js
+if (verb === "__actions__") {
+  return JSON.stringify({
+    app: "todo-cli-collaborate",
+    title: "Collaborative Todo",
+    description: "A CRDT-backed todo list.",
+    actions: [
+      { verb: "add",  summary: "Add an item.",          args: [{ name: "text",   required: true }] },
+      { verb: "list", summary: "List items.",            args: [] },
+      { verb: "done", summary: "Remove an item by no.",  args: [{ name: "number", required: true }] }
+    ]
+  });
+}
+```
+
+The shape is `terrane_api::AppActions` (`app`, `title?`, `description?`,
+`actions: [{ verb, summary?, args?: [{ name, required?, summary? }], returns? }]`).
+
 ### `ctx`
 
 A global `ctx` object is injected. `ctx.resource.<namespace>` is present only

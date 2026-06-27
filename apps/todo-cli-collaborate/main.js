@@ -58,6 +58,38 @@ function done(args) {
   return "done #" + n + " " + text;
 }
 
+// Self-description for hosts/agents (e.g. the MCP `app_actions` tool). The
+// reserved `__actions__` verb returns this app's actions as machine-readable
+// JSON, so a caller can discover what it can do before invoking anything.
+function actions() {
+  return JSON.stringify({
+    app: "todo-cli-collaborate",
+    title: "Collaborative Todo",
+    description:
+      "A CRDT-backed todo list. Items merge across replicas with no lost writes.",
+    actions: [
+      {
+        verb: "add",
+        summary: "Add a todo item.",
+        args: [{ name: "text", required: true, summary: "the item text (may be several words)" }],
+        returns: "a confirmation line, e.g. \"added: buy milk\""
+      },
+      {
+        verb: "list",
+        summary: "List every todo with its 1-based number.",
+        args: [],
+        returns: "newline-separated \"#<n> <text>\" lines, or \"(no todos)\""
+      },
+      {
+        verb: "done",
+        summary: "Remove a todo by its number.",
+        args: [{ name: "number", required: true, summary: "the 1-based number shown by `list`" }],
+        returns: "a confirmation line, e.g. \"done #1 buy milk\""
+      }
+    ]
+  });
+}
+
 // Entry point. `input` is the verb's argument array, e.g. ["add","buy","milk"].
 function handle(input) {
   var args = input || [];
@@ -70,6 +102,8 @@ function handle(input) {
       return list();
     case "done":
       return done(rest);
+    case "__actions__":
+      return actions();
     default:
       return "unknown verb: " + verb + " (try add | list | done)";
   }

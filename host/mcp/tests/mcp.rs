@@ -75,10 +75,13 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     // initialized notification — no response expected.
     send(&mut stdin, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
 
-    // tools/list advertises the two tools.
+    // tools/list advertises the three tools (list → discover → act).
     send(&mut stdin, r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
     let tools = read_line(&mut out);
-    assert!(tools.contains("list_apps") && tools.contains("invoke"), "tools/list: {tools}");
+    assert!(
+        tools.contains("list_apps") && tools.contains("app_actions") && tools.contains("invoke"),
+        "tools/list: {tools}"
+    );
 
     // list_apps → the app is selectable.
     send(
@@ -87,6 +90,22 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let apps = read_line(&mut out);
     assert!(apps.contains("todo-cli-collaborate"), "list_apps: {apps}");
+
+    // app_actions → the app describes its verbs programmatically (from __actions__).
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"act","method":"tools/call","params":{"name":"app_actions","arguments":{"app":"todo-cli-collaborate"}}}"#,
+    );
+    let acts = read_line(&mut out);
+    // The app's JSON is nested (and escaped) inside the MCP result text.
+    assert!(
+        acts.contains("actions")
+            && acts.contains("add")
+            && acts.contains("list")
+            && acts.contains("done"),
+        "app_actions: {acts}"
+    );
+    assert!(acts.contains("\"id\":\"act\""), "string id echoed: {acts}");
 
     // invoke add — take action on the app.
     send(

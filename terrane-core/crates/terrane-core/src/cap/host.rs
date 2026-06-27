@@ -337,10 +337,7 @@ struct Bundle {
 fn load_bundle(source: &str) -> Result<Bundle> {
     let path = Path::new(source);
     if path.is_dir() {
-        let text = std::fs::read_to_string(path.join("manifest.json"))
-            .map_err(|e| Error::Runtime(format!("read manifest.json: {e}")))?;
-        let manifest = Manifest::deserialize_json(&text)
-            .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
+        let manifest = read_manifest(path)?;
         let js_path = path.join(&manifest.backend);
         let source = std::fs::read_to_string(&js_path)
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))?;
@@ -358,8 +355,9 @@ fn load_bundle(source: &str) -> Result<Bundle> {
     }
 }
 
-/// The bits of `manifest.json` the host reads: which JS file is the backend, and
-/// which resources the app is allowed to reach.
+/// The fields of `manifest.json` terrane reads. Public so the CLI (`app install`)
+/// and the edge hosts can read a bundle's catalog metadata (id/name/ui) without
+/// re-implementing the parse.
 ///
 /// Parsed with nanoserde's JSON path (`DeJson`) — a zero-dependency, serde-free
 /// reader, so terrane-core stays serde-free and borsh remains the sole event-log
@@ -367,11 +365,30 @@ fn load_bundle(source: &str) -> Result<Bundle> {
 /// empty when absent: least privilege. Manifests are small, trusted, local files
 /// read once at the edge (off the replay path), so allocating owned strings here
 /// costs nothing.
-#[derive(DeJson)]
-struct Manifest {
-    backend: String,
+#[derive(Debug, Clone, DeJson)]
+pub struct BundleManifest {
+    /// Stable app id (matches the catalog entry). Empty if the manifest omits it.
     #[nserde(default)]
-    resources: Vec<String>,
+    pub id: String,
+    /// Display name.
+    #[nserde(default)]
+    pub name: String,
+    /// The backend JS file, e.g. `"main.js"`.
+    pub backend: String,
+    /// The UI entry file (e.g. `"index.html"`); empty for CLI-only apps.
+    #[nserde(default)]
+    pub ui: String,
+    /// Resource namespaces the backend may reach (least privilege; empty default).
+    #[nserde(default)]
+    pub resources: Vec<String>,
+}
+
+/// Read and parse `<bundle_dir>/manifest.json`.
+pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest> {
+    let text = std::fs::read_to_string(bundle_dir.join("manifest.json"))
+        .map_err(|e| Error::Runtime(format!("read manifest.json: {e}")))?;
+    BundleManifest::deserialize_json(&text)
+        .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))
 }
 
 /// Map an rquickjs error into our typed Runtime error.

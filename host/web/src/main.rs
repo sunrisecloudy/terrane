@@ -173,13 +173,7 @@ fn list_apps(core: &mut Core<EdgeRunner>) -> AppsResponse {
 
 /// The app's declared UI entry file (`manifest.ui`), if any.
 fn read_manifest_ui(source: &str) -> Option<String> {
-    let text = std::fs::read_to_string(Path::new(source).join("manifest.json")).ok()?;
-    #[derive(DeJson)]
-    struct Manifest {
-        #[nserde(default)]
-        ui: String,
-    }
-    Manifest::deserialize_json(&text)
+    terrane_core::cap::host::read_manifest(Path::new(source))
         .ok()
         .map(|m| m.ui)
         .filter(|ui| !ui.is_empty())

@@ -13,7 +13,10 @@
 use std::io::{BufRead, Write};
 
 use nanoserde::{DeJson, SerJson};
-use terrane_api::{mcp_tools, AppSummary, AppsResponse, MCP_PROTOCOL_VERSION, TOOL_INVOKE, TOOL_LIST_APPS};
+use terrane_api::{
+    mcp_tools, AppSummary, AppsResponse, ACTIONS_VERB, MCP_PROTOCOL_VERSION, TOOL_APP_ACTIONS,
+    TOOL_INVOKE, TOOL_LIST_APPS,
+};
 use terrane_cli::EdgeRunner;
 use terrane_core::Core;
 use terrane_domain::Request;
@@ -142,6 +145,16 @@ fn tool_call(core: &mut Core<EdgeRunner>, id: &str, params_raw: &str) -> String 
     let args = params.arguments;
     match params.name.as_str() {
         TOOL_LIST_APPS => tool_text(id, &list_apps(core), false),
+        TOOL_APP_ACTIONS => {
+            if args.app.is_empty() {
+                return tool_text(id, "app_actions requires non-empty 'app'", true);
+            }
+            // The app describes itself via the reserved verb; pass its JSON through.
+            match invoke(core, &args.app, ACTIONS_VERB, &[]) {
+                Ok(output) => tool_text(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
         TOOL_INVOKE => {
             if args.app.is_empty() || args.verb.is_empty() {
                 return tool_text(id, "invoke requires non-empty 'app' and 'verb'", true);
@@ -173,19 +186,9 @@ fn list_apps(core: &mut Core<EdgeRunner>) -> String {
 
 /// Whether the app's bundle declares a UI (`manifest.ui`).
 fn app_has_ui(source: Option<&str>) -> bool {
-    let Some(source) = source else {
-        return false;
-    };
-    let manifest = std::path::Path::new(source).join("manifest.json");
-    let Ok(text) = std::fs::read_to_string(manifest) else {
-        return false;
-    };
-    #[derive(DeJson)]
-    struct Manifest {
-        #[nserde(default)]
-        ui: String,
-    }
-    Manifest::deserialize_json(&text)
+    source
+        .map(std::path::Path::new)
+        .and_then(|dir| terrane_core::cap::host::read_manifest(dir).ok())
         .map(|m| !m.ui.is_empty())
         .unwrap_or(false)
 }

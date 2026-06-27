@@ -99,8 +99,16 @@ pub struct ApiError {
 
 /// MCP tool: list the installed apps (so an agent can *select* one).
 pub const TOOL_LIST_APPS: &str = "list_apps";
+/// MCP tool: describe an app's actions, as the app itself declares them (so an
+/// agent can *discover* what it can do before acting).
+pub const TOOL_APP_ACTIONS: &str = "app_actions";
 /// MCP tool: run a verb on an app (so an agent can *act* on it).
 pub const TOOL_INVOKE: &str = "invoke";
+
+/// The reserved backend verb an app implements to self-describe: `invoke`ing it
+/// (or the `app_actions` tool) returns an [`AppActions`] JSON document. Apps that
+/// don't implement it simply fall through to their "unknown verb" handling.
+pub const ACTIONS_VERB: &str = "__actions__";
 
 /// An MCP tool descriptor: its name, a one-line description, and its input
 /// JSON Schema (as a JSON string — the MCP host drops it verbatim into the
@@ -111,8 +119,8 @@ pub struct ToolDef {
     pub input_schema: &'static str,
 }
 
-/// The tools the MCP host advertises. Their `invoke` shape mirrors
-/// [`InvokeRequest`] plus an `app` selector.
+/// The tools the MCP host advertises, in the order an agent uses them: list →
+/// discover → act. The `invoke` shape mirrors [`InvokeRequest`] plus an `app`.
 pub fn mcp_tools() -> Vec<ToolDef> {
     vec![
         ToolDef {
@@ -121,12 +129,54 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             input_schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
         },
         ToolDef {
+            name: TOOL_APP_ACTIONS,
+            description: "Describe an app's available actions (verbs and their args), as the app \
+                          declares them. Call this before `invoke` to discover what an app can do.",
+            input_schema: r#"{"type":"object","properties":{"app":{"type":"string"}},"required":["app"],"additionalProperties":false}"#,
+        },
+        ToolDef {
             name: TOOL_INVOKE,
             description: "Run a verb on an app's backend and return its string output, \
                           e.g. {\"app\":\"todo-cli-collaborate\",\"verb\":\"add\",\"args\":[\"buy milk\"]}.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"},"verb":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app","verb"],"additionalProperties":false}"#,
         },
     ]
+}
+
+/// An app's self-description, returned by its [`ACTIONS_VERB`] backend verb and
+/// surfaced by the MCP `app_actions` tool. Apps emit this as JSON; clients parse
+/// it to drive the app programmatically.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct AppActions {
+    pub app: String,
+    #[nserde(default)]
+    pub title: String,
+    #[nserde(default)]
+    pub description: String,
+    pub actions: Vec<Action>,
+}
+
+/// One action an app exposes.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct Action {
+    /// The verb to pass to `invoke` (the first element of `args`).
+    pub verb: String,
+    #[nserde(default)]
+    pub summary: String,
+    #[nserde(default)]
+    pub args: Vec<ActionArg>,
+    #[nserde(default)]
+    pub returns: String,
+}
+
+/// One positional argument of an [`Action`].
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct ActionArg {
+    pub name: String,
+    #[nserde(default)]
+    pub required: bool,
+    #[nserde(default)]
+    pub summary: String,
 }
 
 // ---------------------------------------------------------------------------

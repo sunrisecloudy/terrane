@@ -12,10 +12,10 @@
 //! Catalog lives at `$TERRANE_HOME/log.bin` (default `./.terrane/`).
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use terrane_core::Core;
-use terrane_domain::Request;
+use terrane_domain::{Error, Request};
 
 pub mod edge;
 pub mod sync;
@@ -35,6 +35,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["state"] => run_state(),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
+        ["app", "install", path] => run_install(path),
         ["serve"] => sync::run_serve(DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
@@ -72,6 +73,76 @@ pub fn dispatch(command: &str, args: &[&str]) -> Result<(), String> {
             for record in &records {
                 println!("→ {}", record.kind);
             }
+        }
+    }
+    Ok(())
+}
+
+/// `app install <path>`: copy a bundle into this home's `apps/<id>/` and catalog
+/// it from there, so the home OWNS the app — no dependence on an external path or
+/// the working directory the install ran from (the footgun of bare `app add
+/// --source`). The recorded source is the absolute path inside the home.
+pub fn run_install(path: &str) -> Result<(), String> {
+    let src = Path::new(path);
+    let manifest = terrane_core::cap::host::read_manifest(src).map_err(|e| e.to_string())?;
+    let id = manifest.id.trim().to_string();
+    if id.is_empty() {
+        return Err(format!("{path}/manifest.json has no \"id\""));
+    }
+    let name = match manifest.name.trim() {
+        "" => id.clone(),
+        name => name.to_string(),
+    };
+
+    let dest = home_dir().join("apps").join(&id);
+    // Copy the bundle in, unless it's already sitting at the destination.
+    let in_place = matches!(
+        (src.canonicalize(), dest.canonicalize()),
+        (Ok(s), Ok(d)) if s == d
+    );
+    if !in_place {
+        copy_dir(src, &dest).map_err(|e| format!("copy bundle into home: {e}"))?;
+    }
+    let dest_abs = dest
+        .canonicalize()
+        .map_err(|e| format!("resolve {}: {e}", dest.display()))?;
+    let source = dest_abs
+        .to_str()
+        .ok_or("install path is not valid UTF-8")?
+        .to_string();
+
+    let mut core = open()?;
+    ensure_identity(&mut core)?;
+    match core.dispatch(Request::new(
+        "app.add",
+        vec![id.clone(), name, "--source".into(), source.clone()],
+    )) {
+        Ok(_) => {
+            println!("installed {id} → {source}");
+            Ok(())
+        }
+        // The bundle files were refreshed; the catalog already points somewhere.
+        Err(Error::AppExists(_)) => {
+            println!("refreshed {id} (already installed; `terrane app remove {id}` to re-catalog)");
+            Ok(())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Recursively copy a bundle directory, replacing any existing destination.
+fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
+    if dest.exists() {
+        std::fs::remove_dir_all(dest)?;
+    }
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let to = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &to)?;
+        } else {
+            std::fs::copy(entry.path(), &to)?;
         }
     }
     Ok(())
@@ -198,12 +269,17 @@ pub fn open() -> Result<Core<EdgeRunner>, String> {
     Core::open_with(log_path(), EdgeRunner).map_err(|e| e.to_string())
 }
 
-/// The on-disk log path: `$TERRANE_HOME/log.bin` (default `./.terrane/`).
-pub fn log_path() -> PathBuf {
+/// The home directory: `$TERRANE_HOME` (default `./.terrane/`). Holds the event
+/// log and the installed app bundles (`apps/<id>/`).
+pub fn home_dir() -> PathBuf {
     env::var("TERRANE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(".terrane"))
-        .join("log.bin")
+}
+
+/// The on-disk log path: `$TERRANE_HOME/log.bin`.
+pub fn log_path() -> PathBuf {
+    home_dir().join("log.bin")
 }
 
 pub fn print_help() {
@@ -211,7 +287,8 @@ pub fn print_help() {
         "terrane — your local app catalog\n\n\
          Commands are <namespace> <verb> [args…], routed to the capability that\n\
          owns the namespace. Built-in capabilities:\n\n\
-         \x20 terrane app add <id> <name…> [--source <path>]   save an app\n\
+         \x20 terrane app install <path>                       copy a bundle into the home & catalog it\n\
+         \x20 terrane app add <id> <name…> [--source <path>]   catalog an app by path (dev)\n\
          \x20 terrane app remove <id>                          remove an app\n\
          \x20 terrane kv set <app> <key> <value…>              store a value\n\
          \x20 terrane kv rm <app> <key>                        delete a value\n\
