@@ -30,6 +30,9 @@ pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 pub const ROUTE_HEALTHZ: &str = "/healthz";
 /// `GET` — the installed app catalog. Returns [`AppsResponse`].
 pub const ROUTE_APPS: &str = "/apps";
+/// `POST` — MCP JSON-RPC over HTTP. Returns an MCP JSON-RPC response, or 202
+/// for notifications with no response.
+pub const ROUTE_MCP: &str = "/mcp";
 
 /// The UI entry route for an app: `GET /apps/{id}/` (and `/apps/{id}/{asset}`).
 pub fn route_app_ui(id: &str) -> String {
@@ -304,6 +307,11 @@ pub fn host_contract() -> HostContract {
         http_routes: vec![
             route("GET", ROUTE_HEALTHZ, "Liveness check."),
             route("GET", ROUTE_APPS, "List installed apps."),
+            route(
+                "POST",
+                ROUTE_MCP,
+                "MCP JSON-RPC transport over HTTP for the shared host tools.",
+            ),
             route("GET", "/apps/{id}/", "Serve an app's UI and assets."),
             route(
                 "POST",

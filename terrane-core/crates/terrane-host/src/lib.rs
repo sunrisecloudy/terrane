@@ -13,6 +13,7 @@ use terrane_core::Core;
 use terrane_domain::{Error, EventRecord, Request};
 
 pub mod edge;
+pub mod mcp;
 pub mod sync;
 
 pub use edge::EdgeRunner;
@@ -152,6 +153,12 @@ pub fn invoke_app(
     Ok(dispatch_on_core(core, "host.run", &argv)?
         .output
         .unwrap_or_default())
+}
+
+/// Return an app's self-declared action metadata by invoking its reserved
+/// `__actions__` verb.
+pub fn app_actions(core: &mut HostCore, app: &str) -> Result<String, String> {
+    invoke_app(core, app, terrane_api::ACTIONS_VERB, &[])
 }
 
 pub fn list_apps(core: &HostCore) -> AppsResponse {

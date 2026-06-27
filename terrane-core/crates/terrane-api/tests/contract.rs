@@ -109,6 +109,7 @@ fn host_contract_lists_the_v1_subset() {
         vec![
             ("GET", "/healthz"),
             ("GET", "/apps"),
+            ("POST", "/mcp"),
             ("GET", "/apps/{id}/"),
             ("POST", "/apps/{id}/invoke"),
         ]

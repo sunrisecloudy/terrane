@@ -1,7 +1,8 @@
 # Terrane Host API
 
-The contract terrane's **edge hosts** expose — the **web host** (HTTP) and the
-**MCP host** (stdio JSON-RPC). It is the *open subset*: `terrane-premium`
+The contract terrane's **edge hosts** expose — the **web host** (HTTP plus MCP
+over HTTP) and the **MCP host** (stdio JSON-RPC). It is the *open subset*:
+`terrane-premium`
 implements a **superset** of everything here, so apps and clients written against
 this surface are portable upward.
 
@@ -28,10 +29,18 @@ non-loopback binds require `Authorization: Bearer <token>`.
 | --- | --- | --- | --- |
 | `GET` | `/healthz` | — | `HealthResponse { status, version }` |
 | `GET` | `/apps` | — | `AppsResponse { apps: [{ id, name, has_ui }] }` |
+| `POST` | `/mcp` | one JSON-RPC request | MCP JSON-RPC response (`202 Accepted` for notifications) |
 | `GET` | `/apps/{id}/` and `/apps/{id}/{asset}` | — | the app's UI + assets (path-traversal guarded) |
 | `POST` | `/apps/{id}/invoke` | `InvokeRequest { verb, args[] }` | `InvokeResponse { output }` |
 
 Any failure returns `ApiError { error }` with a non-2xx status.
+
+`POST /mcp` is a transport endpoint for the same shared MCP host tools exposed
+over stdio. It accepts a single JSON-RPC request body and returns
+`application/json`; JSON-RPC notifications (no `id`) are accepted with `202`.
+`GET /mcp` is intentionally `405 Method Not Allowed` for now. MCP requests reuse
+the web host's auth rule, and browser-origin requests must come from loopback or
+the same host.
 
 The web host serves a small `window.terrane.invoke(verb, ...args)` shim that
 `fetch`-POSTs to `/apps/{id}/invoke`, so an app runs **unchanged** on the web
@@ -51,11 +60,14 @@ window.terrane = {
 
 ---
 
-## MCP host (stdio JSON-RPC)
+## MCP host (shared tools; stdio and HTTP transports)
 
-A hand-rolled stdio MCP server (`initialize` / `tools/list` / `tools/call`) over
-the same invoke core, so an MCP client (e.g. Claude Code) can **select an app and
-act on it**. Tools:
+The shared MCP surface implements `initialize`, `ping`, `tools/list`, and
+`tools/call` over the same host core, so an MCP client (e.g. Claude Code) can
+**select an app and act on it**. The stdio host reads newline-delimited JSON-RPC
+from stdin/stdout; the web host exposes the same behavior at `POST /mcp`.
+
+Tools:
 
 | Tool | Input | Returns |
 | --- | --- | --- |

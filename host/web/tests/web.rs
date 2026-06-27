@@ -59,8 +59,24 @@ fn copy_dir(src: &Path, dest: &Path) {
 
 /// Minimal blocking HTTP/1.0 client (Connection: close → read to EOF).
 fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
+    http_with_headers(addr, method, path, body, &[])
+}
+
+fn http_with_headers(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    headers: &[(&str, &str)],
+) -> (u16, String) {
     let mut stream = TcpStream::connect(addr).expect("connect");
     let mut req = format!("{method} {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n");
+    for (field, value) in headers {
+        req.push_str(field);
+        req.push_str(": ");
+        req.push_str(value);
+        req.push_str("\r\n");
+    }
     if let Some(b) = body {
         req.push_str("Content-Type: application/json\r\n");
         req.push_str(&format!("Content-Length: {}\r\n", b.len()));
@@ -84,13 +100,19 @@ fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> (u16, Strin
 
 /// Spawn terrane-web on an ephemeral port; return (child, addr) once it's bound.
 fn spawn_web(home: &std::path::Path) -> (Child, String) {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_terrane-web"))
-        .args(["--addr", "127.0.0.1:0"])
+    spawn_web_with(home, "127.0.0.1:0", None)
+}
+
+fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (Child, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_terrane-web"));
+    cmd.args(["--addr", bind])
         .env("TERRANE_HOME", home)
         .stderr(Stdio::piped())
-        .stdout(Stdio::null())
-        .spawn()
-        .expect("spawn terrane-web");
+        .stdout(Stdio::null());
+    if let Some(token) = token {
+        cmd.env("TERRANE_WEB_TOKEN", token);
+    }
+    let mut child = cmd.spawn().expect("spawn terrane-web");
     let stderr = child.stderr.take().unwrap();
     let mut lines = BufReader::new(stderr).lines();
     // First stderr line: "...serving <home> on http://127.0.0.1:PORT (auth: ...)"
@@ -224,9 +246,129 @@ fn serves_catalog_ui_and_invoke_over_http() {
     );
     assert_eq!(status, 404);
 
+    // MCP over HTTP uses the same list → discover → act semantics as stdio.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":11,"method":"initialize","params":{}}"#),
+    );
+    assert_eq!(status, 200, "mcp initialize: {body}");
+    assert!(body.contains("\"serverInfo\""), "mcp initialize: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":12,"method":"tools/list"}"#),
+    );
+    assert_eq!(status, 200, "mcp tools/list: {body}");
+    assert!(
+        body.contains("list_apps") && body.contains("app_actions") && body.contains("invoke"),
+        "mcp tools/list: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"app_actions","arguments":{"app":"todo-cli-collaborate"}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp app_actions: {body}");
+    assert!(
+        body.contains("actions") && body.contains("add") && body.contains("list"),
+        "mcp app_actions: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["via mcp http"]}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp invoke add: {body}");
+    assert!(
+        body.contains("added: via mcp http"),
+        "mcp invoke add: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"list","args":[]}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp invoke list: {body}");
+    assert!(body.contains("via mcp http"), "mcp invoke list: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#),
+    );
+    assert_eq!(status, 202, "mcp notification body: {body}");
+
+    let (status, _) = http(&addr, "GET", "/mcp", None);
+    assert_eq!(status, 405);
+
+    let (status, _) = http_with_headers(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":16,"method":"ping"}"#),
+        &[("Origin", "https://example.invalid")],
+    );
+    assert_eq!(status, 403);
+
+    let (status, body) = http_with_headers(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":17,"method":"ping"}"#),
+        &[("Origin", "http://localhost")],
+    );
+    assert_eq!(status, 200, "loopback origin ping: {body}");
+    assert!(body.contains("\"id\":17"), "loopback origin ping: {body}");
+
     // path traversal is refused.
     let (status, _) = http(&addr, "GET", "/apps/todo/../../Cargo.toml", None);
     assert!(status == 403 || status == 404, "traversal status: {status}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn non_loopback_bind_requires_bearer_auth_for_mcp() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (mut child, bind_addr) = spawn_web_with(home, "0.0.0.0:0", Some("secret"));
+    let connect_addr = bind_addr.replacen("0.0.0.0", "127.0.0.1", 1);
+
+    let (status, _) = http(
+        &connect_addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#),
+    );
+    assert_eq!(status, 401);
+
+    let (status, body) = http_with_headers(
+        &connect_addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":2,"method":"ping"}"#),
+        &[("Authorization", "Bearer secret")],
+    );
+    assert_eq!(status, 200, "authorized ping: {body}");
+    assert!(body.contains("\"id\":2"), "authorized ping: {body}");
 
     let _ = child.kill();
     let _ = child.wait();
