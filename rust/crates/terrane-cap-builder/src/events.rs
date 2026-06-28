@@ -1,5 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_cap_api::{
+use terrane_cap_interface::{
     decode_event, encode_event, state_mut, truncate, EventRecord, Result, StateStore,
 };
 

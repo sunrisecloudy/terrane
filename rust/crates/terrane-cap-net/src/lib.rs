@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_cap_api::Capability;
-use terrane_cap_api::{
+use terrane_cap_interface::Capability;
+use terrane_cap_interface::{
     arg, decode_event, encode_event, ensure_app_exists, state_mut, AppId, CapManifest, CommandCtx,
     CommandSpec, Decision, Effect, Error, EventPattern, EventRecord, EventSpec, Result, StateStore,
 };
@@ -127,3 +127,6 @@ impl Capability for NetCapability {
         None
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -1,9 +1,9 @@
 //! Capabilities — the pluggable units of the engine.
 //!
 //! `terrane-core::cap` keeps the historical module path for built-in caps and
-//! re-exports the shared capability API from `terrane-cap-api`.
+//! re-exports the shared capability API from `terrane-cap-interface`.
 
-pub use terrane_cap_api::*;
+pub use terrane_cap_interface::*;
 
 pub mod host;
 

@@ -13,8 +13,8 @@
 //! The `crdt` capability reads [`ReplicaState::peer`] and authors under it.
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_cap_api::Capability;
-use terrane_cap_api::{
+use terrane_cap_interface::Capability;
+use terrane_cap_interface::{
     decode_event, encode_event, state_mut, state_ref, CapManifest, CommandCtx, CommandSpec,
     Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue, Result,
     StateStore,
@@ -110,3 +110,6 @@ impl Capability for ReplicaCapability {
 pub fn initialized_event(peer: u64) -> Result<EventRecord> {
     encode_event("replica.initialized", &Initialized { peer })
 }
+
+#[cfg(test)]
+mod tests;

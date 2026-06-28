@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_cap_api::Capability;
-use terrane_cap_api::{
+use terrane_cap_interface::Capability;
+use terrane_cap_interface::{
     arg, decode_event, encode_event, state_mut, state_ref, AppId, CapManifest, CommandCtx,
     CommandSpec, Decision, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue, Result,
     StateStore,
@@ -186,3 +186,6 @@ fn parse_add(args: &[String]) -> Result<(String, String, Option<String>)> {
     }
     Ok((id, name_parts.join(" "), source))
 }
+
+#[cfg(test)]
+mod tests;

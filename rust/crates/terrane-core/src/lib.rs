@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 pub mod cap;
 pub mod domain;
 
-pub use terrane_cap_api::{
+pub use terrane_cap_interface::{
     decode_event, encode_event, namespace_of, AppId, Decision, Effect, Error, EventRecord, Request,
     Result,
 };

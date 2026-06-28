@@ -1,3 +1,3 @@
-//! Compatibility re-exports for domain types now owned by `terrane-cap-api`.
+//! Compatibility re-exports for domain types now owned by `terrane-cap-interface`.
 
-pub use terrane_cap_api::{AppId, Error, EventRecord, Request, Result};
+pub use terrane_cap_interface::{AppId, Error, EventRecord, Request, Result};

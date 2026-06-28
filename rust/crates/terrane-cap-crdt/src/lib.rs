@@ -22,8 +22,8 @@ use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use loro::{ExportMode, LoroDoc, LoroError, LoroValue, VersionVector};
-use terrane_cap_api::Capability;
-use terrane_cap_api::{
+use terrane_cap_interface::Capability;
+use terrane_cap_interface::{
     arg, decode_event, encode_event, ensure_app_exists, replica_peer, state_mut, state_ref, AppId,
     CapManifest, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord, EventSpec,
     ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
@@ -534,3 +534,6 @@ fn read_text_get(state: &dyn StateStore, app: &str, args: &[String]) -> Result<R
         .map(|doc| doc.get_text(cname).to_string());
     Ok(ReadValue::OptString(text))
 }
+
+#[cfg(test)]
+mod tests;

@@ -9,5 +9,5 @@ name = "terrane_cap_net"
 path = "src/lib.rs"
 
 [dependencies]
-terrane-cap-api.workspace = true
+terrane-cap-interface.workspace = true
 borsh.workspace = true

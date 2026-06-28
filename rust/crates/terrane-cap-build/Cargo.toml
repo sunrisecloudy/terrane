@@ -10,5 +10,5 @@ path = "src/lib.rs"
 
 [dependencies]
 terrane-app-build.workspace = true
-terrane-cap-api.workspace = true
+terrane-cap-interface.workspace = true
 nanoserde.workspace = true

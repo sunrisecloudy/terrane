@@ -258,6 +258,7 @@ pub trait Capability {
 }
 
 /// A value a resource read hands back to backend JS.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadValue {
     OptString(Option<String>),
     StringMap(BTreeMap<String, String>),
@@ -265,6 +266,7 @@ pub enum ReadValue {
 }
 
 /// One method a capability exposes on `ctx.resource.<namespace>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceMethod {
     Write {
         name: &'static str,
@@ -357,3 +359,6 @@ pub fn truncate(s: &str, max: usize) -> String {
         format!("{head}...")
     }
 }
+
+#[cfg(test)]
+mod tests;

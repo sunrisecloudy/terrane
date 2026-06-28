@@ -1,11 +1,11 @@
 [package]
-name = "terrane-cap-api"
+name = "terrane-cap-interface"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "terrane_cap_api"
+name = "terrane_cap_interface"
 path = "src/lib.rs"
 
 [dependencies]

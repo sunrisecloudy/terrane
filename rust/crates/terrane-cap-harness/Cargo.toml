@@ -9,7 +9,7 @@ name = "terrane_cap_harness"
 path = "src/lib.rs"
 
 [dependencies]
-terrane-cap-api.workspace = true
+terrane-cap-interface.workspace = true
 terrane-cap-builder.workspace = true
 borsh.workspace = true
 nanoserde.workspace = true

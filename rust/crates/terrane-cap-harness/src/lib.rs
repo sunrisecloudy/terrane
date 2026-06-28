@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use nanoserde::{DeJson, SerJson};
-use terrane_cap_api::Capability;
-use terrane_cap_api::{
+use terrane_cap_interface::Capability;
+use terrane_cap_interface::{
     arg, decode_event, encode_event, ensure_app_exists, extract_json_object, state_mut, truncate,
     CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, Result,
     StateStore,
@@ -349,3 +349,6 @@ fn non_empty(raw: String, label: &str) -> Result<String> {
         Ok(value.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests;

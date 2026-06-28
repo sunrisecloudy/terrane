@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/terrane-cap-api",
+  "crates/terrane-cap-interface",
   "crates/terrane-cap-app",
   "crates/terrane-cap-build",
   "crates/terrane-cap-builder",
@@ -24,7 +24,7 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 terrane-core = { path = "crates/terrane-core" }
-terrane-cap-api = { path = "crates/terrane-cap-api" }
+terrane-cap-interface = { path = "crates/terrane-cap-interface" }
 terrane-cap-app = { path = "crates/terrane-cap-app" }
 terrane-cap-build = { path = "crates/terrane-cap-build" }
 terrane-cap-builder = { path = "crates/terrane-cap-builder" }

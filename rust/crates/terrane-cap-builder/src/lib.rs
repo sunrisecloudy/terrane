@@ -8,7 +8,7 @@ mod json;
 mod types;
 mod validation;
 
-use terrane_cap_api::{
+use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, Decision, EventRecord, EventSpec, Result, StateStore,
 };
 
@@ -45,7 +45,7 @@ impl Capability for BuilderCapability {
     }
 
     fn decide(&self, _ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {
-        Err(terrane_cap_api::Error::InvalidInput(format!(
+        Err(terrane_cap_interface::Error::InvalidInput(format!(
             "unknown command: {name}"
         )))
     }
@@ -58,3 +58,6 @@ impl Capability for BuilderCapability {
         events::describe(record)
     }
 }
+
+#[cfg(test)]
+mod tests;

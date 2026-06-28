@@ -5,7 +5,7 @@
 //! access.
 
 use nanoserde::SerJson;
-use terrane_cap_api::{
+use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, Decision, Error, EventRecord, ReadValue, ResourceMethod,
     ResourceReadCtx, Result, StateStore,
 };
@@ -69,3 +69,6 @@ fn compile_ts(args: &[String]) -> ReadValue {
     };
     ReadValue::OptString(Some(json))
 }
+
+#[cfg(test)]
+mod tests;
