@@ -1,5 +1,5 @@
 var description =
-  "App Builder uses the host builderGenerate bridge to request real Codex output.";
+  "App Builder uses the host builderGenerate bridge to request real harness output.";
 
 var actions = {
   status: {

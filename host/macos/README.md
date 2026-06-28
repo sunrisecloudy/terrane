@@ -2,7 +2,7 @@
 
 A native AppKit + WKWebView app switcher that runs Terrane app UIs and bridges
 them to terrane-core over the
-[`terrane-ffi`](../../terrane-core/crates/terrane-ffi) C ABI. The first non-Rust
+[`terrane-host`](../../rust/crates/terrane-host) C ABI. The first non-Rust
 host; the same shape (FFI + thin shell) is how iOS / Android / Windows hosts
 will work.
 
@@ -15,9 +15,9 @@ WKWebView (apps/<id>/<manifest.ui> + terrane.invoke shim)
    ▼
 TerraneBridge (WKScriptMessageHandlerWithReply)
    │ terrane_dispatch(app.add, id, name, --source, path) if needed
-   │ terrane_host_run(handle, app, argv)        ← terrane-ffi C ABI
+   │ terrane_host_run(handle, app, argv)        ← Terrane host C ABI
    ▼
-libterrane_ffi.a  ──▶  terrane-core: dispatch("host.run", …)
+libterrane_host.a  ──▶  terrane-core: dispatch("host.run", …)
    │ output string → reply settles the JS Promise
    ▼
 WKWebView re-renders
@@ -62,7 +62,7 @@ a temp app bundle or add preview apps to the catalog.
 
 Requires `xcodegen` (`brew install xcodegen`), Xcode, and `cargo`. The project
 is defined by `project.yml`; the `.xcodeproj` is generated (gitignored). A
-pre-build phase builds `libterrane_ffi.a` and the target links it.
+pre-build phase builds `libterrane_host.a` and the target links it.
 
 ```sh
 cd host/macos
@@ -96,11 +96,11 @@ events and persisted (the data survives a relaunch because the FFI opens a
 file-backed core, not in-memory):
 
 ```sh
-TERRANE_HOME=~/.terrane ( cd ../../terrane-core && cargo run -q -p terrane-cli -- log )
+TERRANE_HOME=~/.terrane ( cd ../../rust && cargo run -q -p terrane-host --bin terrane -- log )
 # → app.added + kv.set todo/seq, kv.set todo/item:1; NO host.* records
-TERRANE_HOME=~/.terrane ( cd ../../terrane-core && cargo run -q -p terrane-cli -- replay )
+TERRANE_HOME=~/.terrane ( cd ../../rust && cargo run -q -p terrane-host --bin terrane -- replay )
 # → replay ok
 ```
 
-The FFI itself is covered by Rust tests in `terrane-core/crates/terrane-ffi`
-(`cargo test -p terrane-ffi`); this host is the GUI layer over it.
+The C ABI itself is covered by Rust tests in `rust/crates/terrane-host`
+(`cargo test -p terrane-host --test abi`); this host is the GUI layer over it.

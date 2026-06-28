@@ -1,7 +1,7 @@
 //! terrane-host — the CLI host.
 //!
 //! A superset of the `terrane` binary: every standard command works (delegated
-//! to the `terrane-cli` adapter), plus a top-level `run <app> [input…]` that
+//! to the shared host CLI adapter), plus a top-level `run <app> [input…]` that
 //! executes an app's JS backend via the core's `host.run`. It is the first
 //! concrete "host" — the same spine a native shell will wrap, minus the UI.
 
@@ -27,16 +27,16 @@ fn run(argv: &[&str]) -> Result<(), String> {
             let mut args = Vec::with_capacity(1 + input.len());
             args.push(*app);
             args.extend_from_slice(input);
-            terrane_cli::dispatch("host.run", &args)
+            terrane_host::cli::dispatch("host.run", &args)
         }
         ["run"] => Err("usage: terrane-host run <app> [input…]".into()),
         [] | ["help"] | ["--help"] | ["-h"] => {
             print_host_help();
-            terrane_cli::print_help();
+            terrane_host::cli::print_help();
             Ok(())
         }
         // Everything else is a standard terrane command (incl. `host run …`).
-        _ => terrane_cli::run(argv),
+        _ => terrane_host::cli::run(argv),
     }
 }
 

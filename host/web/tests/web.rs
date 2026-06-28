@@ -331,7 +331,7 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
 }
 
 #[test]
-fn builder_generate_route_rejects_invalid_request_before_agent() {
+fn builder_generate_route_rejects_invalid_request_before_harness() {
     let dir = tempdir().unwrap();
     let home = dir.path();
     let (mut child, addr) = spawn_web(home);
@@ -340,7 +340,7 @@ fn builder_generate_route_rejects_invalid_request_before_agent() {
         &addr,
         "POST",
         "/__terrane/builder/generate",
-        Some(r#"{"id":"bad/path","name":"Demo","prompt":"make a greeting app","agent":"codex"}"#),
+        Some(r#"{"id":"bad/path","name":"Demo","prompt":"make a greeting app","harness":"codex"}"#),
     );
     assert_eq!(status, 500, "builder generate should reject early: {body}");
     assert!(

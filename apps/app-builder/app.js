@@ -8,6 +8,7 @@
   };
   var idEl = document.getElementById("app-id");
   var nameEl = document.getElementById("app-name");
+  var harnessEl = document.getElementById("harness");
   var promptEl = document.getElementById("prompt");
   var filesEl = document.getElementById("files");
   var statusEl = document.getElementById("status");
@@ -17,13 +18,9 @@
 
   document.getElementById("generate").addEventListener("click", generate);
   [idEl, nameEl, promptEl].forEach(function (el) {
-    el.addEventListener("input", function () {
-      statusEl.textContent = "Edited";
-      previewStatusEl.textContent = "Edited";
-    });
+    el.addEventListener("input", markEdited);
   });
-
-  generate();
+  harnessEl.addEventListener("change", markEdited);
 
   function generate() {
     var ticket = ++generation;
@@ -40,7 +37,7 @@
       id: slug(idEl.value) || "my-app",
       name: title(nameEl.value, "My App"),
       prompt: title(promptEl.value, "A local-first Terrane app."),
-      agent: "codex",
+      harness: harnessEl.value || "codex",
     })
       .then(function (result) {
         if (ticket !== generation) return null;
@@ -59,6 +56,11 @@
         statusEl.textContent = "Failed: " + error.message;
         previewStatusEl.textContent = "Failed";
       });
+  }
+
+  function markEdited() {
+    statusEl.textContent = "Edited";
+    previewStatusEl.textContent = "Edited";
   }
 
   function renderPreview(ticket, files) {

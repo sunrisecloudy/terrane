@@ -209,6 +209,33 @@ final class BmiCalculatorE2ETests: XCTestCase {
     }
   }
 
+  func testAppBuilderWaitsForExplicitBuildClick() throws {
+    let repoRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .standardizedFileURL
+    let appSource = try String(
+      contentsOf: repoRoot.appendingPathComponent("apps/app-builder/app.js"),
+      encoding: .utf8
+    )
+    let html = try String(
+      contentsOf: repoRoot.appendingPathComponent("apps/app-builder/index.html"),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(appSource.contains(#"addEventListener("click", generate)"#), appSource)
+    XCTAssertTrue(appSource.contains("builderGenerate"), appSource)
+    XCTAssertTrue(appSource.contains(#"harness: harnessEl.value || "codex""#), appSource)
+    XCTAssertFalse(appSource.contains("\n  generate();"), appSource)
+    XCTAssertTrue(html.contains(#"id="generate""#), html)
+    XCTAssertTrue(html.contains(#"id="harness""#), html)
+    XCTAssertTrue(html.contains(#"value="claude-code""#), html)
+    XCTAssertTrue(html.contains(#"value="opencode""#), html)
+    XCTAssertTrue(html.contains(#"<span id="status">Ready</span>"#), html)
+  }
+
   func testSourceSyntaxHighlighterColorsCodeTokens() throws {
     try runOnMainThread {
       let textView = NSTextView()

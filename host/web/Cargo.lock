@@ -2305,6 +2305,7 @@ dependencies = [
  "nanoserde",
  "serde_json",
  "terrane-api",
+ "terrane-app-build",
  "terrane-core",
  "terrane-domain",
 ]

@@ -1,10 +1,10 @@
-# Claude Notes: terrane-core
+# Claude Notes: Terrane Rust Workspace
 
 ## What this is
 
 A deliberate reset of Terrane. The previous build (a 17-crate Rust workspace
 plus native hosts, runtime-web, servers, and specs) was swept intact into
-`legacy/` and is now **reference only**. New work lives in `terrane-core/` and
+`legacy/` and is now **reference only**. New work lives in `rust/` and
 starts from the smallest thing that is genuinely the system.
 
 Read `README.md` first — it states the architecture in one diagram.
@@ -12,11 +12,11 @@ Read `README.md` first — it states the architecture in one diagram.
 ## The one rule (do not break this)
 
 ```
-argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [Event] ──▶ State (+ persisted log)
+argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──▶ [Event] ──▶ State (+ persisted log)
 ```
 
-- The CLI is a thin arg parser. It **never touches data directly** — it only
-  builds a Command and hands it to the core, then renders the result.
+- The CLI is a thin host adapter. It **never touches data directly** — it only
+  builds a request and hands it to the core, then renders the result.
 - The core is **deterministic and replayable**: replaying the event log must
   reproduce identical state. Anything that breaks replay-identity is a bug.
 - No sync, server, UI, FFI, native, or policy in the core. Those are _layers_
@@ -24,7 +24,7 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 
 ## Layout
 
-- `terrane-core/` — the engine + base CLI (Cargo **workspace A**).
+- `rust/` — the shared Rust crates for local hosts and Premium.
   - `crates/terrane-domain/` — shared vocabulary: `Request`, `EventRecord`,
     `Error`, ids. Pure, no I/O.
   - `crates/terrane-core/` — the deterministic engine: capability registry,
@@ -32,11 +32,11 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
     are the capabilities (`app`, `kv`, `net`, `model`, `host`). The `host`
     capability runs app backends in **QuickJS** (`rquickjs`) over a sandboxed,
     app-scoped `ctx.resource` — QuickJS lives ONLY here, never in a host.
-  - `crates/terrane-cli/` — the `terrane` binary plus a reusable **lib** spine
-    (`run`/`dispatch`/`open`/`EdgeRunner`) that hosts wrap.
+  - `crates/terrane-host/` — host services plus the `terrane` binary, C ABI,
+    preview store, sync, MCP, and the reusable CLI adapter.
 - `host/` — hosts, each its **own Cargo workspace** (separate build) so non-Rust
   hosts aren't entangled. `host/cli/` is `terrane-host`, the first host; it
-  path-deps across the boundary into `terrane-core/crates` and adds `run <app>`.
+  path-deps across the boundary into `rust/crates` and adds `run <app>`.
 - `apps/` — app bundles (plain JS, no build system). `apps/todo/` is the first
   app: a `manifest.json` + `main.js` backend over `ctx.resource.kv`.
 - `legacy/` — the prior build, kept as reference. Never depend on it.
@@ -48,7 +48,7 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 - No `unwrap`/panics on real paths — return typed errors.
 - Reuse existing terrane-domain types and errors instead of redefining them.
 - **New commands are new capabilities.** Add a module under
-  `terrane-core/src/cap/` implementing `Capability` (namespace, decide, fold,
+  `rust/crates/terrane-core/src/cap/` implementing `Capability` (namespace, decide, fold,
   optional describe) and register it in `default_registry`. Never reintroduce a
   central command/event enum or a central decide/fold match. Events are
   name-tagged (`{kind, payload}`); cross-capability reactions go through
@@ -57,8 +57,8 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
   them in the crate's `tests/` directory (integration tests over the public
   surface). The `src/*.rs` files hold code; the proofs live beside them.
 - **Hosts are separate workspaces under `host/`; apps are JS bundles under
-  `apps/`.** A host is a thin client over the `terrane_cli` spine; it never
-  embeds its own runtime — running app backends is the core's `host` capability.
+  `apps/`.** A host is a thin client over `terrane-host`; it never embeds its
+  own runtime — running app backends is the core's `host` capability.
   Apps run their JS backend via `host.run`, which records only ordinary `kv.*`
   events so replay rebuilds without re-running JS (Option A).
 - **Always run clippy.** After any change, before committing, both must be
@@ -71,21 +71,22 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 ## Validation
 
 ```sh
-cd terrane-core
+cd rust
 cargo test
 cargo clippy --all-targets -- -D warnings
-cargo run -p terrane-cli -- help
+cargo run -p terrane-host --bin terrane -- help
 ```
 
 Tests mirror `src/cap/`: each capability has a file under `tests/cap/`
 (`tests/cap/main.rs` is the entry that includes them + shared `helpers`). The
-engine logic tests live in `terrane-core/tests/cap/`; the real binary-level e2e
-tests in `terrane-cli/tests/cap/`. The effectful e2e (`net`, `model`) hit the
+engine logic tests live in `rust/crates/terrane-core/tests/cap/`; the real
+binary-level e2e tests in `rust/crates/terrane-host/tests/cap/`. The effectful
+e2e (`net`, `model`) hit the
 real network / real agent CLIs, so they are `#[ignore]`d — keep the default
 `cargo test` green and run them deliberately:
 
 ```sh
-cargo test -p terrane-cli -- --ignored   # real fetch + real agent call
+cargo test -p terrane-host -- --ignored   # real fetch + real agent call
 ```
 
 Add an e2e test for each new capability (pure ones run by default; effectful

@@ -1,0 +1,26 @@
+[package]
+name = "terrane-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_host"
+path = "src/lib.rs"
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "terrane"
+path = "src/bin/terrane.rs"
+
+[dependencies]
+getrandom = "0.4.3"
+nanoserde = { workspace = true }
+serde_json = "1"
+terrane-api = { path = "../terrane-api" }
+terrane-app-build.workspace = true
+terrane-core.workspace = true
+terrane-domain.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

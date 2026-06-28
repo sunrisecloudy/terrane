@@ -1,6 +1,6 @@
-# terrane-core
+# Terrane Rust Workspace
 
-The small, careful core of Terrane — rebuilt from scratch.
+The shared Rust workspace for Terrane — rebuilt from scratch.
 
 Terrane is a local-first platform for personal apps. This repository is a
 deliberate reset: instead of growing the platform outward (sync, server, UI,
@@ -8,22 +8,23 @@ native hosts, FFI, policy, …), we start from the one thing that is actually _t
 system_ and add nothing until a real need forces it.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the high-level layer model (apps ▸
-native host ▸ terrane-core ▸ resources), and [docs/APP_API.md](docs/APP_API.md)
-for the JavaScript API an app's backend and UI get (drift-guarded by a test).
+host ▸ `terrane-core` engine crate ▸ resources), and
+[docs/APP_API.md](docs/APP_API.md) for the JavaScript API an app's backend and
+UI get (drift-guarded by a test).
 
 ## The one rule
 
 Everything goes through a single front door and a single shape:
 
 ```
-argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [Event] ──▶ State
+argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──▶ [Event] ──▶ State
                                           │                         │
                                           └── persist log ──────────┘
                                                     │
                                             replay ─┘  (must reproduce identical State)
 ```
 
-- The **CLI never touches data directly.** It only speaks Commands to the core.
+- The **CLI never touches data directly.** It only speaks requests to the core.
 - The core is **deterministic and replayable**: re-applying the event log
   reproduces identical state. That property is what earns the word _core_.
 - Platform effects (sync, network, native shells, servers) are _layers_ added
@@ -32,11 +33,11 @@ argv ──▶ terrane-cli ──▶ Command ──▶ terrane-core ──▶ [E
 ## Layout
 
 ```
-terrane-core/          # the fresh Rust workspace (the only product code)
+rust/          # the fresh Rust workspace (the only product code)
   crates/
     terrane-domain/    # vocabulary: Command, Event, Id, Error, State — pure, no I/O
     terrane-core/      # engine: apply(Command) -> [Event] -> State; persist; replay
-    terrane-cli/       # front door binary `terrane`
+    terrane-host/      # host services, `terrane` binary, C ABI, sync, preview, MCP
 legacy/                # the previous build, swept aside intact as reference only
 ```
 
@@ -47,7 +48,7 @@ dependency and not a foundation.
 ## Build
 
 ```sh
-cd terrane-core
+cd rust
 cargo test
-cargo run -p terrane-cli -- help
+cargo run -p terrane-host --bin terrane -- help
 ```

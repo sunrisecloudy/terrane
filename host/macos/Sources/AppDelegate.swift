@@ -223,7 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     appSidebar.select(appId: selectedApp?.id)
   }
 
-  /// Workspace home: `$TERRANE_HOME`, else `~/.terrane`. terrane-ffi appends
+  /// Workspace home: `$TERRANE_HOME`, else `~/.terrane`. The host C ABI appends
   /// `log.bin`.
   static func resolveHome() -> URL {
     if let home = ProcessInfo.processInfo.environment["TERRANE_HOME"], !home.isEmpty {

@@ -11,7 +11,7 @@ The client talks to its own backend; the backend talks to resources. The UI has
 no direct access to `ctx.resource`.
 
 > **The `ctx.resource` reference below is generated** from the capabilities' own
-> declarations, and two tests in `terrane-core/tests/cap/host.rs` keep it
+> declarations, and two tests in `rust/crates/terrane-core/tests/cap/host.rs` keep it
 > honest: one asserts the live runtime installs exactly the declared surface,
 > the other that this doc's generated section matches. Change a resource without
 > regenerating (`UPDATE_DOCS=1 cargo test`) → the build goes red.

@@ -34,7 +34,7 @@ run_in() {
 }
 
 rust_workspaces=(
-  "$ROOT/terrane-core"
+  "$ROOT/rust"
   "$ROOT/host/cli"
   "$ROOT/host/mcp"
   "$ROOT/host/web"

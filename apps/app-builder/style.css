@@ -74,6 +74,7 @@ label {
   grid-column: 1 / -1;
 }
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
@@ -82,6 +83,9 @@ textarea {
   color: FieldText;
   font: inherit;
   padding: 9px 10px;
+}
+select {
+  min-height: 39px;
 }
 textarea {
   resize: vertical;

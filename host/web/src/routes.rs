@@ -20,6 +20,8 @@ struct BuilderGenerateRequest {
     name: String,
     prompt: String,
     #[nserde(default)]
+    harness: String,
+    #[nserde(default)]
     agent: String,
 }
 
@@ -89,11 +91,20 @@ fn builder_generate(core: &mut terrane_host::HostCore, request: &mut Request) ->
         &parsed.id,
         &parsed.name,
         &parsed.prompt,
-        Some(&parsed.agent),
+        Some(selected_harness(&parsed.harness, &parsed.agent)),
     ) {
         Ok(json) => Response::from_data(json.into_bytes())
             .with_header(header("Content-Type", "application/json")),
         Err(e) => json_error(500, &e),
+    }
+}
+
+fn selected_harness<'a>(harness: &'a str, legacy_agent: &'a str) -> &'a str {
+    let harness = harness.trim();
+    if harness.is_empty() {
+        legacy_agent
+    } else {
+        harness
     }
 }
 

@@ -1,6 +1,6 @@
 //! Smoke test for the `terrane-host` binary: its top-level `run` verb executes
 //! the real `apps/todo-cli` JS backend (the UI-free CLI app) and the world
-//! replays. The exhaustive logic lives in terrane-core/tests/cap/host.rs; this
+//! replays. The exhaustive logic lives in rust/crates/terrane-core/tests/cap/host.rs; this
 //! just proves the host front door.
 
 use std::path::{Path, PathBuf};

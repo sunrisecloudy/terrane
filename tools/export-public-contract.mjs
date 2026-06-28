@@ -27,15 +27,15 @@ function arg(name, fallback) {
 const CONTRACT_FILES = [
   "docs/SERVER_API.md",
   "docs/APP_API.md",
-  "terrane-core/crates/terrane-api/src/lib.rs",
+  "rust/crates/terrane-api/src/lib.rs",
 ];
 
 export function buildPublicContract() {
   const surfaceJson = execFileSync(
     "cargo",
-    ["run", "-q", "-p", "terrane-cli", "--", "contract", "export"],
+    ["run", "-q", "-p", "terrane-host", "--bin", "terrane", "--", "contract", "export"],
     {
-      cwd: path.join(root, "terrane-core"),
+      cwd: path.join(root, "rust"),
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
     },
@@ -75,8 +75,8 @@ export function buildPublicContract() {
     conformance: {
       sourceCheckoutRequired: true,
       commands: [
-        "cd terrane-core && cargo test --workspace --locked",
-        "cd terrane-core && cargo clippy --workspace --all-targets --locked -- -D warnings",
+        "cd rust && cargo test --workspace --locked",
+        "cd rust && cargo clippy --workspace --all-targets --locked -- -D warnings",
         "cd host/cli && cargo test --locked",
         "cd host/mcp && cargo test --locked",
         "cd host/web && cargo test --locked",

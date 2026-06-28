@@ -1,6 +1,6 @@
 # XcodeGen spec — generates Terrane.xcodeproj (gitignored; regenerate with
 # `xcodegen generate`). The macOS host: an AppKit + WKWebView app that links the
-# Rust staticlib libterrane_ffi.a (built by the pre-build phase below).
+# Rust staticlib libterrane_host.a (built by the pre-build phase below).
 name: Terrane
 options:
   bundleIdPrefix: com.terrane
@@ -26,14 +26,14 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../terrane-core/target/release
+          - $(SRCROOT)/../../rust/target/release
         OTHER_LDFLAGS:
           - $(inherited)
-          - -lterrane_ffi
+          - -lterrane_host
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../terrane-core/crates/terrane-ffi/include
+          - $(SRCROOT)/../../rust/crates/terrane-host/include
     info:
       path: Sources/Info.plist
       properties:
@@ -45,13 +45,13 @@ targets:
       - sdk: WebKit.framework
       - sdk: AppKit.framework
     preBuildScripts:
-      - name: "Build terrane-ffi (Rust staticlib)"
+      - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          cd "$SRCROOT/../../terrane-core"
-          cargo build -p terrane-ffi --release
+          cd "$SRCROOT/../../rust"
+          cargo build -p terrane-host --release
   TerraneHostE2ETests:
     type: bundle.unit-test
     platform: macOS
@@ -71,25 +71,25 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../terrane-core/target/release
+          - $(SRCROOT)/../../rust/target/release
         OTHER_LDFLAGS:
           - $(inherited)
-          - -lterrane_ffi
+          - -lterrane_host
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
         HEADER_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../terrane-core/crates/terrane-ffi/include
+          - $(SRCROOT)/../../rust/crates/terrane-host/include
     dependencies:
       - sdk: WebKit.framework
       - sdk: AppKit.framework
     preBuildScripts:
-      - name: "Build terrane-ffi (Rust staticlib)"
+      - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          cd "$SRCROOT/../../terrane-core"
-          cargo build -p terrane-ffi --release
+          cd "$SRCROOT/../../rust"
+          cargo build -p terrane-host --release
 schemes:
   TerraneHost:
     build:

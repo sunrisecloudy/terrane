@@ -15,7 +15,7 @@ run_in() {
 }
 
 rust_workspaces=(
-  "$ROOT/terrane-core"
+  "$ROOT/rust"
   "$ROOT/host/cli"
   "$ROOT/host/mcp"
   "$ROOT/host/web"
@@ -70,5 +70,5 @@ done < <(
 for manifest in "${react_app_manifests[@]}"; do
   app_dir="$(dirname "$manifest")"
   rel_app_dir="../${app_dir#$ROOT/}"
-  run_in "$ROOT/terrane-core" cargo run -p terrane-app-build -- --check "$rel_app_dir"
+  run_in "$ROOT/rust" cargo run -p terrane-app-build -- --check "$rel_app_dir"
 done

@@ -6,7 +6,7 @@
 //!
 //! The CRDT *merge* guarantee (two replicas converge with no lost writes) is
 //! proven against the same `crdt.listPush` capability this app uses in
-//! terrane-core/tests/cap/crdt.rs (`two_app_replicas_merge_with_no_lost_writes`).
+//! rust/crates/terrane-core/tests/cap/crdt.rs (`two_app_replicas_merge_with_no_lost_writes`).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

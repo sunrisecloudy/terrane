@@ -1,7 +1,7 @@
 import Foundation
 import WebKit
 
-/// Bridges the app UI to terrane-core over the terrane-ffi C ABI.
+/// Bridges the app UI to terrane-core over the Terrane host C ABI.
 ///
 /// The selected app path calls `terrane.invoke(verb, ...args)` and the App
 /// Builder path calls `terrane.preview(files)`; preview frames call the same
@@ -13,6 +13,7 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   private var appSource = ""
   private var catalogedAppIds = Set<String>()
   private let handle: OpaquePointer  // TerraneHandle*
+  private let worker = DispatchQueue(label: "com.terrane.host.bridge", qos: .userInitiated)
 
   init?(home: URL) {
     guard let handle = home.path.withCString({ terrane_open($0) }) else {
@@ -87,7 +88,18 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         replyHandler(nil, "terrane: malformed builder generate message")
         return
       }
-      replyObject(generateDraft(request: request), replyHandler)
+      worker.async { [weak self] in
+        guard let self else {
+          DispatchQueue.main.async {
+            replyHandler(nil, "terrane: bridge is closed")
+          }
+          return
+        }
+        let result = self.generateDraft(request: request)
+        DispatchQueue.main.async {
+          self.replyObject(result, replyHandler)
+        }
+      }
     default:
       replyHandler(nil, "terrane: unknown bridge message")
     }
@@ -145,13 +157,16 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     let id = (request["id"] as? String) ?? ""
     let name = (request["name"] as? String) ?? ""
     let prompt = (request["prompt"] as? String) ?? ""
-    let agent = (request["agent"] as? String) ?? "codex"
+    let harness =
+      (request["harness"] as? String)
+      ?? (request["agent"] as? String)
+      ?? "codex"
 
     let (ok, payload) = id.withCString { idC in
       name.withCString { nameC in
         prompt.withCString { promptC in
-          agent.withCString { agentC in
-            callBuilderGenerate(appId: idC, name: nameC, prompt: promptC, agent: agentC)
+          harness.withCString { harnessC in
+            callBuilderGenerate(appId: idC, name: nameC, prompt: promptC, harness: harnessC)
           }
         }
       }
@@ -307,11 +322,11 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     appId: UnsafePointer<CChar>,
     name: UnsafePointer<CChar>,
     prompt: UnsafePointer<CChar>,
-    agent: UnsafePointer<CChar>
+    harness: UnsafePointer<CChar>
   ) -> (Bool, String) {
     var out: UnsafeMutablePointer<CChar>?
     var err: UnsafeMutablePointer<CChar>?
-    let rc = terrane_builder_generate(handle, appId, name, prompt, agent, &out, &err)
+    let rc = terrane_builder_generate(handle, appId, name, prompt, harness, &out, &err)
     return output(rc: rc, out: out, err: err, label: "terrane_builder_generate")
   }
 
@@ -392,7 +407,7 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
               id: String(request.id || ""),
               name: String(request.name || ""),
               prompt: String(request.prompt || ""),
-              agent: String(request.agent || "codex")
+              harness: String(request.harness || request.agent || "codex")
             }
           });
         }

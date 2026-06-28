@@ -5,7 +5,7 @@ over HTTP) and the **MCP host** (stdio JSON-RPC). It is the _open subset_:
 `terrane-premium` implements a **superset** of everything here, so apps and
 clients written against this surface are portable upward.
 
-The source of truth is the [`terrane-api`](../terrane-core/crates/terrane-api)
+The source of truth is the [`terrane-api`](../rust/crates/terrane-api)
 crate (typed, OSS-side) and the exported `public-contract.json` that premium
 pins (language-neutral). This document is the readable view; the crate is
 normative.
@@ -112,7 +112,7 @@ node tools/verify-public-contract.mjs --contract public-contract.json   # self-c
 `public-contract.json` is the artifact `terrane-premium` pins. Its `surface`
 (host routes, MCP tools, capabilities, `ctx.resource`, app contract, sync) comes
 from `terrane contract export` — derived from the `terrane-api`/`terrane-core`
-declarations, so it can't drift (guarded by `terrane-cli/tests/contract.rs`).
+declarations, so it can't drift (guarded by `terrane-host/tests/contract.rs`).
 Its `conformance.commands` are what a consumer runs to prove an implementation.
 
 ## Subset rule (terrane ⊆ premium)
@@ -122,7 +122,7 @@ and response shapes. Premium adds hosted concerns (accounts, orgs, billing,
 encrypted sync, marketplace, signing, admin) **on top**; it never removes or
 redefines anything here. The mechanical guarantees:
 
-- **Drift**: `terrane-cli/tests/contract.rs` asserts the exported surface
+- **Drift**: `terrane-host/tests/contract.rs` asserts the exported surface
   matches the live declarations; `tools/verify-public-contract.mjs` re-checks
   it + the contract file hashes.
 - **Behaviour**: the host e2e suites are the conformance tests — e.g.

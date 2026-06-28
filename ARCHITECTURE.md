@@ -6,7 +6,7 @@
 
 This document is the high-level shape. It is intentionally about layers and
 responsibilities, not file paths. Implementation lives in
-[`terrane-core/`](terrane-core/); see [README.md](README.md) for the one rule.
+[`rust/`](rust/); see [README.md](README.md) for the one rule.
 
 ## The picture
 

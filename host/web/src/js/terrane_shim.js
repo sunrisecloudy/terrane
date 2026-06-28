@@ -49,7 +49,7 @@
           id: String(request.id || ""),
           name: String(request.name || ""),
           prompt: String(request.prompt || ""),
-          agent: String(request.agent || "codex"),
+          harness: String(request.harness || request.agent || "codex"),
         }),
       })
         .then(function (r) {
