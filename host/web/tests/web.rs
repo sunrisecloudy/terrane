@@ -73,8 +73,7 @@ fn write_built_react_fixture(root: &Path) -> PathBuf {
         r#"{
   "id": "built-react",
   "name": "Built React",
-  "version": "0.1.0",
-  "backend": "main.js",
+  "version":"0.1.0","runtime":"js","backend":"main.js",
   "ui": "dist/index.html",
   "resources": []
 }
@@ -239,7 +238,7 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
     let create = preview_body(&[
         (
             "manifest.json",
-            r#"{"id":"hello-preview","name":"Hello Preview","backend":"main.js","ui":"index.html","resources":[]}"#,
+            r#"{"id":"hello-preview","name":"Hello Preview","runtime":"js","backend":"main.js","ui":"index.html","resources":[]}"#,
         ),
         (
             "main.js",

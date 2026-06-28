@@ -17,15 +17,15 @@ TerraneBridge (WKScriptMessageHandlerWithReply)
    │ terrane_dispatch(app.add, id, name, --source, path) if needed
    │ terrane_host_run(handle, app, argv)        ← Terrane host C ABI
    ▼
-libterrane_host.a  ──▶  terrane-core: dispatch("host.run", …)
+libterrane_host.a  ──▶  terrane-core: dispatch(runtime run, …)
    │ output string → reply settles the JS Promise
    ▼
 WKWebView re-renders
 ```
 
-Every UI action is a `host.run` → recorded `kv.*` → replayable, exactly like the
-CLI. The app id is selected by the native shell, so a page can only act as the
-currently loaded app.
+Every UI action runs the app's manifest-declared backend runtime, then records
+ordinary resource events such as `kv.*` for replay. The app id is selected by
+the native shell, so a page can only act as the currently loaded app.
 
 The sidebar discovers plain HTML UIs from:
 

@@ -15,7 +15,17 @@ fn surface_is_derived_from_the_live_declarations() {
 
     // Every registered capability is listed.
     for ns in [
-        "app", "build", "builder", "harness", "kv", "crdt", "net", "model", "host", "replica",
+        "app",
+        "build",
+        "builder",
+        "harness",
+        "kv",
+        "crdt",
+        "net",
+        "model",
+        "replica",
+        "js-runtime",
+        "wasm-runtime",
     ] {
         assert!(
             s.capabilities.iter().any(|c| c == ns),

@@ -8,10 +8,10 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+use nanoserde::DeJson;
 use terrane_api::{AppSummary, AppsResponse};
 use terrane_cap_builder::draft_json;
 use terrane_cap_crdt::crdt_export_hex;
-use terrane_core::host_runtime::read_manifest;
 use terrane_core::Core;
 use terrane_core::{Error, EventRecord, Request};
 
@@ -151,14 +151,31 @@ pub fn invoke_app(
     verb: &str,
     args: &[String],
 ) -> Result<String, String> {
+    let mut input = Vec::with_capacity(args.len() + 1);
+    input.push(verb.to_string());
+    input.extend(args.iter().cloned());
+    invoke_app_input(core, app, &input)
+}
+
+/// Run an app backend with the exact runtime input vector.
+pub fn invoke_app_input(
+    core: &mut HostCore,
+    app: &str,
+    input: &[String],
+) -> Result<String, String> {
     if !core.state().app.apps.contains_key(app) {
         return Err(format!("no such app: {app}"));
     }
-    let mut argv = Vec::with_capacity(args.len() + 2);
+    let runtime = core.state().app.apps[app].runtime.as_str();
+    let command = match runtime {
+        "js" => "js-runtime.run",
+        "wasm" => "wasm-runtime.run",
+        other => return Err(format!("unknown app runtime for {app}: {other}")),
+    };
+    let mut argv = Vec::with_capacity(input.len() + 1);
     argv.push(app.to_string());
-    argv.push(verb.to_string());
-    argv.extend(args.iter().cloned());
-    Ok(dispatch_on_core(core, "host.run", &argv)?
+    argv.extend(input.iter().cloned());
+    Ok(dispatch_on_core(core, command, &argv)?
         .output
         .unwrap_or_default())
 }
@@ -239,10 +256,12 @@ pub fn install_app(path: &str) -> Result<InstallOutcome, String> {
     let manifest = read_manifest(src).map_err(|e| e.to_string())?;
     let id = manifest.id.trim().to_string();
     validate_bundle_id(path, &id)?;
+    validate_runtime(path, &manifest.runtime)?;
     let name = match manifest.name.trim() {
         "" => id.clone(),
         name => name.to_string(),
     };
+    let runtime = manifest.runtime.trim().to_string();
 
     let dest = home_dir().join("apps").join(&id);
     let in_place = matches!(
@@ -263,7 +282,14 @@ pub fn install_app(path: &str) -> Result<InstallOutcome, String> {
     let mut core = open()?;
     match core.dispatch(Request::new(
         "app.add",
-        vec![id.clone(), name, "--source".into(), source.clone()],
+        vec![
+            id.clone(),
+            name,
+            "--source".into(),
+            source.clone(),
+            "--runtime".into(),
+            runtime,
+        ],
     )) {
         Ok(_) => Ok(InstallOutcome::Installed { id, source }),
         Err(Error::AppExists(_)) => Ok(InstallOutcome::Refreshed { id }),
@@ -348,6 +374,37 @@ fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, DeJson)]
+pub struct BundleManifest {
+    #[nserde(default)]
+    pub id: String,
+    #[nserde(default)]
+    pub name: String,
+    #[nserde(default)]
+    pub runtime: String,
+    #[nserde(default)]
+    pub backend: String,
+    #[nserde(default)]
+    pub module: String,
+    #[nserde(default)]
+    pub entry: String,
+    #[nserde(default)]
+    pub ui: String,
+    #[nserde(default)]
+    pub resources: Vec<String>,
+}
+
+pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest, Error> {
+    let text = std::fs::read_to_string(bundle_dir.join("manifest.json"))
+        .map_err(|e| Error::Runtime(format!("read manifest.json: {e}")))?;
+    let manifest = BundleManifest::deserialize_json(&text)
+        .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
+    Ok(BundleManifest {
+        runtime: non_empty_or(manifest.runtime, "js"),
+        ..manifest
+    })
+}
+
 /// App ids become directory names under `$TERRANE_HOME/apps`, so keep them as
 /// one portable path segment.
 fn validate_bundle_id(path: &str, id: &str) -> Result<(), String> {
@@ -366,4 +423,21 @@ fn validate_bundle_id(path: &str, id: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn validate_runtime(path: &str, runtime: &str) -> Result<(), String> {
+    match runtime {
+        "js" | "wasm" => Ok(()),
+        other => Err(format!(
+            "{path}/manifest.json has unsupported runtime {other:?}; use \"js\" or \"wasm\""
+        )),
+    }
+}
+
+fn non_empty_or(value: String, fallback: &str) -> String {
+    if value.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        value
+    }
 }

@@ -14,12 +14,13 @@ use std::time::{Duration, Instant};
 
 use terrane_cap_builder as builder;
 use terrane_cap_harness as harness;
+use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
 use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
 use terrane_cap_replica::initialized_event;
-use terrane_core::host_runtime::{run_memory_backend, MemoryBackendBundle};
 use terrane_core::{Effect, EffectRunner};
 use terrane_core::{Error, EventRecord, Result};
+use terrane_core::{RuntimeHostHandle, RuntimeResourceHost};
 
 pub struct EdgeRunner;
 
@@ -207,13 +208,17 @@ fn run_harness_js(
             .get(app_id)
             .map(|app| app.name.clone())
             .ok_or_else(|| Error::AppNotFound(app_id.to_string()))?;
-        let bundle = MemoryBackendBundle {
+        let bundle = JsRuntimeBundle {
             source: js.clone(),
             name,
             resources: vec!["kv".to_string(), "build".to_string()],
         };
-        let result = run_memory_backend(app_id, &[], &bundle, state.clone())?;
-        Ok((js, result.output, result.records))
+        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
+            app_id.to_string(),
+            state.clone(),
+        )));
+        let output = run_js_bundle(app_id, &[], &bundle, host.clone())?;
+        Ok((js, output, host.take_records()))
     })();
 
     match result {

@@ -1,4 +1,4 @@
-//! Engine tests for the `host` capability — running a JS backend in QuickJS over
+//! Engine tests for the `js-runtime` capability — running a JS backend in QuickJS over
 //! a sandboxed app-scoped `ctx.resource.kv`. Uses tiny inline bundles so the
 //! tests are self-contained (the full todo e2e lives in terrane-host).
 
@@ -9,8 +9,8 @@ use std::path::Path;
 use tempfile::tempdir;
 use terrane_cap_app::AppRecord;
 use terrane_cap_crdt::crdt_list_strings;
-use terrane_core::host_runtime::{run_memory_backend, MemoryBackendBundle};
-use terrane_core::{fold_records_in_memory, Core, State};
+use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
+use terrane_core::{fold_records_in_memory, Core, RuntimeHostHandle, RuntimeResourceHost, State};
 
 use crate::helpers::req;
 
@@ -49,7 +49,7 @@ fn install_demo(dir: &Path) -> Core {
     let src = write_bundle(
         dir,
         "demo",
-        r#"{ "id": "demo", "name": "Demo", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "demo", "name":"Demo","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
         BACKEND,
     );
     let mut core = Core::open(dir.join("log.bin")).unwrap();
@@ -65,7 +65,7 @@ fn host_run_executes_js_records_kv_and_prints_output() {
 
     // A write produces exactly one kv.set record and the backend's printed string.
     let records = core
-        .dispatch(req("host.run", &["demo", "set", "a", "1"]))
+        .dispatch(req("js-runtime.run", &["demo", "set", "a", "1"]))
         .unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, "kv.set");
@@ -73,24 +73,26 @@ fn host_run_executes_js_records_kv_and_prints_output() {
     assert_eq!(core.state().kv.data["demo"]["a"], "1");
 
     // Reads (no record).
-    core.dispatch(req("host.run", &["demo", "get", "a"]))
+    core.dispatch(req("js-runtime.run", &["demo", "get", "a"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("1"));
-    core.dispatch(req("host.run", &["demo", "get", "missing"]))
+    core.dispatch(req("js-runtime.run", &["demo", "get", "missing"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("(none)"));
 
     // In-run read-after-write: two sets then a get inside ONE run see the latest.
-    core.dispatch(req("host.run", &["demo", "raw"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["demo", "raw"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("v2"));
 
     // all() in a later run sees state committed by earlier runs.
-    core.dispatch(req("host.run", &["demo", "all"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["demo", "all"]))
+        .unwrap();
     let all = core.take_last_output().unwrap();
     assert!(all.contains("a=1") && all.contains("k=v2"), "all: {all}");
 
     // Remove, then it's gone.
-    core.dispatch(req("host.run", &["demo", "rm", "a"]))
+    core.dispatch(req("js-runtime.run", &["demo", "rm", "a"]))
         .unwrap();
     assert!(!core.state().kv.data["demo"].contains_key("a"));
 
@@ -109,11 +111,15 @@ fn host_run_rejects_missing_app_and_missing_source() {
     let mut core = install_demo(dir.path());
 
     // Unknown app.
-    assert!(core.dispatch(req("host.run", &["ghost", "all"])).is_err());
+    assert!(core
+        .dispatch(req("js-runtime.run", &["ghost", "all"]))
+        .is_err());
 
     // App with no --source bundle can't run.
     core.dispatch(req("app.add", &["bare", "Bare"])).unwrap();
-    assert!(core.dispatch(req("host.run", &["bare", "all"])).is_err());
+    assert!(core
+        .dispatch(req("js-runtime.run", &["bare", "all"]))
+        .is_err());
 }
 
 #[test]
@@ -123,14 +129,16 @@ fn undeclared_resource_is_not_installed() {
     let src = write_bundle(
         dir.path(),
         "noperm",
-        r#"{ "id": "noperm", "name": "NoPerm", "backend": "main.js", "resources": [] }"#,
+        r#"{ "id": "noperm", "name":"NoPerm","runtime":"js","backend":"main.js", "resources": [] }"#,
         r#"function handle(input) { return ctx.resource.kv.get("x"); }"#,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["noperm", "NoPerm", "--source", &src]))
         .unwrap();
     // Touching an undeclared resource throws (kv is undefined) → the run errors.
-    assert!(core.dispatch(req("host.run", &["noperm", "x"])).is_err());
+    assert!(core
+        .dispatch(req("js-runtime.run", &["noperm", "x"]))
+        .is_err());
 }
 
 #[test]
@@ -149,7 +157,7 @@ fn build_resource_compiles_typescript_inside_quickjs() {
     let src = write_bundle(
         dir.path(),
         "build-demo",
-        r#"{ "id": "build-demo", "name": "Build Demo", "backend": "main.js", "resources": ["build"] }"#,
+        r#"{ "id": "build-demo", "name":"Build Demo","runtime":"js","backend":"main.js", "resources": ["build"] }"#,
         backend,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
@@ -159,7 +167,9 @@ fn build_resource_compiles_typescript_inside_quickjs() {
     ))
     .unwrap();
 
-    let records = core.dispatch(req("host.run", &["build-demo"])).unwrap();
+    let records = core
+        .dispatch(req("js-runtime.run", &["build-demo"]))
+        .unwrap();
 
     assert!(records.is_empty());
     assert_eq!(core.take_last_output().as_deref(), Some("compiled"));
@@ -179,7 +189,7 @@ fn backend_crdt_writes_use_query_bus_and_working_state() {
     let src = write_bundle(
         dir.path(),
         "crdt-demo",
-        r#"{ "id": "crdt-demo", "name": "CRDT Demo", "backend": "main.js", "resources": ["crdt"] }"#,
+        r#"{ "id": "crdt-demo", "name":"CRDT Demo","runtime":"js","backend":"main.js", "resources": ["crdt"] }"#,
         backend,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
@@ -189,7 +199,9 @@ fn backend_crdt_writes_use_query_bus_and_working_state() {
     ))
     .unwrap();
 
-    let records = core.dispatch(req("host.run", &["crdt-demo"])).unwrap();
+    let records = core
+        .dispatch(req("js-runtime.run", &["crdt-demo"]))
+        .unwrap();
 
     assert_eq!(core.take_last_output().as_deref(), Some("alpha,beta"));
     assert_eq!(records.len(), 2);
@@ -212,14 +224,14 @@ fn backend_cannot_use_eval_or_function_constructor() {
     let src = write_bundle(
         dir.path(),
         "no-eval",
-        r#"{ "id": "no-eval", "name": "No Eval", "backend": "main.js", "resources": [] }"#,
+        r#"{ "id": "no-eval", "name":"No Eval","runtime":"js","backend":"main.js", "resources": [] }"#,
         backend,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["no-eval", "No Eval", "--source", &src]))
         .unwrap();
 
-    core.dispatch(req("host.run", &["no-eval"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["no-eval"])).unwrap();
 
     assert_eq!(
         core.take_last_output().as_deref(),
@@ -233,10 +245,10 @@ fn failed_run_clears_last_output() {
     let mut core = install_demo(dir.path());
 
     // A successful run sets the output; we deliberately do NOT consume it.
-    core.dispatch(req("host.run", &["demo", "set", "b", "2"]))
+    core.dispatch(req("js-runtime.run", &["demo", "set", "b", "2"]))
         .unwrap();
     // A subsequent failed run must not leave the stale string behind.
-    let _ = core.dispatch(req("host.run", &["ghost", "x"]));
+    let _ = core.dispatch(req("js-runtime.run", &["ghost", "x"]));
     assert_eq!(
         core.take_last_output(),
         None,
@@ -250,13 +262,13 @@ fn handle_must_return_a_string() {
     let src = write_bundle(
         dir.path(),
         "bad",
-        r#"{ "id": "bad", "name": "Bad", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "bad", "name":"Bad","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
         r#"function handle(input) { return 42; }"#,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["bad", "Bad", "--source", &src]))
         .unwrap();
-    let result = core.dispatch(req("host.run", &["bad", "go"]));
+    let result = core.dispatch(req("js-runtime.run", &["bad", "go"]));
     assert!(result.is_err(), "non-string handle() return should error");
 }
 
@@ -289,7 +301,7 @@ fn actions_table_backend_is_synthesized_and_self_describes() {
     let src = write_bundle(
         dir.path(),
         "acts",
-        r#"{ "id": "acts", "name": "Acts Demo", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "acts", "name":"Acts Demo","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
         ACTIONS_BACKEND,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
@@ -297,28 +309,31 @@ fn actions_table_backend_is_synthesized_and_self_describes() {
         .unwrap();
 
     // Dispatch works with no hand-written handle; reads see prior writes.
-    core.dispatch(req("host.run", &["acts", "set", "hi", "there"]))
+    core.dispatch(req("js-runtime.run", &["acts", "set", "hi", "there"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("ok"));
-    core.dispatch(req("host.run", &["acts", "get"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["acts", "get"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("hi there"));
 
     // usage() is derived from the action's declared args.
-    core.dispatch(req("host.run", &["acts", "set"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["acts", "set"]))
+        .unwrap();
     assert_eq!(
         core.take_last_output().as_deref(),
         Some("usage: set <value>")
     );
 
     // The unknown-verb help lists the table's keys.
-    core.dispatch(req("host.run", &["acts", "frob"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["acts", "frob"]))
+        .unwrap();
     assert_eq!(
         core.take_last_output().as_deref(),
         Some("unknown verb: frob (try set | get)")
     );
 
     // __actions__ self-describes, with app id/name pulled from the manifest.
-    core.dispatch(req("host.run", &["acts", "__actions__"]))
+    core.dispatch(req("js-runtime.run", &["acts", "__actions__"]))
         .unwrap();
     let out = core.take_last_output().unwrap();
     assert!(out.contains("\"app\":\"acts\""), "id from manifest: {out}");
@@ -342,7 +357,7 @@ fn actions_table_accepts_direct_function_entries() {
     let src = write_bundle(
         dir.path(),
         "counter",
-        r#"{ "id": "counter", "name": "Counter", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "counter", "name":"Counter","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
         r#"
 var kv = ctx.resource.kv;
 function readCount() {
@@ -365,13 +380,14 @@ var actions = {
     core.dispatch(req("app.add", &["counter", "Counter", "--source", &src]))
         .unwrap();
 
-    core.dispatch(req("host.run", &["counter", "reset"]))
+    core.dispatch(req("js-runtime.run", &["counter", "reset"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("0"));
-    core.dispatch(req("host.run", &["counter", "increment"]))
+    core.dispatch(req("js-runtime.run", &["counter", "increment"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("1"));
-    core.dispatch(req("host.run", &["counter", "get"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["counter", "get"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("1"));
 
     assert!(core.replay_matches().unwrap());
@@ -383,7 +399,9 @@ fn redundant_same_key_set_is_coalesced_within_a_run() {
     let mut core = install_demo(dir.path());
 
     // `raw` sets "k" twice in one run → only the last set is committed.
-    let records = core.dispatch(req("host.run", &["demo", "raw"])).unwrap();
+    let records = core
+        .dispatch(req("js-runtime.run", &["demo", "raw"]))
+        .unwrap();
     assert_eq!(
         records.len(),
         1,
@@ -403,7 +421,9 @@ fn set_then_rm_same_key_cancels_the_set() {
 
     // `setrm` sets "z" then removes it in one run → the set is superseded by the
     // later rm, so only the delete is committed.
-    let records = core.dispatch(req("host.run", &["demo", "setrm"])).unwrap();
+    let records = core
+        .dispatch(req("js-runtime.run", &["demo", "setrm"]))
+        .unwrap();
     assert_eq!(
         records.len(),
         1,
@@ -427,7 +447,7 @@ fn kv_set_with_non_string_arg_gives_attributable_error() {
     let src = write_bundle(
         dir.path(),
         "typed",
-        r#"{ "id": "typed", "name": "Typed", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "typed", "name":"Typed","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
         r#"function handle(input) { ctx.resource.kv.set(1, "v"); return "ok"; }"#,
     );
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
@@ -437,7 +457,7 @@ fn kv_set_with_non_string_arg_gives_attributable_error() {
     // A non-string key aborts the run with a typed error naming the kv call —
     // not a generic rquickjs conversion message — and commits nothing.
     let err = core
-        .dispatch(req("host.run", &["typed", "go"]))
+        .dispatch(req("js-runtime.run", &["typed", "go"]))
         .unwrap_err();
     match err {
         terrane_core::Error::InvalidInput(msg) => {
@@ -463,7 +483,7 @@ fn manifest_ignores_nested_backend_key() {
     core.dispatch(req("app.add", &["nested", "Nested", "--source", &src]))
         .unwrap();
 
-    core.dispatch(req("host.run", &["nested", "set", "a", "1"]))
+    core.dispatch(req("js-runtime.run", &["nested", "set", "a", "1"]))
         .unwrap();
     assert_eq!(core.state().kv.data["nested"]["a"], "1");
 }
@@ -475,21 +495,22 @@ fn manifest_decodes_string_escapes() {
     // backslash) which decodes to 'v' → "kv". A raw-substring scan would keep the
     // literal `kv` and fail to grant the kv resource, so the run would error.
     let bsl = char::from_u32(92).unwrap();
-    let manifest =
-        format!(r#"{{ "id": "esc", "backend": "main.js", "resources": ["k{bsl}u0076"] }}"#);
+    let manifest = format!(
+        r#"{{ "id":"esc","runtime":"js","backend":"main.js", "resources": ["k{bsl}u0076"] }}"#
+    );
     let src = write_bundle(dir.path(), "esc", &manifest, BACKEND);
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["esc", "Esc", "--source", &src]))
         .unwrap();
 
-    core.dispatch(req("host.run", &["esc", "set", "a", "1"]))
+    core.dispatch(req("js-runtime.run", &["esc", "set", "a", "1"]))
         .unwrap();
     assert_eq!(core.state().kv.data["esc"]["a"], "1");
 }
 
 /// The live runtime installs EXACTLY the resource surface the capabilities
 /// declare via `resource_api()` — no more, no less. Catches a bug in the
-/// declaration-driven install loop in `host_runtime.rs`.
+/// declaration-driven install loop in the JS runtime.
 #[test]
 fn runtime_resource_surface_matches_declarations() {
     let declared = terrane_core::declared_resource_surface();
@@ -524,7 +545,7 @@ fn runtime_resource_surface_matches_declarations() {
         dir.path(),
         "introspect",
         &format!(
-            r#"{{ "id": "introspect", "name": "Introspect", "backend": "main.js", "resources": [{resources_json}] }}"#
+            r#"{{ "id": "introspect", "name":"Introspect","runtime":"js","backend":"main.js", "resources": [{resources_json}] }}"#
         ),
         introspect,
     );
@@ -534,7 +555,7 @@ fn runtime_resource_surface_matches_declarations() {
         &["introspect", "Introspect", "--source", &src],
     ))
     .unwrap();
-    core.dispatch(req("host.run", &["introspect", "list"]))
+    core.dispatch(req("js-runtime.run", &["introspect", "list"]))
         .unwrap();
     let runtime: BTreeSet<String> = core
         .take_last_output()
@@ -563,28 +584,34 @@ fn memory_backend_run_returns_records_for_caller_owned_fold() {
             id: "preview-demo".to_string(),
             name: "Preview Demo".to_string(),
             source: None,
+            runtime: "js".to_string(),
         },
     );
-    let bundle = MemoryBackendBundle {
+    let bundle = JsRuntimeBundle {
         source: BACKEND.to_string(),
         name: "Preview Demo".to_string(),
         resources: vec!["kv".to_string()],
     };
 
-    let result = run_memory_backend(
+    let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
+        "preview-demo",
+        state.clone(),
+    )));
+    let output = run_js_bundle(
         "preview-demo",
         &["set".to_string(), "a".to_string(), "1".to_string()],
         &bundle,
-        state.clone(),
+        host.clone(),
     )
     .unwrap();
+    let records = host.take_records();
 
-    assert_eq!(result.output, "ok a");
-    assert_eq!(result.records.len(), 1);
-    assert_eq!(result.records[0].kind, "kv.set");
+    assert_eq!(output, "ok a");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, "kv.set");
     assert!(!state.kv.data.contains_key("preview-demo"));
 
-    fold_records_in_memory(&mut state, &result.records).unwrap();
+    fold_records_in_memory(&mut state, &records).unwrap();
     assert_eq!(state.kv.data["preview-demo"]["a"], "1");
 }
 

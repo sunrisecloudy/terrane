@@ -73,7 +73,7 @@ pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle
     result.ok().flatten().unwrap_or(ptr::null_mut())
 }
 
-/// Run an app's JS backend: `host.run app [args…]`. On success writes the
+/// Run an app backend through its cataloged runtime. On success writes the
 /// backend's printed string to `out_output` and returns [`TERRANE_OK`]; on
 /// failure writes a message to `out_error` and returns a non-zero code.
 ///
@@ -97,27 +97,32 @@ pub unsafe extern "C" fn terrane_host_run(
             Ok(a) => a,
             Err(code) => return code,
         };
-        let mut args = match read_argv(argc, argv) {
+        let args = match read_argv(argc, argv) {
             Ok(a) => a,
             Err(code) => return code,
         };
-        let mut full = Vec::with_capacity(1 + args.len());
-        full.push(app);
-        full.append(&mut args);
-        dispatch_request(
-            h,
-            Request::new("host.run", full),
-            true,
-            out_output,
-            out_error,
-        )
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::invoke_app_input(&mut core, &app, &args) {
+            Ok(output) => {
+                write_out(out_output, output);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
     }));
     finish(code, out_error)
 }
 
 /// Dispatch any command: `name [args…]`. On success writes the committed event
 /// kinds (one per line) to `out_output`; on failure writes a message to
-/// `out_error`. For non-`host.run` commands (e.g. `app.add`, `kv.set`).
+/// `out_error`. For non-runtime commands (e.g. `app.add`, `kv.set`).
 ///
 /// # Safety
 /// Same as [`terrane_host_run`], with `name` in place of `app`.
@@ -430,7 +435,7 @@ pub unsafe extern "C" fn terrane_close(h: *mut TerraneHandle) {
 
 // ---- internals ----
 
-/// Lock the core, dispatch, and write the output (backend string for `host.run`,
+/// Lock the core, dispatch, and write the output (backend string for runtime commands,
 /// else the committed event kinds) or the error.
 unsafe fn dispatch_request(
     h: *mut TerraneHandle,

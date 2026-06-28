@@ -3,8 +3,8 @@ use std::path::{Component, Path};
 
 use nanoserde::{DeJson, SerJson};
 use terrane_cap_app::AppRecord;
-use terrane_core::host_runtime::{run_memory_backend, BundleManifest, MemoryBackendBundle};
-use terrane_core::{fold_records_in_memory, State};
+use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
+use terrane_core::{fold_records_in_memory, RuntimeHostHandle, RuntimeResourceHost, State};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["html", "htm", "css", "js", "mjs", "json", "svg"];
 
@@ -39,7 +39,7 @@ struct Preview {
     files: BTreeMap<String, String>,
     ui: String,
     state: State,
-    bundle: MemoryBackendBundle,
+    bundle: JsRuntimeBundle,
 }
 
 #[derive(DeJson)]
@@ -55,6 +55,8 @@ struct PreviewManifest {
     name: String,
     #[nserde(default)]
     backend: String,
+    #[nserde(default)]
+    runtime: String,
     #[nserde(default)]
     ui: String,
     #[nserde(default)]
@@ -95,6 +97,12 @@ impl PreviewStore {
             .ok_or_else(|| "missing manifest.json".to_string())?;
         let manifest = parse_manifest(manifest_text)?;
         validate_manifest_id(&manifest.id)?;
+        if manifest.runtime != "js" {
+            return Err(format!(
+                "preview runtime {:?} is not supported; use \"js\"",
+                manifest.runtime
+            ));
+        }
 
         let ui =
             normalize_rel_path(&manifest.ui).map_err(|e| format!("manifest.ui is invalid: {e}"))?;
@@ -121,9 +129,10 @@ impl PreviewStore {
                 id: id.clone(),
                 name,
                 source: None,
+                runtime: "js".to_string(),
             },
         );
-        let bundle = MemoryBackendBundle {
+        let bundle = JsRuntimeBundle {
             source: backend_source,
             name: manifest.name.clone(),
             resources: manifest.resources.clone(),
@@ -176,11 +185,15 @@ impl PreviewStore {
         let mut input = Vec::with_capacity(args.len() + 1);
         input.push(verb.to_string());
         input.extend(args.iter().cloned());
-        let result =
-            run_memory_backend(&preview.id, &input, &preview.bundle, preview.state.clone())
-                .map_err(|e| e.to_string())?;
-        fold_records_in_memory(&mut preview.state, &result.records).map_err(|e| e.to_string())?;
-        Ok(result.output)
+        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
+            preview.id.clone(),
+            preview.state.clone(),
+        )));
+        let output = run_js_bundle(&preview.id, &input, &preview.bundle, host.clone())
+            .map_err(|e| e.to_string())?;
+        let records = host.take_records();
+        fold_records_in_memory(&mut preview.state, &records).map_err(|e| e.to_string())?;
+        Ok(output)
     }
 
     fn preview(&self, id: &str) -> Result<&Preview, String> {
@@ -234,21 +247,22 @@ fn validate_files(files: Vec<PreviewFile>) -> Result<BTreeMap<String, String>, S
     Ok(out)
 }
 
-fn parse_manifest(text: &str) -> Result<BundleManifest, String> {
-    let m = PreviewManifest::deserialize_json(text).map_err(|e| format!("manifest.json: {e}"))?;
+fn parse_manifest(text: &str) -> Result<PreviewManifest, String> {
+    let mut m =
+        PreviewManifest::deserialize_json(text).map_err(|e| format!("manifest.json: {e}"))?;
+    if m.runtime.trim().is_empty() {
+        m.runtime = "js".to_string();
+    }
+    if m.runtime != "js" {
+        return Ok(m);
+    }
     if m.backend.trim().is_empty() {
         return Err("missing manifest.backend".to_string());
     }
     if m.ui.trim().is_empty() {
         return Err("missing manifest.ui".to_string());
     }
-    Ok(BundleManifest {
-        id: m.id,
-        name: m.name,
-        backend: m.backend,
-        ui: m.ui,
-        resources: m.resources,
-    })
+    Ok(m)
 }
 
 fn validate_manifest_id(id: &str) -> Result<(), String> {

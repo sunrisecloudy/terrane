@@ -6,7 +6,7 @@ User request:
 Hard requirements:
 - Return only a JSON object, no markdown, no prose.
 - Shape: {"files":[{"path":"manifest.json","content":"..."}]}
-- manifest.json must use id {{APP_ID_JSON}}, name {{APP_NAME_JSON}}, version "0.1.0", backend "main.js", ui "index.html".
+- manifest.json must use id {{APP_ID_JSON}}, name {{APP_NAME_JSON}}, version "0.1.0", runtime "js", backend "main.js", ui "index.html".
 - Include manifest.json, main.js, index.html, and style.css.
 - Backend runs in Terrane QuickJS. Define a global `actions` object or `handle(input)`. It must return strings only.
 - Actions receive string args and may use `ctx.resource.kv.get(key)`, `ctx.resource.kv.set(key, value)`, `ctx.resource.kv.rm(key)`, and `ctx.resource.kv.all()` when manifest.resources includes "kv".

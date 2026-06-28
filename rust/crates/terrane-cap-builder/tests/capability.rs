@@ -42,7 +42,7 @@ impl CapBus for NoBus {
 
 fn generated_json() -> String {
     r#"{"files":[
-{"path":"manifest.json","content":"{\"id\":\"calendar\",\"name\":\"Calendar\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[\"kv\",\"crdt\"]}"},
+{"path":"manifest.json","content":"{\"id\":\"calendar\",\"name\":\"Calendar\",\"runtime\":\"js\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[\"kv\",\"crdt\"]}"},
 {"path":"main.js","content":"export function run(){ return 1; }"},
 {"path":"index.html","content":"<!doctype html><title>Calendar</title>"},
 {"path":"style.css","content":"body { color: black; }"}

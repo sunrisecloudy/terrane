@@ -2,7 +2,7 @@
 //!
 //! A superset of the `terrane` binary: every standard command works (delegated
 //! to the shared host CLI adapter), plus a top-level `run <app> [input…]` that
-//! executes an app's JS backend via the core's `host.run`. It is the first
+//! executes an app backend via its cataloged runtime. It is the first
 //! concrete "host" — the same spine a native shell will wrap, minus the UI.
 
 use std::env;
@@ -22,12 +22,15 @@ fn main() -> ExitCode {
 
 fn run(argv: &[&str]) -> Result<(), String> {
     match argv {
-        // Top-level run: `terrane-host run <app> [input…]` → host.run.
+        // Top-level run: `terrane-host run <app> [input…]`.
         ["run", app, input @ ..] => {
-            let mut args = Vec::with_capacity(1 + input.len());
-            args.push(*app);
-            args.extend_from_slice(input);
-            terrane_host::cli::dispatch("host.run", &args)
+            let mut core = terrane_host::open()?;
+            let input = input.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+            println!(
+                "{}",
+                terrane_host::invoke_app_input(&mut core, app, &input)?
+            );
+            Ok(())
         }
         ["run"] => Err("usage: terrane-host run <app> [input…]".into()),
         [] | ["help"] | ["--help"] | ["-h"] => {
@@ -35,7 +38,7 @@ fn run(argv: &[&str]) -> Result<(), String> {
             terrane_host::cli::print_help();
             Ok(())
         }
-        // Everything else is a standard terrane command (incl. `host run …`).
+        // Everything else is a standard terrane command.
         _ => terrane_host::cli::run(argv),
     }
 }
@@ -43,7 +46,7 @@ fn run(argv: &[&str]) -> Result<(), String> {
 fn print_host_help() {
     println!(
         "terrane-host — the terrane CLI plus the app runtime entry point\n\n\
-         \x20 terrane-host run <app> [input…]   run an app's JS backend\n\n\
+         \x20 terrane-host run <app> [input…]   run an app backend\n\n\
          All standard terrane commands also work:\n"
     );
 }

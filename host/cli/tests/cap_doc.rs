@@ -25,24 +25,15 @@ fn cap_info_returns_relational_db_document() {
     let dir = tempdir().unwrap();
     let home = dir.path();
 
-    let (ok, out, err) = host(
-        home,
-        &["cap", "info", "relational_db", "--format", "json"],
-    );
+    let (ok, out, err) = host(home, &["cap", "info", "relational_db", "--format", "json"]);
     assert!(ok, "stderr: {err}");
-    assert!(
-        out.contains(r#""namespace":"relational_db""#),
-        "out: {out}"
-    );
+    assert!(out.contains(r#""namespace":"relational_db""#), "out: {out}");
     assert!(out.contains(r#""status":"planned""#), "out: {out}");
     assert!(out.contains("table_spec.schema.json"), "out: {out}");
     assert!(out.contains("query.schema.json"), "out: {out}");
     assert!(!out.contains("Reserved kv layout"), "out: {out}");
 
-    let (ok, skill, err) = host(
-        home,
-        &["cap", "info", "relational_db", "--format", "skill"],
-    );
+    let (ok, skill, err) = host(home, &["cap", "info", "relational_db", "--format", "skill"]);
     assert!(ok, "stderr: {err}");
     assert!(skill.contains("# relational_db"), "skill: {skill}");
     assert!(
@@ -80,8 +71,5 @@ fn cap_list_exposes_capability_summaries() {
     let (ok, out, err) = host(home, &["cap", "list", "--format", "json"]);
     assert!(ok, "stderr: {err}");
     assert!(out.contains(r#""namespace":"kv""#), "out: {out}");
-    assert!(
-        out.contains(r#""namespace":"relational_db""#),
-        "out: {out}"
-    );
+    assert!(out.contains(r#""namespace":"relational_db""#), "out: {out}");
 }
