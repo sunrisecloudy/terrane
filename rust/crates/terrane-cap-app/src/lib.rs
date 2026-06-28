@@ -17,6 +17,7 @@ pub struct AppRecord {
     pub id: AppId,
     pub name: String,
     pub source: Option<String>,
+    pub runtime: String,
 }
 
 /// This capability's slice of State.
@@ -30,6 +31,7 @@ struct Added {
     id: String,
     name: String,
     source: Option<String>,
+    runtime: String,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -65,12 +67,15 @@ impl Capability for AppCapability {
     fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         match name {
             "app.add" => {
-                let (id, app_name, source) = parse_add(args)?;
+                let (id, app_name, source, runtime) = parse_add(args)?;
                 if id.trim().is_empty() {
                     return Err(Error::InvalidInput("app id must not be empty".into()));
                 }
                 if app_name.trim().is_empty() {
                     return Err(Error::InvalidInput("app name must not be empty".into()));
+                }
+                if runtime.trim().is_empty() {
+                    return Err(Error::InvalidInput("app runtime must not be empty".into()));
                 }
                 if state_ref::<AppState>(ctx.state, "app")?
                     .apps
@@ -84,6 +89,7 @@ impl Capability for AppCapability {
                         id,
                         name: app_name,
                         source,
+                        runtime,
                     },
                 )?]))
             }
@@ -128,6 +134,7 @@ impl Capability for AppCapability {
                         id: e.id,
                         name: e.name,
                         source: e.source,
+                        runtime: e.runtime,
                     },
                 );
             }
@@ -145,8 +152,11 @@ impl Capability for AppCapability {
             "app.added" => {
                 let e: Added = decode_event(record).ok()?;
                 Some(match e.source {
-                    Some(src) => format!("app.added {} \"{}\" [{}]", e.id, e.name, src),
-                    None => format!("app.added {} \"{}\"", e.id, e.name),
+                    Some(src) => format!(
+                        "app.added {} \"{}\" runtime={} [{}]",
+                        e.id, e.name, e.runtime, src
+                    ),
+                    None => format!("app.added {} \"{}\" runtime={}", e.id, e.name, e.runtime),
                 })
             }
             "app.removed" => {
@@ -158,11 +168,12 @@ impl Capability for AppCapability {
     }
 }
 
-/// Parse `add` args: `<id> <name…> [--source <path>]`.
-fn parse_add(args: &[String]) -> Result<(String, String, Option<String>)> {
+/// Parse `add` args: `<id> <name…> [--source <path>] [--runtime <name>]`.
+fn parse_add(args: &[String]) -> Result<(String, String, Option<String>, String)> {
     let id = arg(args, 0, "app id")?;
     let mut name_parts: Vec<&str> = Vec::new();
     let mut source = None;
+    let mut runtime = "js".to_string();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -173,6 +184,13 @@ fn parse_add(args: &[String]) -> Result<(String, String, Option<String>)> {
                 source = Some(path.clone());
                 i += 2;
             }
+            "--runtime" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| Error::InvalidInput("`--runtime` needs a name".into()))?;
+                runtime = value.clone();
+                i += 2;
+            }
             word => {
                 name_parts.push(word);
                 i += 1;
@@ -181,10 +199,10 @@ fn parse_add(args: &[String]) -> Result<(String, String, Option<String>)> {
     }
     if name_parts.is_empty() {
         return Err(Error::InvalidInput(
-            "usage: app add <id> <name…> [--source <path>]".into(),
+            "usage: app add <id> <name…> [--source <path>] [--runtime <name>]".into(),
         ));
     }
-    Ok((id, name_parts.join(" "), source))
+    Ok((id, name_parts.join(" "), source, runtime))
 }
 
 #[cfg(test)]

@@ -22,6 +22,8 @@ struct Manifest {
     #[nserde(default)]
     name: String,
     #[nserde(default)]
+    runtime: String,
+    #[nserde(default)]
     backend: String,
     #[nserde(default)]
     ui: String,
@@ -98,6 +100,12 @@ pub fn validate_files(
         return Err(Error::InvalidInput(format!(
             "builder manifest name {:?} must match requested app name {name:?}",
             manifest.name
+        )));
+    }
+    if manifest.runtime.trim() != "js" {
+        return Err(Error::InvalidInput(format!(
+            "builder manifest runtime {:?} must be \"js\"",
+            manifest.runtime
         )));
     }
     let backend = normalize_rel_path(&manifest.backend)

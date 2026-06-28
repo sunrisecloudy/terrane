@@ -8,9 +8,11 @@ members = [
   "crates/terrane-cap-crdt",
   "crates/terrane-cap-harness",
   "crates/terrane-cap-kv",
+  "crates/terrane-cap-js-runtime",
   "crates/terrane-cap-model",
   "crates/terrane-cap-net",
   "crates/terrane-cap-replica",
+  "crates/terrane-cap-wasm-runtime",
   "crates/terrane-core",
   "crates/terrane-host",
   "crates/terrane-api",
@@ -31,14 +33,16 @@ terrane-cap-builder = { path = "crates/terrane-cap-builder" }
 terrane-cap-crdt = { path = "crates/terrane-cap-crdt" }
 terrane-cap-harness = { path = "crates/terrane-cap-harness" }
 terrane-cap-kv = { path = "crates/terrane-cap-kv" }
+terrane-cap-js-runtime = { path = "crates/terrane-cap-js-runtime" }
 terrane-cap-model = { path = "crates/terrane-cap-model" }
 terrane-cap-net = { path = "crates/terrane-cap-net" }
 terrane-cap-replica = { path = "crates/terrane-cap-replica" }
+terrane-cap-wasm-runtime = { path = "crates/terrane-cap-wasm-runtime" }
 terrane-host = { path = "crates/terrane-host" }
 terrane-app-build = { path = "crates/terrane-app-build" }
 borsh = { version = "1", features = ["derive"] }
 # JSON path only — no binary/ron/toml. borsh stays the event-log format; this
-# only reads hand-authored bundle manifests at the edge (see host_runtime.rs).
+# only reads hand-authored bundle manifests at the edge.
 nanoserde = { version = "0.2", default-features = false, features = ["json"] }
 tempfile = "3"
 

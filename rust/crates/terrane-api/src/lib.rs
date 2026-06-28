@@ -73,7 +73,7 @@ pub struct AppsResponse {
 
 /// `POST /apps/{id}/invoke` body — the HTTP twin of `window.terrane.invoke` and
 /// of the MCP `invoke` tool: a verb plus its string argument array, run against
-/// the app's backend (`host.run`).
+/// the app's backend runtime.
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
 pub struct InvokeRequest {
     pub verb: String,
@@ -278,9 +278,10 @@ pub fn public_surface(
         resources,
         app: AppContractInfo {
             actions_verb: ACTIONS_VERB.to_string(),
-            invoke: "a verb plus its string args runs the app backend and returns a string \
-                     (HTTP POST /apps/{id}/invoke; MCP `invoke` tool; CLI `terrane host run`)"
-                .to_string(),
+            invoke:
+                "a verb plus its string args runs the app backend and returns a string \
+                     (HTTP POST /apps/{id}/invoke; MCP `invoke` tool; runtime selected by manifest)"
+                    .to_string(),
         },
         sync: SyncInfo {
             wire_event: "crdt.update".to_string(),

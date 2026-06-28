@@ -187,7 +187,7 @@ fn host_run_drives_crdt_resource_and_replays() {
     fs::create_dir(&bundle).unwrap();
     fs::write(
         bundle.join("manifest.json"),
-        r#"{ "id": "notes", "name": "Notes", "backend": "main.js", "resources": ["crdt"] }"#,
+        r#"{ "id": "notes", "name":"Notes","runtime":"js","backend":"main.js", "resources": ["crdt"] }"#,
     )
     .unwrap();
     fs::write(bundle.join("main.js"), BACKEND).unwrap();
@@ -200,20 +200,21 @@ fn host_run_drives_crdt_resource_and_replays() {
     ))
     .unwrap();
 
-    core.dispatch(req("host.run", &["notes", "set", "theme", "dark"]))
+    core.dispatch(req("js-runtime.run", &["notes", "set", "theme", "dark"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("ok"));
-    core.dispatch(req("host.run", &["notes", "get", "theme"]))
+    core.dispatch(req("js-runtime.run", &["notes", "get", "theme"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("dark"));
 
     // A list grows across runs; reads come back as a real JS array.
-    core.dispatch(req("host.run", &["notes", "push", "a"]))
+    core.dispatch(req("js-runtime.run", &["notes", "push", "a"]))
         .unwrap();
-    core.dispatch(req("host.run", &["notes", "push", "b"]))
+    core.dispatch(req("js-runtime.run", &["notes", "push", "b"]))
         .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("2"));
-    core.dispatch(req("host.run", &["notes", "list"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["notes", "list"]))
+        .unwrap();
     assert_eq!(core.take_last_output().as_deref(), Some("a,b"));
 
     // Option-A: the log holds only crdt.update events; replay rebuilds without JS.

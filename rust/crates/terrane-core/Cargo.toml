@@ -16,13 +16,14 @@ terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-kv.workspace = true
+terrane-cap-js-runtime.workspace = true
 terrane-cap-model.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
+terrane-cap-wasm-runtime.workspace = true
 borsh.workspace = true
-nanoserde.workspace = true
-rquickjs = { version = "0.12", features = ["macro"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+wat = "1.252.0"
 loro = "1.13.6"

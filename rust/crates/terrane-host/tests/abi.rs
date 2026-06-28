@@ -24,8 +24,8 @@ function handle(input) {
 }
 "#;
 
-/// A backend using the CRDT resource, so FFI host.run exercises stable replica
-/// authoring rather than plain kv storage.
+/// A backend using the CRDT resource, so FFI runtime invocation exercises stable
+/// replica authoring rather than plain kv storage.
 const CRDT_BACKEND: &str = r#"
 var crdt = ctx.resource.crdt;
 function handle(input) {
@@ -46,7 +46,7 @@ fn write_bundle(dir: &Path) -> String {
     fs::create_dir(&bundle).unwrap();
     fs::write(
         bundle.join("manifest.json"),
-        r#"{ "id": "demo", "name": "Demo", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "demo", "name":"Demo","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
     )
     .unwrap();
     fs::write(bundle.join("main.js"), BACKEND).unwrap();
@@ -58,7 +58,7 @@ fn write_crdt_bundle(dir: &Path) -> String {
     fs::create_dir(&bundle).unwrap();
     fs::write(
         bundle.join("manifest.json"),
-        r#"{ "id": "crdt_demo", "name": "CRDT Demo", "backend": "main.js", "resources": ["crdt"] }"#,
+        r#"{ "id": "crdt_demo", "name":"CRDT Demo","runtime":"js","backend":"main.js", "resources": ["crdt"] }"#,
     )
     .unwrap();
     fs::write(bundle.join("main.js"), CRDT_BACKEND).unwrap();
@@ -319,7 +319,7 @@ fn host_run_unknown_app_returns_error_not_panic() {
         assert_ne!(code, TERRANE_OK);
         assert!(out.is_none(), "no output on error");
         assert!(
-            err.as_deref().unwrap_or_default().contains("app not found"),
+            err.as_deref().unwrap_or_default().contains("no such app"),
             "err: {err:?}"
         );
         terrane_close(h);
@@ -331,7 +331,7 @@ fn app_builder_preview_abi_stays_in_memory() {
     let dir = tempdir().unwrap();
     let home = CString::new(dir.path().to_str().unwrap()).unwrap();
     let log = dir.path().join("log.bin");
-    let files_json = r#"{"files":[{"path":"manifest.json","content":"{\"id\":\"demo\",\"name\":\"Demo\",\"ui\":\"ui/index.html\",\"backend\":\"main.js\",\"resources\":[\"kv\"]}"},{"path":"ui/index.html","content":"<script src=\"client.js\"></script>"},{"path":"ui/client.js","content":"console.log(\"hi\")"},{"path":"main.js","content":"var kv=ctx.resource.kv;function handle(input){if(input[0]===\"set\"){kv.set(input[1],input[2]);return \"ok\";}if(input[0]===\"get\"){var v=kv.get(input[1]);return v==null?\"(none)\":v;}return \"?\";}"}]}"#;
+    let files_json = r#"{"files":[{"path":"manifest.json","content":"{\"id\":\"demo\",\"name\":\"Demo\",\"runtime\":\"js\",\"ui\":\"ui/index.html\",\"backend\":\"main.js\",\"resources\":[\"kv\"]}"},{"path":"ui/index.html","content":"<script src=\"client.js\"></script>"},{"path":"ui/client.js","content":"console.log(\"hi\")"},{"path":"main.js","content":"var kv=ctx.resource.kv;function handle(input){if(input[0]===\"set\"){kv.set(input[1],input[2]);return \"ok\";}if(input[0]===\"get\"){var v=kv.get(input[1]);return v==null?\"(none)\":v;}return \"?\";}"}]}"#;
 
     unsafe {
         let h = terrane_open(home.as_ptr());

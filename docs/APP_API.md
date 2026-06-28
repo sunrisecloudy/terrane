@@ -1,10 +1,10 @@
 # Terrane App API
 
-A Terrane app has two JavaScript halves, each with its own API surface:
+A Terrane app has two halves, each with its own API surface:
 
 | Half                 | Runs in                    | Entry           | Can access                   |
 | -------------------- | -------------------------- | --------------- | ---------------------------- |
-| **Backend** (server) | the host's QuickJS runtime | `handle(input)` | `ctx.resource.*`             |
+| **Backend** (server) | QuickJS or Wasmtime        | `handle(input)` | Terrane resources            |
 | **Client** (UI)      | the host's webview         | your page's JS  | `window.terrane.invoke(...)` |
 
 The client talks to its own backend; the backend talks to resources. The UI has
@@ -18,17 +18,18 @@ no direct access to `ctx.resource`.
 
 ---
 
-## Backend (server) — `main.js`
+## Backend (server) — `main.js` or `main.wasm`
 
-The backend runs in an embedded QuickJS once per `host.run` invocation. Each run
-is a **fresh context** — no JavaScript state survives between runs, so all
-persistence goes through resources. Calls are **synchronous** (no Promises).
+The backend runs once per invocation in the runtime declared by
+`manifest.runtime`. JS backends use embedded QuickJS through `js-runtime.run`;
+WASM backends use Wasmtime through `wasm-runtime.run`. Each run is a **fresh
+context** — no runtime state survives between runs, so all persistence goes
+through resources.
 
 A backend is invoked as `handle(input)` where `input` is the verb's string
-argument array. From the CLI: `terrane host run <app> add "buy milk"` →
-`handle(["add", "buy milk"])`. From the UI: `terrane.invoke("add", "buy milk")`
-→ the same. `handle` **must return a string**. You can provide `handle` one of
-two ways.
+argument array. From the UI: `terrane.invoke("add", "buy milk")` →
+`handle(["add", "buy milk"])`. `handle` **must return a string**. JS backends
+can provide `handle` one of two ways.
 
 ### Recommended: an `actions` table
 
@@ -77,11 +78,28 @@ function handle(input) {
 }
 ```
 
-### `ctx`
+### `ctx` for JS backends
 
 A global `ctx` object is injected. `ctx.resource.<namespace>` is present only
 for the namespaces your `manifest.json` lists in `resources` (the sandbox: an
 undeclared resource is simply absent).
+
+### WASM backend ABI
+
+WASM backends run in Wasmtime with no WASI and no ambient host access. A WASM
+module must export:
+
+- `memory`
+- `alloc(len: i32) -> ptr: i32`
+- `handle(ptr: i32, len: i32) -> i64`, or the function named by `manifest.entry`
+
+The input bytes are a JSON array of strings. The returned `i64` packs the output
+pointer in the high 32 bits and byte length in the low 32 bits; those bytes must
+be UTF-8. Resource access goes through host imports in module `"terrane"`:
+`resource_write(ns, method, args_json) -> i32` and
+`resource_read(ns, method, args_json, out) -> i32`, where each string/buffer
+argument is the same packed pointer/length pair. The runtime checks
+`manifest.resources` before forwarding any resource call.
 
 ### Resources
 
@@ -201,7 +219,10 @@ backend works unchanged.
 | `id`        | string            | stable app id (matches the catalog entry)                           |
 | `name`      | string            | display name                                                        |
 | `version`   | string            | app version                                                         |
-| `backend`   | string            | backend JS file, e.g. `"main.js"`                                   |
+| `runtime`   | string            | `"js"` or `"wasm"`                                                   |
+| `backend`   | string            | JS backend file, e.g. `"main.js"`                                    |
+| `module`    | string            | WASM module file, e.g. `"main.wasm"`                                 |
+| `entry`     | string (optional) | WASM entry export; defaults to `"handle"`                            |
 | `ui`        | string (optional) | UI entry file, e.g. `"index.html"`; omit for CLI-only apps          |
 | `resources` | string[]          | the resource namespaces the backend may use — the sandbox allowlist |
 
@@ -210,8 +231,21 @@ backend works unchanged.
   "id": "todo",
   "name": "Todo",
   "version": "0.1.0",
+  "runtime": "js",
   "backend": "main.js",
   "ui": "index.html",
+  "resources": ["kv"]
+}
+```
+
+```json
+{
+  "id": "counter-wasm",
+  "name": "Counter WASM",
+  "version": "0.1.0",
+  "runtime": "wasm",
+  "module": "main.wasm",
+  "entry": "handle",
   "resources": ["kv"]
 }
 ```

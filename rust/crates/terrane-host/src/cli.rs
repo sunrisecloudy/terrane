@@ -229,7 +229,8 @@ pub fn print_help() {
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
          \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
-         \x20 terrane host run <app> [input…]                  run an app's JS backend\n\n\
+         \x20 terrane js-runtime run <app> [input…]            run an app's JS backend\n\
+         \x20 terrane wasm-runtime run <app> [input…]          run an app's WASM backend\n\n\
          Multi-user:\n\
          \x20 terrane serve [--addr <addr>]      listen for peers (default 127.0.0.1:7777)\n\
          \x20 terrane sync <app> --from <home>   merge another home's edits (local)\n\

@@ -7,7 +7,7 @@ fn files() -> Vec<PreviewFile> {
     vec![
         PreviewFile {
             path: "manifest.json".to_string(),
-            content: r#"{"id":"demo","name":"Demo","ui":"ui/index.html","backend":"main.js","resources":["kv"]}"#.to_string(),
+            content: r#"{"id":"demo","name":"Demo","runtime":"js","ui":"ui/index.html","backend":"main.js","resources":["kv"]}"#.to_string(),
         },
         PreviewFile {
             path: "ui/index.html".to_string(),
@@ -98,7 +98,8 @@ fn rejects_invalid_files_and_manifest_refs() {
         .contains("unsupported"));
 
     let mut missing_ui = files();
-    missing_ui[0].content = r#"{"id":"demo","backend":"main.js","resources":["kv"]}"#.to_string();
+    missing_ui[0].content =
+        r#"{"id":"demo","runtime":"js","backend":"main.js","resources":["kv"]}"#.to_string();
     assert!(PreviewStore::new()
         .create_preview(missing_ui, &State::default())
         .unwrap_err()
@@ -106,7 +107,7 @@ fn rejects_invalid_files_and_manifest_refs() {
 
     let mut missing_backend_ref = files();
     missing_backend_ref[0].content =
-        r#"{"id":"demo","ui":"ui/index.html","backend":"missing.js"}"#.to_string();
+        r#"{"id":"demo","runtime":"js","ui":"ui/index.html","backend":"missing.js"}"#.to_string();
     assert!(PreviewStore::new()
         .create_preview(missing_backend_ref, &State::default())
         .unwrap_err()

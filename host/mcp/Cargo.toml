@@ -1,8 +1,7 @@
 # Standalone workspace: host/mcp is its own Cargo workspace (separate Cargo.lock
 # and target/) like the other hosts, so it isn't entangled with them. It path-
-# depends across the boundary into the shared rust/ workspace. QuickJS/Loro come
-# transitively through the terrane-core engine crate (host.run runs an app's JS
-# backend).
+# depends across the boundary into the shared rust/ workspace. Runtime and CRDT
+# dependencies come transitively through the terrane-core engine crate.
 [workspace]
 
 [package]

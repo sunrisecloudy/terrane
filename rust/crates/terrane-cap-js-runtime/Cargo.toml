@@ -1,0 +1,17 @@
+[package]
+name = "terrane-cap-js-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_js_runtime"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-interface.workspace = true
+nanoserde.workspace = true
+rquickjs = { version = "0.12", features = ["macro"] }
+
+[dev-dependencies]
+tempfile.workspace = true

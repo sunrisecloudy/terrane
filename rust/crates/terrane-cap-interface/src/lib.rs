@@ -1,7 +1,9 @@
 //! Shared capability ABI for Terrane built-in and external capability crates.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -66,6 +68,20 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Decision {
     Commit(Vec<EventRecord>),
     Effect(Effect),
+    Runtime(RuntimeRequest),
+}
+
+/// A request for a runtime capability to execute an app backend once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeRequest {
+    pub app: String,
+    pub input: Vec<String>,
+}
+
+/// The non-record output of one runtime execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeOutput {
+    pub output: String,
 }
 
 /// A side effect the engine must perform in the outside world.
@@ -215,6 +231,70 @@ pub struct ResourceReadCtx<'a> {
     pub app: &'a str,
 }
 
+/// A runtime engine's controlled access to Terrane resources.
+pub trait RuntimeHost {
+    fn resource_methods(&self, namespace: &str) -> Result<Vec<ResourceMethod>>;
+
+    fn read_resource(
+        &mut self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> Result<ReadValue>;
+
+    fn write_resource(&mut self, namespace: &str, method: &str, args: &[String]) -> Result<()>;
+
+    fn take_records(&mut self) -> Vec<EventRecord>;
+}
+
+/// Shareable runtime host handle. Runtime engines capture this inside guest-code
+/// callbacks while core keeps ownership of commit/replay.
+#[derive(Clone)]
+pub struct RuntimeHostHandle {
+    inner: Rc<RefCell<Box<dyn RuntimeHost>>>,
+}
+
+impl RuntimeHostHandle {
+    pub fn new(host: Box<dyn RuntimeHost>) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(host)),
+        }
+    }
+
+    pub fn resource_methods(&self, namespace: &str) -> Result<Vec<ResourceMethod>> {
+        self.inner.borrow().resource_methods(namespace)
+    }
+
+    pub fn read_resource(
+        &self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        self.inner
+            .borrow_mut()
+            .read_resource(namespace, method, args)
+    }
+
+    pub fn write_resource(&self, namespace: &str, method: &str, args: &[String]) -> Result<()> {
+        self.inner
+            .borrow_mut()
+            .write_resource(namespace, method, args)
+    }
+
+    pub fn take_records(&self) -> Vec<EventRecord> {
+        self.inner.borrow_mut().take_records()
+    }
+}
+
+/// Context handed to runtime capabilities.
+#[derive(Clone)]
+pub struct RuntimeCtx {
+    pub source: String,
+    pub app_name: String,
+    pub host: RuntimeHostHandle,
+}
+
 /// A self-contained slice of engine behaviour.
 pub trait Capability {
     fn namespace(&self) -> &'static str;
@@ -254,6 +334,15 @@ pub trait Capability {
 
     fn resource_api(&self) -> Vec<ResourceMethod> {
         self.manifest().resources
+    }
+
+    fn run_runtime(&self, ctx: RuntimeCtx, request: RuntimeRequest) -> Result<RuntimeOutput> {
+        let _ = ctx;
+        let _ = request;
+        Err(Error::InvalidInput(format!(
+            "{} is not a runtime capability",
+            self.namespace()
+        )))
     }
 }
 

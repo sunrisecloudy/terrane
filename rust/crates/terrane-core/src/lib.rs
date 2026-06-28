@@ -5,7 +5,8 @@
 //! ```text
 //! Request ──registry──▶ capability.decide ──▶ Decision
 //!   Commit([EventRecord]) ─┐
-//!   Effect(e) ─runner─▶ [EventRecord] ─┴─▶ append to log ─▶ fold ─▶ State
+//!   Effect(e) ─runner─▶ [EventRecord] ─┤
+//!   Runtime(r) ─runtime cap─▶ [EventRecord] ─┴─▶ append to log ─▶ fold ─▶ State
 //! ```
 //!
 //! There is no central command/event enum and no central match. Each
@@ -35,11 +36,11 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub mod domain;
-pub mod host_runtime;
-
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CommandCtx, Decision,
-    Effect, Error, EventRecord, QueryCtx, QueryValue, Request, Result, StateStore,
+    Effect, Error, EventRecord, QueryCtx, QueryValue, ReadValue, Request, ResourceMethod,
+    ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle, RuntimeOutput,
+    RuntimeRequest, StateStore,
 };
 
 use terrane_cap_app::AppState;
@@ -266,7 +267,8 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_replica::ReplicaCapability));
     registry.register(Box::new(terrane_cap_net::NetCapability));
     registry.register(Box::new(terrane_cap_model::ModelCapability));
-    registry.register(Box::new(host_runtime::HostCapability));
+    registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
+    registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
     registry
         .validate()
         .expect("default capability registry should be valid");
@@ -386,6 +388,126 @@ pub fn fold_records_in_memory(state: &mut State, records: &[EventRecord]) -> Res
     Ok(())
 }
 
+/// Resource bridge used by runtime capabilities. It owns a working State so
+/// guest-code writes are visible to later reads during the same run, while the
+/// real log is untouched until core commits the collected records.
+pub struct RuntimeResourceHost {
+    app: String,
+    state: State,
+    registry: Registry,
+    recorded: Vec<RecordedWrite>,
+}
+
+impl RuntimeResourceHost {
+    pub fn new(app: impl Into<String>, base_state: State) -> Self {
+        Self {
+            app: app.into(),
+            state: base_state,
+            registry: default_registry(),
+            recorded: Vec::new(),
+        }
+    }
+}
+
+struct RecordedWrite {
+    record: EventRecord,
+    coalesce_key: Option<String>,
+    is_set: bool,
+}
+
+impl RuntimeHost for RuntimeResourceHost {
+    fn resource_methods(&self, namespace: &str) -> Result<Vec<ResourceMethod>> {
+        Ok(self.registry.get(namespace)?.resource_api())
+    }
+
+    fn read_resource(
+        &mut self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        let capability = self.registry.get(namespace)?;
+        let bus = RegistryBus::new(&self.registry, &self.state);
+        capability.read_resource(
+            ResourceReadCtx {
+                state: &self.state,
+                bus: &bus,
+                app: &self.app,
+            },
+            method,
+            args,
+        )
+    }
+
+    fn write_resource(&mut self, namespace: &str, method: &str, args: &[String]) -> Result<()> {
+        let name = format!("{namespace}.{method}");
+        let mut scoped_args = Vec::with_capacity(args.len() + 1);
+        scoped_args.push(self.app.clone());
+        scoped_args.extend(args.iter().cloned());
+
+        let coalesce_key = (namespace == "kv" && matches!(method, "set" | "rm"))
+            .then(|| scoped_args.get(1).cloned())
+            .flatten();
+        let is_set = namespace == "kv" && method == "set";
+
+        let bus = RegistryBus::new(&self.registry, &self.state);
+        let ctx = CommandCtx {
+            state: &self.state,
+            bus: &bus,
+        };
+        let decision = self
+            .registry
+            .get(namespace)?
+            .decide(ctx, &name, &scoped_args)?;
+        let records = match decision {
+            Decision::Commit(records) => records,
+            Decision::Effect(_) | Decision::Runtime(_) => {
+                return Err(Error::Runtime(format!(
+                    "{name}: effects and runtime calls are not allowed inside a runtime"
+                )));
+            }
+        };
+        for record in &records {
+            apply(&self.registry, &mut self.state, record)?;
+        }
+        for record in records {
+            self.recorded.push(RecordedWrite {
+                record,
+                coalesce_key: coalesce_key.clone(),
+                is_set,
+            });
+        }
+        Ok(())
+    }
+
+    fn take_records(&mut self) -> Vec<EventRecord> {
+        coalesce(std::mem::take(&mut self.recorded))
+    }
+}
+
+fn coalesce(writes: Vec<RecordedWrite>) -> Vec<EventRecord> {
+    let mut keep = vec![true; writes.len()];
+    for i in 0..writes.len() {
+        if !writes[i].is_set {
+            continue;
+        }
+        let Some(key) = writes[i].coalesce_key.as_deref() else {
+            continue;
+        };
+        if writes[i + 1..]
+            .iter()
+            .any(|w| w.coalesce_key.as_deref() == Some(key))
+        {
+            keep[i] = false;
+        }
+    }
+    writes
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(write, keep)| keep.then_some(write.record))
+        .collect()
+}
+
 /// Read every [`EventRecord`] from the log, in order. The log is a flat sequence
 /// of length-prefixed borsh records: a little-endian `u32` byte length followed
 /// by that many bytes of one borsh-encoded `EventRecord`. A missing log is an
@@ -433,7 +555,7 @@ pub struct Core<R: EffectRunner = NoEffects> {
     state: State,
     runner: R,
     registry: Registry,
-    /// String printed by the most recent `host.run` backend, if any. Not part of
+    /// String printed by the most recent runtime backend, if any. Not part of
     /// State, never logged or replayed — purely a transport for the host to print.
     last_output: Option<String>,
 }
@@ -473,14 +595,8 @@ impl<R: EffectRunner> Core<R> {
     /// events (running an effect first if the decision calls for one). Nothing is
     /// written unless the command succeeds.
     pub fn dispatch(&mut self, request: Request) -> Result<Vec<EventRecord>> {
+        self.last_output = None;
         let namespace = namespace_of(&request.name)?;
-
-        // `host.run` re-dispatches the backend's kv.* writes and therefore needs
-        // &mut self, which a pure decide (&State) cannot have. Every other command
-        // goes through the unchanged decide -> commit path.
-        if request.name == "host.run" {
-            return self.run_backend(&request.args);
-        }
 
         let bus = RegistryBus::new(&self.registry, &self.state);
         let ctx = CommandCtx {
@@ -497,38 +613,42 @@ impl<R: EffectRunner> Core<R> {
                 let records = self.runner.run(&effect, &self.state)?;
                 self.commit(records)
             }
+            Decision::Runtime(request) => self.run_runtime(namespace, request),
         }
     }
 
-    /// Execute `host.run app [input…]`: load the app's bundle, run its JS backend
-    /// in QuickJS over a sandboxed app-scoped `ctx.resource`, commit the `kv.*`
-    /// records it produced (so the global log holds only ordinary events), and
-    /// stash the backend's printed string for [`take_last_output`](Self::take_last_output).
-    /// JS runs once here, never on replay.
-    fn run_backend(&mut self, args: &[String]) -> Result<Vec<EventRecord>> {
-        // Reset first, so take_last_output() reflects only this attempt — a
-        // failed run leaves no stale output from a previous successful one.
+    fn run_runtime(
+        &mut self,
+        namespace: &str,
+        request: RuntimeRequest,
+    ) -> Result<Vec<EventRecord>> {
         self.last_output = None;
-        let app = arg(args, 0, "app")?;
-        let input: Vec<String> = args.get(1..).unwrap_or_default().to_vec();
-
-        let source = self
+        let app = self
             .state
             .app
             .apps
-            .get(&app)
-            .ok_or_else(|| Error::AppNotFound(app.clone()))?
+            .get(&request.app)
+            .ok_or_else(|| Error::AppNotFound(request.app.clone()))?;
+        let source = app
             .source
             .clone()
-            .ok_or_else(|| Error::Runtime(format!("app {app} has no --source bundle")))?;
-
-        let result = host_runtime::run(&app, &input, &source, self.state.clone())?;
-        let records = self.commit(result.records)?;
+            .ok_or_else(|| Error::Runtime(format!("app {} has no --source bundle", app.id)))?;
+        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
+            request.app.clone(),
+            self.state.clone(),
+        )));
+        let ctx = RuntimeCtx {
+            source,
+            app_name: app.name.clone(),
+            host: host.clone(),
+        };
+        let result = self.registry.get(namespace)?.run_runtime(ctx, request)?;
+        let records = self.commit(host.take_records())?;
         self.last_output = Some(result.output);
         Ok(records)
     }
 
-    /// Take the string printed by the most recent `host.run` (if any). Not part
+    /// Take the string printed by the most recent runtime run (if any). Not part
     /// of State; never logged or replayed.
     pub fn take_last_output(&mut self) -> Option<String> {
         self.last_output.take()

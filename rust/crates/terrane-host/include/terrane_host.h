@@ -29,7 +29,7 @@ typedef struct TerraneHandle TerraneHandle;
  * the default. Returns a handle, or NULL on failure. */
 TerraneHandle *terrane_open(const char *home);
 
-/* Run an app's JS backend: host.run app [args...]. On success writes the
+/* Run an app backend using its manifest runtime. On success writes the
  * backend's output string to *out_output and returns TERRANE_OK; on failure
  * writes a message to *out_error and returns non-zero. */
 int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,

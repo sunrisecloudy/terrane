@@ -97,7 +97,7 @@ fn install_rejects_manifest_id_path_traversal() {
     fs::write(victim.join("keep.txt"), "do not delete\n").unwrap();
     fs::write(
         src.join("manifest.json"),
-        r#"{ "id": "../../victim", "name": "Bad", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "../../victim", "name":"Bad","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
     )
     .unwrap();
     fs::write(src.join("main.js"), "function handle() { return 'ok'; }\n").unwrap();

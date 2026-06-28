@@ -1,40 +1,22 @@
-//! The `host.run` runtime — running a bundled JS backend in QuickJS.
+//! The `js-runtime` capability — running a bundled JS backend in QuickJS.
 //!
-//! `host.run` is special-cased in [`Core::dispatch`](crate::Core::dispatch): it
-//! needs `&mut self` to re-dispatch the backend's `kv.*` writes, which a pure
-//! `decide` (`&State`) cannot do. The [`HostCapability`] below exists for the
-//! registry / namespace contract and to reject any *direct* `host.*` command. It
-//! owns no State slice and folds nothing — a run's only records are ordinary
-//! `kv.*` events, so Option-A replay rebuilds state without ever re-running JS.
-//!
-//! ## How a run works (the load-bearing detail)
-//!
-//! The backend calls `ctx.resource.kv.{set,rm,get,all}` synchronously. Writes
-//! must be visible to later reads *within the run*, and each must become a real
-//! `kv.*` record in the global log. rquickjs host closures must be `'static`, so
-//! we cannot hand them `&mut Core`. Instead, one run owns a [`RunAccum`] — a
-//! working copy of State + a fresh registry — behind `Rc<RefCell<_>>`, captured
-//! by `Fn` closures. Writes go through the *same* `kv` capability `decide`/fold
-//! as a CLI `kv set`, applied to the working State (so reads see them) and
-//! stashed in `recorded`. After JS returns, [`Core::run_backend`] commits the
-//! collected records once, through the normal path. JS runs exactly here, never
-//! on replay.
+//! The engine stays deterministic by letting this capability execute JS exactly
+//! once and by recording only the ordinary resource-write events produced during
+//! the run. Replay folds those recorded events and never re-runs JavaScript.
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
-use crate::{Error, EventRecord, Result};
 use nanoserde::DeJson;
 use rquickjs::function::Rest;
 use rquickjs::{
     CatchResultExt, CaughtError, Context, Ctx, Function, IntoJs, Object, Runtime, Value,
 };
-
-use crate::{apply, default_registry, namespace_of, Decision, Registry, RegistryBus, State};
 use terrane_cap_interface::{
-    CapManifest, Capability, CommandCtx, CommandSpec, ReadValue, ResourceMethod, ResourceReadCtx,
-    StateStore,
+    arg, ensure_app_exists, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error,
+    EventRecord, ReadValue, ResourceMethod, Result, RuntimeCtx, RuntimeHostHandle, RuntimeOutput,
+    RuntimeRequest, StateStore,
 };
 
 /// Hand a resource read's result back to JS: a string|null, or an object.
@@ -50,16 +32,18 @@ impl<'js> IntoJs<'js> for JsReadValue {
     }
 }
 
-pub struct HostCapability;
+pub struct JsRuntimeCapability;
 
-impl Capability for HostCapability {
+impl Capability for JsRuntimeCapability {
     fn namespace(&self) -> &'static str {
-        "host"
+        "js-runtime"
     }
 
     fn manifest(&self) -> CapManifest {
         CapManifest {
-            commands: vec![CommandSpec { name: "host.run" }],
+            commands: vec![CommandSpec {
+                name: "js-runtime.run",
+            }],
             events: Vec::new(),
             queries: Vec::new(),
             resources: Vec::new(),
@@ -67,197 +51,74 @@ impl Capability for HostCapability {
         }
     }
 
-    fn decide(&self, _ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {
-        // host.run is executed by Core::dispatch directly and never reaches here.
-        Err(Error::InvalidInput(format!(
-            "{name}: host commands are executed by the core, not decided"
-        )))
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
+        match name {
+            "js-runtime.run" => {
+                let app = arg(args, 0, "app")?;
+                ensure_app_exists(ctx.bus, &app)?;
+                Ok(Decision::Runtime(RuntimeRequest {
+                    app,
+                    input: args.get(1..).unwrap_or_default().to_vec(),
+                }))
+            }
+            other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
+        }
     }
 
     fn fold(&self, _state: &mut dyn StateStore, _record: &EventRecord) -> Result<()> {
         Ok(())
     }
+
+    fn run_runtime(&self, ctx: RuntimeCtx, request: RuntimeRequest) -> Result<RuntimeOutput> {
+        let bundle = load_bundle(&ctx.source)?;
+        let output = run_js_bundle(
+            &request.app,
+            &request.input,
+            &JsRuntimeBundle {
+                source: bundle.source,
+                name: if bundle.name.is_empty() {
+                    ctx.app_name
+                } else {
+                    bundle.name
+                },
+                resources: bundle.resources,
+            },
+            ctx.host,
+        )?;
+        Ok(RuntimeOutput { output })
+    }
 }
 
-/// The outcome of a backend run: the resource-write records it produced and the
-/// string it returned. Callers choose whether to commit the records to the real
-/// log or fold them into a private in-memory [`State`](crate::State).
+/// A memory-backed JS backend bundle: source, display name, and granted resource
+/// namespaces. Preview and tests use this without disk I/O.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RunResult {
-    pub records: Vec<EventRecord>,
-    pub output: String,
-}
-
-/// A memory-backed backend bundle: the JS source, display name, and declared
-/// resource namespaces. This is the preview/test twin of an on-disk bundle.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoryBackendBundle {
+pub struct JsRuntimeBundle {
     pub source: String,
     pub name: String,
     pub resources: Vec<String>,
 }
 
-/// Run an app's JS backend once. `source` is the app's bundle dir (or a direct
-/// `.js` path); `input` is the verb argument array passed to `handle`. The
-/// returned records are NOT yet committed — the caller commits them through
-/// [`Core::commit`](crate::Core) so they land in the global log.
-pub(crate) fn run(
+pub fn run_js_bundle(
     app: &str,
     input: &[String],
-    source: &str,
-    base_state: State,
-) -> Result<RunResult> {
-    let bundle = load_bundle(source)?;
-    run_memory_backend(app, input, &bundle, base_state)
-}
-
-/// Run a memory-backed backend once. No disk reads are performed and no event
-/// log is appended; the returned records remain the caller's responsibility.
-pub fn run_memory_backend(
-    app: &str,
-    input: &[String],
-    bundle: &MemoryBackendBundle,
-    base_state: State,
-) -> Result<RunResult> {
-    let cell = Rc::new(RefCell::new(RunAccum {
-        app: app.to_string(),
-        state: base_state,
-        registry: default_registry(),
-        recorded: Vec::new(),
-        first_error: None,
-    }));
-
+    bundle: &JsRuntimeBundle,
+    host: RuntimeHostHandle,
+) -> Result<String> {
+    let first_error = Rc::new(RefCell::new(None));
     let output = execute_js(
         &bundle.source,
         &bundle.resources,
         input,
-        cell.clone(),
+        host,
+        first_error.clone(),
         app,
         &bundle.name,
     );
 
-    // Sole ownership again now that the Context/Runtime (and their closures) dropped.
-    let accum = Rc::try_unwrap(cell)
-        .map_err(|_| Error::Runtime("dangling JS handle after run".into()))?
-        .into_inner();
-
-    // A typed write error (e.g. KeyNotFound) wins over the JS result; nothing is
-    // committed in that case (run-level all-or-nothing on error).
-    if let Some(e) = accum.first_error {
+    if let Some(e) = first_error.borrow_mut().take() {
         return Err(e);
     }
-    let output = output?;
-
-    Ok(RunResult {
-        records: coalesce(accum.recorded),
-        output,
-    })
-}
-
-/// One run's owned, `'static` working surface, shared with the JS host closures
-/// via `Rc<RefCell<_>>`.
-struct RunAccum {
-    app: String,
-    state: State,
-    registry: Registry,
-    recorded: Vec<RecordedWrite>,
-    first_error: Option<Error>,
-}
-
-/// A write stashed during a run, carrying just enough to coalesce redundant
-/// same-key `kv.set`s before committing (see [`coalesce`]).
-struct RecordedWrite {
-    record: EventRecord,
-    /// The app-scoped key this write targets, set only for `kv.*` writes (the
-    /// only ones that participate in coalescing); `None` for anything else.
-    coalesce_key: Option<String>,
-    /// True only for a `kv.set` — the kind we drop when a later write supersedes
-    /// it. A `kv.rm` (or any other record) is always kept.
-    is_set: bool,
-}
-
-/// Coalesce redundant same-key `kv.set` records produced within a single run: a
-/// `kv.set` is dropped when a *later* write targets the same key (a newer
-/// `kv.set`, or a `kv.rm` that removes it). The last set of each key and every
-/// `kv.rm` survive, in their original relative order — so the committed records
-/// fold to the exact same State, just without the intra-run churn. Replay stays
-/// identical because only the net effect is logged.
-fn coalesce(writes: Vec<RecordedWrite>) -> Vec<EventRecord> {
-    let mut keep = vec![true; writes.len()];
-    for i in 0..writes.len() {
-        if !writes[i].is_set {
-            continue;
-        }
-        let Some(key) = writes[i].coalesce_key.as_deref() else {
-            continue;
-        };
-        if writes[i + 1..]
-            .iter()
-            .any(|w| w.coalesce_key.as_deref() == Some(key))
-        {
-            keep[i] = false;
-        }
-    }
-    writes
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(w, keep)| keep.then_some(w.record))
-        .collect()
-}
-
-impl RunAccum {
-    /// A resource WRITE: app-scope it (force arg0 = the running app), decide via
-    /// the owning capability against the working State, fold so later reads see
-    /// it, and stash the records. Errors are captured (first wins), not thrown.
-    fn write(&mut self, name: &str, mut args: Vec<String>) {
-        args.insert(0, self.app.clone());
-        // The kv key (args[1] after app-scoping) drives coalescing; non-kv writes
-        // never coalesce.
-        let coalesce_key = name
-            .starts_with("kv.")
-            .then(|| args.get(1).cloned())
-            .flatten();
-        let is_set = name == "kv.set";
-        let result = (|| -> Result<()> {
-            let bus = RegistryBus::new(&self.registry, &self.state);
-            let ctx = CommandCtx {
-                state: &self.state,
-                bus: &bus,
-            };
-            let decision = self
-                .registry
-                .get(namespace_of(name)?)?
-                .decide(ctx, name, &args)?;
-            let records = match decision {
-                Decision::Commit(records) => records,
-                Decision::Effect(_) => {
-                    return Err(Error::Runtime(format!(
-                        "{name}: effects not allowed in a backend"
-                    )))
-                }
-            };
-            for record in &records {
-                apply(&self.registry, &mut self.state, record)?;
-            }
-            for record in records {
-                self.recorded.push(RecordedWrite {
-                    record,
-                    coalesce_key: coalesce_key.clone(),
-                    is_set,
-                });
-            }
-            Ok(())
-        })();
-        if let Err(e) = result {
-            self.capture(e);
-        }
-    }
-
-    fn capture(&mut self, e: Error) {
-        if self.first_error.is_none() {
-            self.first_error = Some(e);
-        }
-    }
+    output
 }
 
 /// Default wall-clock budget for a single backend run; override with
@@ -284,7 +145,8 @@ fn execute_js(
     backend_src: &str,
     resources: &[String],
     input: &[String],
-    cell: Rc<RefCell<RunAccum>>,
+    host: RuntimeHostHandle,
+    first_error: Rc<RefCell<Option<Error>>>,
     app_id: &str,
     app_name: &str,
 ) -> Result<String> {
@@ -304,66 +166,62 @@ fn execute_js(
         // capability's declared resource_api() — the SAME declaration the docs are
         // generated from, so the bridge and the reference cannot drift. Only
         // namespaces the manifest lists are installed (capability sandbox).
-        let surface: Vec<(&'static str, Vec<ResourceMethod>)> = {
-            let accum = cell.borrow();
-            resources
-                .iter()
-                .filter_map(|ns| {
-                    let cap = accum.registry.get(ns).ok()?;
-                    let api = cap.resource_api();
-                    (!api.is_empty()).then(|| (cap.namespace(), api))
-                })
-                .collect()
-        };
+        let surface: Vec<(String, Vec<ResourceMethod>)> = resources
+            .iter()
+            .filter_map(|ns| {
+                let api = host.resource_methods(ns).ok()?;
+                (!api.is_empty()).then(|| (ns.clone(), api))
+            })
+            .collect();
         for (ns, methods) in surface {
             let obj = Object::new(ctx.clone()).map_err(js_err)?;
             for method in methods {
                 let call = format!("{ns}.{}", method.name());
                 let params = method.params();
-                let cell = cell.clone();
                 match method {
                     // A non-string arg is NOT coerced (that would change app-visible
                     // semantics); it captures a typed, attributable error so the run
                     // aborts naming the offending call and parameter.
                     ResourceMethod::Write { name, .. } => {
+                        let method_name = name;
+                        let namespace = ns.clone();
+                        let host = host.clone();
+                        let first_error = first_error.clone();
                         let f =
                             Function::new(ctx.clone(), move |args: Rest<Value>| match string_args(
                                 &call, params, &args.0,
                             ) {
-                                Ok(strs) => cell.borrow_mut().write(&call, strs),
-                                Err(e) => cell.borrow_mut().capture(e),
+                                Ok(strs) => {
+                                    if let Err(e) =
+                                        host.write_resource(&namespace, method_name, &strs)
+                                    {
+                                        capture(&first_error, e);
+                                    }
+                                }
+                                Err(e) => capture(&first_error, e),
                             })
                             .map_err(js_err)?;
                         obj.set(name, f).map_err(js_err)?;
                     }
                     ResourceMethod::Read { name, .. } => {
+                        let method_name = name;
+                        let namespace = ns.clone();
+                        let host = host.clone();
+                        let first_error = first_error.clone();
                         let f =
                             Function::new(ctx.clone(), move |args: Rest<Value>| -> JsReadValue {
                                 match string_args(&call, params, &args.0) {
                                     Ok(strs) => {
-                                        let accum = cell.borrow();
-                                        let bus = RegistryBus::new(&accum.registry, &accum.state);
-                                        match accum.registry.get(ns).and_then(|cap| {
-                                            cap.read_resource(
-                                                ResourceReadCtx {
-                                                    state: &accum.state,
-                                                    bus: &bus,
-                                                    app: &accum.app,
-                                                },
-                                                name,
-                                                &strs,
-                                            )
-                                        }) {
+                                        match host.read_resource(&namespace, method_name, &strs) {
                                             Ok(value) => JsReadValue(value),
                                             Err(e) => {
-                                                drop(accum);
-                                                cell.borrow_mut().capture(e);
+                                                capture(&first_error, e);
                                                 JsReadValue(ReadValue::OptString(None))
                                             }
                                         }
                                     }
                                     Err(e) => {
-                                        cell.borrow_mut().capture(e);
+                                        capture(&first_error, e);
                                         JsReadValue(ReadValue::OptString(None))
                                     }
                                 }
@@ -373,7 +231,7 @@ fn execute_js(
                     }
                 }
             }
-            resource.set(ns, obj).map_err(js_err)?;
+            resource.set(ns.as_str(), obj).map_err(js_err)?;
         }
 
         let ctx_obj = Object::new(ctx.clone()).map_err(js_err)?;
@@ -476,14 +334,20 @@ const APP_RUNTIME: &str = r#"
 /// directory's resources come from `manifest.resources` (absent → none, least
 /// privilege); a direct `.js` has no manifest, so it gets the dev default of all
 /// currently-known resources.
-fn load_bundle(source: &str) -> Result<MemoryBackendBundle> {
+fn load_bundle(source: &str) -> Result<JsRuntimeBundle> {
     let path = Path::new(source);
     if path.is_dir() {
         let manifest = read_manifest(path)?;
+        if !manifest.runtime.is_empty() && manifest.runtime != "js" {
+            return Err(Error::Runtime(format!(
+                "manifest runtime {:?} is not js",
+                manifest.runtime
+            )));
+        }
         let js_path = path.join(&manifest.backend);
         let source = std::fs::read_to_string(&js_path)
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))?;
-        Ok(MemoryBackendBundle {
+        Ok(JsRuntimeBundle {
             source,
             name: manifest.name,
             resources: manifest.resources,
@@ -491,7 +355,7 @@ fn load_bundle(source: &str) -> Result<MemoryBackendBundle> {
     } else {
         let source = std::fs::read_to_string(path)
             .map_err(|e| Error::Runtime(format!("read backend {}: {e}", path.display())))?;
-        Ok(MemoryBackendBundle {
+        Ok(JsRuntimeBundle {
             source,
             name: String::new(),
             resources: vec!["kv".to_string()],
@@ -519,6 +383,9 @@ pub struct BundleManifest {
     pub name: String,
     /// The backend JS file, e.g. `"main.js"`.
     pub backend: String,
+    /// Runtime engine. Empty means JS for source-only developer use.
+    #[nserde(default)]
+    pub runtime: String,
     /// The UI entry file (e.g. `"index.html"`); empty for CLI-only apps.
     #[nserde(default)]
     pub ui: String,
@@ -538,6 +405,13 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest> {
 /// Map an rquickjs error into our typed Runtime error.
 fn js_err(e: rquickjs::Error) -> Error {
     Error::Runtime(e.to_string())
+}
+
+fn capture(slot: &Rc<RefCell<Option<Error>>>, e: Error) {
+    let mut slot = slot.borrow_mut();
+    if slot.is_none() {
+        *slot = Some(e);
+    }
 }
 
 /// Strictly read a JS string argument — no coercion. Returns the owned string, or

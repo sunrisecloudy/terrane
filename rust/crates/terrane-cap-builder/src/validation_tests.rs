@@ -2,7 +2,7 @@ use super::*;
 
 fn generated_json() -> String {
     r#"{"files":[
-{"path":"manifest.json","content":"{\"id\":\"demo\",\"name\":\"Demo\",\"version\":\"0.1.0\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[\"kv\"]}"},
+{"path":"manifest.json","content":"{\"id\":\"demo\",\"name\":\"Demo\",\"version\":\"0.1.0\",\"runtime\":\"js\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[\"kv\"]}"},
 {"path":"main.js","content":"var actions={hello:{summary:\"Say hello.\",args:[],run:function(){return \"hi\";}}};"},
 {"path":"index.html","content":"<!doctype html><title>Demo</title><script src=\"app.js\"></script>"},
 {"path":"style.css","content":"body { font-family: system-ui; }"}

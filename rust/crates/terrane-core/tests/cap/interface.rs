@@ -157,6 +157,7 @@ fn registry_bus_exposes_app_exists_and_replica_peer_queries() {
             id: "demo".to_string(),
             name: "Demo".to_string(),
             source: None,
+            runtime: "js".to_string(),
         },
     );
 

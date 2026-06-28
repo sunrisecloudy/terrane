@@ -46,7 +46,30 @@ fn parse_add_collects_multi_word_name_and_optional_source() {
         (
             "demo".into(),
             "Daily Calendar".into(),
-            Some("/tmp/demo".into())
+            Some("/tmp/demo".into()),
+            "js".into()
+        )
+    );
+}
+
+#[test]
+fn parse_add_accepts_explicit_runtime() {
+    let args = vec![
+        "demo".into(),
+        "Daily".into(),
+        "--runtime".into(),
+        "wasm".into(),
+        "--source".into(),
+        "/tmp/demo".into(),
+    ];
+
+    assert_eq!(
+        parse_add(&args).unwrap(),
+        (
+            "demo".into(),
+            "Daily".into(),
+            Some("/tmp/demo".into()),
+            "wasm".into()
         )
     );
 }
@@ -85,7 +108,11 @@ fn add_event_describes_and_folds_into_state() {
         panic!("expected app.add to commit");
     };
 
-    assert_eq!(cap.describe(&events[0]).unwrap(), "app.added demo \"Demo\"");
+    assert_eq!(
+        cap.describe(&events[0]).unwrap(),
+        "app.added demo \"Demo\" runtime=js"
+    );
     cap.fold(&mut store, &events[0]).unwrap();
     assert_eq!(store.app.apps["demo"].name, "Demo");
+    assert_eq!(store.app.apps["demo"].runtime, "js");
 }

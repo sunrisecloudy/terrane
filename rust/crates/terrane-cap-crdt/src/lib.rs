@@ -38,7 +38,7 @@ pub struct CrdtState {
 
 // A `LoroDoc`'s derived `clone()` is a *reference* clone (it aliases the same
 // underlying document), which would let a backend run mutate live State. State
-// is cloned into every `host.run`, so CrdtState must deep-copy: `fork()` gives an
+// is cloned into every `js-runtime.run`, so CrdtState must deep-copy: `fork()` gives an
 // independent document. (The fork's own PeerID is irrelevant — a live document is
 // only ever imported into, never authored on directly.)
 impl Clone for CrdtState {

@@ -14,9 +14,10 @@ normative.
 - MCP protocol version: `terrane_api::MCP_PROTOCOL_VERSION`
 
 Both hosts run against a single `TERRANE_HOME` and ultimately call one core
-operation — **invoke**: run a verb on an app's backend (`host.run`) and return
-its string. That is the same contract the CLI (`terrane host run`) and the macOS
-webview (`window.terrane.invoke`) already use.
+operation — **invoke**: run a verb on an app's backend using the runtime declared
+by the app manifest (`js-runtime.run` or `wasm-runtime.run`) and return its
+string. That is the same contract the CLI and the macOS webview
+(`window.terrane.invoke`) already use.
 
 ---
 

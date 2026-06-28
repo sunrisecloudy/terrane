@@ -37,23 +37,23 @@ fn todo_cli_backend_runs_and_replays() {
     assert!(ok, "app add failed: {err}");
     assert!(out.contains("app.added"), "out: {out}");
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "add", "buy milk"]);
-    assert!(ok, "host run add failed: {err}");
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "add", "buy milk"]);
+    assert!(ok, "js-runtime run add failed: {err}");
     assert_eq!(out.trim(), "added #1 buy milk", "out: {out}");
 
-    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "add", "ship it"]);
+    let (ok, out, _) = terrane(home, &["js-runtime", "run", "todo-cli", "add", "ship it"]);
     assert!(ok);
     assert_eq!(out.trim(), "added #2 ship it", "out: {out}");
 
-    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "list"]);
+    let (ok, out, _) = terrane(home, &["js-runtime", "run", "todo-cli", "list"]);
     assert!(ok);
     assert_eq!(out.trim(), "#1 buy milk\n#2 ship it", "out: {out}");
 
-    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "done", "1"]);
+    let (ok, out, _) = terrane(home, &["js-runtime", "run", "todo-cli", "done", "1"]);
     assert!(ok);
     assert_eq!(out.trim(), "done #1", "out: {out}");
 
-    let (ok, out, _) = terrane(home, &["host", "run", "todo-cli", "list"]);
+    let (ok, out, _) = terrane(home, &["js-runtime", "run", "todo-cli", "list"]);
     assert!(ok);
     assert_eq!(out.trim(), "#2 ship it", "out: {out}");
 
@@ -83,9 +83,9 @@ fn todo_app_items_returns_json() {
     let src = app_source("todo");
 
     terrane(home, &["app", "add", "todo", "Todo", "--source", &src]);
-    terrane(home, &["host", "run", "todo", "add", "buy milk"]);
+    terrane(home, &["js-runtime", "run", "todo", "add", "buy milk"]);
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo", "items"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo", "items"]);
     assert!(ok, "items failed: {err}");
     assert_eq!(
         out.trim(),
@@ -109,7 +109,7 @@ fn runaway_backend_is_interrupted() {
     fs::create_dir(&bundle).unwrap();
     fs::write(
         bundle.join("manifest.json"),
-        r#"{ "id": "loop", "name": "Loop", "backend": "main.js", "resources": ["kv"] }"#,
+        r#"{ "id": "loop", "name":"Loop","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
     )
     .unwrap();
     fs::write(
@@ -133,7 +133,7 @@ fn runaway_backend_is_interrupted() {
 
     // Short budget so the test is fast; the run must fail, not wedge.
     let output = Command::new(env!("CARGO_BIN_EXE_terrane"))
-        .args(["host", "run", "loop", "go"])
+        .args(["js-runtime", "run", "loop", "go"])
         .env("TERRANE_HOME", home)
         .env("TERRANE_BACKEND_BUDGET_MS", "200")
         .output()

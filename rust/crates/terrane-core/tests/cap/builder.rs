@@ -15,7 +15,7 @@ fn builder_records_fold_into_draft_state() {
             "draft-1",
             vec![BuilderFile {
                 path: "manifest.json".into(),
-                content: r#"{"id":"demo","name":"Demo","version":"0.1.0","backend":"main.js","ui":"index.html","resources":[]}"#.into(),
+                content: r#"{"id":"demo","name":"Demo","version":"0.1.0","runtime":"js","backend":"main.js","ui":"index.html","resources":[]}"#.into(),
             }],
         )
         .unwrap(),

@@ -15,3 +15,4 @@ mod log;
 mod model;
 mod net;
 mod replica;
+mod wasm_runtime;
