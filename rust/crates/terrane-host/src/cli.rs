@@ -21,6 +21,9 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["replay"] => run_replay(),
         ["app", "install", path] => run_install(path),
         ["contract", "export"] => run_contract_export(),
+        ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
+        ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
+        ["kv", "storage", "status"] => run_kv_storage_status(),
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
@@ -81,6 +84,9 @@ pub fn run_state() -> Result<(), String> {
             println!("  {app}/{key} = {value}");
         }
     }
+
+    println!("kv storage:");
+    print_kv_storage_plan(core.kv_storage_plan());
 
     println!("fetches:");
     if state.net.fetches.is_empty() {
@@ -188,6 +194,79 @@ pub fn run_replay() -> Result<(), String> {
     }
 }
 
+pub fn run_kv_storage_set(rest: &[&str]) -> Result<(), String> {
+    let args = parse_kv_storage_set(rest)?;
+    print_command_outcome(crate::dispatch("kv.storage.set", &args)?);
+    Ok(())
+}
+
+pub fn run_kv_storage_clear(rest: &[&str]) -> Result<(), String> {
+    let args = parse_kv_storage_clear(rest)?;
+    print_command_outcome(crate::dispatch("kv.storage.clear", &args)?);
+    Ok(())
+}
+
+pub fn run_kv_storage_status() -> Result<(), String> {
+    let core = crate::open()?;
+    print_kv_storage_plan(core.kv_storage_plan());
+    Ok(())
+}
+
+fn parse_kv_storage_set(rest: &[&str]) -> Result<Vec<String>, String> {
+    match rest {
+        ["--default", backend, tail @ ..] | ["default", backend, tail @ ..] => {
+            let mut args = vec!["default".to_string(), (*backend).to_string()];
+            if let Some(path) = parse_optional_storage_path(tail)? {
+                args.push(path);
+            }
+            Ok(args)
+        }
+        ["--app", app, backend, tail @ ..] | ["app", app, backend, tail @ ..] => {
+            let mut args = vec![
+                "app".to_string(),
+                (*app).to_string(),
+                (*backend).to_string(),
+            ];
+            if let Some(path) = parse_optional_storage_path(tail)? {
+                args.push(path);
+            }
+            Ok(args)
+        }
+        _ => Err(
+            "usage: terrane kv storage set (--default <memory|sqlite|rocksdb> | --app <app> <memory|sqlite|rocksdb>) [--path <path>]".into(),
+        ),
+    }
+}
+
+fn parse_kv_storage_clear(rest: &[&str]) -> Result<Vec<String>, String> {
+    match rest {
+        ["--default"] | ["default"] => Ok(vec!["default".to_string()]),
+        ["--app", app] | ["app", app] => Ok(vec!["app".to_string(), (*app).to_string()]),
+        _ => Err("usage: terrane kv storage clear (--default | --app <app>)".into()),
+    }
+}
+
+fn parse_optional_storage_path(tail: &[&str]) -> Result<Option<String>, String> {
+    match tail {
+        [] => Ok(None),
+        ["--path", path] => Ok(Some((*path).to_string())),
+        [path] => Ok(Some((*path).to_string())),
+        _ => Err("storage path must be passed as [--path <path>]".into()),
+    }
+}
+
+fn print_kv_storage_plan(plan: &terrane_core::cap::kv::KvStoragePlan) {
+    println!("  default -> {}", plan.default.describe());
+    if plan.apps.is_empty() {
+        println!("  app overrides: (none)");
+        return;
+    }
+    println!("  app overrides:");
+    for (app, binding) in &plan.apps {
+        println!("    {app} -> {}", binding.describe());
+    }
+}
+
 /// Open the workspace core at `$TERRANE_HOME/log.bin` with the real edge runner.
 pub fn open() -> Result<crate::HostCore, String> {
     crate::open()
@@ -225,6 +304,10 @@ pub fn print_help() {
          \x20 terrane app remove <id>                          remove an app\n\
          \x20 terrane kv set <app> <key> <value…>              store a value\n\
          \x20 terrane kv rm <app> <key>                        delete a value\n\
+         \x20 terrane kv storage set --default <backend> [--path <path>]\n\
+         \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
+         \x20 terrane kv storage clear (--default | --app <app>)\n\
+         \x20 terrane kv storage status\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\

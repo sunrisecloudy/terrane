@@ -99,3 +99,85 @@ fn set_rejects_empty_keys_before_recording_event() {
 
     assert_eq!(err, Error::InvalidInput("key must not be empty".into()));
 }
+
+#[test]
+fn storage_bindings_are_owned_by_kv_capability() {
+    let cap = KvCapability;
+    let bus = AppBus;
+    let mut store = Store::default();
+
+    let Decision::Commit(default_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "kv.storage.set",
+            &[
+                "default".into(),
+                "sqlite".into(),
+                ".terrane/kv.sqlite3".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("kv.storage.set should commit");
+    };
+    cap.fold(&mut store, &default_events[0]).unwrap();
+    assert_eq!(
+        storage_plan(&store).unwrap().default,
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some(".terrane/kv.sqlite3".into())
+        }
+    );
+
+    let Decision::Commit(app_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "kv.storage.set",
+            &[
+                "app".into(),
+                "demo".into(),
+                "rocksdb".into(),
+                "/tmp/demo.rocksdb".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("app kv.storage.set should commit");
+    };
+    cap.fold(&mut store, &app_events[0]).unwrap();
+    assert_eq!(
+        storage_binding(&store, Some("demo")).unwrap(),
+        KvStorageBinding {
+            backend: KvStorageBackend::RocksDb,
+            path: Some("/tmp/demo.rocksdb".into())
+        }
+    );
+
+    let Decision::Commit(clear_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "kv.storage.clear",
+            &["app".into(), "demo".into()],
+        )
+        .unwrap()
+    else {
+        panic!("kv.storage.clear should commit");
+    };
+    cap.fold(&mut store, &clear_events[0]).unwrap();
+    assert_eq!(
+        storage_binding(&store, Some("demo")).unwrap(),
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some(".terrane/kv.sqlite3".into())
+        }
+    );
+}
