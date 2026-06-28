@@ -1,14 +1,18 @@
 //! e2e smoke for `kv`. Logic detail is covered by `rust/crates/terrane-core/tests/cap/kv.rs`.
 
+#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 use std::path::{Path, PathBuf};
 
+#[cfg(feature = "rocksdb-storage")]
 use rocksdb::{Direction, IteratorMode, Options, DB};
+#[cfg(feature = "sqlite-storage")]
 use rusqlite::{Connection, OptionalExtension};
 use tempfile::tempdir;
 
 use crate::helpers::terrane;
 
 /// Absolute path to a repo app bundle (`apps/<name>`).
+#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 fn app_source(name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")) // .../rust/crates/terrane-host
         .join("../../../apps")
@@ -31,6 +35,21 @@ fn kv_e2e_smoke() {
     assert!(out.contains("kv.set"), "out: {out}");
 }
 
+#[cfg(not(feature = "sqlite-storage"))]
+#[test]
+fn sqlite_storage_projection_requires_feature() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (ok, out, err) = terrane(home, &["kv", "storage", "set", "--default", "sqlite"]);
+
+    assert!(!ok, "sqlite storage should be feature gated: {out}");
+    assert!(
+        err.contains("kv storage backend sqlite requires feature sqlite-storage"),
+        "stderr: {err}"
+    );
+}
+
+#[cfg(feature = "sqlite-storage")]
 #[test]
 fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
     let dir = tempdir().unwrap();
@@ -130,6 +149,26 @@ fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
     );
 }
 
+#[cfg(not(feature = "rocksdb-storage"))]
+#[test]
+fn rocksdb_storage_projection_requires_feature() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    terrane(home, &["app", "add", "todo-cli", "Todo CLI"]);
+
+    let (ok, out, err) = terrane(
+        home,
+        &["kv", "storage", "set", "--app", "todo-cli", "rocksdb"],
+    );
+
+    assert!(!ok, "rocksdb storage should be feature gated: {out}");
+    assert!(
+        err.contains("kv storage backend rocksdb requires feature rocksdb-storage"),
+        "stderr: {err}"
+    );
+}
+
+#[cfg(feature = "rocksdb-storage")]
 #[test]
 fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() {
     let dir = tempdir().unwrap();
@@ -228,6 +267,7 @@ fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() 
     );
 }
 
+#[cfg(feature = "sqlite-storage")]
 fn sqlite_value(path: &Path, app: &str, key: &str) -> Option<String> {
     Connection::open(path)
         .unwrap()
@@ -240,6 +280,7 @@ fn sqlite_value(path: &Path, app: &str, key: &str) -> Option<String> {
         .unwrap()
 }
 
+#[cfg(feature = "sqlite-storage")]
 fn sqlite_rows(path: &Path, app: &str) -> Vec<(String, String)> {
     let conn = Connection::open(path).unwrap();
     let mut stmt = conn
@@ -251,6 +292,7 @@ fn sqlite_rows(path: &Path, app: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn rocksdb_value(path: &Path, app: &str, key: &str) -> Option<String> {
     let db = open_rocksdb_read_only(path);
     db.get(rocksdb_key(app, key))
@@ -258,6 +300,7 @@ fn rocksdb_value(path: &Path, app: &str, key: &str) -> Option<String> {
         .map(|bytes| String::from_utf8(bytes).unwrap())
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn rocksdb_rows(path: &Path, app: &str) -> Vec<(String, String)> {
     let db = open_rocksdb_read_only(path);
     let prefix = rocksdb_app_prefix(app);
@@ -276,11 +319,13 @@ fn rocksdb_rows(path: &Path, app: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn open_rocksdb_read_only(path: &Path) -> DB {
     let opts = Options::default();
     DB::open_for_read_only(&opts, path, false).unwrap()
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn rocksdb_app_prefix(app: &str) -> Vec<u8> {
     let app_bytes = app.as_bytes();
     let mut out = Vec::with_capacity(4 + app_bytes.len());
@@ -289,6 +334,7 @@ fn rocksdb_app_prefix(app: &str) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn rocksdb_key(app: &str, key: &str) -> Vec<u8> {
     let mut out = rocksdb_app_prefix(app);
     out.extend_from_slice(key.as_bytes());

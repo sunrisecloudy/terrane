@@ -37,6 +37,33 @@ impl KvStorageBackend {
             KvStorageBackend::RocksDb => "rocksdb",
         }
     }
+
+    pub fn required_feature(&self) -> Option<&'static str> {
+        match self {
+            KvStorageBackend::Memory => None,
+            KvStorageBackend::Sqlite => Some("sqlite-storage"),
+            KvStorageBackend::RocksDb => Some("rocksdb-storage"),
+        }
+    }
+
+    pub fn is_available(&self) -> bool {
+        match self {
+            KvStorageBackend::Memory => true,
+            KvStorageBackend::Sqlite => cfg!(feature = "sqlite-storage"),
+            KvStorageBackend::RocksDb => cfg!(feature = "rocksdb-storage"),
+        }
+    }
+
+    pub fn ensure_available(&self) -> Result<()> {
+        if self.is_available() {
+            return Ok(());
+        }
+        let feature = self.required_feature().unwrap_or("unknown");
+        Err(Error::InvalidInput(format!(
+            "kv storage backend {} requires feature {feature}",
+            self.as_str()
+        )))
+    }
 }
 
 impl fmt::Display for KvStorageBackend {
@@ -418,7 +445,9 @@ fn ensure_arg_count(args: &[String], max: usize) -> Result<()> {
 }
 
 fn parse_storage_backend(args: &[String], index: usize) -> Result<KvStorageBackend> {
-    arg(args, index, "backend")?.parse()
+    let backend: KvStorageBackend = arg(args, index, "backend")?.parse()?;
+    backend.ensure_available()?;
+    Ok(backend)
 }
 
 fn parse_storage_path(args: &[String], index: usize) -> Result<Option<String>> {

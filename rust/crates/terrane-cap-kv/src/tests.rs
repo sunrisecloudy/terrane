@@ -113,11 +113,7 @@ fn storage_bindings_are_owned_by_kv_capability() {
                 bus: &bus,
             },
             "kv.storage.set",
-            &[
-                "default".into(),
-                "sqlite".into(),
-                ".terrane/kv.sqlite3".into(),
-            ],
+            &["default".into(), "memory".into()],
         )
         .unwrap()
     else {
@@ -127,8 +123,8 @@ fn storage_bindings_are_owned_by_kv_capability() {
     assert_eq!(
         storage_plan(&store).unwrap().default,
         KvStorageBinding {
-            backend: KvStorageBackend::Sqlite,
-            path: Some(".terrane/kv.sqlite3".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
     );
 
@@ -139,12 +135,7 @@ fn storage_bindings_are_owned_by_kv_capability() {
                 bus: &bus,
             },
             "kv.storage.set",
-            &[
-                "app".into(),
-                "demo".into(),
-                "rocksdb".into(),
-                "/tmp/demo.rocksdb".into(),
-            ],
+            &["app".into(), "demo".into(), "memory".into()],
         )
         .unwrap()
     else {
@@ -154,8 +145,8 @@ fn storage_bindings_are_owned_by_kv_capability() {
     assert_eq!(
         storage_binding(&store, Some("demo")).unwrap(),
         KvStorageBinding {
-            backend: KvStorageBackend::RocksDb,
-            path: Some("/tmp/demo.rocksdb".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
     );
 
@@ -176,8 +167,8 @@ fn storage_bindings_are_owned_by_kv_capability() {
     assert_eq!(
         storage_binding(&store, Some("demo")).unwrap(),
         KvStorageBinding {
-            backend: KvStorageBackend::Sqlite,
-            path: Some(".terrane/kv.sqlite3".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
     );
 }

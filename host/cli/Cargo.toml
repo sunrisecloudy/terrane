@@ -11,6 +11,11 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = []
+sqlite-storage = ["terrane-host/sqlite-storage"]
+rocksdb-storage = ["terrane-host/rocksdb-storage"]
+
 [[bin]]
 name = "terrane-host"
 path = "src/main.rs"

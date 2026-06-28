@@ -1,8 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
+use std::path::PathBuf;
 
+#[cfg(feature = "rocksdb-storage")]
 use rocksdb::{Direction, IteratorMode, Options, DB};
+#[cfg(feature = "sqlite-storage")]
 use rusqlite::{params, Connection};
 use terrane_cap_interface::{AppId, Error, Result};
 
@@ -54,15 +59,8 @@ fn ensure_configured_backends(home: &Path, state: &KvState) -> Result<()> {
 fn ensure_backend(home: &Path, binding: &KvStorageBinding) -> Result<()> {
     match binding.backend {
         KvStorageBackend::Memory => Ok(()),
-        KvStorageBackend::Sqlite => {
-            let path = storage_path(home, binding)?;
-            let conn = open_sqlite(&path)?;
-            ensure_sqlite_schema(&conn)
-        }
-        KvStorageBackend::RocksDb => {
-            let path = storage_path(home, binding)?;
-            open_rocksdb(&path).map(|_| ())
-        }
+        KvStorageBackend::Sqlite => ensure_sqlite_backend(home, binding),
+        KvStorageBackend::RocksDb => ensure_rocksdb_backend(home, binding),
     }
 }
 
@@ -74,23 +72,19 @@ fn sync_app(
 ) -> Result<()> {
     match binding.backend {
         KvStorageBackend::Memory => Ok(()),
-        KvStorageBackend::Sqlite => {
-            let path = storage_path(home, binding)?;
-            sync_sqlite_app(&path, app, data)
-        }
-        KvStorageBackend::RocksDb => {
-            let path = storage_path(home, binding)?;
-            sync_rocksdb_app(&path, app, data)
-        }
+        KvStorageBackend::Sqlite => sync_sqlite_backend(home, binding, app, data),
+        KvStorageBackend::RocksDb => sync_rocksdb_backend(home, binding, app, data),
     }
 }
 
+#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 fn storage_path(home: &Path, binding: &KvStorageBinding) -> Result<PathBuf> {
     binding
         .resolved_path(home)
         .ok_or_else(|| Error::Storage("memory backend has no storage path".into()))
 }
 
+#[cfg(feature = "sqlite-storage")]
 fn ensure_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -100,11 +94,54 @@ fn ensure_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn unavailable_backend(backend: &KvStorageBackend) -> Result<()> {
+    let feature = backend.required_feature().unwrap_or("unknown");
+    Err(Error::Storage(format!(
+        "kv storage backend {} requires feature {feature}",
+        backend.as_str()
+    )))
+}
+
+#[cfg(feature = "sqlite-storage")]
+fn ensure_sqlite_backend(home: &Path, binding: &KvStorageBinding) -> Result<()> {
+    let path = storage_path(home, binding)?;
+    let conn = open_sqlite(&path)?;
+    ensure_sqlite_schema(&conn)
+}
+
+#[cfg(not(feature = "sqlite-storage"))]
+fn ensure_sqlite_backend(_home: &Path, binding: &KvStorageBinding) -> Result<()> {
+    unavailable_backend(&binding.backend)
+}
+
+#[cfg(feature = "sqlite-storage")]
+fn sync_sqlite_backend(
+    home: &Path,
+    binding: &KvStorageBinding,
+    app: &str,
+    data: Option<&BTreeMap<String, String>>,
+) -> Result<()> {
+    let path = storage_path(home, binding)?;
+    sync_sqlite_app(&path, app, data)
+}
+
+#[cfg(not(feature = "sqlite-storage"))]
+fn sync_sqlite_backend(
+    _home: &Path,
+    binding: &KvStorageBinding,
+    _app: &str,
+    _data: Option<&BTreeMap<String, String>>,
+) -> Result<()> {
+    unavailable_backend(&binding.backend)
+}
+
+#[cfg(feature = "sqlite-storage")]
 fn open_sqlite(path: &Path) -> Result<Connection> {
     ensure_parent(path)?;
     Connection::open(path).map_err(|e| Error::Storage(format!("open sqlite: {e}")))
 }
 
+#[cfg(feature = "sqlite-storage")]
 fn ensure_sqlite_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS kv_entries (
@@ -117,6 +154,7 @@ fn ensure_sqlite_schema(conn: &Connection) -> Result<()> {
     .map_err(|e| Error::Storage(format!("init sqlite schema: {e}")))
 }
 
+#[cfg(feature = "sqlite-storage")]
 fn sync_sqlite_app(path: &Path, app: &str, data: Option<&BTreeMap<String, String>>) -> Result<()> {
     let mut conn = open_sqlite(path)?;
     ensure_sqlite_schema(&conn)?;
@@ -138,6 +176,39 @@ fn sync_sqlite_app(path: &Path, app: &str, data: Option<&BTreeMap<String, String
         .map_err(|e| Error::Storage(format!("commit sqlite transaction: {e}")))
 }
 
+#[cfg(feature = "rocksdb-storage")]
+fn ensure_rocksdb_backend(home: &Path, binding: &KvStorageBinding) -> Result<()> {
+    let path = storage_path(home, binding)?;
+    open_rocksdb(&path).map(|_| ())
+}
+
+#[cfg(not(feature = "rocksdb-storage"))]
+fn ensure_rocksdb_backend(_home: &Path, binding: &KvStorageBinding) -> Result<()> {
+    unavailable_backend(&binding.backend)
+}
+
+#[cfg(feature = "rocksdb-storage")]
+fn sync_rocksdb_backend(
+    home: &Path,
+    binding: &KvStorageBinding,
+    app: &str,
+    data: Option<&BTreeMap<String, String>>,
+) -> Result<()> {
+    let path = storage_path(home, binding)?;
+    sync_rocksdb_app(&path, app, data)
+}
+
+#[cfg(not(feature = "rocksdb-storage"))]
+fn sync_rocksdb_backend(
+    _home: &Path,
+    binding: &KvStorageBinding,
+    _app: &str,
+    _data: Option<&BTreeMap<String, String>>,
+) -> Result<()> {
+    unavailable_backend(&binding.backend)
+}
+
+#[cfg(feature = "rocksdb-storage")]
 fn open_rocksdb(path: &Path) -> Result<DB> {
     fs::create_dir_all(path).map_err(|e| Error::Storage(e.to_string()))?;
     let mut opts = Options::default();
@@ -145,6 +216,7 @@ fn open_rocksdb(path: &Path) -> Result<DB> {
     DB::open(&opts, path).map_err(|e| Error::Storage(format!("open rocksdb: {e}")))
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn sync_rocksdb_app(path: &Path, app: &str, data: Option<&BTreeMap<String, String>>) -> Result<()> {
     let db = open_rocksdb(path)?;
     let prefix = rocksdb_app_prefix(app);
@@ -172,6 +244,7 @@ fn sync_rocksdb_app(path: &Path, app: &str, data: Option<&BTreeMap<String, Strin
     Ok(())
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn rocksdb_app_prefix(app: &str) -> Vec<u8> {
     let app_bytes = app.as_bytes();
     let mut out = Vec::with_capacity(4 + app_bytes.len());
@@ -180,6 +253,7 @@ fn rocksdb_app_prefix(app: &str) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "rocksdb-storage")]
 fn rocksdb_key(app: &str, key: &str) -> Vec<u8> {
     let mut out = rocksdb_app_prefix(app);
     out.extend_from_slice(key.as_bytes());

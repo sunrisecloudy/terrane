@@ -8,6 +8,11 @@ license.workspace = true
 name = "terrane_core"
 path = "src/lib.rs"
 
+[features]
+default = []
+sqlite-storage = ["terrane-cap-kv/sqlite-storage"]
+rocksdb-storage = ["terrane-cap-kv/rocksdb-storage"]
+
 [dependencies]
 terrane-cap-interface.workspace = true
 terrane-cap-app.workspace = true

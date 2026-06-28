@@ -169,11 +169,7 @@ fn kv_capability_records_user_storage_bindings() {
                 bus: &bus,
             },
             "kv.storage.set",
-            &[
-                "default".into(),
-                "sqlite".into(),
-                "workspace.sqlite3".into(),
-            ],
+            &["default".into(), "memory".into()],
         )
         .unwrap()
     else {
@@ -183,8 +179,8 @@ fn kv_capability_records_user_storage_bindings() {
     assert_eq!(
         storage_plan(&store).unwrap().default,
         KvStorageBinding {
-            backend: KvStorageBackend::Sqlite,
-            path: Some("workspace.sqlite3".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
     );
 
@@ -195,12 +191,7 @@ fn kv_capability_records_user_storage_bindings() {
                 bus: &bus,
             },
             "kv.storage.set",
-            &[
-                "app".into(),
-                "demo".into(),
-                "rocksdb".into(),
-                "demo.rocksdb".into(),
-            ],
+            &["app".into(), "demo".into(), "memory".into()],
         )
         .unwrap()
     else {
@@ -210,8 +201,8 @@ fn kv_capability_records_user_storage_bindings() {
     assert_eq!(
         storage_binding(&store, Some("demo")).unwrap(),
         KvStorageBinding {
-            backend: KvStorageBackend::RocksDb,
-            path: Some("demo.rocksdb".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
     );
 
@@ -223,8 +214,50 @@ fn kv_capability_records_user_storage_bindings() {
     assert_eq!(
         storage_binding(&store, Some("demo")).unwrap(),
         KvStorageBinding {
-            backend: KvStorageBackend::Sqlite,
-            path: Some("workspace.sqlite3".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
+    );
+}
+
+#[cfg(not(feature = "sqlite-storage"))]
+#[test]
+fn kv_capability_rejects_sqlite_storage_without_feature() {
+    let cap = KvCapability;
+    let bus = AppBus { exists: true };
+    let store = Store::default();
+
+    assert_eq!(
+        cap.decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "kv.storage.set",
+            &["default".into(), "sqlite".into()],
+        )
+        .unwrap_err(),
+        Error::InvalidInput("kv storage backend sqlite requires feature sqlite-storage".into())
+    );
+}
+
+#[cfg(not(feature = "rocksdb-storage"))]
+#[test]
+fn kv_capability_rejects_rocksdb_storage_without_feature() {
+    let cap = KvCapability;
+    let bus = AppBus { exists: true };
+    let store = Store::default();
+
+    assert_eq!(
+        cap.decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "kv.storage.set",
+            &["app".into(), "demo".into(), "rocksdb".into()],
+        )
+        .unwrap_err(),
+        Error::InvalidInput("kv storage backend rocksdb requires feature rocksdb-storage".into())
     );
 }

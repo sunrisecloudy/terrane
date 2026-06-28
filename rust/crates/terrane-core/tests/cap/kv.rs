@@ -47,29 +47,23 @@ fn kv_storage_plan_is_cap_owned_and_replayed_for_core_use() {
     let mut core = Core::open(&log).unwrap();
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
 
-    core.dispatch(req(
-        "kv.storage.set",
-        &["default", "sqlite", ".terrane/kv.sqlite3"],
-    ))
-    .unwrap();
-    core.dispatch(req(
-        "kv.storage.set",
-        &["app", "notes", "rocksdb", "/tmp/notes.rocksdb"],
-    ))
-    .unwrap();
+    core.dispatch(req("kv.storage.set", &["default", "memory"]))
+        .unwrap();
+    core.dispatch(req("kv.storage.set", &["app", "notes", "memory"]))
+        .unwrap();
 
     assert_eq!(
         core.kv_storage_plan().default,
         KvStorageBinding {
-            backend: KvStorageBackend::Sqlite,
-            path: Some(".terrane/kv.sqlite3".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
     );
     assert_eq!(
         core.kv_storage_plan().apps["notes"],
         KvStorageBinding {
-            backend: KvStorageBackend::RocksDb,
-            path: Some("/tmp/notes.rocksdb".into())
+            backend: KvStorageBackend::Memory,
+            path: None
         }
     );
     assert!(core.replay_matches().unwrap());
@@ -79,4 +73,37 @@ fn kv_storage_plan_is_cap_owned_and_replayed_for_core_use() {
 
     core.dispatch(req("app.remove", &["notes"])).unwrap();
     assert!(!core.kv_storage_plan().apps.contains_key("notes"));
+}
+
+#[cfg(not(feature = "sqlite-storage"))]
+#[test]
+fn sqlite_storage_requires_feature_before_commit() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open(&log).unwrap();
+
+    assert_eq!(
+        core.dispatch(req("kv.storage.set", &["default", "sqlite"])),
+        Err(Error::InvalidInput(
+            "kv storage backend sqlite requires feature sqlite-storage".into()
+        ))
+    );
+    assert!(core.log_lines().unwrap().is_empty());
+}
+
+#[cfg(not(feature = "rocksdb-storage"))]
+#[test]
+fn rocksdb_storage_requires_feature_before_commit() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open(&log).unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
+
+    assert_eq!(
+        core.dispatch(req("kv.storage.set", &["app", "notes", "rocksdb"])),
+        Err(Error::InvalidInput(
+            "kv storage backend rocksdb requires feature rocksdb-storage".into()
+        ))
+    );
+    assert_eq!(core.log_lines().unwrap().len(), 1);
 }
