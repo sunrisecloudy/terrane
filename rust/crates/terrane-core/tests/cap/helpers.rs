@@ -1,6 +1,6 @@
 //! Shared fixtures for the per-capability engine tests.
 
-use terrane_domain::Request;
+use terrane_core::Request;
 
 /// Build a `Request` from a dotted name and string args.
 pub(crate) fn req(name: &str, args: &[&str]) -> Request {

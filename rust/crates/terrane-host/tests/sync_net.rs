@@ -7,7 +7,7 @@ use std::thread;
 use tempfile::tempdir;
 use terrane_core::cap::crdt::crdt_list_strings;
 use terrane_core::Core;
-use terrane_domain::Request;
+use terrane_core::Request;
 use terrane_host::{serve_conn, sync_conn, EdgeRunner};
 
 fn req(name: &str, args: &[&str]) -> Request {

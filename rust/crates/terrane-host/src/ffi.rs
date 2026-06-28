@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::ptr;
 use std::sync::Mutex;
 
-use terrane_domain::Request;
+use terrane_core::Request;
 
 pub const TERRANE_OK: c_int = 0;
 pub const TERRANE_ERR_NULL_ARG: c_int = 1;

@@ -4,7 +4,7 @@ use std::fs;
 
 use tempfile::tempdir;
 use terrane_core::read_log;
-use terrane_domain::Error;
+use terrane_core::Error;
 
 #[test]
 fn partial_length_prefix_is_corruption_not_clean_eof() {

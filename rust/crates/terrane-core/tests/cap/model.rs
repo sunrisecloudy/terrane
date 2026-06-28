@@ -2,8 +2,8 @@
 
 use tempfile::tempdir;
 use terrane_core::cap::model::responded_event;
+use terrane_core::Error;
 use terrane_core::{fold_records_in_memory, Core, State};
-use terrane_domain::Error;
 
 use crate::helpers::req;
 

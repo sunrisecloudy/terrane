@@ -2275,14 +2275,6 @@ dependencies = [
  "nanoserde",
  "rquickjs",
  "terrane-app-build",
- "terrane-domain",
-]
-
-[[package]]
-name = "terrane-domain"
-version = "0.1.0"
-dependencies = [
- "borsh",
 ]
 
 [[package]]
@@ -2295,7 +2287,6 @@ dependencies = [
  "terrane-api",
  "terrane-app-build",
  "terrane-core",
- "terrane-domain",
 ]
 
 [[package]]
@@ -2306,7 +2297,6 @@ dependencies = [
  "tempfile",
  "terrane-api",
  "terrane-core",
- "terrane-domain",
  "terrane-host",
 ]
 

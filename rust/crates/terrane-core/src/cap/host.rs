@@ -24,12 +24,12 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::{Error, EventRecord, Result};
 use nanoserde::DeJson;
 use rquickjs::function::Rest;
 use rquickjs::{
     CatchResultExt, CaughtError, Context, Ctx, Function, IntoJs, Object, Runtime, Value,
 };
-use terrane_domain::{Error, EventRecord, Result};
 
 use super::{Capability, ReadValue, ResourceMethod};
 use crate::{apply, default_registry, namespace_of, Decision, Registry, State};

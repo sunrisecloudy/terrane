@@ -22,7 +22,7 @@ use std::net::{TcpListener, TcpStream};
 
 use terrane_core::cap::crdt::{crdt_export_from_vv, crdt_vv, to_hex};
 use terrane_core::Core;
-use terrane_domain::Request;
+use terrane_core::Request;
 
 use crate::{ensure_identity, open, EdgeRunner};
 

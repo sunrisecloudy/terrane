@@ -4,8 +4,8 @@
 //! Generated agents can use it from QuickJS without gaining shell or filesystem
 //! access.
 
+use crate::{EventRecord, Result};
 use nanoserde::SerJson;
-use terrane_domain::{EventRecord, Result};
 
 use super::{Capability, ReadValue, ResourceMethod};
 use crate::{Decision, State};
@@ -18,7 +18,7 @@ impl Capability for BuildCapability {
     }
 
     fn decide(&self, _state: &State, name: &str, _args: &[String]) -> Result<Decision> {
-        Err(terrane_domain::Error::InvalidInput(format!(
+        Err(crate::Error::InvalidInput(format!(
             "unknown command: {name}"
         )))
     }

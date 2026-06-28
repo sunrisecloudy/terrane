@@ -3,9 +3,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::{Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
 use nanoserde::{DeJson, SerJson};
-use terrane_domain::{Error, EventRecord, Result};
 
 use super::{arg, builder, extract_json_object, truncate, Capability};
 use crate::{decode_event, encode_event, Decision, Effect, State};

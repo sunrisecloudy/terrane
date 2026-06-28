@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use tempfile::tempdir;
 use terrane_core::Core;
-use terrane_domain::Request;
+use terrane_core::Request;
 
 fn app_source() -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

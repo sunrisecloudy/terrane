@@ -8,7 +8,7 @@ mod json;
 mod types;
 mod validation;
 
-use terrane_domain::{EventRecord, Result};
+use crate::{EventRecord, Result};
 
 use super::Capability;
 use crate::{Decision, State};
@@ -26,7 +26,7 @@ impl Capability for BuilderCapability {
     }
 
     fn decide(&self, _state: &State, name: &str, _args: &[String]) -> Result<Decision> {
-        Err(terrane_domain::Error::InvalidInput(format!(
+        Err(crate::Error::InvalidInput(format!(
             "unknown command: {name}"
         )))
     }

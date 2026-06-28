@@ -403,7 +403,7 @@ fn kv_set_with_non_string_arg_gives_attributable_error() {
         .dispatch(req("host.run", &["typed", "go"]))
         .unwrap_err();
     match err {
-        terrane_domain::Error::InvalidInput(msg) => {
+        terrane_core::Error::InvalidInput(msg) => {
             assert!(msg.contains("kv.set"), "error names the call: {msg}");
             assert!(msg.contains("key"), "error names the bad param: {msg}");
         }

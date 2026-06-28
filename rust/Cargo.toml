@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/terrane-domain",
   "crates/terrane-core",
   "crates/terrane-host",
   "crates/terrane-api",
@@ -14,7 +13,6 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-terrane-domain = { path = "crates/terrane-domain" }
 terrane-core = { path = "crates/terrane-core" }
 terrane-host = { path = "crates/terrane-host" }
 terrane-app-build = { path = "crates/terrane-app-build" }

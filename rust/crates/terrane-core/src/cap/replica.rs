@@ -12,8 +12,8 @@
 //! the id back from the log — never re-mints it — so identity is replay-stable.
 //! The `crdt` capability reads [`ReplicaState::peer`] and authors under it.
 
+use crate::{Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_domain::{Error, EventRecord, Result};
 
 use super::Capability;
 use crate::{decode_event, encode_event, Decision, Effect, State};

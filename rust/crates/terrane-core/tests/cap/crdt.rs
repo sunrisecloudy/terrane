@@ -9,7 +9,7 @@ use std::path::Path;
 use loro::LoroDoc;
 use tempfile::tempdir;
 use terrane_core::Core;
-use terrane_domain::Error;
+use terrane_core::Error;
 
 use crate::helpers::req;
 

@@ -1,5 +1,5 @@
+use crate::{EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_domain::{EventRecord, Result};
 
 use crate::{cap::truncate, decode_event, encode_event, State};
 

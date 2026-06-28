@@ -34,9 +34,10 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_domain::{Error, EventRecord, Request, Result};
-
 pub mod cap;
+pub mod domain;
+
+pub use domain::{AppId, Error, EventRecord, Request, Result};
 
 use cap::{
     app::AppState, builder::BuilderState, crdt::CrdtState, harness::HarnessState, kv::KvState,

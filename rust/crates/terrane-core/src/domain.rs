@@ -1,4 +1,4 @@
-//! terrane-domain — shared primitives and the dispatch boundary.
+//! Shared primitives and the dispatch boundary.
 //!
 //! What crosses every capability lives here: identifiers, the typed [`Error`],
 //! and the two envelopes a command and an event take at the core boundary —

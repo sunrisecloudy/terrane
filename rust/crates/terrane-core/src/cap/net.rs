@@ -4,8 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use crate::{AppId, Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_domain::{AppId, Error, EventRecord, Result};
 
 use super::{arg, Capability};
 use crate::{decode_event, encode_event, Decision, Effect, State};

@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use terrane_domain::{Error, EventRecord, Result};
+use crate::{Error, EventRecord, Result};
 
 use crate::{Decision, State};
 

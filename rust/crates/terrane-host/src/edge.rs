@@ -18,7 +18,7 @@ use terrane_core::cap::model::responded_event;
 use terrane_core::cap::net::fetched_event;
 use terrane_core::cap::replica::initialized_event;
 use terrane_core::{Effect, EffectRunner};
-use terrane_domain::{Error, EventRecord, Result};
+use terrane_core::{Error, EventRecord, Result};
 
 pub struct EdgeRunner;
 

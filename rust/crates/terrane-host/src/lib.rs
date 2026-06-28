@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use terrane_api::{AppSummary, AppsResponse};
 use terrane_core::Core;
-use terrane_domain::{Error, EventRecord, Request};
+use terrane_core::{Error, EventRecord, Request};
 
 pub mod cli;
 pub mod edge;

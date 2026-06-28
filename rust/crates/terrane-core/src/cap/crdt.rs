@@ -20,9 +20,9 @@
 
 use std::collections::BTreeMap;
 
+use crate::{AppId, Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
 use loro::{ExportMode, LoroDoc, LoroError, LoroValue, VersionVector};
-use terrane_domain::{AppId, Error, EventRecord, Result};
 
 use super::{arg, Capability, ReadValue, ResourceMethod};
 use crate::{decode_event, encode_event, Decision, State};
