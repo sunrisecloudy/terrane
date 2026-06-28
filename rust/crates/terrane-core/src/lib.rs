@@ -718,6 +718,7 @@ pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
 pub struct Core<R: EffectRunner = NoEffects> {
     log_path: PathBuf,
     state: State,
+    kv_storage_plan: cap::kv::KvStoragePlan,
     runner: R,
     registry: Registry,
     /// String printed by the most recent `host.run` backend, if any. Not part of
@@ -742,9 +743,13 @@ impl<R: EffectRunner> Core<R> {
         for record in read_log(&log_path)? {
             apply(&registry, &mut state, &record)?;
         }
+        let kv_storage_plan = cap::kv::storage_plan(&state)?;
+        let storage_home = storage_home(&log_path);
+        cap::kv::sync_full_storage(&storage_home, &state.kv)?;
         Ok(Core {
             log_path,
             state,
+            kv_storage_plan,
             runner,
             registry,
             last_output: None,
@@ -754,6 +759,11 @@ impl<R: EffectRunner> Core<R> {
     /// The current world. Reads go through here.
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    /// Core-facing storage projection plan owned by the `kv` capability.
+    pub fn kv_storage_plan(&self) -> &cap::kv::KvStoragePlan {
+        &self.kv_storage_plan
     }
 
     /// Run a command end to end: route to its capability, decide, then commit
@@ -850,10 +860,17 @@ impl<R: EffectRunner> Core<R> {
 
     /// Persist records to the log, then fold them into State.
     fn commit(&mut self, records: Vec<EventRecord>) -> Result<Vec<EventRecord>> {
+        let before_kv = self.state.kv.clone();
         self.append(&records)?;
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
+        self.kv_storage_plan = cap::kv::storage_plan(&self.state)?;
+        cap::kv::sync_storage_after_commit(
+            &storage_home(&self.log_path),
+            &before_kv,
+            &self.state.kv,
+        )?;
         Ok(records)
     }
 
@@ -879,4 +896,11 @@ impl<R: EffectRunner> Core<R> {
         }
         Ok(())
     }
+}
+
+fn storage_home(log_path: &Path) -> PathBuf {
+    log_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
 }

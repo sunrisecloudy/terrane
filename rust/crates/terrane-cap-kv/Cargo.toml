@@ -11,3 +11,5 @@ path = "src/lib.rs"
 [dependencies]
 terrane-cap-interface.workspace = true
 borsh.workspace = true
+rocksdb.workspace = true
+rusqlite.workspace = true

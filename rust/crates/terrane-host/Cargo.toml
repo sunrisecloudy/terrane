@@ -29,4 +29,6 @@ terrane-cap-replica.workspace = true
 terrane-core.workspace = true
 
 [dev-dependencies]
+rocksdb.workspace = true
+rusqlite.workspace = true
 tempfile.workspace = true

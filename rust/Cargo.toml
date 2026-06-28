@@ -40,6 +40,8 @@ borsh = { version = "1", features = ["derive"] }
 # JSON path only — no binary/ron/toml. borsh stays the event-log format; this
 # only reads hand-authored bundle manifests at the edge (see host_runtime.rs).
 nanoserde = { version = "0.2", default-features = false, features = ["json"] }
+rocksdb = { version = "0.24.0", default-features = false, features = ["bindgen-runtime"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 tempfile = "3"
 
 [profile.dev]

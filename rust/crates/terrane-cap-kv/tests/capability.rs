@@ -6,7 +6,9 @@ use terrane_cap_interface::{
     encode_event, CapBus, Capability, CommandCtx, Decision, Error, QueryValue, ReadValue,
     ResourceReadCtx, StateStore,
 };
-use terrane_cap_kv::{KvCapability, KvState};
+use terrane_cap_kv::{
+    storage_binding, storage_plan, KvCapability, KvState, KvStorageBackend, KvStorageBinding,
+};
 
 #[derive(Default)]
 struct Store {
@@ -151,5 +153,78 @@ fn kv_capability_requires_existing_app_and_key_for_writes() {
         )
         .unwrap_err(),
         Error::KeyNotFound("demo".into(), "missing".into())
+    );
+}
+
+#[test]
+fn kv_capability_records_user_storage_bindings() {
+    let cap = KvCapability;
+    let bus = AppBus { exists: true };
+    let mut store = Store::default();
+
+    let Decision::Commit(default_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "kv.storage.set",
+            &[
+                "default".into(),
+                "sqlite".into(),
+                "workspace.sqlite3".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("kv.storage.set should commit");
+    };
+    cap.fold(&mut store, &default_events[0]).unwrap();
+    assert_eq!(
+        storage_plan(&store).unwrap().default,
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some("workspace.sqlite3".into())
+        }
+    );
+
+    let Decision::Commit(app_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "kv.storage.set",
+            &[
+                "app".into(),
+                "demo".into(),
+                "rocksdb".into(),
+                "demo.rocksdb".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("app kv.storage.set should commit");
+    };
+    cap.fold(&mut store, &app_events[0]).unwrap();
+    assert_eq!(
+        storage_binding(&store, Some("demo")).unwrap(),
+        KvStorageBinding {
+            backend: KvStorageBackend::RocksDb,
+            path: Some("demo.rocksdb".into())
+        }
+    );
+
+    cap.fold(
+        &mut store,
+        &encode_event("app.removed", &Removed { id: "demo".into() }).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        storage_binding(&store, Some("demo")).unwrap(),
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some("workspace.sqlite3".into())
+        }
     );
 }
