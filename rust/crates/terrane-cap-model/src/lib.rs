@@ -6,11 +6,13 @@
 
 use std::collections::BTreeMap;
 
-use crate::{AppId, Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-
-use super::{arg, truncate, Capability};
-use crate::{decode_event, encode_event, Decision, Effect, State};
+use terrane_cap_api::Capability;
+use terrane_cap_api::{
+    arg, decode_event, encode_event, ensure_app_exists, state_mut, truncate, AppId, CapManifest,
+    CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern, EventRecord, EventSpec, Result,
+    StateStore,
+};
 
 /// The agents this capability knows how to drive.
 pub const AGENTS: [&str; 2] = ["claude", "codex"];
@@ -68,16 +70,28 @@ impl Capability for ModelCapability {
         "model"
     }
 
-    fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![CommandSpec { name: "model.ask" }],
+            events: vec![EventSpec {
+                kind: "model.responded",
+            }],
+            queries: Vec::new(),
+            resources: Vec::new(),
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
+        }
+    }
+
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         match name {
             "model.ask" => {
                 let app = arg(args, 0, "app")?;
                 let agent = arg(args, 1, "agent (claude|codex)")?;
                 let prompt = args.get(2..).unwrap_or_default().join(" ");
                 // Validate purely; the agent runs at the edge.
-                if !state.app.apps.contains_key(&app) {
-                    return Err(Error::AppNotFound(app));
-                }
+                ensure_app_exists(ctx.bus, &app)?;
                 if !AGENTS.contains(&agent.as_str()) {
                     return Err(Error::InvalidInput(format!(
                         "unknown agent {agent:?}; expected one of {AGENTS:?}"
@@ -92,16 +106,20 @@ impl Capability for ModelCapability {
         }
     }
 
-    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+    fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         match record.kind.as_str() {
             "model.responded" => {
                 let e: Responded = decode_event(record)?;
-                state.model.turns.entry(e.app).or_default().push(ModelTurn {
-                    agent: e.agent,
-                    prompt: e.prompt,
-                    response: e.response,
-                    exit_code: e.exit_code,
-                });
+                state_mut::<ModelState>(state, "model")?
+                    .turns
+                    .entry(e.app)
+                    .or_default()
+                    .push(ModelTurn {
+                        agent: e.agent,
+                        prompt: e.prompt,
+                        response: e.response,
+                        exit_code: e.exit_code,
+                    });
             }
             "app.removed" => {
                 #[derive(BorshDeserialize)]
@@ -109,7 +127,7 @@ impl Capability for ModelCapability {
                     id: String,
                 }
                 let e: Removed = decode_event(record)?;
-                state.model.turns.remove(&e.id);
+                state_mut::<ModelState>(state, "model")?.turns.remove(&e.id);
             }
             _ => {}
         }

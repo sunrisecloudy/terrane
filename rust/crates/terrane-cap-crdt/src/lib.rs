@@ -20,12 +20,14 @@
 
 use std::collections::BTreeMap;
 
-use crate::{AppId, Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
 use loro::{ExportMode, LoroDoc, LoroError, LoroValue, VersionVector};
-
-use super::{arg, Capability, ReadValue, ResourceMethod};
-use crate::{decode_event, encode_event, Decision, State};
+use terrane_cap_api::Capability;
+use terrane_cap_api::{
+    arg, decode_event, encode_event, ensure_app_exists, replica_peer, state_mut, state_ref, AppId,
+    CapManifest, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord, EventSpec,
+    ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
+};
 
 /// This capability's slice of State: one Loro document per app. Reacts to
 /// `app.removed` by dropping that app's document.
@@ -96,71 +98,50 @@ impl Capability for CrdtCapability {
     /// method's first arg is a container *name* (an app may hold many named
     /// documents); numeric args (`index`, `len`) arrive as strings — the runtime
     /// passes JS args verbatim with no coercion — and are parsed here.
-    fn resource_api(&self) -> Vec<ResourceMethod> {
-        vec![
-            // Map — a merging key/value document.
-            ResourceMethod::Write {
-                name: "mapSet",
-                params: &["doc", "key", "value"],
-            },
-            ResourceMethod::Read {
-                name: "mapGet",
-                params: &["doc", "key"],
-                read: read_map_get,
-            },
-            ResourceMethod::Read {
-                name: "mapAll",
-                params: &["doc"],
-                read: read_map_all,
-            },
-            ResourceMethod::Write {
-                name: "mapDel",
-                params: &["doc", "key"],
-            },
-            // List — an ordered sequence.
-            ResourceMethod::Write {
-                name: "listPush",
-                params: &["doc", "value"],
-            },
-            ResourceMethod::Write {
-                name: "listInsert",
-                params: &["doc", "index", "value"],
-            },
-            ResourceMethod::Write {
-                name: "listDel",
-                params: &["doc", "index"],
-            },
-            ResourceMethod::Read {
-                name: "listAll",
-                params: &["doc"],
-                read: read_list_all,
-            },
-            // Text — a collaborative string.
-            ResourceMethod::Write {
-                name: "textInsert",
-                params: &["doc", "index", "text"],
-            },
-            ResourceMethod::Write {
-                name: "textDel",
-                params: &["doc", "index", "len"],
-            },
-            ResourceMethod::Read {
-                name: "textGet",
-                params: &["doc"],
-                read: read_text_get,
-            },
-        ]
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![
+                CommandSpec {
+                    name: "crdt.mapSet",
+                },
+                CommandSpec {
+                    name: "crdt.mapDel",
+                },
+                CommandSpec {
+                    name: "crdt.listPush",
+                },
+                CommandSpec {
+                    name: "crdt.listInsert",
+                },
+                CommandSpec {
+                    name: "crdt.listDel",
+                },
+                CommandSpec {
+                    name: "crdt.textInsert",
+                },
+                CommandSpec {
+                    name: "crdt.textDel",
+                },
+                CommandSpec { name: "crdt.merge" },
+            ],
+            events: vec![EventSpec {
+                kind: "crdt.update",
+            }],
+            queries: Vec::new(),
+            resources: resource_methods(),
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
+        }
     }
 
-    fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         let app = arg(args, 0, "app")?;
-        if !state.app.apps.contains_key(&app) {
-            return Err(Error::AppNotFound(app));
-        }
+        ensure_app_exists(ctx.bus, &app)?;
 
         // `crdt.merge` ingests another replica's update rather than authoring one.
         if name == "crdt.merge" {
-            return decide_merge(state, app, args);
+            return decide_merge(ctx.state, app, args);
         }
 
         // Apply the op to a fork (never to live State), then export just the new
@@ -169,14 +150,14 @@ impl Capability for CrdtCapability {
         // concurrent ops would collide on `(peer, counter)` and a merge would
         // silently drop one. The randomness is frozen into the recorded bytes
         // (Option A), so replay re-imports it and replay-identity still holds.
-        let doc = match state.crdt.docs.get(&app) {
+        let doc = match state_ref::<CrdtState>(ctx.state, "crdt")?.docs.get(&app) {
             Some(existing) => existing.fork(),
             None => LoroDoc::new(),
         };
         // Author under this home's stable replica PeerID when it has minted one
         // (so all its edits share one peer); otherwise the fork's fresh peer still
         // keeps the op distinct. Either way the bytes are recorded (Option A).
-        if let Some(peer) = state.replica.peer {
+        if let Some(peer) = replica_peer(ctx.bus)? {
             let _ = doc.set_peer_id(peer);
         }
         let before = doc.oplog_vv();
@@ -246,11 +227,14 @@ impl Capability for CrdtCapability {
         )?]))
     }
 
-    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+    fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         match record.kind.as_str() {
             "crdt.update" => {
                 let e: Update = decode_event(record)?;
-                let doc = state.crdt.docs.entry(e.app.clone()).or_default();
+                let doc = state_mut::<CrdtState>(state, "crdt")?
+                    .docs
+                    .entry(e.app.clone())
+                    .or_default();
                 doc.import(&e.bytes)
                     .map_err(|err| Error::Storage(format!("crdt import: {err}")))?;
             }
@@ -261,7 +245,7 @@ impl Capability for CrdtCapability {
                     id: String,
                 }
                 let e: Removed = decode_event(record)?;
-                state.crdt.docs.remove(&e.id);
+                state_mut::<CrdtState>(state, "crdt")?.docs.remove(&e.id);
             }
             _ => {}
         }
@@ -277,6 +261,23 @@ impl Capability for CrdtCapability {
             _ => None,
         }
     }
+
+    fn read_resource(
+        &self,
+        ctx: ResourceReadCtx<'_>,
+        name: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        match name {
+            "mapGet" => read_map_get(ctx.state, ctx.app, args),
+            "mapAll" => read_map_all(ctx.state, ctx.app, args),
+            "listAll" => read_list_all(ctx.state, ctx.app, args),
+            "textGet" => read_text_get(ctx.state, ctx.app, args),
+            other => Err(Error::InvalidInput(format!(
+                "unknown resource read: crdt.{other}"
+            ))),
+        }
+    }
 }
 
 /// `crdt.merge <app> <hex>` — ingest another replica's exported Loro update.
@@ -284,10 +285,10 @@ impl Capability for CrdtCapability {
 /// committed, so the log can't be poisoned) and dedups (an update that adds
 /// nothing new is a no-op), then records the bytes as an ordinary `crdt.update`
 /// so the merge replays like any other write.
-fn decide_merge(state: &State, app: String, args: &[String]) -> Result<Decision> {
+fn decide_merge(state: &dyn StateStore, app: String, args: &[String]) -> Result<Decision> {
     let hex = arg(args, 1, "update")?;
     let bytes = from_hex(&hex)?;
-    let doc = match state.crdt.docs.get(&app) {
+    let doc = match state_ref::<CrdtState>(state, "crdt")?.docs.get(&app) {
         Some(existing) => existing.fork(),
         None => LoroDoc::new(),
     };
@@ -308,12 +309,15 @@ fn decide_merge(state: &State, app: String, args: &[String]) -> Result<Decision>
 /// `since` lacks (a delta), ready to feed to `crdt.merge` on the `since` replica.
 /// `None` if `source` has no document for the app. This is the outbound half of
 /// sync — a host operation, deliberately NOT on the backend `ctx.resource`.
-pub fn crdt_export_hex(source: &State, app: &str, since: &State) -> Result<Option<String>> {
-    let Some(doc) = source.crdt.docs.get(app) else {
+pub fn crdt_export_hex(
+    source: &dyn StateStore,
+    app: &str,
+    since: &dyn StateStore,
+) -> Result<Option<String>> {
+    let Some(doc) = state_ref::<CrdtState>(source, "crdt")?.docs.get(app) else {
         return Ok(None);
     };
-    let from = since
-        .crdt
+    let from = state_ref::<CrdtState>(since, "crdt")?
         .docs
         .get(app)
         .map(|d| d.oplog_vv())
@@ -327,12 +331,10 @@ pub fn crdt_export_hex(source: &State, app: &str, since: &State) -> Result<Optio
 /// This replica's encoded version vector for `app` (empty if it has no document
 /// yet). A peer sends this so we can export exactly the ops it's missing — the
 /// inbound half of a networked sync.
-pub fn crdt_vv(state: &State, app: &str) -> Vec<u8> {
-    state
-        .crdt
-        .docs
-        .get(app)
-        .map(|d| d.oplog_vv().encode())
+pub fn crdt_vv(state: &dyn StateStore, app: &str) -> Vec<u8> {
+    state_ref::<CrdtState>(state, "crdt")
+        .ok()
+        .and_then(|state| state.docs.get(app).map(|d| d.oplog_vv().encode()))
         .unwrap_or_default()
 }
 
@@ -340,8 +342,9 @@ pub fn crdt_vv(state: &State, app: &str) -> Vec<u8> {
 /// `peer_vv`, empty = has nothing) is missing — the raw Loro update bytes. Hex
 /// them for `crdt.merge`, or frame them straight onto a socket. Empty if we have
 /// no document for the app.
-pub fn crdt_export_from_vv(state: &State, app: &str, peer_vv: &[u8]) -> Result<Vec<u8>> {
-    let Some(doc) = state.crdt.docs.get(app) else {
+pub fn crdt_export_from_vv(state: &dyn StateStore, app: &str, peer_vv: &[u8]) -> Result<Vec<u8>> {
+    let crdt = state_ref::<CrdtState>(state, "crdt")?;
+    let Some(doc) = crdt.docs.get(app) else {
         return Ok(Vec::new());
     };
     let from = if peer_vv.is_empty() {
@@ -355,9 +358,9 @@ pub fn crdt_export_from_vv(state: &State, app: &str, peer_vv: &[u8]) -> Result<V
 }
 
 /// The string elements of `app`'s named list — a read accessor for hosts/tests.
-pub fn crdt_list_strings(state: &State, app: &str, container: &str) -> Vec<String> {
+pub fn crdt_list_strings(state: &dyn StateStore, app: &str, container: &str) -> Vec<String> {
     match read_list_all(state, app, &[container.to_string()]) {
-        ReadValue::StringList(items) => items,
+        Ok(ReadValue::StringList(items)) => items,
         _ => Vec::new(),
     }
 }
@@ -405,6 +408,58 @@ fn crdt_err(e: LoroError) -> Error {
     Error::Runtime(format!("crdt: {e}"))
 }
 
+fn resource_methods() -> Vec<ResourceMethod> {
+    vec![
+        // Map — a merging key/value document.
+        ResourceMethod::Write {
+            name: "mapSet",
+            params: &["doc", "key", "value"],
+        },
+        ResourceMethod::Read {
+            name: "mapGet",
+            params: &["doc", "key"],
+        },
+        ResourceMethod::Read {
+            name: "mapAll",
+            params: &["doc"],
+        },
+        ResourceMethod::Write {
+            name: "mapDel",
+            params: &["doc", "key"],
+        },
+        // List — an ordered sequence.
+        ResourceMethod::Write {
+            name: "listPush",
+            params: &["doc", "value"],
+        },
+        ResourceMethod::Write {
+            name: "listInsert",
+            params: &["doc", "index", "value"],
+        },
+        ResourceMethod::Write {
+            name: "listDel",
+            params: &["doc", "index"],
+        },
+        ResourceMethod::Read {
+            name: "listAll",
+            params: &["doc"],
+        },
+        // Text — a collaborative string.
+        ResourceMethod::Write {
+            name: "textInsert",
+            params: &["doc", "index", "text"],
+        },
+        ResourceMethod::Write {
+            name: "textDel",
+            params: &["doc", "index", "len"],
+        },
+        ResourceMethod::Read {
+            name: "textGet",
+            params: &["doc"],
+        },
+    ]
+}
+
 /// A Loro scalar as a string (`None` if it isn't a string — map reads are
 /// string-typed like `kv`).
 fn loro_string(v: &LoroValue) -> Option<String> {
@@ -428,26 +483,24 @@ fn stringify(v: &LoroValue) -> String {
 
 /// `ctx.resource.crdt.mapGet(doc, key)` — the value for `key` in `app`'s named
 /// map, or none.
-fn read_map_get(state: &State, app: &str, args: &[String]) -> ReadValue {
+fn read_map_get(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
     let cname = args.first().map(String::as_str).unwrap_or_default();
     let key = args.get(1).map(String::as_str).unwrap_or_default();
-    let value =
-        state
-            .crdt
-            .docs
-            .get(app)
-            .and_then(|doc| match doc.get_map(cname).get_deep_value() {
-                LoroValue::Map(m) => m.get(key).and_then(loro_string),
-                _ => None,
-            });
-    ReadValue::OptString(value)
+    let value = state_ref::<CrdtState>(state, "crdt")?
+        .docs
+        .get(app)
+        .and_then(|doc| match doc.get_map(cname).get_deep_value() {
+            LoroValue::Map(m) => m.get(key).and_then(loro_string),
+            _ => None,
+        });
+    Ok(ReadValue::OptString(value))
 }
 
 /// `ctx.resource.crdt.mapAll(doc)` — every string entry in `app`'s named map.
-fn read_map_all(state: &State, app: &str, args: &[String]) -> ReadValue {
+fn read_map_all(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
     let cname = args.first().map(String::as_str).unwrap_or_default();
     let mut out = BTreeMap::new();
-    if let Some(doc) = state.crdt.docs.get(app) {
+    if let Some(doc) = state_ref::<CrdtState>(state, "crdt")?.docs.get(app) {
         if let LoroValue::Map(m) = doc.get_map(cname).get_deep_value() {
             for (k, v) in m.iter() {
                 if let Some(s) = loro_string(v) {
@@ -456,29 +509,28 @@ fn read_map_all(state: &State, app: &str, args: &[String]) -> ReadValue {
             }
         }
     }
-    ReadValue::StringMap(out)
+    Ok(ReadValue::StringMap(out))
 }
 
 /// `ctx.resource.crdt.listAll(doc)` — the ordered elements of `app`'s named list.
-fn read_list_all(state: &State, app: &str, args: &[String]) -> ReadValue {
+fn read_list_all(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
     let cname = args.first().map(String::as_str).unwrap_or_default();
     let mut out = Vec::new();
-    if let Some(doc) = state.crdt.docs.get(app) {
+    if let Some(doc) = state_ref::<CrdtState>(state, "crdt")?.docs.get(app) {
         if let LoroValue::List(l) = doc.get_list(cname).get_deep_value() {
             out.extend(l.iter().map(stringify));
         }
     }
-    ReadValue::StringList(out)
+    Ok(ReadValue::StringList(out))
 }
 
 /// `ctx.resource.crdt.textGet(doc)` — the current contents of `app`'s named text
 /// (none only if the app has no document yet).
-fn read_text_get(state: &State, app: &str, args: &[String]) -> ReadValue {
+fn read_text_get(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
     let cname = args.first().map(String::as_str).unwrap_or_default();
-    let text = state
-        .crdt
+    let text = state_ref::<CrdtState>(state, "crdt")?
         .docs
         .get(app)
         .map(|doc| doc.get_text(cname).to_string());
-    ReadValue::OptString(text)
+    Ok(ReadValue::OptString(text))
 }

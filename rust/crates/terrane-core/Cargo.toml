@@ -9,11 +9,20 @@ name = "terrane_core"
 path = "src/lib.rs"
 
 [dependencies]
-terrane-app-build.workspace = true
+terrane-cap-api.workspace = true
+terrane-cap-app.workspace = true
+terrane-cap-build.workspace = true
+terrane-cap-builder.workspace = true
+terrane-cap-crdt.workspace = true
+terrane-cap-harness.workspace = true
+terrane-cap-kv.workspace = true
+terrane-cap-model.workspace = true
+terrane-cap-net.workspace = true
+terrane-cap-replica.workspace = true
 borsh.workspace = true
 nanoserde.workspace = true
 rquickjs = { version = "0.12", features = ["macro"] }
-loro = "1.13.6"
 
 [dev-dependencies]
 tempfile.workspace = true
+loro = "1.13.6"

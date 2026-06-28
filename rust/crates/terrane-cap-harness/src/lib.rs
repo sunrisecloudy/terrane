@@ -3,12 +3,16 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
 use nanoserde::{DeJson, SerJson};
+use terrane_cap_api::Capability;
+use terrane_cap_api::{
+    arg, decode_event, encode_event, ensure_app_exists, extract_json_object, state_mut, truncate,
+    CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, Result,
+    StateStore,
+};
 
-use super::{arg, builder, extract_json_object, truncate, Capability};
-use crate::{decode_event, encode_event, Decision, Effect, State};
+use terrane_cap_builder as builder;
 
 pub const DEFAULT_HARNESS: &str = "codex";
 pub const APP_BUNDLE_OUTPUT_SCHEMA: &str = include_str!("prompts/app_bundle.schema.json");
@@ -71,7 +75,37 @@ impl Capability for HarnessCapability {
         "harness"
     }
 
-    fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![
+                CommandSpec {
+                    name: "harness.generate-app",
+                },
+                CommandSpec {
+                    name: "harness.run-js",
+                },
+            ],
+            events: vec![
+                EventSpec {
+                    kind: "harness.js.requested",
+                },
+                EventSpec {
+                    kind: "harness.js.generated",
+                },
+                EventSpec {
+                    kind: "harness.js.completed",
+                },
+                EventSpec {
+                    kind: "harness.js.failed",
+                },
+            ],
+            queries: Vec::new(),
+            resources: Vec::new(),
+            subscriptions: Vec::new(),
+        }
+    }
+
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         match name {
             "harness.generate-app" => {
                 let parsed = parse_harness_args(args, 4)?;
@@ -91,9 +125,7 @@ impl Capability for HarnessCapability {
                 let parsed = parse_harness_args(args, 3)?;
                 let run_id = builder::validate_id(&parsed.required[0], "run id")?;
                 let app_id = builder::validate_id(&parsed.required[1], "app id")?;
-                if !state.app.apps.contains_key(&app_id) {
-                    return Err(Error::AppNotFound(app_id));
-                }
+                ensure_app_exists(ctx.bus, &app_id)?;
                 let prompt = non_empty(parsed.tail, "prompt")?;
                 Ok(Decision::Effect(Effect::RunHarnessJs {
                     run_id,
@@ -106,11 +138,11 @@ impl Capability for HarnessCapability {
         }
     }
 
-    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+    fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         match record.kind.as_str() {
             "harness.js.requested" | "codex.js.requested" => {
                 let e: JsRequested = decode_event(record)?;
-                state.harness.runs.insert(
+                state_mut::<HarnessState>(state, "harness")?.runs.insert(
                     e.id.clone(),
                     HarnessJsRun {
                         id: e.id,
@@ -125,21 +157,30 @@ impl Capability for HarnessCapability {
             }
             "harness.js.generated" | "codex.js.generated" => {
                 let e: JsGenerated = decode_event(record)?;
-                let run = state.harness.runs.entry(e.id.clone()).or_default();
+                let run = state_mut::<HarnessState>(state, "harness")?
+                    .runs
+                    .entry(e.id.clone())
+                    .or_default();
                 run.id = e.id;
                 run.js = Some(e.js);
                 run.error = None;
             }
             "harness.js.completed" | "codex.js.completed" => {
                 let e: JsCompleted = decode_event(record)?;
-                let run = state.harness.runs.entry(e.id.clone()).or_default();
+                let run = state_mut::<HarnessState>(state, "harness")?
+                    .runs
+                    .entry(e.id.clone())
+                    .or_default();
                 run.id = e.id;
                 run.output = Some(e.output);
                 run.error = None;
             }
             "harness.js.failed" | "codex.js.failed" => {
                 let e: JsFailed = decode_event(record)?;
-                let run = state.harness.runs.entry(e.id.clone()).or_default();
+                let run = state_mut::<HarnessState>(state, "harness")?
+                    .runs
+                    .entry(e.id.clone())
+                    .or_default();
                 run.id = e.id;
                 run.output = None;
                 run.error = Some(e.error);

@@ -1,0 +1,15 @@
+[package]
+name = "terrane-cap-harness"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_harness"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-api.workspace = true
+terrane-cap-builder.workspace = true
+borsh.workspace = true
+nanoserde.workspace = true

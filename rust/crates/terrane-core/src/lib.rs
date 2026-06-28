@@ -28,20 +28,24 @@
 //! runs the effect — it only folds the recorded event — so a non-deterministic
 //! call (an HTTP GET) is reproduced from the log, not the network.
 
+use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
-use borsh::{BorshDeserialize, BorshSerialize};
 pub mod cap;
 pub mod domain;
 
-pub use domain::{AppId, Error, EventRecord, Request, Result};
+pub use terrane_cap_api::{
+    decode_event, encode_event, namespace_of, AppId, Decision, Effect, Error, EventRecord, Request,
+    Result,
+};
 
 use cap::{
     app::AppState, builder::BuilderState, crdt::CrdtState, harness::HarnessState, kv::KvState,
-    model::ModelState, net::NetState, replica::ReplicaState, Capability,
+    model::ModelState, net::NetState, replica::ReplicaState, CapBus, Capability, CommandCtx,
+    QueryCtx, QueryValue, StateStore,
 };
 
 /// The whole world the core holds: one slice per capability. Capabilities read
@@ -63,51 +67,34 @@ pub struct State {
     pub replica: ReplicaState,
 }
 
-/// What a Command resolves to. Pure commands commit Events immediately;
-/// effectful commands name an [`Effect`] for the engine to run at the edge.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Decision {
-    Commit(Vec<EventRecord>),
-    Effect(Effect),
-}
+impl StateStore for State {
+    fn get(&self, namespace: &str) -> Option<&dyn Any> {
+        match namespace {
+            "app" => Some(&self.app),
+            "builder" => Some(&self.builder),
+            "harness" => Some(&self.harness),
+            "kv" => Some(&self.kv),
+            "net" => Some(&self.net),
+            "model" => Some(&self.model),
+            "crdt" => Some(&self.crdt),
+            "replica" => Some(&self.replica),
+            _ => None,
+        }
+    }
 
-/// A side effect the engine must perform in the outside world. The runner turns
-/// it into the Event(s) that get recorded.
-///
-/// Effects are still a small central enum (they live at the edge and grow slowly,
-/// unlike commands). If they proliferate, make them name-tagged like events with
-/// a runner registry — the same move we made for commands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Effect {
-    HttpGet {
-        app: String,
-        url: String,
-    },
-    /// Ask an agent CLI (`claude`, `codex`) a prompt; its output is recorded.
-    ModelCall {
-        app: String,
-        agent: String,
-        prompt: String,
-    },
-    /// Ask a harness CLI to generate a Terrane app bundle draft.
-    GenerateAppWithHarness {
-        draft_id: String,
-        app_id: String,
-        name: String,
-        harness: String,
-        prompt: String,
-    },
-    /// Ask a harness CLI for JavaScript only, then run that JS once in the
-    /// QuickJS backend sandbox with an explicit capability resource allowlist.
-    RunHarnessJs {
-        run_id: String,
-        app_id: String,
-        harness: String,
-        prompt: String,
-    },
-    /// Mint this home's stable replica PeerID from OS entropy. The runner records
-    /// it once as a `replica.initialized` event; replay reads it back.
-    NewReplicaId,
+    fn get_mut(&mut self, namespace: &str) -> Option<&mut dyn Any> {
+        match namespace {
+            "app" => Some(&mut self.app),
+            "builder" => Some(&mut self.builder),
+            "harness" => Some(&mut self.harness),
+            "kv" => Some(&mut self.kv),
+            "net" => Some(&mut self.net),
+            "model" => Some(&mut self.model),
+            "crdt" => Some(&mut self.crdt),
+            "replica" => Some(&mut self.replica),
+            _ => None,
+        }
+    }
 }
 
 /// Performs effects at the edge. Implementors do the real I/O (or, in tests, a
@@ -129,28 +116,6 @@ impl EffectRunner for NoEffects {
     }
 }
 
-/// Encode a capability's typed event into a name-tagged [`EventRecord`].
-pub fn encode_event<E: BorshSerialize>(kind: &str, event: &E) -> Result<EventRecord> {
-    let payload = borsh::to_vec(event).map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(EventRecord {
-        kind: kind.to_string(),
-        payload,
-    })
-}
-
-/// Decode an [`EventRecord`]'s payload back into a capability's typed event.
-pub fn decode_event<E: BorshDeserialize>(record: &EventRecord) -> Result<E> {
-    borsh::from_slice::<E>(&record.payload)
-        .map_err(|e| Error::Storage(format!("corrupt {} payload: {e}", record.kind)))
-}
-
-/// The namespace of a dotted name (`"app.add"` → `"app"`).
-pub(crate) fn namespace_of(name: &str) -> Result<&str> {
-    name.split_once('.').map(|(ns, _)| ns).ok_or_else(|| {
-        Error::InvalidInput(format!("command name must be 'namespace.verb': {name}"))
-    })
-}
-
 /// A table of capabilities keyed by namespace. Register one to plug in a whole
 /// set of commands.
 #[derive(Default)]
@@ -165,7 +130,20 @@ impl Registry {
 
     /// Plug a capability in. Its namespace must be unique.
     pub fn register(&mut self, capability: Box<dyn Capability>) {
-        self.caps.insert(capability.namespace(), capability);
+        self.try_register(capability)
+            .expect("capability registry should be valid");
+    }
+
+    /// Try to plug a capability in. Its namespace must be unique.
+    pub fn try_register(&mut self, capability: Box<dyn Capability>) -> Result<()> {
+        let namespace = capability.namespace();
+        if self.caps.contains_key(namespace) {
+            return Err(Error::InvalidInput(format!(
+                "duplicate capability namespace: {namespace}"
+            )));
+        }
+        self.caps.insert(namespace, capability);
+        Ok(())
     }
 
     pub(crate) fn get(&self, namespace: &str) -> Result<&dyn Capability> {
@@ -173,6 +151,103 @@ impl Registry {
             .get(namespace)
             .map(AsRef::as_ref)
             .ok_or_else(|| Error::InvalidInput(format!("unknown command namespace: {namespace}")))
+    }
+
+    /// Validate the registry-wide declaration surface: command/query names and
+    /// emitted event kinds have one owner, and subscriptions reference declared
+    /// events without claiming ownership themselves.
+    pub fn validate(&self) -> Result<()> {
+        let mut commands = BTreeMap::<&'static str, &'static str>::new();
+        let mut queries = BTreeMap::<&'static str, &'static str>::new();
+        let mut events = BTreeMap::<&'static str, &'static str>::new();
+        let mut subscriptions = Vec::<(&'static str, &'static str)>::new();
+
+        for capability in self.caps.values() {
+            let namespace = capability.namespace();
+            let manifest = capability.manifest();
+
+            for command in &manifest.commands {
+                validate_dotted_owner(namespace, "command", command.name)?;
+                insert_unique(&mut commands, command.name, namespace, "command")?;
+            }
+            for query in &manifest.queries {
+                validate_dotted_owner(namespace, "query", query.name)?;
+                insert_unique(&mut queries, query.name, namespace, "query")?;
+            }
+            for event in &manifest.events {
+                validate_dotted_owner(namespace, "event", event.kind)?;
+                insert_unique(&mut events, event.kind, namespace, "event")?;
+            }
+            for subscription in &manifest.subscriptions {
+                subscriptions.push((namespace, subscription.kind));
+            }
+        }
+
+        for (subscriber, kind) in subscriptions {
+            if !events.contains_key(kind) {
+                return Err(Error::InvalidInput(format!(
+                    "{subscriber} subscribes to undeclared event: {kind}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn insert_unique(
+    owners: &mut BTreeMap<&'static str, &'static str>,
+    name: &'static str,
+    owner: &'static str,
+    label: &str,
+) -> Result<()> {
+    if let Some(previous) = owners.insert(name, owner) {
+        return Err(Error::InvalidInput(format!(
+            "duplicate {label} declaration: {name} owned by both {previous} and {owner}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_dotted_owner(owner: &str, label: &str, name: &str) -> Result<()> {
+    let Some((namespace, _)) = name.split_once('.') else {
+        return Err(Error::InvalidInput(format!(
+            "{label} declaration must be 'namespace.name': {name}"
+        )));
+    };
+    if namespace != owner {
+        return Err(Error::InvalidInput(format!(
+            "{label} declaration {name} does not belong to capability {owner}"
+        )));
+    }
+    Ok(())
+}
+
+/// A read-only query bus over an arbitrary registry/state pair.
+pub struct RegistryBus<'a> {
+    registry: &'a Registry,
+    state: &'a dyn StateStore,
+}
+
+impl<'a> RegistryBus<'a> {
+    pub fn new(registry: &'a Registry, state: &'a dyn StateStore) -> Self {
+        Self { registry, state }
+    }
+}
+
+impl CapBus for RegistryBus<'_> {
+    fn query(&self, cap: &str, name: &str, args: &[String]) -> Result<QueryValue> {
+        let capability = self
+            .registry
+            .caps
+            .get(cap)
+            .map(AsRef::as_ref)
+            .ok_or_else(|| Error::InvalidInput(format!("unknown query capability: {cap}")))?;
+        let ctx = QueryCtx {
+            state: self.state,
+            bus: self,
+        };
+        capability.query(ctx, name, args)
     }
 }
 
@@ -189,6 +264,9 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(cap::net::NetCapability));
     registry.register(Box::new(cap::model::ModelCapability));
     registry.register(Box::new(cap::host::HostCapability));
+    registry
+        .validate()
+        .expect("default capability registry should be valid");
     registry
 }
 
@@ -401,10 +479,15 @@ impl<R: EffectRunner> Core<R> {
             return self.run_backend(&request.args);
         }
 
-        let decision =
-            self.registry
-                .get(namespace)?
-                .decide(&self.state, &request.name, &request.args)?;
+        let bus = RegistryBus::new(&self.registry, &self.state);
+        let ctx = CommandCtx {
+            state: &self.state,
+            bus: &bus,
+        };
+        let decision = self
+            .registry
+            .get(namespace)?
+            .decide(ctx, &request.name, &request.args)?;
         match decision {
             Decision::Commit(records) => self.commit(records),
             Decision::Effect(effect) => {

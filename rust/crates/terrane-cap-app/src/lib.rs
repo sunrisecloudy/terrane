@@ -2,11 +2,13 @@
 
 use std::collections::BTreeMap;
 
-use crate::{AppId, Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-
-use super::{arg, Capability};
-use crate::{decode_event, encode_event, Decision, State};
+use terrane_cap_api::Capability;
+use terrane_cap_api::{
+    arg, decode_event, encode_event, state_mut, state_ref, AppId, CapManifest, CommandCtx,
+    CommandSpec, Decision, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue, Result,
+    StateStore,
+};
 
 /// A saved app, as the user sees it in their catalog. `source` is where the
 /// app's body lives — a path to its bundle (UI + backend).
@@ -42,7 +44,25 @@ impl Capability for AppCapability {
         "app"
     }
 
-    fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![
+                CommandSpec { name: "app.add" },
+                CommandSpec { name: "app.remove" },
+            ],
+            events: vec![
+                EventSpec { kind: "app.added" },
+                EventSpec {
+                    kind: "app.removed",
+                },
+            ],
+            queries: vec![QuerySpec { name: "app.exists" }],
+            resources: Vec::new(),
+            subscriptions: Vec::new(),
+        }
+    }
+
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         match name {
             "app.add" => {
                 let (id, app_name, source) = parse_add(args)?;
@@ -52,7 +72,10 @@ impl Capability for AppCapability {
                 if app_name.trim().is_empty() {
                     return Err(Error::InvalidInput("app name must not be empty".into()));
                 }
-                if state.app.apps.contains_key(&id) {
+                if state_ref::<AppState>(ctx.state, "app")?
+                    .apps
+                    .contains_key(&id)
+                {
                     return Err(Error::AppExists(id));
                 }
                 Ok(Decision::Commit(vec![encode_event(
@@ -66,7 +89,10 @@ impl Capability for AppCapability {
             }
             "app.remove" => {
                 let id = arg(args, 0, "app id")?;
-                if !state.app.apps.contains_key(&id) {
+                if !state_ref::<AppState>(ctx.state, "app")?
+                    .apps
+                    .contains_key(&id)
+                {
                     return Err(Error::AppNotFound(id));
                 }
                 Ok(Decision::Commit(vec![encode_event(
@@ -78,11 +104,25 @@ impl Capability for AppCapability {
         }
     }
 
-    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+    fn query(&self, ctx: QueryCtx<'_>, name: &str, args: &[String]) -> Result<QueryValue> {
+        match name {
+            "exists" => {
+                let app = arg(args, 0, "app")?;
+                Ok(QueryValue::Bool(
+                    state_ref::<AppState>(ctx.state, "app")?
+                        .apps
+                        .contains_key(&app),
+                ))
+            }
+            other => Err(Error::InvalidInput(format!("unknown query: app.{other}"))),
+        }
+    }
+
+    fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         match record.kind.as_str() {
             "app.added" => {
                 let e: Added = decode_event(record)?;
-                state.app.apps.insert(
+                state_mut::<AppState>(state, "app")?.apps.insert(
                     e.id.clone(),
                     AppRecord {
                         id: e.id,
@@ -93,7 +133,7 @@ impl Capability for AppCapability {
             }
             "app.removed" => {
                 let e: Removed = decode_event(record)?;
-                state.app.apps.remove(&e.id);
+                state_mut::<AppState>(state, "app")?.apps.remove(&e.id);
             }
             _ => {}
         }

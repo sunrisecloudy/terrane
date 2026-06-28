@@ -1,0 +1,13 @@
+[package]
+name = "terrane-cap-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_net"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-api.workspace = true
+borsh.workspace = true

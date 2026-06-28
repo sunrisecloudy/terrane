@@ -4,11 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use crate::{AppId, Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-
-use super::{arg, Capability};
-use crate::{decode_event, encode_event, Decision, Effect, State};
+use terrane_cap_api::Capability;
+use terrane_cap_api::{
+    arg, decode_event, encode_event, ensure_app_exists, state_mut, AppId, CapManifest, CommandCtx,
+    CommandSpec, Decision, Effect, Error, EventPattern, EventRecord, EventSpec, Result, StateStore,
+};
 
 /// A recorded network response, rebuilt by folding a `net.fetched` event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,15 +54,27 @@ impl Capability for NetCapability {
         "net"
     }
 
-    fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![CommandSpec { name: "net.fetch" }],
+            events: vec![EventSpec {
+                kind: "net.fetched",
+            }],
+            queries: Vec::new(),
+            resources: Vec::new(),
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
+        }
+    }
+
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         match name {
             "net.fetch" => {
                 let app = arg(args, 0, "app")?;
                 let url = arg(args, 1, "url")?;
                 // Validate purely; the result is produced by the runner at the edge.
-                if !state.app.apps.contains_key(&app) {
-                    return Err(Error::AppNotFound(app));
-                }
+                ensure_app_exists(ctx.bus, &app)?;
                 if url.trim().is_empty() {
                     return Err(Error::InvalidInput("url must not be empty".into()));
                 }
@@ -71,17 +84,21 @@ impl Capability for NetCapability {
         }
     }
 
-    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+    fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         match record.kind.as_str() {
             "net.fetched" => {
                 let e: Fetched = decode_event(record)?;
-                state.net.fetches.entry(e.app).or_default().insert(
-                    e.url,
-                    FetchResponse {
-                        status: e.status,
-                        body: e.body,
-                    },
-                );
+                state_mut::<NetState>(state, "net")?
+                    .fetches
+                    .entry(e.app)
+                    .or_default()
+                    .insert(
+                        e.url,
+                        FetchResponse {
+                            status: e.status,
+                            body: e.body,
+                        },
+                    );
             }
             "app.removed" => {
                 #[derive(BorshDeserialize)]
@@ -89,7 +106,7 @@ impl Capability for NetCapability {
                     id: String,
                 }
                 let e: Removed = decode_event(record)?;
-                state.net.fetches.remove(&e.id);
+                state_mut::<NetState>(state, "net")?.fetches.remove(&e.id);
             }
             _ => {}
         }

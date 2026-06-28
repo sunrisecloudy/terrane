@@ -1,6 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
+  "crates/terrane-cap-api",
+  "crates/terrane-cap-app",
+  "crates/terrane-cap-build",
+  "crates/terrane-cap-builder",
+  "crates/terrane-cap-crdt",
+  "crates/terrane-cap-harness",
+  "crates/terrane-cap-kv",
+  "crates/terrane-cap-model",
+  "crates/terrane-cap-net",
+  "crates/terrane-cap-replica",
   "crates/terrane-core",
   "crates/terrane-host",
   "crates/terrane-api",
@@ -14,6 +24,16 @@ license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 terrane-core = { path = "crates/terrane-core" }
+terrane-cap-api = { path = "crates/terrane-cap-api" }
+terrane-cap-app = { path = "crates/terrane-cap-app" }
+terrane-cap-build = { path = "crates/terrane-cap-build" }
+terrane-cap-builder = { path = "crates/terrane-cap-builder" }
+terrane-cap-crdt = { path = "crates/terrane-cap-crdt" }
+terrane-cap-harness = { path = "crates/terrane-cap-harness" }
+terrane-cap-kv = { path = "crates/terrane-cap-kv" }
+terrane-cap-model = { path = "crates/terrane-cap-model" }
+terrane-cap-net = { path = "crates/terrane-cap-net" }
+terrane-cap-replica = { path = "crates/terrane-cap-replica" }
 terrane-host = { path = "crates/terrane-host" }
 terrane-app-build = { path = "crates/terrane-app-build" }
 borsh = { version = "1", features = ["derive"] }

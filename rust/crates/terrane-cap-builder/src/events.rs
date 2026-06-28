@@ -1,7 +1,7 @@
-use crate::{EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-
-use crate::{cap::truncate, decode_event, encode_event, State};
+use terrane_cap_api::{
+    decode_event, encode_event, state_mut, truncate, EventRecord, Result, StateStore,
+};
 
 use super::{BuilderDraft, BuilderFile};
 
@@ -65,33 +65,41 @@ pub fn failed_event(id: &str, error: impl Into<String>) -> Result<EventRecord> {
     )
 }
 
-pub fn fold(state: &mut State, record: &EventRecord) -> Result<()> {
+pub fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
     match record.kind.as_str() {
         "builder.requested" => {
             let e: Requested = decode_event(record)?;
-            state.builder.drafts.insert(
-                e.id.clone(),
-                BuilderDraft {
-                    id: e.id,
-                    app_id: e.app_id,
-                    name: e.name,
-                    prompt: e.prompt,
-                    harness: e.harness,
-                    files: Vec::new(),
-                    error: None,
-                },
-            );
+            state_mut::<super::BuilderState>(state, "builder")?
+                .drafts
+                .insert(
+                    e.id.clone(),
+                    BuilderDraft {
+                        id: e.id,
+                        app_id: e.app_id,
+                        name: e.name,
+                        prompt: e.prompt,
+                        harness: e.harness,
+                        files: Vec::new(),
+                        error: None,
+                    },
+                );
         }
         "builder.generated" => {
             let e: Generated = decode_event(record)?;
-            let draft = state.builder.drafts.entry(e.id.clone()).or_default();
+            let draft = state_mut::<super::BuilderState>(state, "builder")?
+                .drafts
+                .entry(e.id.clone())
+                .or_default();
             draft.id = e.id;
             draft.files = e.files;
             draft.error = None;
         }
         "builder.failed" => {
             let e: Failed = decode_event(record)?;
-            let draft = state.builder.drafts.entry(e.id.clone()).or_default();
+            let draft = state_mut::<super::BuilderState>(state, "builder")?
+                .drafts
+                .entry(e.id.clone())
+                .or_default();
             draft.id = e.id;
             draft.files.clear();
             draft.error = Some(e.error);

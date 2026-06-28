@@ -12,11 +12,13 @@
 //! the id back from the log — never re-mints it — so identity is replay-stable.
 //! The `crdt` capability reads [`ReplicaState::peer`] and authors under it.
 
-use crate::{Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-
-use super::Capability;
-use crate::{decode_event, encode_event, Decision, Effect, State};
+use terrane_cap_api::Capability;
+use terrane_cap_api::{
+    decode_event, encode_event, state_mut, state_ref, CapManifest, CommandCtx, CommandSpec,
+    Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue, Result,
+    StateStore,
+};
 
 /// This capability's slice of State: the home's PeerID, once minted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -36,12 +38,31 @@ impl Capability for ReplicaCapability {
         "replica"
     }
 
-    fn decide(&self, state: &State, name: &str, _args: &[String]) -> Result<Decision> {
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![CommandSpec {
+                name: "replica.init",
+            }],
+            events: vec![EventSpec {
+                kind: "replica.initialized",
+            }],
+            queries: vec![QuerySpec {
+                name: "replica.peer",
+            }],
+            resources: Vec::new(),
+            subscriptions: Vec::new(),
+        }
+    }
+
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {
         match name {
             // Idempotent: a home mints its identity exactly once. Re-running is a
             // no-op so callers can "ensure identity" cheaply before any write.
             "replica.init" => {
-                if state.replica.peer.is_some() {
+                if state_ref::<ReplicaState>(ctx.state, "replica")?
+                    .peer
+                    .is_some()
+                {
                     Ok(Decision::Commit(vec![]))
                 } else {
                     Ok(Decision::Effect(Effect::NewReplicaId))
@@ -51,13 +72,25 @@ impl Capability for ReplicaCapability {
         }
     }
 
-    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+    fn query(&self, ctx: QueryCtx<'_>, name: &str, _args: &[String]) -> Result<QueryValue> {
+        match name {
+            "peer" => Ok(QueryValue::U64(
+                state_ref::<ReplicaState>(ctx.state, "replica")?.peer,
+            )),
+            other => Err(Error::InvalidInput(format!(
+                "unknown query: replica.{other}"
+            ))),
+        }
+    }
+
+    fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         if record.kind == "replica.initialized" {
             let e: Initialized = decode_event(record)?;
             // First identity wins — guard against a duplicated init event ever
             // changing a home's peer on replay.
-            if state.replica.peer.is_none() {
-                state.replica.peer = Some(e.peer);
+            let state = state_mut::<ReplicaState>(state, "replica")?;
+            if state.peer.is_none() {
+                state.peer = Some(e.peer);
             }
         }
         Ok(())

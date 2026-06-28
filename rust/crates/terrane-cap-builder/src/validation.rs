@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
-use crate::{Error, Result};
 use nanoserde::DeJson;
-
-use crate::cap::extract_json_object;
+use terrane_cap_api::{extract_json_object, Error, Result};
 
 use super::BuilderFile;
 

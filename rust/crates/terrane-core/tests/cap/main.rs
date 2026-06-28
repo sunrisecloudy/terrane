@@ -9,6 +9,7 @@ mod builder;
 mod crdt;
 mod harness;
 mod host;
+mod interface;
 mod kv;
 mod log;
 mod model;

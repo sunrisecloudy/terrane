@@ -3,11 +3,13 @@
 
 use std::collections::BTreeMap;
 
-use crate::{AppId, Error, EventRecord, Result};
 use borsh::{BorshDeserialize, BorshSerialize};
-
-use super::{arg, Capability, ReadValue, ResourceMethod};
-use crate::{decode_event, encode_event, Decision, State};
+use terrane_cap_api::Capability;
+use terrane_cap_api::{
+    arg, decode_event, encode_event, ensure_app_exists, state_mut, state_ref, AppId, CapManifest,
+    CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord, EventSpec, ReadValue,
+    ResourceMethod, ResourceReadCtx, Result, StateStore,
+};
 
 /// This capability's slice of State: per-app key/value maps.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -36,38 +38,32 @@ impl Capability for KvCapability {
     }
 
     /// The app-scoped key/value surface backends get on `ctx.resource.kv`.
-    fn resource_api(&self) -> Vec<ResourceMethod> {
-        vec![
-            ResourceMethod::Write {
-                name: "set",
-                params: &["key", "value"],
-            },
-            ResourceMethod::Read {
-                name: "get",
-                params: &["key"],
-                read: read_get,
-            },
-            ResourceMethod::Read {
-                name: "all",
-                params: &[],
-                read: read_all,
-            },
-            ResourceMethod::Write {
-                name: "rm",
-                params: &["key"],
-            },
-        ]
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![
+                CommandSpec { name: "kv.set" },
+                CommandSpec { name: "kv.rm" },
+                CommandSpec { name: "kv.delete" },
+            ],
+            events: vec![
+                EventSpec { kind: "kv.set" },
+                EventSpec { kind: "kv.deleted" },
+            ],
+            queries: Vec::new(),
+            resources: resource_methods(),
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
+        }
     }
 
-    fn decide(&self, state: &State, name: &str, args: &[String]) -> Result<Decision> {
+    fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         match name {
             "kv.set" => {
                 let app = arg(args, 0, "app")?;
                 let key = arg(args, 1, "key")?;
                 let value = args.get(2..).unwrap_or_default().join(" ");
-                if !state.app.apps.contains_key(&app) {
-                    return Err(Error::AppNotFound(app));
-                }
+                ensure_app_exists(ctx.bus, &app)?;
                 if key.trim().is_empty() {
                     return Err(Error::InvalidInput("key must not be empty".into()));
                 }
@@ -79,8 +75,7 @@ impl Capability for KvCapability {
             "kv.rm" | "kv.delete" => {
                 let app = arg(args, 0, "app")?;
                 let key = arg(args, 1, "key")?;
-                let missing = state
-                    .kv
+                let missing = state_ref::<KvState>(ctx.state, "kv")?
                     .data
                     .get(&app)
                     .map(|kv| !kv.contains_key(&key))
@@ -97,12 +92,11 @@ impl Capability for KvCapability {
         }
     }
 
-    fn fold(&self, state: &mut State, record: &EventRecord) -> Result<()> {
+    fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         match record.kind.as_str() {
             "kv.set" => {
                 let e: Set = decode_event(record)?;
-                state
-                    .kv
+                state_mut::<KvState>(state, "kv")?
                     .data
                     .entry(e.app)
                     .or_default()
@@ -110,10 +104,11 @@ impl Capability for KvCapability {
             }
             "kv.deleted" => {
                 let e: Deleted = decode_event(record)?;
-                if let Some(kv) = state.kv.data.get_mut(&e.app) {
+                let state = state_mut::<KvState>(state, "kv")?;
+                if let Some(kv) = state.data.get_mut(&e.app) {
                     kv.remove(&e.key);
                     if kv.is_empty() {
-                        state.kv.data.remove(&e.app);
+                        state.data.remove(&e.app);
                     }
                 }
             }
@@ -124,7 +119,7 @@ impl Capability for KvCapability {
                     id: String,
                 }
                 let e: Removed = decode_event(record)?;
-                state.kv.data.remove(&e.id);
+                state_mut::<KvState>(state, "kv")?.data.remove(&e.id);
             }
             _ => {}
         }
@@ -144,15 +139,62 @@ impl Capability for KvCapability {
             _ => None,
         }
     }
+
+    fn read_resource(
+        &self,
+        ctx: ResourceReadCtx<'_>,
+        name: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        match name {
+            "get" => read_get(ctx.state, ctx.app, args),
+            "all" => read_all(ctx.state, ctx.app, args),
+            other => Err(Error::InvalidInput(format!(
+                "unknown resource read: kv.{other}"
+            ))),
+        }
+    }
+}
+
+fn resource_methods() -> Vec<ResourceMethod> {
+    vec![
+        ResourceMethod::Write {
+            name: "set",
+            params: &["key", "value"],
+        },
+        ResourceMethod::Read {
+            name: "get",
+            params: &["key"],
+        },
+        ResourceMethod::Read {
+            name: "all",
+            params: &[],
+        },
+        ResourceMethod::Write {
+            name: "rm",
+            params: &["key"],
+        },
+    ]
 }
 
 /// `ctx.resource.kv.get(key)` — the value for `key` in `app`'s store, or none.
-fn read_get(state: &State, app: &str, args: &[String]) -> ReadValue {
+fn read_get(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
     let key = args.first().map(String::as_str).unwrap_or_default();
-    ReadValue::OptString(state.kv.data.get(app).and_then(|m| m.get(key).cloned()))
+    Ok(ReadValue::OptString(
+        state_ref::<KvState>(state, "kv")?
+            .data
+            .get(app)
+            .and_then(|m| m.get(key).cloned()),
+    ))
 }
 
 /// `ctx.resource.kv.all()` — every key/value pair in `app`'s store.
-fn read_all(state: &State, app: &str, _args: &[String]) -> ReadValue {
-    ReadValue::StringMap(state.kv.data.get(app).cloned().unwrap_or_default())
+fn read_all(state: &dyn StateStore, app: &str, _args: &[String]) -> Result<ReadValue> {
+    Ok(ReadValue::StringMap(
+        state_ref::<KvState>(state, "kv")?
+            .data
+            .get(app)
+            .cloned()
+            .unwrap_or_default(),
+    ))
 }

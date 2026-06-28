@@ -31,13 +31,18 @@ use rquickjs::{
     CatchResultExt, CaughtError, Context, Ctx, Function, IntoJs, Object, Runtime, Value,
 };
 
-use super::{Capability, ReadValue, ResourceMethod};
-use crate::{apply, default_registry, namespace_of, Decision, Registry, State};
+use super::{
+    CapManifest, Capability, CommandCtx, CommandSpec, ReadValue, ResourceMethod, ResourceReadCtx,
+    StateStore,
+};
+use crate::{apply, default_registry, namespace_of, Decision, Registry, RegistryBus, State};
 
 /// Hand a resource read's result back to JS: a string|null, or an object.
-impl<'js> IntoJs<'js> for ReadValue {
+struct JsReadValue(ReadValue);
+
+impl<'js> IntoJs<'js> for JsReadValue {
     fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<Value<'js>> {
-        match self {
+        match self.0 {
             ReadValue::OptString(opt) => opt.into_js(ctx),
             ReadValue::StringMap(map) => map.into_js(ctx),
             ReadValue::StringList(list) => list.into_js(ctx),
@@ -52,14 +57,24 @@ impl Capability for HostCapability {
         "host"
     }
 
-    fn decide(&self, _state: &State, name: &str, _args: &[String]) -> Result<Decision> {
+    fn manifest(&self) -> CapManifest {
+        CapManifest {
+            commands: vec![CommandSpec { name: "host.run" }],
+            events: Vec::new(),
+            queries: Vec::new(),
+            resources: Vec::new(),
+            subscriptions: Vec::new(),
+        }
+    }
+
+    fn decide(&self, _ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {
         // host.run is executed by Core::dispatch directly and never reaches here.
         Err(Error::InvalidInput(format!(
             "{name}: host commands are executed by the core, not decided"
         )))
     }
 
-    fn fold(&self, _state: &mut State, _record: &EventRecord) -> Result<()> {
+    fn fold(&self, _state: &mut dyn StateStore, _record: &EventRecord) -> Result<()> {
         Ok(())
     }
 }
@@ -204,10 +219,15 @@ impl RunAccum {
             .flatten();
         let is_set = name == "kv.set";
         let result = (|| -> Result<()> {
-            let decision =
-                self.registry
-                    .get(namespace_of(name)?)?
-                    .decide(&self.state, name, &args)?;
+            let bus = RegistryBus::new(&self.registry, &self.state);
+            let ctx = CommandCtx {
+                state: &self.state,
+                bus: &bus,
+            };
+            let decision = self
+                .registry
+                .get(namespace_of(name)?)?
+                .decide(ctx, name, &args)?;
             let records = match decision {
                 Decision::Commit(records) => records,
                 Decision::Effect(_) => {
@@ -316,20 +336,39 @@ fn execute_js(
                             .map_err(js_err)?;
                         obj.set(name, f).map_err(js_err)?;
                     }
-                    ResourceMethod::Read { name, read, .. } => {
-                        let f = Function::new(ctx.clone(), move |args: Rest<Value>| -> ReadValue {
-                            match string_args(&call, params, &args.0) {
-                                Ok(strs) => {
-                                    let accum = cell.borrow();
-                                    read(&accum.state, &accum.app, &strs)
+                    ResourceMethod::Read { name, .. } => {
+                        let f =
+                            Function::new(ctx.clone(), move |args: Rest<Value>| -> JsReadValue {
+                                match string_args(&call, params, &args.0) {
+                                    Ok(strs) => {
+                                        let accum = cell.borrow();
+                                        let bus = RegistryBus::new(&accum.registry, &accum.state);
+                                        match accum.registry.get(ns).and_then(|cap| {
+                                            cap.read_resource(
+                                                ResourceReadCtx {
+                                                    state: &accum.state,
+                                                    bus: &bus,
+                                                    app: &accum.app,
+                                                },
+                                                name,
+                                                &strs,
+                                            )
+                                        }) {
+                                            Ok(value) => JsReadValue(value),
+                                            Err(e) => {
+                                                drop(accum);
+                                                cell.borrow_mut().capture(e);
+                                                JsReadValue(ReadValue::OptString(None))
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        cell.borrow_mut().capture(e);
+                                        JsReadValue(ReadValue::OptString(None))
+                                    }
                                 }
-                                Err(e) => {
-                                    cell.borrow_mut().capture(e);
-                                    ReadValue::OptString(None)
-                                }
-                            }
-                        })
-                        .map_err(js_err)?;
+                            })
+                            .map_err(js_err)?;
                         obj.set(name, f).map_err(js_err)?;
                     }
                 }

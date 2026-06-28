@@ -8,6 +8,7 @@ use std::path::Path;
 
 use tempfile::tempdir;
 use terrane_core::cap::app::AppRecord;
+use terrane_core::cap::crdt::crdt_list_strings;
 use terrane_core::cap::host::{run_memory_backend, MemoryBackendBundle};
 use terrane_core::{fold_records_in_memory, Core, State};
 
@@ -162,6 +163,42 @@ fn build_resource_compiles_typescript_inside_quickjs() {
 
     assert!(records.is_empty());
     assert_eq!(core.take_last_output().as_deref(), Some("compiled"));
+}
+
+#[test]
+fn backend_crdt_writes_use_query_bus_and_working_state() {
+    let dir = tempdir().unwrap();
+    let backend = r#"
+        var crdt = ctx.resource.crdt;
+        function handle(input) {
+            crdt.listPush("items", "alpha");
+            crdt.listPush("items", "beta");
+            return crdt.listAll("items").join(",");
+        }
+    "#;
+    let src = write_bundle(
+        dir.path(),
+        "crdt-demo",
+        r#"{ "id": "crdt-demo", "name": "CRDT Demo", "backend": "main.js", "resources": ["crdt"] }"#,
+        backend,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req(
+        "app.add",
+        &["crdt-demo", "CRDT Demo", "--source", &src],
+    ))
+    .unwrap();
+
+    let records = core.dispatch(req("host.run", &["crdt-demo"])).unwrap();
+
+    assert_eq!(core.take_last_output().as_deref(), Some("alpha,beta"));
+    assert_eq!(records.len(), 2);
+    assert!(records.iter().all(|record| record.kind == "crdt.update"));
+    assert_eq!(
+        crdt_list_strings(core.state(), "crdt-demo", "items"),
+        vec!["alpha".to_string(), "beta".to_string()]
+    );
+    assert!(core.replay_matches().unwrap());
 }
 
 #[test]
