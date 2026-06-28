@@ -23,6 +23,7 @@ terrane-cap-app.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true
 terrane-cap-harness.workspace = true
+terrane-cap-kv.workspace = true
 terrane-cap-model.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true

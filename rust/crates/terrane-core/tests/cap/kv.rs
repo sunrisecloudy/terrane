@@ -1,7 +1,7 @@
 //! Engine tests for the `kv` capability, including the broadcast-fold cascade.
 
 use tempfile::tempdir;
-use terrane_core::cap::kv::{KvStorageBackend, KvStorageBinding};
+use terrane_cap_kv::{KvStorageBackend, KvStorageBinding};
 use terrane_core::Core;
 use terrane_core::Error;
 

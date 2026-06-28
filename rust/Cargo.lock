@@ -2600,6 +2600,7 @@ dependencies = [
  "terrane-cap-builder",
  "terrane-cap-crdt",
  "terrane-cap-harness",
+ "terrane-cap-kv",
  "terrane-cap-model",
  "terrane-cap-net",
  "terrane-cap-replica",

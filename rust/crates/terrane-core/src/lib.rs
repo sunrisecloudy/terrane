@@ -48,7 +48,7 @@ use terrane_cap_app::AppState;
 use terrane_cap_builder::BuilderState;
 use terrane_cap_crdt::CrdtState;
 use terrane_cap_harness::HarnessState;
-use terrane_cap_kv::KvState;
+use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_model::ModelState;
 use terrane_cap_net::NetState;
 use terrane_cap_replica::ReplicaState;
@@ -718,7 +718,7 @@ pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
 pub struct Core<R: EffectRunner = NoEffects> {
     log_path: PathBuf,
     state: State,
-    kv_storage_plan: cap::kv::KvStoragePlan,
+    kv_storage_plan: KvStoragePlan,
     runner: R,
     registry: Registry,
     /// String printed by the most recent `host.run` backend, if any. Not part of
@@ -743,9 +743,9 @@ impl<R: EffectRunner> Core<R> {
         for record in read_log(&log_path)? {
             apply(&registry, &mut state, &record)?;
         }
-        let kv_storage_plan = cap::kv::storage_plan(&state)?;
+        let kv_storage_plan = terrane_cap_kv::storage_plan(&state)?;
         let storage_home = storage_home(&log_path);
-        cap::kv::sync_full_storage(&storage_home, &state.kv)?;
+        terrane_cap_kv::sync_full_storage(&storage_home, &state.kv)?;
         Ok(Core {
             log_path,
             state,
@@ -762,7 +762,7 @@ impl<R: EffectRunner> Core<R> {
     }
 
     /// Core-facing storage projection plan owned by the `kv` capability.
-    pub fn kv_storage_plan(&self) -> &cap::kv::KvStoragePlan {
+    pub fn kv_storage_plan(&self) -> &KvStoragePlan {
         &self.kv_storage_plan
     }
 
@@ -865,8 +865,8 @@ impl<R: EffectRunner> Core<R> {
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
-        self.kv_storage_plan = cap::kv::storage_plan(&self.state)?;
-        cap::kv::sync_storage_after_commit(
+        self.kv_storage_plan = terrane_cap_kv::storage_plan(&self.state)?;
+        terrane_cap_kv::sync_storage_after_commit(
             &storage_home(&self.log_path),
             &before_kv,
             &self.state.kv,

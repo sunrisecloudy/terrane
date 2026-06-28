@@ -294,7 +294,7 @@ fn parse_optional_storage_path(tail: &[&str]) -> Result<Option<String>, String> 
     }
 }
 
-fn print_kv_storage_plan(plan: &terrane_core::cap::kv::KvStoragePlan) {
+fn print_kv_storage_plan(plan: &terrane_cap_kv::KvStoragePlan) {
     println!("  default -> {}", plan.default.describe());
     if plan.apps.is_empty() {
         println!("  app overrides: (none)");
