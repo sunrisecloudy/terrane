@@ -69,16 +69,24 @@ from stdin/stdout; the web host exposes the same behavior at `POST /mcp`.
 
 Tools:
 
-| Tool          | Input                   | Returns                                                    |
-| ------------- | ----------------------- | ---------------------------------------------------------- |
-| `list_apps`   | `{}`                    | the installed apps (id, name, has_ui)                      |
-| `app_actions` | `{ app }`               | the app's actions (verbs + args), as the app declares them |
-| `invoke`      | `{ app, verb, args[] }` | the backend's output string                                |
+| Tool                | Input                                            | Returns                                                    |
+| ------------------- | ------------------------------------------------ | ---------------------------------------------------------- |
+| `list_apps`         | `{}`                                             | the installed apps (id, name, has_ui)                      |
+| `app_actions`       | `{ app }`                                        | the app's actions (verbs + args), as the app declares them |
+| `invoke`            | `{ app, verb, args[] }`                          | the backend's output string                                |
+| `capabilities_list` | `{ includeInternal? }`                           | capability namespaces, statuses, and short summaries       |
+| `capability_info`   | `{ namespace, format?, includeInternal? }`       | one capability's docs as `json`, `markdown`, or `skill`    |
 
 The intended order is **list → discover → act**: `list_apps` to find an app,
 `app_actions` to learn its verbs, `invoke` to run one. `app_actions` calls the
 app's reserved `__actions__` verb (see the App API), so the action list is the
 app's own — not hard-coded in the host.
+
+Capability documentation follows the same generated-source rule:
+`capabilities_list` discovers namespaces and `capability_info` returns the
+canonical `CapabilityDoc` render. `includeInternal` defaults to `false`, so
+implementation notes such as reserved backing-store layouts are hidden from
+agents and app authors unless explicitly requested.
 
 ```jsonc
 // tools/call → invoke
@@ -110,9 +118,10 @@ node tools/verify-public-contract.mjs --contract public-contract.json   # self-c
 ```
 
 `public-contract.json` is the artifact `terrane-premium` pins. Its `surface`
-(host routes, MCP tools, capabilities, `ctx.resource`, app contract, sync) comes
-from `terrane contract export` — derived from the `terrane-api`/`terrane-core`
-declarations, so it can't drift (guarded by `terrane-host/tests/contract.rs`).
+(host routes, MCP tools, capabilities, capability docs, `ctx.resource`, app
+contract, sync) comes from `terrane contract export` — derived from the
+`terrane-api`/`terrane-core` declarations, so it can't drift (guarded by
+`terrane-host/tests/contract.rs`).
 Its `conformance.commands` are what a consumer runs to prove an implementation.
 
 ## Subset rule (terrane ⊆ premium)

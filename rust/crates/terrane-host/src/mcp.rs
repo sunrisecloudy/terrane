@@ -5,7 +5,10 @@
 //! discover -> act contract.
 
 use nanoserde::{DeJson, SerJson};
-use terrane_api::{mcp_tools, MCP_PROTOCOL_VERSION, TOOL_APP_ACTIONS, TOOL_INVOKE, TOOL_LIST_APPS};
+use terrane_api::{
+    mcp_tools, MCP_PROTOCOL_VERSION, TOOL_APP_ACTIONS, TOOL_CAPABILITIES_LIST,
+    TOOL_CAPABILITY_INFO, TOOL_INVOKE, TOOL_LIST_APPS,
+};
 
 use crate::HostCore;
 
@@ -74,6 +77,12 @@ struct CallArgs {
     verb: String,
     #[nserde(default)]
     args: Vec<String>,
+    #[nserde(default)]
+    namespace: String,
+    #[nserde(default)]
+    format: String,
+    #[nserde(default, rename = "includeInternal")]
+    include_internal: bool,
 }
 
 /// Handle `tools/call`. `params_raw` is the isolated top-level `params` object,
@@ -100,6 +109,24 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
                 return tool_text(id, "invoke requires non-empty 'app' and 'verb'", true);
             }
             match crate::invoke_app(core, &args.app, &args.verb, &args.args) {
+                Ok(output) => tool_text(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_CAPABILITIES_LIST => tool_text(
+            id,
+            &crate::cap_doc::capability_list_json(args.include_internal),
+            false,
+        ),
+        TOOL_CAPABILITY_INFO => {
+            if args.namespace.is_empty() {
+                return tool_text(id, "capability_info requires non-empty 'namespace'", true);
+            }
+            match crate::cap_doc::render_capability_info(
+                &args.namespace,
+                &args.format,
+                args.include_internal,
+            ) {
                 Ok(output) => tool_text(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }

@@ -17,7 +17,7 @@
 use nanoserde::{DeJson, SerJson};
 
 /// Version of *this* host API surface. Bumped when a route/tool/shape changes.
-pub const CONTRACT_VERSION: &str = "0.1.0";
+pub const CONTRACT_VERSION: &str = "0.2.0";
 
 /// The MCP protocol revision the MCP host speaks in its `initialize` handshake.
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -107,6 +107,10 @@ pub const TOOL_LIST_APPS: &str = "list_apps";
 pub const TOOL_APP_ACTIONS: &str = "app_actions";
 /// MCP tool: run a verb on an app (so an agent can *act* on it).
 pub const TOOL_INVOKE: &str = "invoke";
+/// MCP tool: list capability docs.
+pub const TOOL_CAPABILITIES_LIST: &str = "capabilities_list";
+/// MCP tool: return detailed capability docs for one namespace.
+pub const TOOL_CAPABILITY_INFO: &str = "capability_info";
 
 /// The reserved backend verb an app implements to self-describe: `invoke`ing it
 /// (or the `app_actions` tool) returns an [`AppActions`] JSON document. Apps that
@@ -142,6 +146,16 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             description: "Run a verb on an app's backend and return its string output, \
                           e.g. {\"app\":\"todo-cli-collaborate\",\"verb\":\"add\",\"args\":[\"buy milk\"]}.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"},"verb":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app","verb"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_CAPABILITIES_LIST,
+            description: "List Terrane capability namespaces and short summaries.",
+            input_schema: r#"{"type":"object","properties":{"includeInternal":{"type":"boolean","description":"Include internal-only capability notes. Defaults to false."}},"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_CAPABILITY_INFO,
+            description: "Return detailed Terrane capability documentation for one namespace.",
+            input_schema: r#"{"type":"object","properties":{"namespace":{"type":"string","description":"Capability namespace, e.g. kv, crdt, relational_db."},"format":{"type":"string","enum":["json","markdown","skill"],"description":"Rendered output format. Defaults to json."},"includeInternal":{"type":"boolean","description":"Include internal-only implementation notes. Defaults to false."}},"required":["namespace"],"additionalProperties":false}"#,
         },
     ]
 }
@@ -232,6 +246,106 @@ pub struct ResourceNamespace {
     pub methods: Vec<ResourceMethodInfo>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityList {
+    pub capabilities: Vec<CapabilitySummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilitySummary {
+    pub namespace: String,
+    pub title: String,
+    pub summary: String,
+    pub status: String,
+    pub resources: Vec<String>,
+    pub commands: Vec<String>,
+    pub events: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityDocInfo {
+    pub namespace: String,
+    pub title: String,
+    pub summary: String,
+    pub status: String,
+    pub version: String,
+    pub audience: Vec<String>,
+    pub manifest: CapabilityManifestInfo,
+    pub resources: Vec<CapabilityResourceInfo>,
+    pub schemas: Vec<CapabilitySchemaInfo>,
+    pub examples: Vec<CapabilityExampleInfo>,
+    pub constraints: Vec<String>,
+    pub limits: Vec<CapabilityLimitInfo>,
+    pub compatibility: Vec<String>,
+    #[nserde(default)]
+    pub internal: Vec<CapabilityInternalInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityManifestInfo {
+    pub commands: Vec<String>,
+    pub queries: Vec<String>,
+    pub events: Vec<String>,
+    pub subscriptions: Vec<String>,
+    pub resource_methods: Vec<CapabilityResourceMethodInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityResourceInfo {
+    pub namespace: String,
+    pub summary: String,
+    pub methods: Vec<CapabilityResourceMethodInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityResourceMethodInfo {
+    pub name: String,
+    pub kind: String,
+    pub params: Vec<CapabilityParamInfo>,
+    pub returns: String,
+    pub summary: String,
+    pub errors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityParamInfo {
+    pub name: String,
+    pub summary: String,
+    pub required: bool,
+    pub schema_ref: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilitySchemaInfo {
+    pub id: String,
+    pub title: String,
+    pub media_type: String,
+    pub schema_json: String,
+    pub public: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityExampleInfo {
+    pub title: String,
+    pub summary: String,
+    pub language: String,
+    pub code: String,
+    pub expected: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityLimitInfo {
+    pub name: String,
+    pub value: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityInternalInfo {
+    pub title: String,
+    pub body: String,
+}
+
 /// How a client runs an app, and how an app self-describes.
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
 pub struct AppContractInfo {
@@ -260,6 +374,7 @@ pub struct PublicSurface {
     pub host: HostContract,
     pub capabilities: Vec<String>,
     pub resources: Vec<ResourceNamespace>,
+    pub capability_docs: Vec<CapabilityDocInfo>,
     pub app: AppContractInfo,
     pub sync: SyncInfo,
 }
@@ -270,12 +385,14 @@ pub struct PublicSurface {
 pub fn public_surface(
     capabilities: Vec<String>,
     resources: Vec<ResourceNamespace>,
+    capability_docs: Vec<CapabilityDocInfo>,
 ) -> PublicSurface {
     PublicSurface {
         contract_version: CONTRACT_VERSION.to_string(),
         host: host_contract(),
         capabilities,
         resources,
+        capability_docs,
         app: AppContractInfo {
             actions_verb: ACTIONS_VERB.to_string(),
             invoke: "a verb plus its string args runs the app backend and returns a string \

@@ -22,6 +22,18 @@ fn surface_is_derived_from_the_live_declarations() {
             "missing capability {ns}"
         );
     }
+    assert!(s.capability_docs.iter().any(|doc| doc.namespace == "kv"));
+    let rdb = s
+        .capability_docs
+        .iter()
+        .find(|doc| doc.namespace == "relational_db")
+        .expect("planned relational_db docs");
+    assert_eq!(rdb.status, "planned");
+    assert!(rdb
+        .schemas
+        .iter()
+        .any(|schema| schema.id == "table_spec.schema.json"));
+    assert!(rdb.internal.is_empty());
 
     // The resource surface carries the declared backend methods.
     let kv = s

@@ -19,6 +19,12 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["state"] => run_state(),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
+        ["cap", "list", rest @ ..] => run_cap_list(rest),
+        ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
+        ["cap", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane cap (list | info <namespace>) [--format json|markdown|skill] [--include-internal]".into())
+        }
         ["app", "install", path] => run_install(path),
         ["contract", "export"] => run_contract_export(),
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
@@ -53,6 +59,39 @@ pub fn run_install(path: &str) -> Result<(), String> {
 
 pub fn run_sync(app: &str, from_home: &str) -> Result<(), String> {
     println!("{}", crate::sync_from_home(app, from_home)?.message());
+    Ok(())
+}
+
+pub fn run_cap_list(rest: &[&str]) -> Result<(), String> {
+    let options = parse_cap_options(rest, "markdown")?;
+    match options.format.as_str() {
+        "json" => println!(
+            "{}",
+            crate::cap_doc::capability_list_json(options.include_internal)
+        ),
+        "markdown" => println!(
+            "{}",
+            crate::cap_doc::capability_list_markdown(options.include_internal)
+        ),
+        other => {
+            return Err(format!(
+                "unknown cap list format: {other} (expected json or markdown)"
+            ))
+        }
+    }
+    Ok(())
+}
+
+pub fn run_cap_info(namespace: &str, rest: &[&str]) -> Result<(), String> {
+    let options = parse_cap_options(rest, "markdown")?;
+    println!(
+        "{}",
+        crate::cap_doc::render_capability_info(
+            namespace,
+            &options.format,
+            options.include_internal
+        )?
+    );
     Ok(())
 }
 
@@ -215,6 +254,37 @@ fn print_command_outcome(outcome: crate::CommandOutcome) {
     }
 }
 
+struct CapOptions {
+    format: String,
+    include_internal: bool,
+}
+
+fn parse_cap_options(rest: &[&str], default_format: &str) -> Result<CapOptions, String> {
+    let mut format = default_format.to_string();
+    let mut include_internal = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--format" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--format requires a value".into());
+                };
+                format = (*value).to_string();
+                i += 2;
+            }
+            "--include-internal" => {
+                include_internal = true;
+                i += 1;
+            }
+            other => return Err(format!("unknown cap option: {other}")),
+        }
+    }
+    Ok(CapOptions {
+        format,
+        include_internal,
+    })
+}
+
 pub fn print_help() {
     println!(
         "terrane — your local app catalog\n\n\
@@ -238,6 +308,8 @@ pub fn print_help() {
          \x20 terrane state                  print the whole world\n\
          \x20 terrane log                    print the event log (decoded)\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
+         \x20 terrane cap list               list capability docs\n\
+         \x20 terrane cap info <namespace>   show capability docs\n\
          \x20 terrane contract export        print the public API contract (JSON)\n\
          \x20 terrane help                   this message\n\n\
          Catalog: $TERRANE_HOME/log.bin (binary event log; default ./.terrane/)"

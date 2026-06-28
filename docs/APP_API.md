@@ -95,6 +95,12 @@ The tables below are **generated** from the capabilities' declared resource
 APIs. Don't hand-edit between the markers — a test regenerates them and fails if
 they drift from the runtime.
 
+For richer per-capability documentation, use the generated capability doc
+surface: `terrane cap list`, `terrane cap info <namespace> --format
+json|markdown|skill`, or the MCP tools `capabilities_list` and
+`capability_info`. Those views come from the same capability declarations, with
+internal notes hidden unless `includeInternal=true`.
+
 <!-- generated:resource-api:start -->
 #### `ctx.resource.build`
 

@@ -78,14 +78,18 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
     );
 
-    // tools/list advertises the three tools (list → discover → act).
+    // tools/list advertises app tools plus capability-doc tools.
     send(
         &mut stdin,
         r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
     );
     let tools = read_line(&mut out);
     assert!(
-        tools.contains("list_apps") && tools.contains("app_actions") && tools.contains("invoke"),
+        tools.contains("list_apps")
+            && tools.contains("app_actions")
+            && tools.contains("invoke")
+            && tools.contains("capabilities_list")
+            && tools.contains("capability_info"),
         "tools/list: {tools}"
     );
 

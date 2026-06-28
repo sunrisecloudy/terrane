@@ -122,6 +122,54 @@ fn bus_helpers_validate_expected_query_types() {
 }
 
 #[test]
+fn capability_doc_defaults_are_generated_from_manifest() {
+    struct DocCap;
+
+    impl Capability for DocCap {
+        fn namespace(&self) -> &'static str {
+            "doc"
+        }
+
+        fn manifest(&self) -> CapManifest {
+            CapManifest {
+                commands: vec![CommandSpec { name: "doc.run" }],
+                events: vec![EventSpec { kind: "doc.ran" }],
+                queries: vec![QuerySpec { name: "doc.exists" }],
+                resources: vec![ResourceMethod::Read {
+                    name: "get",
+                    params: &["key"],
+                }],
+                subscriptions: vec![EventPattern {
+                    kind: "app.removed",
+                }],
+            }
+        }
+
+        fn decide(&self, _ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {
+            Err(Error::InvalidInput(format!("unknown command: {name}")))
+        }
+
+        fn fold(&self, _state: &mut dyn StateStore, _record: &EventRecord) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    let public = DocCap.doc(false);
+    assert_eq!(public.namespace, "doc");
+    assert_eq!(public.manifest.commands, vec!["doc.run"]);
+    assert_eq!(public.manifest.events, vec!["doc.ran"]);
+    assert_eq!(public.manifest.queries, vec!["doc.exists"]);
+    assert_eq!(public.manifest.subscriptions, vec!["app.removed"]);
+    assert_eq!(public.resources[0].methods[0].name, "get");
+    assert_eq!(public.resources[0].methods[0].kind, "read");
+    assert_eq!(public.resources[0].methods[0].params[0].name, "key");
+    assert!(public.internal.is_empty());
+
+    let internal = DocCap.doc(true);
+    assert_eq!(internal.internal.len(), 1);
+}
+
+#[test]
 fn json_extraction_and_truncation_are_deterministic() {
     assert_eq!(
         extract_json_object("prefix {\"ok\":true} suffix", "sample").unwrap(),

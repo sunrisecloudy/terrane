@@ -28,6 +28,11 @@ const CONTRACT_FILES = [
   "docs/SERVER_API.md",
   "docs/APP_API.md",
   "rust/crates/terrane-api/src/lib.rs",
+  "rust/crates/terrane-cap-interface/src/lib.rs",
+  "rust/crates/terrane-core/src/lib.rs",
+  "rust/crates/terrane-host/src/cap_doc.rs",
+  "rust/crates/terrane-host/src/cli.rs",
+  "rust/crates/terrane-host/src/mcp.rs",
 ];
 
 export function buildPublicContract() {

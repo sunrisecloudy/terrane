@@ -4,7 +4,8 @@
 use nanoserde::{DeJson, SerJson};
 use terrane_api::{
     host_contract, mcp_tools, Action, ApiError, AppActions, AppSummary, AppsResponse,
-    HealthResponse, InvokeRequest, InvokeResponse, TOOL_APP_ACTIONS, TOOL_INVOKE, TOOL_LIST_APPS,
+    CapabilityDocInfo, CapabilityManifestInfo, HealthResponse, InvokeRequest, InvokeResponse,
+    TOOL_APP_ACTIONS, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_INFO, TOOL_INVOKE, TOOL_LIST_APPS,
 };
 
 #[test]
@@ -75,7 +76,16 @@ fn responses_round_trip() {
 fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
     let tools = mcp_tools();
     let names: Vec<&str> = tools.iter().map(|t| t.name).collect();
-    assert_eq!(names, vec![TOOL_LIST_APPS, TOOL_APP_ACTIONS, TOOL_INVOKE]);
+    assert_eq!(
+        names,
+        vec![
+            TOOL_LIST_APPS,
+            TOOL_APP_ACTIONS,
+            TOOL_INVOKE,
+            TOOL_CAPABILITIES_LIST,
+            TOOL_CAPABILITY_INFO
+        ]
+    );
 
     // Each tool's input schema must parse as a JSON object — it's dropped verbatim
     // into the MCP tools/list reply, so a malformed one would break the protocol.
@@ -118,11 +128,47 @@ fn host_contract_lists_the_v1_subset() {
     let tool_names: Vec<&str> = c.mcp_tools.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(
         tool_names,
-        vec![TOOL_LIST_APPS, TOOL_APP_ACTIONS, TOOL_INVOKE]
+        vec![
+            TOOL_LIST_APPS,
+            TOOL_APP_ACTIONS,
+            TOOL_INVOKE,
+            TOOL_CAPABILITIES_LIST,
+            TOOL_CAPABILITY_INFO
+        ]
     );
 
     // The whole contract serializes (this is what the export folds in).
     assert!(c.serialize_json().contains("\"contract_version\""));
+}
+
+#[test]
+fn capability_doc_info_round_trips() {
+    let doc = CapabilityDocInfo {
+        namespace: "kv".into(),
+        title: "kv".into(),
+        summary: "Key/value storage".into(),
+        status: "stable".into(),
+        version: "0.1.0".into(),
+        audience: vec!["agent".into()],
+        manifest: CapabilityManifestInfo {
+            commands: vec!["kv.set".into()],
+            queries: vec![],
+            events: vec!["kv.set".into()],
+            subscriptions: vec![],
+            resource_methods: vec![],
+        },
+        resources: vec![],
+        schemas: vec![],
+        examples: vec![],
+        constraints: vec![],
+        limits: vec![],
+        compatibility: vec![],
+        internal: vec![],
+    };
+    assert_eq!(
+        CapabilityDocInfo::deserialize_json(&doc.serialize_json()).unwrap(),
+        doc
+    );
 }
 
 #[test]

@@ -8,8 +8,8 @@ use terrane_cap_interface::{
 };
 use terrane_cap_replica::initialized_event;
 use terrane_core::{
-    default_registry, fold_records_in_memory, Decision, Error, EventRecord, Registry, RegistryBus,
-    Result, State,
+    capability_doc, capability_docs, default_registry, fold_records_in_memory, Decision, Error,
+    EventRecord, Registry, RegistryBus, Result, State,
 };
 
 struct TestCap {
@@ -193,6 +193,37 @@ fn registry_bus_reports_unknown_capability_or_query() {
         "unknown query capability",
     );
     assert_invalid_contains(bus.query("app", "missing", &[]), "unknown query");
+}
+
+#[test]
+fn capability_docs_include_registered_and_planned_docs() {
+    let docs = capability_docs(false);
+    assert!(docs.iter().any(|doc| doc.namespace == "kv"));
+    let rdb = docs
+        .iter()
+        .find(|doc| doc.namespace == "relational_db")
+        .expect("planned relational_db doc");
+    assert_eq!(rdb.status, "planned");
+    assert!(rdb
+        .schemas
+        .iter()
+        .any(|schema| schema.id == "table_spec.schema.json"));
+    assert!(rdb
+        .schemas
+        .iter()
+        .any(|schema| schema.id == "query.schema.json"));
+    assert!(rdb.internal.is_empty());
+
+    let internal = capability_doc("relational_db", true).unwrap();
+    assert!(internal
+        .internal
+        .iter()
+        .any(|note| note.title.contains("Reserved kv layout")));
+}
+
+#[test]
+fn capability_doc_unknown_namespace_is_clear() {
+    assert_invalid_contains(capability_doc("ghost", false), "unknown command namespace");
 }
 
 fn assert_invalid_contains<T: std::fmt::Debug>(result: Result<T>, expected: &str) {

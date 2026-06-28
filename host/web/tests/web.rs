@@ -678,7 +678,11 @@ fn serves_catalog_ui_and_invoke_over_http() {
     );
     assert_eq!(status, 200, "mcp tools/list: {body}");
     assert!(
-        body.contains("list_apps") && body.contains("app_actions") && body.contains("invoke"),
+        body.contains("list_apps")
+            && body.contains("app_actions")
+            && body.contains("invoke")
+            && body.contains("capabilities_list")
+            && body.contains("capability_info"),
         "mcp tools/list: {body}"
     );
 

@@ -15,6 +15,7 @@ use terrane_core::host_runtime::read_manifest;
 use terrane_core::Core;
 use terrane_core::{Error, EventRecord, Request};
 
+pub mod cap_doc;
 pub mod cli;
 pub mod edge;
 pub mod ffi;
@@ -303,6 +304,11 @@ pub fn sync_from_home(app: &str, from_home: &str) -> Result<SyncOutcome, String>
 /// The public API surface assembled from `terrane-api` and `terrane-core`
 /// declarations, so it can't drift from the running system.
 pub fn contract_surface() -> terrane_api::PublicSurface {
+    let capability_docs = terrane_core::capability_docs(false)
+        .into_iter()
+        .map(|doc| cap_doc::capability_info(&doc.namespace, false))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("capability docs should be exported from known namespaces");
     let resources = terrane_core::resource_surface()
         .into_iter()
         .map(|ns| terrane_api::ResourceNamespace {
@@ -322,7 +328,7 @@ pub fn contract_surface() -> terrane_api::PublicSurface {
         .into_iter()
         .map(str::to_string)
         .collect();
-    terrane_api::public_surface(capabilities, resources)
+    terrane_api::public_surface(capabilities, resources, capability_docs)
 }
 
 fn copy_dir(src: &Path, dest: &Path) -> std::io::Result<()> {

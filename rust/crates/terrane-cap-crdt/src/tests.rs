@@ -76,7 +76,7 @@ fn map_set_decision_records_update_without_mutating_live_state() {
         panic!("expected crdt.mapSet to commit an update");
     };
     assert_eq!(events.len(), 1);
-    assert!(store.crdt.docs.get("demo").is_none());
+    assert!(!store.crdt.docs.contains_key("demo"));
 }
 
 #[test]
