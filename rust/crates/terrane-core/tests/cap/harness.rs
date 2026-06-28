@@ -1,7 +1,7 @@
 //! Engine tests for harness app generation requests.
 
 use tempfile::tempdir;
-use terrane_core::cap::harness::{
+use terrane_cap_harness::{
     js_completed_event, js_failed_event, js_generated_event, js_requested_event,
     parse_run_js_output,
 };

@@ -1,7 +1,7 @@
 //! Engine tests for the `replica` capability — a home's stable, minted identity.
 
 use tempfile::tempdir;
-use terrane_core::cap::replica::initialized_event;
+use terrane_cap_replica::initialized_event;
 use terrane_core::{fold_records_in_memory, Core, State};
 
 use crate::helpers::req;

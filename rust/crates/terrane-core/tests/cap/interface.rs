@@ -1,12 +1,12 @@
 //! Capability-interface contract tests: registry manifest validation and the
 //! read-only query bus.
 
-use terrane_core::cap::app::AppRecord;
-use terrane_core::cap::replica::initialized_event;
-use terrane_core::cap::{
+use terrane_cap_app::AppRecord;
+use terrane_cap_interface::{
     CapBus, CapManifest, Capability, CommandCtx, CommandSpec, EventPattern, EventSpec, QuerySpec,
     QueryValue, StateStore,
 };
+use terrane_cap_replica::initialized_event;
 use terrane_core::{
     default_registry, fold_records_in_memory, Decision, Error, EventRecord, Registry, RegistryBus,
     Result, State,

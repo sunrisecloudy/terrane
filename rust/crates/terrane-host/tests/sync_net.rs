@@ -5,7 +5,7 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 
 use tempfile::tempdir;
-use terrane_core::cap::crdt::crdt_list_strings;
+use terrane_cap_crdt::crdt_list_strings;
 use terrane_core::Core;
 use terrane_core::Request;
 use terrane_host::{serve_conn, sync_conn, EdgeRunner};

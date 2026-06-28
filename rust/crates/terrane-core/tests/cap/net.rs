@@ -1,7 +1,7 @@
 //! Engine tests for the `net` capability — the recorded-effect mechanism.
 
 use tempfile::tempdir;
-use terrane_core::cap::net::fetched_event;
+use terrane_cap_net::fetched_event;
 use terrane_core::Error;
 use terrane_core::{fold_records_in_memory, Core, State};
 

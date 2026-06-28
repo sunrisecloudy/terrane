@@ -9,7 +9,7 @@
 //! ```
 //!
 //! There is no central command/event enum and no central match. Each
-//! [`Capability`](cap::Capability) owns a namespace (`"app"`, `"kv"`, `"net"`,
+//! [`Capability`] owns a namespace (`"app"`, `"kv"`, `"net"`,
 //! …) and is wholly responsible for its commands, its events, deciding, and
 //! folding. You add a command by writing/registering one capability — nothing
 //! central changes except the [`default_registry`] line and (if it carries new
@@ -22,7 +22,7 @@
 //!
 //! ## Effects & determinism
 //!
-//! An effectful command's [`decide`](cap::Capability::decide) returns a
+//! An effectful command's [`decide`](Capability::decide) returns a
 //! [`Decision::Effect`] describing the work; [`Core`] runs it through an injected
 //! [`EffectRunner`] **once**, then records the result as an event. Replay never
 //! runs the effect — it only folds the recorded event — so a non-deterministic
@@ -34,19 +34,22 @@ use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
-pub mod cap;
 pub mod domain;
+pub mod host_runtime;
 
 pub use terrane_cap_interface::{
-    decode_event, encode_event, namespace_of, AppId, Decision, Effect, Error, EventRecord, Request,
-    Result,
+    arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CommandCtx, Decision,
+    Effect, Error, EventRecord, QueryCtx, QueryValue, Request, Result, StateStore,
 };
 
-use cap::{
-    app::AppState, builder::BuilderState, crdt::CrdtState, harness::HarnessState, kv::KvState,
-    model::ModelState, net::NetState, replica::ReplicaState, CapBus, Capability, CommandCtx,
-    QueryCtx, QueryValue, StateStore,
-};
+use terrane_cap_app::AppState;
+use terrane_cap_builder::BuilderState;
+use terrane_cap_crdt::CrdtState;
+use terrane_cap_harness::HarnessState;
+use terrane_cap_kv::KvState;
+use terrane_cap_model::ModelState;
+use terrane_cap_net::NetState;
+use terrane_cap_replica::ReplicaState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -254,16 +257,16 @@ impl CapBus for RegistryBus<'_> {
 /// The registry every core opens with: the built-in capabilities.
 pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
-    registry.register(Box::new(cap::app::AppCapability));
-    registry.register(Box::new(cap::build::BuildCapability));
-    registry.register(Box::new(cap::builder::BuilderCapability));
-    registry.register(Box::new(cap::harness::HarnessCapability));
-    registry.register(Box::new(cap::kv::KvCapability));
-    registry.register(Box::new(cap::crdt::CrdtCapability));
-    registry.register(Box::new(cap::replica::ReplicaCapability));
-    registry.register(Box::new(cap::net::NetCapability));
-    registry.register(Box::new(cap::model::ModelCapability));
-    registry.register(Box::new(cap::host::HostCapability));
+    registry.register(Box::new(terrane_cap_app::AppCapability));
+    registry.register(Box::new(terrane_cap_build::BuildCapability));
+    registry.register(Box::new(terrane_cap_builder::BuilderCapability));
+    registry.register(Box::new(terrane_cap_harness::HarnessCapability));
+    registry.register(Box::new(terrane_cap_kv::KvCapability));
+    registry.register(Box::new(terrane_cap_crdt::CrdtCapability));
+    registry.register(Box::new(terrane_cap_replica::ReplicaCapability));
+    registry.register(Box::new(terrane_cap_net::NetCapability));
+    registry.register(Box::new(terrane_cap_model::ModelCapability));
+    registry.register(Box::new(host_runtime::HostCapability));
     registry
         .validate()
         .expect("default capability registry should be valid");
@@ -506,7 +509,7 @@ impl<R: EffectRunner> Core<R> {
         // Reset first, so take_last_output() reflects only this attempt — a
         // failed run leaves no stale output from a previous successful one.
         self.last_output = None;
-        let app = cap::arg(args, 0, "app")?;
+        let app = arg(args, 0, "app")?;
         let input: Vec<String> = args.get(1..).unwrap_or_default().to_vec();
 
         let source = self
@@ -519,7 +522,7 @@ impl<R: EffectRunner> Core<R> {
             .clone()
             .ok_or_else(|| Error::Runtime(format!("app {app} has no --source bundle")))?;
 
-        let result = cap::host::run(&app, &input, &source, self.state.clone())?;
+        let result = host_runtime::run(&app, &input, &source, self.state.clone())?;
         let records = self.commit(result.records)?;
         self.last_output = Some(result.output);
         Ok(records)

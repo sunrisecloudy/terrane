@@ -1,7 +1,7 @@
 //! Engine tests for replayable builder draft state.
 
 use tempfile::tempdir;
-use terrane_core::cap::builder::{failed_event, generated_event, requested_event, BuilderFile};
+use terrane_cap_builder::{failed_event, generated_event, requested_event, BuilderFile};
 use terrane_core::{fold_records_in_memory, Core, NoEffects, State};
 
 use crate::helpers::req;

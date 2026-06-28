@@ -35,9 +35,9 @@ argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──
 ```
 rust/          # the fresh Rust workspace (the only product code)
   crates/
-    terrane-domain/    # vocabulary: Command, Event, Id, Error, State — pure, no I/O
-    terrane-core/      # engine: apply(Command) -> [Event] -> State; persist; replay
-    terrane-host/      # host services, `terrane` binary, C ABI, sync, preview, MCP
+    terrane-core/           # shared vocabulary + deterministic engine + host_runtime
+    terrane-cap-*/          # standalone capabilities over terrane-cap-interface
+    terrane-host/           # host services, `terrane` binary, C ABI, sync, preview, MCP
 legacy/                # the previous build, swept aside intact as reference only
 ```
 

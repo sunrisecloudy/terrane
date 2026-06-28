@@ -12,11 +12,12 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use terrane_core::cap::builder;
-use terrane_core::cap::harness;
-use terrane_core::cap::model::responded_event;
-use terrane_core::cap::net::fetched_event;
-use terrane_core::cap::replica::initialized_event;
+use terrane_cap_builder as builder;
+use terrane_cap_harness as harness;
+use terrane_cap_model::responded_event;
+use terrane_cap_net::fetched_event;
+use terrane_cap_replica::initialized_event;
+use terrane_core::host_runtime::{run_memory_backend, MemoryBackendBundle};
 use terrane_core::{Effect, EffectRunner};
 use terrane_core::{Error, EventRecord, Result};
 
@@ -206,13 +207,12 @@ fn run_harness_js(
             .get(app_id)
             .map(|app| app.name.clone())
             .ok_or_else(|| Error::AppNotFound(app_id.to_string()))?;
-        let bundle = terrane_core::cap::host::MemoryBackendBundle {
+        let bundle = MemoryBackendBundle {
             source: js.clone(),
             name,
             resources: vec!["kv".to_string(), "build".to_string()],
         };
-        let result =
-            terrane_core::cap::host::run_memory_backend(app_id, &[], &bundle, state.clone())?;
+        let result = run_memory_backend(app_id, &[], &bundle, state.clone())?;
         Ok((js, result.output, result.records))
     })();
 

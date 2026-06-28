@@ -2279,13 +2279,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "terrane-cap-interface"
-version = "0.1.0"
-dependencies = [
- "borsh",
-]
-
-[[package]]
 name = "terrane-cap-app"
 version = "0.1.0"
 dependencies = [
@@ -2326,8 +2319,15 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "nanoserde",
- "terrane-cap-interface",
  "terrane-cap-builder",
+ "terrane-cap-interface",
+]
+
+[[package]]
+name = "terrane-cap-interface"
+version = "0.1.0"
+dependencies = [
+ "borsh",
 ]
 
 [[package]]
@@ -2369,12 +2369,12 @@ dependencies = [
  "borsh",
  "nanoserde",
  "rquickjs",
- "terrane-cap-interface",
  "terrane-cap-app",
  "terrane-cap-build",
  "terrane-cap-builder",
  "terrane-cap-crdt",
  "terrane-cap-harness",
+ "terrane-cap-interface",
  "terrane-cap-kv",
  "terrane-cap-model",
  "terrane-cap-net",
@@ -2390,6 +2390,13 @@ dependencies = [
  "serde_json",
  "terrane-api",
  "terrane-app-build",
+ "terrane-cap-app",
+ "terrane-cap-builder",
+ "terrane-cap-crdt",
+ "terrane-cap-harness",
+ "terrane-cap-model",
+ "terrane-cap-net",
+ "terrane-cap-replica",
  "terrane-core",
 ]
 

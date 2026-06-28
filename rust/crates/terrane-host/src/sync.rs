@@ -20,7 +20,7 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
-use terrane_core::cap::crdt::{crdt_export_from_vv, crdt_vv, to_hex};
+use terrane_cap_crdt::{crdt_export_from_vv, crdt_vv, to_hex};
 use terrane_core::Core;
 use terrane_core::Request;
 

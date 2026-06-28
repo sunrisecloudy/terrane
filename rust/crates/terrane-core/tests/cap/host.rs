@@ -7,9 +7,9 @@ use std::fs;
 use std::path::Path;
 
 use tempfile::tempdir;
-use terrane_core::cap::app::AppRecord;
-use terrane_core::cap::crdt::crdt_list_strings;
-use terrane_core::cap::host::{run_memory_backend, MemoryBackendBundle};
+use terrane_cap_app::AppRecord;
+use terrane_cap_crdt::crdt_list_strings;
+use terrane_core::host_runtime::{run_memory_backend, MemoryBackendBundle};
 use terrane_core::{fold_records_in_memory, Core, State};
 
 use crate::helpers::req;
@@ -489,7 +489,7 @@ fn manifest_decodes_string_escapes() {
 
 /// The live runtime installs EXACTLY the resource surface the capabilities
 /// declare via `resource_api()` — no more, no less. Catches a bug in the
-/// declaration-driven install loop in `cap/host.rs`.
+/// declaration-driven install loop in `host_runtime.rs`.
 #[test]
 fn runtime_resource_surface_matches_declarations() {
     let declared = terrane_core::declared_resource_surface();

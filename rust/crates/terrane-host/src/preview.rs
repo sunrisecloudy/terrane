@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path};
 
 use nanoserde::{DeJson, SerJson};
-use terrane_core::cap::app::AppRecord;
-use terrane_core::cap::host::{run_memory_backend, BundleManifest, MemoryBackendBundle};
+use terrane_cap_app::AppRecord;
+use terrane_core::host_runtime::{run_memory_backend, BundleManifest, MemoryBackendBundle};
 use terrane_core::{fold_records_in_memory, State};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["html", "htm", "css", "js", "mjs", "json", "svg"];

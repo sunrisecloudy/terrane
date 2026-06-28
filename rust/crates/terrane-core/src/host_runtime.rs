@@ -1,4 +1,4 @@
-//! The `host` capability — running a bundled JS backend in QuickJS.
+//! The `host.run` runtime — running a bundled JS backend in QuickJS.
 //!
 //! `host.run` is special-cased in [`Core::dispatch`](crate::Core::dispatch): it
 //! needs `&mut self` to re-dispatch the backend's `kv.*` writes, which a pure
@@ -31,11 +31,11 @@ use rquickjs::{
     CatchResultExt, CaughtError, Context, Ctx, Function, IntoJs, Object, Runtime, Value,
 };
 
-use super::{
+use crate::{apply, default_registry, namespace_of, Decision, Registry, RegistryBus, State};
+use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, CommandSpec, ReadValue, ResourceMethod, ResourceReadCtx,
     StateStore,
 };
-use crate::{apply, default_registry, namespace_of, Decision, Registry, RegistryBus, State};
 
 /// Hand a resource read's result back to JS: a string|null, or an object.
 struct JsReadValue(ReadValue);

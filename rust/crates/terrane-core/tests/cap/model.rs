@@ -1,7 +1,7 @@
 //! Engine tests for the `model` capability — recorded agent calls.
 
 use tempfile::tempdir;
-use terrane_core::cap::model::responded_event;
+use terrane_cap_model::responded_event;
 use terrane_core::Error;
 use terrane_core::{fold_records_in_memory, Core, State};
 

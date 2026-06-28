@@ -9,6 +9,9 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use terrane_api::{AppSummary, AppsResponse};
+use terrane_cap_builder::draft_json;
+use terrane_cap_crdt::crdt_export_hex;
+use terrane_core::host_runtime::read_manifest;
 use terrane_core::Core;
 use terrane_core::{Error, EventRecord, Request};
 
@@ -197,7 +200,7 @@ pub fn generate_app_json(
         .drafts
         .get(draft_id)
         .ok_or_else(|| format!("builder draft missing after generation: {draft_id}"))?;
-    Ok(terrane_core::cap::builder::draft_json(draft))
+    Ok(draft_json(draft))
 }
 
 pub fn list_apps(core: &HostCore) -> AppsResponse {
@@ -221,7 +224,7 @@ pub fn app_has_ui(source: Option<&str>) -> bool {
 
 /// The app's declared UI entry file (`manifest.ui`), if any.
 pub fn read_manifest_ui(source: &str) -> Option<String> {
-    terrane_core::cap::host::read_manifest(Path::new(source))
+    read_manifest(Path::new(source))
         .ok()
         .map(|m| m.ui)
         .filter(|ui| !ui.is_empty())
@@ -232,7 +235,7 @@ pub fn read_manifest_ui(source: &str) -> Option<String> {
 /// command's working directory.
 pub fn install_app(path: &str) -> Result<InstallOutcome, String> {
     let src = Path::new(path);
-    let manifest = terrane_core::cap::host::read_manifest(src).map_err(|e| e.to_string())?;
+    let manifest = read_manifest(src).map_err(|e| e.to_string())?;
     let id = manifest.id.trim().to_string();
     validate_bundle_id(path, &id)?;
     let name = match manifest.name.trim() {
@@ -274,8 +277,7 @@ pub fn sync_from_home(app: &str, from_home: &str) -> Result<SyncOutcome, String>
     let source = Core::open(&src_log).map_err(|e| format!("open --from {from_home}: {e}"))?;
 
     let mut local = open()?;
-    let hex = terrane_core::cap::crdt::crdt_export_hex(source.state(), app, local.state())
-        .map_err(|e| e.to_string())?;
+    let hex = crdt_export_hex(source.state(), app, local.state()).map_err(|e| e.to_string())?;
     let Some(hex) = hex else {
         return Ok(SyncOutcome::NothingToSync {
             app: app.to_string(),

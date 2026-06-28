@@ -1,4 +1,4 @@
-//! Per-capability end-to-end tests, mirroring `src/cap/`. Each module drives the
+//! Per-capability end-to-end tests. Each module drives the
 //! real `terrane` binary against a throwaway `$TERRANE_HOME`. Shared fixtures
 //! live in `helpers`.
 //!
