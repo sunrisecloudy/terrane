@@ -1,3 +1,0 @@
-[submodule "external-lib/loro"]
-	path = legacy/external-lib/loro
-	url = https://github.com/loro-dev/loro
