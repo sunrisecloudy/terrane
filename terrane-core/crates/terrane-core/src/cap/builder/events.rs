@@ -1,7 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_domain::{EventRecord, Result};
 
-use crate::{decode_event, encode_event, State};
+use crate::{cap::truncate, decode_event, encode_event, State};
 
 use super::{BuilderDraft, BuilderFile};
 
@@ -129,14 +129,5 @@ pub fn describe(record: &EventRecord) -> Option<String> {
             ))
         }
         _ => None,
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let head: String = s.chars().take(max).collect();
-        format!("{head}...")
     }
 }

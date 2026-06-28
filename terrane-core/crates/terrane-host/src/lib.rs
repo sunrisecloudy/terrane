@@ -179,7 +179,7 @@ pub fn generate_app_json(
         .unwrap_or("codex");
     dispatch_on_core(
         core,
-        "codex.generate-app",
+        "harness.generate-app",
         &[
             "--harness".to_string(),
             harness.to_string(),

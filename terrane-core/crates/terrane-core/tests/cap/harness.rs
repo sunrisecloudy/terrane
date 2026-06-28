@@ -1,7 +1,7 @@
-//! Engine tests for Codex app generation requests.
+//! Engine tests for harness app generation requests.
 
 use tempfile::tempdir;
-use terrane_core::cap::codex::{
+use terrane_core::cap::harness::{
     js_completed_event, js_failed_event, js_generated_event, js_requested_event,
     parse_run_js_output,
 };
@@ -10,7 +10,7 @@ use terrane_core::{fold_records_in_memory, Core, NoEffects, State};
 use crate::helpers::req;
 
 #[test]
-fn codex_js_events_fold_run_state() {
+fn harness_js_events_fold_run_state() {
     let mut state = State::default();
     let records = vec![
         js_requested_event("run-1", "demo", "write files", "codex").unwrap(),
@@ -24,7 +24,7 @@ fn codex_js_events_fold_run_state() {
 
     fold_records_in_memory(&mut state, &records).unwrap();
 
-    let run = &state.codex.runs["run-1"];
+    let run = &state.harness.runs["run-1"];
     assert_eq!(run.app_id, "demo");
     assert_eq!(run.harness, "codex");
     assert_eq!(run.output.as_deref(), Some("wrote"));
@@ -33,7 +33,7 @@ fn codex_js_events_fold_run_state() {
 }
 
 #[test]
-fn codex_js_failed_event_records_error() {
+fn harness_js_failed_event_records_error() {
     let mut state = State::default();
 
     fold_records_in_memory(
@@ -45,19 +45,19 @@ fn codex_js_failed_event_records_error() {
     )
     .unwrap();
 
-    let run = &state.codex.runs["run-1"];
+    let run = &state.harness.runs["run-1"];
     assert_eq!(run.error.as_deref(), Some("syntax error"));
     assert!(run.output.is_none());
 }
 
 #[test]
-fn codex_generation_validates_request_before_effect() {
+fn harness_generation_validates_request_before_effect() {
     let dir = tempdir().unwrap();
     let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
 
     assert!(core
         .dispatch(req(
-            "codex.generate-app",
+            "harness.generate-app",
             &["bad/path", "demo", "Demo", "make app"],
         ))
         .unwrap_err()
@@ -65,20 +65,20 @@ fn codex_generation_validates_request_before_effect() {
         .contains("unsafe"));
 
     assert!(core
-        .dispatch(req("codex.generate-app", &["demo", "demo", "Demo", ""]))
+        .dispatch(req("harness.generate-app", &["demo", "demo", "Demo", ""]))
         .unwrap_err()
         .to_string()
         .contains("prompt"));
 }
 
 #[test]
-fn pure_core_rejects_codex_effect_without_runner() {
+fn pure_core_rejects_harness_effect_without_runner() {
     let dir = tempdir().unwrap();
     let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
 
     assert!(core
         .dispatch(req(
-            "codex.generate-app",
+            "harness.generate-app",
             &["demo", "demo", "Demo", "make app"],
         ))
         .unwrap_err()
@@ -87,13 +87,13 @@ fn pure_core_rejects_codex_effect_without_runner() {
 }
 
 #[test]
-fn codex_generation_accepts_supported_harness_flag() {
+fn harness_generation_accepts_supported_harness_flag() {
     let dir = tempdir().unwrap();
     let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
 
     assert!(core
         .dispatch(req(
-            "codex.generate-app",
+            "harness.generate-app",
             &[
                 "--harness",
                 "claude-code",
@@ -109,13 +109,13 @@ fn codex_generation_accepts_supported_harness_flag() {
 }
 
 #[test]
-fn codex_rejects_unsupported_harness() {
+fn harness_rejects_unsupported_harness() {
     let dir = tempdir().unwrap();
     let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
 
     assert!(core
         .dispatch(req(
-            "codex.generate-app",
+            "harness.generate-app",
             &["--harness", "other", "demo", "demo", "Demo", "make app"],
         ))
         .unwrap_err()
@@ -124,35 +124,35 @@ fn codex_rejects_unsupported_harness() {
 }
 
 #[test]
-fn codex_run_js_validates_existing_app_and_prompt_before_effect() {
+fn harness_run_js_validates_existing_app_and_prompt_before_effect() {
     let dir = tempdir().unwrap();
     let mut core = Core::<NoEffects>::open(dir.path().join("log.bin")).unwrap();
 
     assert!(core
-        .dispatch(req("codex.run-js", &["run-1", "missing", "write app"]))
+        .dispatch(req("harness.run-js", &["run-1", "missing", "write app"]))
         .unwrap_err()
         .to_string()
         .contains("not found"));
 
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
     assert!(core
-        .dispatch(req("codex.run-js", &["bad/path", "demo", "write app"]))
+        .dispatch(req("harness.run-js", &["bad/path", "demo", "write app"]))
         .unwrap_err()
         .to_string()
         .contains("unsafe"));
     assert!(core
-        .dispatch(req("codex.run-js", &["run-1", "demo", ""]))
+        .dispatch(req("harness.run-js", &["run-1", "demo", ""]))
         .unwrap_err()
         .to_string()
         .contains("prompt"));
     assert!(core
-        .dispatch(req("codex.run-js", &["run-1", "demo", "write app"]))
+        .dispatch(req("harness.run-js", &["run-1", "demo", "write app"]))
         .unwrap_err()
         .to_string()
         .contains("no effect runner"));
     assert!(core
         .dispatch(req(
-            "codex.run-js",
+            "harness.run-js",
             &["--harness", "opencode", "run-2", "demo", "write app"],
         ))
         .unwrap_err()

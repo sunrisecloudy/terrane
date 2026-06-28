@@ -39,7 +39,7 @@ use terrane_domain::{Error, EventRecord, Request, Result};
 pub mod cap;
 
 use cap::{
-    app::AppState, builder::BuilderState, codex::CodexState, crdt::CrdtState, kv::KvState,
+    app::AppState, builder::BuilderState, crdt::CrdtState, harness::HarnessState, kv::KvState,
     model::ModelState, net::NetState, replica::ReplicaState, Capability,
 };
 
@@ -54,7 +54,7 @@ use cap::{
 pub struct State {
     pub app: AppState,
     pub builder: BuilderState,
-    pub codex: CodexState,
+    pub harness: HarnessState,
     pub kv: KvState,
     pub net: NetState,
     pub model: ModelState,
@@ -98,7 +98,7 @@ pub enum Effect {
     },
     /// Ask a harness CLI for JavaScript only, then run that JS once in the
     /// QuickJS backend sandbox with an explicit capability resource allowlist.
-    RunCodexJs {
+    RunHarnessJs {
         run_id: String,
         app_id: String,
         harness: String,
@@ -181,7 +181,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(cap::app::AppCapability));
     registry.register(Box::new(cap::build::BuildCapability));
     registry.register(Box::new(cap::builder::BuilderCapability));
-    registry.register(Box::new(cap::codex::CodexCapability));
+    registry.register(Box::new(cap::harness::HarnessCapability));
     registry.register(Box::new(cap::kv::KvCapability));
     registry.register(Box::new(cap::crdt::CrdtCapability));
     registry.register(Box::new(cap::replica::ReplicaCapability));

@@ -13,8 +13,8 @@ use crate::{Decision, State};
 pub mod app;
 pub mod build;
 pub mod builder;
-pub mod codex;
 pub mod crdt;
+pub mod harness;
 pub mod host;
 pub mod kv;
 pub mod model;
@@ -110,4 +110,32 @@ pub(crate) fn arg(args: &[String], index: usize, what: &str) -> Result<String> {
     args.get(index)
         .cloned()
         .ok_or_else(|| Error::InvalidInput(format!("missing {what}")))
+}
+
+pub(crate) fn extract_json_object<'a>(raw: &'a str, source: &str) -> Result<&'a str> {
+    let trimmed = raw.trim();
+    if trimmed.starts_with('{') && trimmed.ends_with('}') {
+        return Ok(trimmed);
+    }
+    let start = raw
+        .find('{')
+        .ok_or_else(|| Error::InvalidInput(format!("{source} did not contain JSON")))?;
+    let end = raw
+        .rfind('}')
+        .ok_or_else(|| Error::InvalidInput(format!("{source} did not contain complete JSON")))?;
+    if end <= start {
+        return Err(Error::InvalidInput(format!(
+            "{source} JSON range is invalid"
+        )));
+    }
+    Ok(&raw[start..=end])
+}
+
+pub(crate) fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}...")
+    }
 }

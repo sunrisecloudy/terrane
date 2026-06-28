@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use terrane_core::cap::builder;
-use terrane_core::cap::codex;
+use terrane_core::cap::harness;
 use terrane_core::cap::model::responded_event;
 use terrane_core::cap::net::fetched_event;
 use terrane_core::cap::replica::initialized_event;
@@ -44,12 +44,12 @@ impl EffectRunner for EdgeRunner {
                 harness,
                 prompt,
             } => run_builder_harness(draft_id, app_id, name, harness, prompt),
-            Effect::RunCodexJs {
+            Effect::RunHarnessJs {
                 run_id,
                 app_id,
                 harness,
                 prompt,
-            } => run_codex_js(run_id, app_id, harness, prompt, state),
+            } => run_harness_js(run_id, app_id, harness, prompt, state),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
         }
     }
@@ -150,11 +150,11 @@ fn run_builder_harness(
         draft_id, app_id, name, prompt, harness,
     )?];
     let result = (|| -> Result<Vec<builder::BuilderFile>> {
-        let prompt = codex::app_bundle_prompt(app_id, name, prompt);
+        let prompt = harness::app_bundle_prompt(app_id, name, prompt);
         let (response, exit_code) = run_harness_command(
             harness,
             &prompt,
-            codex::APP_BUNDLE_OUTPUT_SCHEMA,
+            harness::APP_BUNDLE_OUTPUT_SCHEMA,
             "builder-output.schema.json",
             "last-message.txt",
         )?;
@@ -174,22 +174,24 @@ fn run_builder_harness(
     Ok(records)
 }
 
-fn run_codex_js(
+fn run_harness_js(
     run_id: &str,
     app_id: &str,
     harness: &str,
     prompt: &str,
     state: &terrane_core::State,
 ) -> Result<Vec<EventRecord>> {
-    let mut records = vec![codex::js_requested_event(run_id, app_id, prompt, harness)?];
+    let mut records = vec![harness::js_requested_event(
+        run_id, app_id, prompt, harness,
+    )?];
     let result = (|| -> Result<(String, String, Vec<EventRecord>)> {
-        let generated_prompt = codex::run_js_prompt(app_id, prompt);
+        let generated_prompt = harness::run_js_prompt(app_id, prompt);
         let (response, exit_code) = run_harness_command(
             harness,
             &generated_prompt,
-            codex::RUN_JS_OUTPUT_SCHEMA,
-            "codex-run-js.schema.json",
-            "codex-run-js-last-message.txt",
+            harness::RUN_JS_OUTPUT_SCHEMA,
+            "harness-run-js.schema.json",
+            "harness-run-js-last-message.txt",
         )?;
         if exit_code != 0 {
             return Err(Error::Storage(format!(
@@ -197,7 +199,7 @@ fn run_codex_js(
                 response.trim()
             )));
         }
-        let js = codex::parse_run_js_output(&response)?;
+        let js = harness::parse_run_js_output(&response)?;
         let name = state
             .app
             .apps
@@ -216,11 +218,11 @@ fn run_codex_js(
 
     match result {
         Ok((js, output, writes)) => {
-            records.push(codex::js_generated_event(run_id, &js)?);
+            records.push(harness::js_generated_event(run_id, &js)?);
             records.extend(writes);
-            records.push(codex::js_completed_event(run_id, &output)?);
+            records.push(harness::js_completed_event(run_id, &output)?);
         }
-        Err(e) => records.push(codex::js_failed_event(run_id, e.to_string())?),
+        Err(e) => records.push(harness::js_failed_event(run_id, e.to_string())?),
     }
     Ok(records)
 }

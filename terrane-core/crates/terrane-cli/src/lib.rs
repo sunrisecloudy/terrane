@@ -137,11 +137,11 @@ pub fn run_state() -> Result<(), String> {
         );
     }
 
-    println!("codex:");
-    if state.codex.runs.is_empty() {
+    println!("harness:");
+    if state.harness.runs.is_empty() {
         println!("  (none)");
     }
-    for run in state.codex.runs.values() {
+    for run in state.harness.runs.values() {
         let status = if run.error.is_some() {
             "failed"
         } else if run.output.is_some() {
@@ -232,8 +232,8 @@ pub fn print_help() {
          \x20 terrane kv rm <app> <key>                        delete a value\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
-         \x20 terrane codex generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
-         \x20 terrane codex run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
+         \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
+         \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
          \x20 terrane host run <app> [input…]                  run an app's JS backend\n\n\
          Multi-user:\n\
          \x20 terrane serve [--addr <addr>]      listen for peers (default 127.0.0.1:7777)\n\

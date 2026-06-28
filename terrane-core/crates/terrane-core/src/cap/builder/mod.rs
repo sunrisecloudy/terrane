@@ -1,7 +1,7 @@
 //! The `builder` capability — replayable app-generation drafts.
 //!
 //! Builder owns draft state and validates generated bundle files. Agent-specific
-//! prompting/execution lives in sibling capabilities such as `codex`.
+//! prompting/execution lives in sibling capabilities such as `harness`.
 
 mod events;
 mod json;

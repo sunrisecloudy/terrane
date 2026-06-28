@@ -6,8 +6,8 @@ mod helpers;
 
 mod app;
 mod builder;
-mod codex;
 mod crdt;
+mod harness;
 mod host;
 mod kv;
 mod log;

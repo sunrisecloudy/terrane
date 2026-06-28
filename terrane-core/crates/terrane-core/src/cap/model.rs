@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_domain::{AppId, Error, EventRecord, Result};
 
-use super::{arg, Capability};
+use super::{arg, truncate, Capability};
 use crate::{decode_event, encode_event, Decision, Effect, State};
 
 /// The agents this capability knows how to drive.
@@ -130,14 +130,5 @@ impl Capability for ModelCapability {
             ));
         }
         None
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let head: String = s.chars().take(max).collect();
-        format!("{head}…")
     }
 }

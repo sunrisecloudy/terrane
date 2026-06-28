@@ -4,6 +4,8 @@ use std::path::{Component, Path};
 use nanoserde::DeJson;
 use terrane_domain::{Error, Result};
 
+use crate::cap::extract_json_object;
+
 use super::BuilderFile;
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["html", "htm", "css", "js", "mjs", "json", "svg"];
@@ -30,7 +32,7 @@ struct Manifest {
 }
 
 pub fn parse_generated_files(raw: &str, app_id: &str, name: &str) -> Result<Vec<BuilderFile>> {
-    let json = extract_json_object(raw)?;
+    let json = extract_json_object(raw, "builder output")?;
     let payload = GeneratedPayload::deserialize_json(json)
         .map_err(|e| Error::InvalidInput(format!("builder output JSON: {e}")))?;
     validate_files(payload.files, app_id, name)
@@ -149,25 +151,6 @@ pub fn validate_id(raw: &str, label: &str) -> Result<String> {
         )));
     }
     Ok(id.to_string())
-}
-
-fn extract_json_object(raw: &str) -> Result<&str> {
-    let trimmed = raw.trim();
-    if trimmed.starts_with('{') && trimmed.ends_with('}') {
-        return Ok(trimmed);
-    }
-    let start = raw
-        .find('{')
-        .ok_or_else(|| Error::InvalidInput("builder output did not contain JSON".into()))?;
-    let end = raw.rfind('}').ok_or_else(|| {
-        Error::InvalidInput("builder output did not contain complete JSON".into())
-    })?;
-    if end <= start {
-        return Err(Error::InvalidInput(
-            "builder output JSON range is invalid".into(),
-        ));
-    }
-    Ok(&raw[start..=end])
 }
 
 fn normalize_rel_path(input: &str) -> Result<String> {

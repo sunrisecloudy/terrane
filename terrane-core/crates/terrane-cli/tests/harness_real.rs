@@ -36,7 +36,7 @@ fn run_real_harness(harness: &str) {
     let run = terrane(
         home.path(),
         &[
-            "codex",
+            "harness",
             "run-js",
             "--harness",
             harness,
@@ -53,7 +53,7 @@ fn run_real_harness(harness: &str) {
         run.stderr
     );
     assert!(
-        run.stdout.contains("codex.js.completed"),
+        run.stdout.contains("harness.js.completed"),
         "{harness} run did not complete:\n{}",
         run.stdout
     );
