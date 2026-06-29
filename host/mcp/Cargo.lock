@@ -2920,6 +2920,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-relational-db"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "serde",
+ "serde_json",
+ "terrane-cap-interface",
+ "terrane-cap-kv",
+]
+
+[[package]]
 name = "terrane-cap-replica"
 version = "0.1.0"
 dependencies = [
@@ -2952,6 +2963,7 @@ dependencies = [
  "terrane-cap-kv",
  "terrane-cap-model",
  "terrane-cap-net",
+ "terrane-cap-relational-db",
  "terrane-cap-replica",
  "terrane-cap-wasm-runtime",
 ]
@@ -2963,7 +2975,6 @@ dependencies = [
  "getrandom 0.4.3",
  "nanoserde",
  "rocksdb",
- "rusqlite",
  "serde_json",
  "terrane-api",
  "terrane-app-build",
@@ -2985,6 +2996,7 @@ name = "terrane-host-mcp"
 version = "0.1.0"
 dependencies = [
  "nanoserde",
+ "rusqlite",
  "tempfile",
  "terrane-api",
  "terrane-core",

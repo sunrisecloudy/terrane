@@ -10,6 +10,8 @@ use terrane_cap_interface::{
     ResourceReadCtx, Result, StateStore,
 };
 
+mod doc;
+
 pub struct BuildCapability;
 
 impl Capability for BuildCapability {
@@ -25,6 +27,10 @@ impl Capability for BuildCapability {
             resources: resource_methods(),
             subscriptions: Vec::new(),
         }
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::build_doc(include_internal)
     }
 
     fn decide(&self, _ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {

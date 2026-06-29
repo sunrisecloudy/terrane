@@ -10,6 +10,7 @@ use terrane_cap_interface::{
 };
 
 mod bundle;
+mod doc;
 mod sandbox;
 
 pub use bundle::{read_manifest, BundleManifest, JsRuntimeBundle};
@@ -53,7 +54,10 @@ impl Capability for JsRuntimeCapability {
     }
 
     fn run_runtime(&self, ctx: RuntimeCtx, request: RuntimeRequest) -> Result<RuntimeOutput> {
-        let bundle = bundle::load_bundle(&ctx.source)?;
+        let bundle = match &ctx.source_files {
+            Some(files) => bundle::load_bundle_files(files)?,
+            None => bundle::load_bundle(&ctx.source)?,
+        };
         let output = run_js_bundle(
             &request.app,
             &request.input,
@@ -69,5 +73,9 @@ impl Capability for JsRuntimeCapability {
             ctx.host,
         )?;
         Ok(RuntimeOutput { output })
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::js_runtime_doc(include_internal)
     }
 }

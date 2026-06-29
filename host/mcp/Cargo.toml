@@ -12,7 +12,6 @@ license = "MIT OR Apache-2.0"
 
 [features]
 default = []
-sqlite-storage = ["terrane-host/sqlite-storage"]
 rocksdb-storage = ["terrane-host/rocksdb-storage"]
 
 [[bin]]
@@ -25,5 +24,6 @@ terrane-host = { path = "../../rust/crates/terrane-host" }
 nanoserde = { version = "0.2", default-features = false, features = ["json"] }
 
 [dev-dependencies]
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 tempfile = "3"
 terrane-core = { path = "../../rust/crates/terrane-core" }

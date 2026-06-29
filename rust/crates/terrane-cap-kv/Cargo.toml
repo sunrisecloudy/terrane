@@ -10,11 +10,10 @@ path = "src/lib.rs"
 
 [features]
 default = []
-sqlite-storage = ["dep:rusqlite"]
 rocksdb-storage = ["dep:rocksdb"]
 
 [dependencies]
 terrane-cap-interface.workspace = true
 borsh.workspace = true
 rocksdb = { workspace = true, optional = true }
-rusqlite = { workspace = true, optional = true }
+rusqlite.workspace = true

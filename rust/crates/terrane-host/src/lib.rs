@@ -12,8 +12,9 @@ use nanoserde::DeJson;
 use terrane_api::{AppSummary, AppsResponse};
 use terrane_cap_builder::draft_json;
 use terrane_cap_crdt::crdt_export_hex;
+use terrane_cap_kv::app_bundle_source;
 use terrane_core::Core;
-use terrane_core::{Error, EventRecord, Request};
+use terrane_core::{Decision, Error, EventRecord, QueryValue, Request};
 
 pub mod cap_doc;
 pub mod cli;
@@ -36,6 +37,11 @@ pub const DEFAULT_SERVE_ADDR: &str = "127.0.0.1:7777";
 pub struct CommandOutcome {
     pub records: Vec<EventRecord>,
     pub output: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDryRunOutcome {
+    pub records: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +148,37 @@ pub fn dispatch_on_core(
         records,
         output: core.take_last_output(),
     })
+}
+
+pub fn dry_run_on_core(
+    core: &HostCore,
+    command: &str,
+    args: &[String],
+) -> Result<CommandDryRunOutcome, String> {
+    match core
+        .decide(Request::new(command, args.to_vec()))
+        .map_err(|e| e.to_string())?
+    {
+        Decision::Commit(records) => Ok(CommandDryRunOutcome {
+            records: records.len(),
+        }),
+        Decision::Effect(_) => Err(format!(
+            "dryRun unsupported for command '{command}': command requires an effect"
+        )),
+        Decision::Runtime(_) => Err(format!(
+            "dryRun unsupported for command '{command}': command invokes a runtime"
+        )),
+    }
+}
+
+pub fn query_on_core(
+    core: &HostCore,
+    capability: &str,
+    query: &str,
+    args: &[String],
+) -> Result<QueryValue, String> {
+    core.query(capability, query, args)
+        .map_err(|e| e.to_string())
 }
 
 /// Run an app backend and return the backend output string.
@@ -297,6 +334,42 @@ pub fn install_app(path: &str) -> Result<InstallOutcome, String> {
     }
 }
 
+/// `app install-kv <path>`: import a JS bundle into reserved cap-kv keys and
+/// catalog it with a `kv://app-bundle/<id>` source. If a storage backend is
+/// provided, the same commit configures that app's kv projection first.
+pub fn install_app_to_kv(
+    path: &str,
+    storage_backend: Option<String>,
+    storage_path: Option<String>,
+) -> Result<InstallOutcome, String> {
+    let src = Path::new(path);
+    let manifest = read_manifest(src).map_err(|e| e.to_string())?;
+    let id = manifest.id.trim().to_string();
+    validate_bundle_id(path, &id)?;
+    validate_runtime(path, &manifest.runtime)?;
+    if manifest.runtime != "js" {
+        return Err("app install-kv currently supports js text bundles only".into());
+    }
+    let source = app_bundle_source(&id);
+
+    let mut args = vec![path.to_string()];
+    if let Some(backend) = storage_backend {
+        args.push("--storage".into());
+        args.push(backend);
+    }
+    if let Some(path) = storage_path {
+        args.push("--path".into());
+        args.push(path);
+    }
+
+    let mut core = open()?;
+    match core.dispatch(Request::new("app.import", args)) {
+        Ok(_) => Ok(InstallOutcome::Installed { id, source }),
+        Err(Error::AppExists(_)) => Ok(InstallOutcome::Refreshed { id }),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// `sync <app> --from <home>`: pull another replica's edits for one app and
 /// merge them into this one.
 pub fn sync_from_home(app: &str, from_home: &str) -> Result<SyncOutcome, String> {
@@ -407,7 +480,7 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest, Error> {
 
 /// App ids become directory names under `$TERRANE_HOME/apps`, so keep them as
 /// one portable path segment.
-fn validate_bundle_id(path: &str, id: &str) -> Result<(), String> {
+pub(crate) fn validate_bundle_id(path: &str, id: &str) -> Result<(), String> {
     if id.is_empty() {
         return Err(format!("{path}/manifest.json has no \"id\""));
     }
@@ -425,7 +498,7 @@ fn validate_bundle_id(path: &str, id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_runtime(path: &str, runtime: &str) -> Result<(), String> {
+pub(crate) fn validate_runtime(path: &str, runtime: &str) -> Result<(), String> {
     match runtime {
         "js" | "wasm" => Ok(()),
         other => Err(format!(

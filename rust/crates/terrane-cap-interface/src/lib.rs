@@ -14,8 +14,9 @@ pub use abi::{
 };
 pub use capability::Capability;
 pub use doc::{
-    limit, param, resource_method, schema, CapabilityDoc, CapabilityManifestDoc, ExampleDoc,
-    InternalNote, LimitDoc, ParamDoc, ResourceDoc, ResourceMethodDoc, SchemaDoc,
+    command_doc, event_doc, limit, param, query_doc, resource_method, schema, CapabilityDoc,
+    CapabilityManifestDoc, CommandDoc, EventDoc, ExampleDoc, InternalNote, LimitDoc, ParamDoc,
+    QueryDoc, ResourceDoc, ResourceMethodDoc, SchemaDoc,
 };
 pub use helpers::{
     app_exists, arg, decode_app_removed, ensure_app_exists, extract_json_object, join_tail,

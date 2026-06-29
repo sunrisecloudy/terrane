@@ -1,13 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 use std::fs;
-use std::path::Path;
-#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[cfg(feature = "rocksdb-storage")]
 use rocksdb::{Direction, IteratorMode, Options, DB};
-#[cfg(feature = "sqlite-storage")]
 use rusqlite::{params, Connection};
 use terrane_cap_interface::{AppId, Error, Result};
 
@@ -77,14 +73,12 @@ fn sync_app(
     }
 }
 
-#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 fn storage_path(home: &Path, binding: &KvStorageBinding) -> Result<PathBuf> {
     binding
         .resolved_path(home)
         .ok_or_else(|| Error::Storage("memory backend has no storage path".into()))
 }
 
-#[cfg(feature = "sqlite-storage")]
 fn ensure_parent(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -94,6 +88,7 @@ fn ensure_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(feature = "rocksdb-storage"))]
 fn unavailable_backend(backend: &KvStorageBackend) -> Result<()> {
     let feature = backend.required_feature().unwrap_or("unknown");
     Err(Error::Storage(format!(
@@ -102,19 +97,12 @@ fn unavailable_backend(backend: &KvStorageBackend) -> Result<()> {
     )))
 }
 
-#[cfg(feature = "sqlite-storage")]
 fn ensure_sqlite_backend(home: &Path, binding: &KvStorageBinding) -> Result<()> {
     let path = storage_path(home, binding)?;
     let conn = open_sqlite(&path)?;
     ensure_sqlite_schema(&conn)
 }
 
-#[cfg(not(feature = "sqlite-storage"))]
-fn ensure_sqlite_backend(_home: &Path, binding: &KvStorageBinding) -> Result<()> {
-    unavailable_backend(&binding.backend)
-}
-
-#[cfg(feature = "sqlite-storage")]
 fn sync_sqlite_backend(
     home: &Path,
     binding: &KvStorageBinding,
@@ -125,23 +113,11 @@ fn sync_sqlite_backend(
     sync_sqlite_app(&path, app, data)
 }
 
-#[cfg(not(feature = "sqlite-storage"))]
-fn sync_sqlite_backend(
-    _home: &Path,
-    binding: &KvStorageBinding,
-    _app: &str,
-    _data: Option<&BTreeMap<String, String>>,
-) -> Result<()> {
-    unavailable_backend(&binding.backend)
-}
-
-#[cfg(feature = "sqlite-storage")]
 fn open_sqlite(path: &Path) -> Result<Connection> {
     ensure_parent(path)?;
     Connection::open(path).map_err(|e| Error::Storage(format!("open sqlite: {e}")))
 }
 
-#[cfg(feature = "sqlite-storage")]
 fn ensure_sqlite_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS kv_entries (
@@ -154,7 +130,6 @@ fn ensure_sqlite_schema(conn: &Connection) -> Result<()> {
     .map_err(|e| Error::Storage(format!("init sqlite schema: {e}")))
 }
 
-#[cfg(feature = "sqlite-storage")]
 fn sync_sqlite_app(path: &Path, app: &str, data: Option<&BTreeMap<String, String>>) -> Result<()> {
     let mut conn = open_sqlite(path)?;
     ensure_sqlite_schema(&conn)?;

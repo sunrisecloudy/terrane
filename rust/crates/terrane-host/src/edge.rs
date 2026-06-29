@@ -5,9 +5,10 @@
 //! a minimal `http://` GET (`net`), an agent-CLI call (`model`), and minting this
 //! home's replica id from OS entropy (`replica`).
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,6 +16,9 @@ use std::time::{Duration, Instant};
 use terrane_cap_builder as builder;
 use terrane_cap_harness as harness;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
+use terrane_cap_kv::{
+    app_bundle_key, app_bundle_source, set_event, storage_configured_event, KvStorageBackend,
+};
 use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
 use terrane_cap_replica::initialized_event;
@@ -52,6 +56,11 @@ impl EffectRunner for EdgeRunner {
                 harness,
                 prompt,
             } => run_harness_js(run_id, app_id, harness, prompt, state),
+            Effect::ImportAppBundle {
+                source,
+                storage_backend,
+                storage_path,
+            } => import_app_bundle(source, storage_backend, storage_path, state),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
         }
     }
@@ -230,6 +239,128 @@ fn run_harness_js(
         Err(e) => records.push(harness::js_failed_event(run_id, e.to_string())?),
     }
     Ok(records)
+}
+
+fn import_app_bundle(
+    source: &str,
+    storage_backend: &Option<String>,
+    storage_path: &Option<String>,
+    state: &terrane_core::State,
+) -> Result<Vec<EventRecord>> {
+    let src = Path::new(source);
+    let manifest = crate::read_manifest(src)?;
+    let id = manifest.id.trim().to_string();
+    crate::validate_bundle_id(source, &id).map_err(Error::InvalidInput)?;
+    crate::validate_runtime(source, &manifest.runtime).map_err(Error::InvalidInput)?;
+    if manifest.runtime != "js" {
+        return Err(Error::InvalidInput(
+            "app.import currently supports js text bundles only".into(),
+        ));
+    }
+    if state.app.apps.contains_key(&id) {
+        return Err(Error::AppExists(id));
+    }
+    let name = match manifest.name.trim() {
+        "" => id.clone(),
+        name => name.to_string(),
+    };
+    let files = read_text_bundle_files(src)?;
+
+    let mut records = Vec::new();
+    if let Some(raw_backend) = storage_backend {
+        let backend: KvStorageBackend = raw_backend.parse()?;
+        backend.ensure_available()?;
+        records.push(storage_configured_event(
+            Some(id.clone()),
+            backend,
+            storage_path.clone(),
+        )?);
+    } else if storage_path.is_some() {
+        return Err(Error::InvalidInput(
+            "--path requires --storage for app.import".into(),
+        ));
+    }
+
+    records.push(terrane_cap_app::added_event(
+        id.clone(),
+        name,
+        Some(app_bundle_source(&id)),
+        manifest.runtime,
+    )?);
+    for (path, value) in files {
+        records.push(set_event(id.clone(), app_bundle_key(&path)?, value)?);
+    }
+    Ok(records)
+}
+
+fn read_text_bundle_files(root: &Path) -> Result<BTreeMap<String, String>> {
+    if !root.is_dir() {
+        return Err(Error::InvalidInput(format!(
+            "app.import source must be a bundle directory: {}",
+            root.display()
+        )));
+    }
+    let mut files = BTreeMap::new();
+    collect_text_bundle_files(root, root, &mut files)?;
+    if !files.contains_key("manifest.json") {
+        return Err(Error::InvalidInput(
+            "app.import bundle must contain manifest.json".into(),
+        ));
+    }
+    Ok(files)
+}
+
+fn collect_text_bundle_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut BTreeMap<String, String>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir).map_err(|e| Error::Storage(e.to_string()))? {
+        let entry = entry.map_err(|e| Error::Storage(e.to_string()))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|e| Error::Storage(e.to_string()))?;
+        let path = entry.path();
+        if file_type.is_symlink() {
+            return Err(Error::InvalidInput(format!(
+                "app.import rejects symlinks: {}",
+                path.display()
+            )));
+        }
+        if file_type.is_dir() {
+            collect_text_bundle_files(root, &path, files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let rel = bundle_relative_path(root, &path)?;
+        app_bundle_key(&rel)?;
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| Error::Runtime(format!("read bundle file {}: {e}", path.display())))?;
+        files.insert(rel, text);
+    }
+    Ok(())
+}
+
+fn bundle_relative_path(root: &Path, path: &Path) -> Result<String> {
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    let mut parts = Vec::new();
+    for component in rel.components() {
+        let std::path::Component::Normal(part) = component else {
+            return Err(Error::InvalidInput(format!(
+                "unsafe bundle path: {}",
+                path.display()
+            )));
+        };
+        let part = part.to_str().ok_or_else(|| {
+            Error::InvalidInput(format!("bundle path is not UTF-8: {}", path.display()))
+        })?;
+        parts.push(part.to_string());
+    }
+    Ok(parts.join("/"))
 }
 
 fn run_harness_command(

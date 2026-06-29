@@ -12,6 +12,8 @@ use terrane_cap_interface::{
     EventSpec, Result, StateStore,
 };
 
+mod doc;
+
 /// A recorded network response, rebuilt by folding a `net.fetched` event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchResponse {
@@ -67,6 +69,10 @@ impl Capability for NetCapability {
                 kind: "app.removed",
             }],
         }
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::net_doc(include_internal)
     }
 
     fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {

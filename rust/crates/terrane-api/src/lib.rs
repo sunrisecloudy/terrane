@@ -17,7 +17,7 @@
 use nanoserde::{DeJson, SerJson};
 
 /// Version of *this* host API surface. Bumped when a route/tool/shape changes.
-pub const CONTRACT_VERSION: &str = "0.2.0";
+pub const CONTRACT_VERSION: &str = "0.4.0";
 
 /// The MCP protocol revision the MCP host speaks in its `initialize` handshake.
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -107,10 +107,26 @@ pub const TOOL_LIST_APPS: &str = "list_apps";
 pub const TOOL_APP_ACTIONS: &str = "app_actions";
 /// MCP tool: run a verb on an app (so an agent can *act* on it).
 pub const TOOL_INVOKE: &str = "invoke";
+/// MCP tool: list guided workflows for weaker/blank-context clients.
+pub const TOOL_WORKFLOWS_LIST: &str = "workflows_list";
+/// MCP tool: return exact MCP-call recipes for one guided workflow.
+pub const TOOL_WORKFLOW_INFO: &str = "workflow_info";
+/// MCP tool: return app-building recipes for common app kinds.
+pub const TOOL_APP_RECIPE: &str = "app_recipe";
+/// MCP tool: return a minimal generated app bundle as JSON files.
+pub const TOOL_APP_SCAFFOLD: &str = "app_scaffold";
+/// MCP tool: validate an app bundle path before registration.
+pub const TOOL_APP_BUNDLE_VALIDATE: &str = "app_bundle_validate";
+/// MCP tool: register an app bundle through the core app.add command.
+pub const TOOL_APP_REGISTER: &str = "app_register";
 /// MCP tool: list capability docs.
 pub const TOOL_CAPABILITIES_LIST: &str = "capabilities_list";
 /// MCP tool: return detailed capability docs for one namespace.
 pub const TOOL_CAPABILITY_INFO: &str = "capability_info";
+/// MCP tool: run a public capability command through the core dispatcher.
+pub const TOOL_CAPABILITY_COMMAND: &str = "capability_command";
+/// MCP tool: run a read-only public capability query.
+pub const TOOL_CAPABILITY_QUERY: &str = "capability_query";
 
 /// The reserved backend verb an app implements to self-describe: `invoke`ing it
 /// (or the `app_actions` tool) returns an [`AppActions`] JSON document. Apps that
@@ -131,8 +147,38 @@ pub struct ToolDef {
 pub fn mcp_tools() -> Vec<ToolDef> {
     vec![
         ToolDef {
+            name: TOOL_WORKFLOWS_LIST,
+            description: "Start here for blank-context or weaker models. Lists exact MCP workflows such as make_js_kv_app, register_app_bundle, inspect_app_actions, run_app_action, and safe_capability_command.",
+            input_schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_WORKFLOW_INFO,
+            description: "Return an executable recipe of tools/call steps for one workflow. Example tools/call arguments: {\"name\":\"workflow_info\",\"arguments\":{\"name\":\"make_js_kv_app\"}}.",
+            input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Workflow id from workflows_list, e.g. make_js_kv_app or register_app_bundle."}},"required":["name"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_RECIPE,
+            description: "Return a concise app-building recipe. For most JS apps, call app_scaffold, write its files, app_bundle_validate, app_register, app_actions, then invoke.",
+            input_schema: r#"{"type":"object","properties":{"kind":{"type":"string","description":"Recipe kind. Defaults to js_kv_app."}},"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_SCAFFOLD,
+            description: "Generate a minimal JS app bundle as JSON files without writing to disk. Use this to create manifest.json and main.js before app_bundle_validate.",
+            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. notes-demo."},"name":{"type":"string","description":"Display name, e.g. Notes Demo."},"kind":{"type":"string","description":"Scaffold kind. Defaults to js_kv_notes."},"withUi":{"type":"boolean","description":"Include index.html and style.css. Defaults to false."}},"required":["id","name"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_BUNDLE_VALIDATE,
+            description: "Validate an app bundle path before registering it. Example tools/call arguments: {\"name\":\"app_bundle_validate\",\"arguments\":{\"path\":\"/tmp/my-app\"}}.",
+            input_schema: r#"{"type":"object","properties":{"path":{"type":"string","description":"Directory containing manifest.json and referenced backend/UI files."}},"required":["path"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_REGISTER,
+            description: "Happy-path app registration for agents. Reads manifest.json from source, validates the bundle, then dispatches app.add through core. Use dryRun true before committing.",
+            input_schema: r#"{"type":"object","properties":{"source":{"type":"string","description":"App bundle directory containing manifest.json."},"id":{"type":"string","description":"Optional id override; defaults to manifest.id."},"name":{"type":"string","description":"Optional display-name override; defaults to manifest.name or id."},"runtime":{"type":"string","description":"Optional runtime override; defaults to manifest.runtime or js."},"dryRun":{"type":"boolean","description":"Validate through app.add without committing. Defaults to false."}},"required":["source"],"additionalProperties":false}"#,
+        },
+        ToolDef {
             name: TOOL_LIST_APPS,
-            description: "List the installed terrane apps (id, name, whether it has a UI).",
+            description: "List the installed terrane apps (id, name, whether it has a UI). Returns structuredContent.apps as well as text JSON.",
             input_schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
         },
         ToolDef {
@@ -154,8 +200,18 @@ pub fn mcp_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TOOL_CAPABILITY_INFO,
-            description: "Return detailed Terrane capability documentation for one namespace.",
+            description: "Return detailed Terrane capability documentation for one namespace. For app registration docs, call with {\"namespace\":\"app\",\"format\":\"json\"}.",
             input_schema: r#"{"type":"object","properties":{"namespace":{"type":"string","description":"Capability namespace, e.g. kv, crdt, relational_db."},"format":{"type":"string","enum":["json","markdown","skill"],"description":"Rendered output format. Defaults to json."},"includeInternal":{"type":"boolean","description":"Include internal-only implementation notes. Defaults to false."}},"required":["namespace"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_CAPABILITY_QUERY,
+            description: "Run a read-only Terrane capability query, e.g. {\"capability\":\"app\",\"query\":\"exists\",\"args\":[\"todo\"]}.",
+            input_schema: r#"{"type":"object","properties":{"capability":{"type":"string","description":"Capability namespace, e.g. app or replica."},"query":{"type":"string","description":"Query name, either local (exists) or dotted (app.exists)."},"args":{"type":"array","items":{"type":"string"},"description":"Query argument vector. Defaults to []."}},"required":["capability","query"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_CAPABILITY_COMMAND,
+            description: "Run a Terrane capability command through the core dispatcher. First call tools/call with {\"name\":\"capability_command\",\"arguments\":{\"name\":\"app.add\",\"help\":true}} for ordered params and examples. Set dryRun true to validate simple commit commands without mutation.",
+            input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Dotted command name, e.g. app.add or kv.set."},"args":{"type":"array","items":{"type":"string"},"description":"Command argument vector in the order returned by help:true / capability docs. Defaults to []."},"dryRun":{"type":"boolean","description":"Validate without committing when the command can be decided locally. Defaults to false."},"help":{"type":"boolean","description":"Return ordered parameter docs, effects, errors, and examples for name without executing. Defaults to false."}},"required":["name"],"additionalProperties":false}"#,
         },
     ]
 }
@@ -259,6 +315,8 @@ pub struct CapabilitySummary {
     pub status: String,
     pub resources: Vec<String>,
     pub commands: Vec<String>,
+    #[nserde(default)]
+    pub queries: Vec<String>,
     pub events: Vec<String>,
 }
 
@@ -271,6 +329,12 @@ pub struct CapabilityDocInfo {
     pub version: String,
     pub audience: Vec<String>,
     pub manifest: CapabilityManifestInfo,
+    #[nserde(default)]
+    pub commands: Vec<CapabilityCommandInfo>,
+    #[nserde(default)]
+    pub queries: Vec<CapabilityQueryInfo>,
+    #[nserde(default)]
+    pub events: Vec<CapabilityEventInfo>,
     pub resources: Vec<CapabilityResourceInfo>,
     pub schemas: Vec<CapabilitySchemaInfo>,
     pub examples: Vec<CapabilityExampleInfo>,
@@ -288,6 +352,76 @@ pub struct CapabilityManifestInfo {
     pub events: Vec<String>,
     pub subscriptions: Vec<String>,
     pub resource_methods: Vec<CapabilityResourceMethodInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityCommandInfo {
+    pub name: String,
+    #[nserde(default)]
+    pub summary: String,
+    #[nserde(default)]
+    pub params: Vec<CapabilityParamInfo>,
+    #[nserde(default)]
+    pub returns: String,
+    #[nserde(default)]
+    pub errors: Vec<String>,
+    #[nserde(default)]
+    pub emits: Vec<String>,
+    #[nserde(default)]
+    pub effects: Vec<String>,
+    #[nserde(default)]
+    pub examples: Vec<CapabilityExampleInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityCommandHelpInfo {
+    pub name: String,
+    #[nserde(default)]
+    pub summary: String,
+    #[nserde(default)]
+    pub argument_order: Vec<String>,
+    #[nserde(default)]
+    pub params: Vec<CapabilityParamInfo>,
+    #[nserde(default)]
+    pub returns: String,
+    #[nserde(default)]
+    pub errors: Vec<String>,
+    #[nserde(default)]
+    pub emits: Vec<String>,
+    #[nserde(default)]
+    pub effects: Vec<String>,
+    #[nserde(default)]
+    pub examples: Vec<CapabilityExampleInfo>,
+    #[nserde(default)]
+    pub notes: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityQueryInfo {
+    pub name: String,
+    #[nserde(default)]
+    pub summary: String,
+    #[nserde(default)]
+    pub params: Vec<CapabilityParamInfo>,
+    #[nserde(default)]
+    pub returns: String,
+    #[nserde(default)]
+    pub errors: Vec<String>,
+    #[nserde(default)]
+    pub examples: Vec<CapabilityExampleInfo>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct CapabilityEventInfo {
+    pub kind: String,
+    #[nserde(default)]
+    pub summary: String,
+    #[nserde(default)]
+    pub params: Vec<CapabilityParamInfo>,
+    #[nserde(default)]
+    pub effects: Vec<String>,
+    #[nserde(default)]
+    pub examples: Vec<CapabilityExampleInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]

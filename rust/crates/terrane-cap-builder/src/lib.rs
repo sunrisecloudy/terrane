@@ -3,6 +3,7 @@
 //! Builder owns draft state and validates generated bundle files. Agent-specific
 //! prompting/execution lives in sibling capabilities such as `harness`.
 
+mod doc;
 mod events;
 mod json;
 mod types;
@@ -56,6 +57,10 @@ impl Capability for BuilderCapability {
 
     fn describe(&self, record: &EventRecord) -> Option<String> {
         events::describe(record)
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::builder_doc(include_internal)
     }
 }
 

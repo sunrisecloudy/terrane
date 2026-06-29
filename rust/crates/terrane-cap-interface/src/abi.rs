@@ -102,6 +102,11 @@ pub enum Effect {
         harness: String,
         prompt: String,
     },
+    ImportAppBundle {
+        source: String,
+        storage_backend: Option<String>,
+        storage_path: Option<String>,
+    },
     NewReplicaId,
 }
 

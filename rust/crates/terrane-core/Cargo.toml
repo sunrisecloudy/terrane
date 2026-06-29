@@ -10,7 +10,6 @@ path = "src/lib.rs"
 
 [features]
 default = []
-sqlite-storage = ["terrane-cap-kv/sqlite-storage"]
 rocksdb-storage = ["terrane-cap-kv/rocksdb-storage"]
 
 [dependencies]

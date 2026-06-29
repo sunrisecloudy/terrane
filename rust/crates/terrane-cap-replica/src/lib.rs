@@ -20,6 +20,8 @@ use terrane_cap_interface::{
     StateStore,
 };
 
+mod doc;
+
 /// This capability's slice of State: the home's PeerID, once minted.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReplicaState {
@@ -52,6 +54,10 @@ impl Capability for ReplicaCapability {
             resources: Vec::new(),
             subscriptions: Vec::new(),
         }
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::replica_doc(include_internal)
     }
 
     fn decide(&self, ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {

@@ -11,11 +11,6 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
 default = []
-sqlite-storage = [
-  "terrane-core/sqlite-storage",
-  "terrane-cap-kv/sqlite-storage",
-  "dep:rusqlite",
-]
 rocksdb-storage = [
   "terrane-core/rocksdb-storage",
   "terrane-cap-kv/rocksdb-storage",
@@ -44,7 +39,7 @@ terrane-cap-replica.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 terrane-core.workspace = true
 rocksdb = { workspace = true, optional = true }
-rusqlite = { workspace = true, optional = true }
 
 [dev-dependencies]
+rusqlite.workspace = true
 tempfile.workspace = true

@@ -1,5 +1,3 @@
-use crate::manifest::{CapManifest, ResourceMethod};
-
 /// Canonical capability documentation. Edge surfaces render this into MCP
 /// detail, CLI help, generated skills, and public contract docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +9,9 @@ pub struct CapabilityDoc {
     pub version: String,
     pub audience: Vec<String>,
     pub manifest: CapabilityManifestDoc,
+    pub commands: Vec<CommandDoc>,
+    pub queries: Vec<QueryDoc>,
+    pub events: Vec<EventDoc>,
     pub resources: Vec<ResourceDoc>,
     pub schemas: Vec<SchemaDoc>,
     pub examples: Vec<ExampleDoc>,
@@ -21,73 +22,6 @@ pub struct CapabilityDoc {
 }
 
 impl CapabilityDoc {
-    pub fn from_manifest(namespace: &str, manifest: CapManifest, include_internal: bool) -> Self {
-        let resource_methods: Vec<ResourceMethodDoc> = manifest
-            .resources
-            .iter()
-            .map(ResourceMethodDoc::from_resource_method)
-            .collect();
-        let resources = if resource_methods.is_empty() {
-            Vec::new()
-        } else {
-            vec![ResourceDoc {
-                namespace: namespace.to_string(),
-                summary: format!("Backend resource surface for `{namespace}`."),
-                methods: resource_methods.clone(),
-            }]
-        };
-        Self {
-            namespace: namespace.to_string(),
-            title: namespace.to_string(),
-            summary: format!("Capability namespace `{namespace}`."),
-            status: "stable".to_string(),
-            version: "0.1.0".to_string(),
-            audience: vec![
-                "app-author".to_string(),
-                "agent".to_string(),
-                "host-implementer".to_string(),
-            ],
-            manifest: CapabilityManifestDoc {
-                commands: manifest
-                    .commands
-                    .iter()
-                    .map(|command| command.name.to_string())
-                    .collect(),
-                queries: manifest
-                    .queries
-                    .iter()
-                    .map(|query| query.name.to_string())
-                    .collect(),
-                events: manifest
-                    .events
-                    .iter()
-                    .map(|event| event.kind.to_string())
-                    .collect(),
-                subscriptions: manifest
-                    .subscriptions
-                    .iter()
-                    .map(|subscription| subscription.kind.to_string())
-                    .collect(),
-                resource_methods,
-            },
-            resources,
-            schemas: Vec::new(),
-            examples: Vec::new(),
-            constraints: Vec::new(),
-            limits: Vec::new(),
-            compatibility: Vec::new(),
-            internal: if include_internal {
-                vec![InternalNote {
-                    title: "Generated from manifest".to_string(),
-                    body: "This fallback doc was generated from Capability::manifest()."
-                        .to_string(),
-                }]
-            } else {
-                Vec::new()
-            },
-        }
-    }
-
     pub fn without_internal(mut self) -> Self {
         self.internal.clear();
         self
@@ -101,6 +35,83 @@ pub struct CapabilityManifestDoc {
     pub events: Vec<String>,
     pub subscriptions: Vec<String>,
     pub resource_methods: Vec<ResourceMethodDoc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandDoc {
+    pub name: String,
+    pub summary: String,
+    pub params: Vec<ParamDoc>,
+    pub returns: String,
+    pub errors: Vec<String>,
+    pub emits: Vec<String>,
+    pub effects: Vec<String>,
+    pub examples: Vec<ExampleDoc>,
+}
+
+impl CommandDoc {
+    pub fn with_errors(mut self, errors: &[&str]) -> Self {
+        self.errors = strings(errors);
+        self
+    }
+
+    pub fn with_emits(mut self, emits: &[&str]) -> Self {
+        self.emits = strings(emits);
+        self
+    }
+
+    pub fn with_effects(mut self, effects: &[&str]) -> Self {
+        self.effects = strings(effects);
+        self
+    }
+
+    pub fn with_examples(mut self, examples: &[ExampleDoc]) -> Self {
+        self.examples = examples.to_vec();
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryDoc {
+    pub name: String,
+    pub summary: String,
+    pub params: Vec<ParamDoc>,
+    pub returns: String,
+    pub errors: Vec<String>,
+    pub examples: Vec<ExampleDoc>,
+}
+
+impl QueryDoc {
+    pub fn with_errors(mut self, errors: &[&str]) -> Self {
+        self.errors = strings(errors);
+        self
+    }
+
+    pub fn with_examples(mut self, examples: &[ExampleDoc]) -> Self {
+        self.examples = examples.to_vec();
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventDoc {
+    pub kind: String,
+    pub summary: String,
+    pub params: Vec<ParamDoc>,
+    pub effects: Vec<String>,
+    pub examples: Vec<ExampleDoc>,
+}
+
+impl EventDoc {
+    pub fn with_effects(mut self, effects: &[&str]) -> Self {
+        self.effects = strings(effects);
+        self
+    }
+
+    pub fn with_examples(mut self, examples: &[ExampleDoc]) -> Self {
+        self.examples = examples.to_vec();
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,28 +129,6 @@ pub struct ResourceMethodDoc {
     pub returns: String,
     pub summary: String,
     pub errors: Vec<String>,
-}
-
-impl ResourceMethodDoc {
-    fn from_resource_method(method: &ResourceMethod) -> Self {
-        Self {
-            name: method.name().to_string(),
-            kind: method.kind().to_string(),
-            params: method
-                .params()
-                .iter()
-                .map(|name| ParamDoc {
-                    name: (*name).to_string(),
-                    summary: String::new(),
-                    required: true,
-                    schema_ref: String::new(),
-                })
-                .collect(),
-            returns: String::new(),
-            summary: format!("{} resource method `{}`.", method.kind(), method.name()),
-            errors: Vec::new(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +168,40 @@ pub struct LimitDoc {
 pub struct InternalNote {
     pub title: String,
     pub body: String,
+}
+
+pub fn command_doc(name: &str, params: &[ParamDoc], returns: &str, summary: &str) -> CommandDoc {
+    CommandDoc {
+        name: name.to_string(),
+        summary: summary.to_string(),
+        params: params.to_vec(),
+        returns: returns.to_string(),
+        errors: Vec::new(),
+        emits: Vec::new(),
+        effects: Vec::new(),
+        examples: Vec::new(),
+    }
+}
+
+pub fn query_doc(name: &str, params: &[ParamDoc], returns: &str, summary: &str) -> QueryDoc {
+    QueryDoc {
+        name: name.to_string(),
+        summary: summary.to_string(),
+        params: params.to_vec(),
+        returns: returns.to_string(),
+        errors: Vec::new(),
+        examples: Vec::new(),
+    }
+}
+
+pub fn event_doc(kind: &str, params: &[ParamDoc], summary: &str) -> EventDoc {
+    EventDoc {
+        kind: kind.to_string(),
+        summary: summary.to_string(),
+        params: params.to_vec(),
+        effects: Vec::new(),
+        examples: Vec::new(),
+    }
 }
 
 pub fn resource_method(
@@ -226,4 +249,8 @@ pub fn schema(id: &str, title: &str, schema_json: &str) -> SchemaDoc {
         schema_json: schema_json.to_string(),
         public: true,
     }
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| (*value).to_string()).collect()
 }

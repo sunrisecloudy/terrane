@@ -106,6 +106,7 @@ impl RuntimeHostHandle {
 #[derive(Clone)]
 pub struct RuntimeCtx {
     pub source: String,
+    pub source_files: Option<BTreeMap<String, String>>,
     pub app_name: String,
     pub host: RuntimeHostHandle,
 }

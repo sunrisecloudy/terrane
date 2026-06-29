@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use nanoserde::DeJson;
@@ -65,6 +66,34 @@ pub(crate) fn load_bundle(source: &str) -> Result<JsRuntimeBundle> {
             resources: vec!["kv".to_string()],
         })
     }
+}
+
+pub(crate) fn load_bundle_files(files: &BTreeMap<String, String>) -> Result<JsRuntimeBundle> {
+    let manifest_text = files
+        .get("manifest.json")
+        .ok_or_else(|| Error::Runtime("kv app bundle is missing manifest.json".into()))?;
+    let manifest = BundleManifest::deserialize_json(manifest_text)
+        .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
+    if !manifest.runtime.is_empty() && manifest.runtime != "js" {
+        return Err(Error::Runtime(format!(
+            "manifest runtime {:?} is not js",
+            manifest.runtime
+        )));
+    }
+    let source = files
+        .get(&manifest.backend)
+        .ok_or_else(|| {
+            Error::Runtime(format!(
+                "kv app bundle is missing backend file {}",
+                manifest.backend
+            ))
+        })?
+        .clone();
+    Ok(JsRuntimeBundle {
+        source,
+        name: manifest.name,
+        resources: manifest.resources,
+    })
 }
 
 /// Read and parse `<bundle_dir>/manifest.json`.

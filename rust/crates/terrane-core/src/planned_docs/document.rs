@@ -1,13 +1,13 @@
 use terrane_cap_interface::{
-    limit, param, resource_method, schema, CapabilityDoc, CapabilityManifestDoc, ExampleDoc,
-    InternalNote, ResourceDoc, SchemaDoc,
+    command_doc, event_doc, limit, param, schema, CapabilityDoc, CapabilityManifestDoc, CommandDoc,
+    EventDoc, ExampleDoc, InternalNote, ParamDoc, ResourceDoc, ResourceMethodDoc, SchemaDoc,
 };
 pub fn document_doc(include_internal: bool) -> CapabilityDoc {
     let resource_methods = vec![
-        resource_method(
+        method_doc(
             "create",
             "write",
-            &[
+            vec![
                 param("id", "Stable document id.", "document_id.schema.json"),
                 param("title", "Human-readable title.", ""),
                 param("body", "Initial document body.", ""),
@@ -18,11 +18,18 @@ pub fn document_doc(include_internal: bool) -> CapabilityDoc {
                 ),
             ],
             "Create or replace one app-owned document.",
+            "void",
+            &[
+                "invalid document id",
+                "invalid metadata JSON",
+                "body too large",
+                "document quota exceeded",
+            ],
         ),
-        resource_method(
+        method_doc(
             "patch",
             "write",
-            &[
+            vec![
                 param("id", "Stable document id.", "document_id.schema.json"),
                 param(
                     "patchJson",
@@ -31,46 +38,68 @@ pub fn document_doc(include_internal: bool) -> CapabilityDoc {
                 ),
             ],
             "Patch title, body, or metadata for one document.",
+            "void",
+            &[
+                "missing document",
+                "invalid patch JSON",
+                "metadata too large",
+                "body too large",
+            ],
         ),
-        resource_method(
+        method_doc(
             "append",
             "write",
-            &[
+            vec![
                 param("id", "Stable document id.", "document_id.schema.json"),
                 param("text", "Text to append to the body.", ""),
             ],
             "Append text to a document body.",
+            "void",
+            &["missing document", "body too large"],
         ),
-        resource_method(
+        method_doc(
             "delete",
             "write",
-            &[param(
+            vec![param(
                 "id",
                 "Stable document id.",
                 "document_id.schema.json",
             )],
             "Delete one app-owned document.",
+            "void",
+            &["invalid document id"],
         ),
-        resource_method(
+        method_doc(
             "get",
             "read",
-            &[param(
+            vec![param(
                 "id",
                 "Stable document id.",
                 "document_id.schema.json",
             )],
             "Read one document as JSON.",
+            "string|null",
+            &["invalid document id"],
         ),
-        resource_method("list", "read", &[], "List document ids and titles."),
-        resource_method(
+        method_doc(
+            "list",
+            "read",
+            Vec::new(),
+            "List document ids and titles.",
+            "string",
+            &[],
+        ),
+        method_doc(
             "exportMarkdown",
             "read",
-            &[param(
+            vec![param(
                 "id",
                 "Stable document id.",
                 "document_id.schema.json",
             )],
             "Return the body as markdown/plain text for copy or preview.",
+            "string|null",
+            &["missing document", "invalid document id"],
         ),
     ];
     CapabilityDoc {
@@ -101,6 +130,9 @@ pub fn document_doc(include_internal: bool) -> CapabilityDoc {
             subscriptions: vec!["app.removed".to_string()],
             resource_methods: resource_methods.clone(),
         },
+        commands: document_commands(),
+        queries: Vec::new(),
+        events: document_events(),
         resources: vec![ResourceDoc {
             namespace: "document".to_string(),
             summary: "App-scoped document records with explicit metadata and body text."
@@ -113,21 +145,14 @@ pub fn document_doc(include_internal: bool) -> CapabilityDoc {
                 title: "Create a note".to_string(),
                 summary: "Store a markdown note with simple metadata.".to_string(),
                 language: "js".to_string(),
-                code: r###"ctx.resource.document.create(
-  "daily-plan",
-  "Daily Plan",
-  "## Today\n- Ship the capability docs",
-  JSON.stringify({ contentType: "text/markdown", tags: ["planning"] })
-);"###
-                .to_string(),
+                code: include_str!("examples/document/create_note.js").to_string(),
                 expected: "document created".to_string(),
             },
             ExampleDoc {
                 title: "Append generated content".to_string(),
                 summary: "Grow a document body without rewriting the whole document.".to_string(),
                 language: "js".to_string(),
-                code: r#"ctx.resource.document.append("daily-plan", "\n- Verify MCP completion");"#
-                    .to_string(),
+                code: include_str!("examples/document/append_generated_content.js").to_string(),
                 expected: "document appended".to_string(),
             },
         ],
@@ -136,7 +161,7 @@ pub fn document_doc(include_internal: bool) -> CapabilityDoc {
             "Bodies are strings; binary assets stay out of this capability.".to_string(),
             "Writes must be recorded as deterministic events.".to_string(),
             "Reads are derived from folded state and are not recorded.".to_string(),
-            "Generated apps must check runtime availability before using this planned surface."
+            "Planned resource availability warning: ctx.resource.document may be absent until the host/runtime grants this planned capability; generated apps must feature-detect it before calling document methods."
                 .to_string(),
         ],
         limits: vec![
@@ -151,7 +176,7 @@ pub fn document_doc(include_internal: bool) -> CapabilityDoc {
         compatibility: vec![
             concat!(
                 "This planned doc is exposed before runtime injection; generated apps must check ",
-                "that the runtime actually grants the resource before calling it."
+                "that the runtime actually grants ctx.resource.document before calling it."
             )
             .to_string(),
             "For collaborative merge semantics, use `crdt` until document-level collaboration lands.".to_string(),
@@ -168,6 +193,150 @@ pub fn document_doc(include_internal: bool) -> CapabilityDoc {
         } else {
             Vec::new()
         },
+    }
+}
+
+fn document_commands() -> Vec<CommandDoc> {
+    vec![
+        command_doc(
+            "document.create",
+            &[
+                param("id", "Stable document id.", "document_id.schema.json"),
+                param("title", "Human-readable title.", "string"),
+                param("body", "Initial document body.", "string"),
+                param(
+                    "metadataJson",
+                    "Optional metadata JSON.",
+                    "document_meta.schema.json",
+                ),
+            ],
+            "commit",
+            "Create or replace one app-owned document.",
+        )
+        .with_errors(&[
+            "document resource unavailable: planned capability not granted by runtime",
+            "invalid document id",
+            "invalid metadata JSON",
+            "body too large",
+            "document quota exceeded",
+        ])
+        .with_emits(&["document.created"]),
+        command_doc(
+            "document.patch",
+            &[
+                param("id", "Stable document id.", "document_id.schema.json"),
+                param(
+                    "patchJson",
+                    "Partial document update.",
+                    "document_patch.schema.json",
+                ),
+            ],
+            "commit",
+            "Patch title, body, or metadata for one document.",
+        )
+        .with_errors(&[
+            "document resource unavailable: planned capability not granted by runtime",
+            "missing document",
+            "invalid patch JSON",
+            "metadata too large",
+            "body too large",
+        ])
+        .with_emits(&["document.patched"]),
+        command_doc(
+            "document.append",
+            &[
+                param("id", "Stable document id.", "document_id.schema.json"),
+                param("text", "Text to append to the body.", "string"),
+            ],
+            "commit",
+            "Append text to a document body.",
+        )
+        .with_errors(&[
+            "document resource unavailable: planned capability not granted by runtime",
+            "missing document",
+            "body too large",
+        ])
+        .with_emits(&["document.patched"]),
+        command_doc(
+            "document.delete",
+            &[param(
+                "id",
+                "Stable document id.",
+                "document_id.schema.json",
+            )],
+            "commit",
+            "Delete one app-owned document.",
+        )
+        .with_errors(&[
+            "document resource unavailable: planned capability not granted by runtime",
+            "invalid document id",
+        ])
+        .with_emits(&["document.deleted"]),
+    ]
+}
+
+fn document_events() -> Vec<EventDoc> {
+    vec![
+        event_doc(
+            "document.created",
+            &[
+                param("id", "Stable document id.", "document_id.schema.json"),
+                param("title", "Human-readable title.", "string"),
+                param("body", "Document body.", "string"),
+                param(
+                    "metadataJson",
+                    "Document metadata JSON.",
+                    "document_meta.schema.json",
+                ),
+            ],
+            "Creates or replaces the folded document record.",
+        )
+        .with_effects(&["folds into document state"]),
+        event_doc(
+            "document.patched",
+            &[
+                param("id", "Stable document id.", "document_id.schema.json"),
+                param(
+                    "patchJson",
+                    "Partial document update.",
+                    "document_patch.schema.json",
+                ),
+            ],
+            "Applies a deterministic patch to the folded document record.",
+        )
+        .with_effects(&["folds into document state"]),
+        event_doc(
+            "document.deleted",
+            &[param(
+                "id",
+                "Stable document id.",
+                "document_id.schema.json",
+            )],
+            "Removes one folded document record.",
+        )
+        .with_effects(&["removes document state for id"]),
+    ]
+}
+
+fn method_doc(
+    name: &str,
+    kind: &str,
+    params: Vec<ParamDoc>,
+    summary: &str,
+    returns: &str,
+    specific_errors: &[&str],
+) -> ResourceMethodDoc {
+    let mut errors = vec![
+        "document resource unavailable: planned capability not granted by runtime".to_string(),
+    ];
+    errors.extend(specific_errors.iter().map(|error| (*error).to_string()));
+    ResourceMethodDoc {
+        name: name.to_string(),
+        kind: kind.to_string(),
+        params,
+        returns: returns.to_string(),
+        summary: summary.to_string(),
+        errors,
     }
 }
 

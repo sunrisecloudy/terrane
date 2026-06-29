@@ -1,9 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
-    decode_app_removed, decode_event, encode_event, state_mut, EventRecord, Result, StateStore,
+    decode_app_removed, decode_event, encode_event, state_mut, truncate, EventRecord, Result,
+    StateStore,
 };
 
-use crate::{KvState, KvStorageBackend, KvStorageBinding};
+use crate::{KvState, KvStorageBackend, KvStorageBinding, LOG_VALUE_PREVIEW_CHARS};
 
 #[derive(BorshSerialize, BorshDeserialize)]
 pub(crate) struct Set {
@@ -56,6 +57,17 @@ pub fn delete_event(app: impl Into<String>, key: impl Into<String>) -> Result<Ev
             app: app.into(),
             key: key.into(),
         },
+    )
+}
+
+pub fn storage_configured_event(
+    app: Option<String>,
+    backend: KvStorageBackend,
+    path: Option<String>,
+) -> Result<EventRecord> {
+    encode_event(
+        "kv.storage.configured",
+        &StorageConfigured { app, backend, path },
     )
 }
 
@@ -119,7 +131,12 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
     match record.kind.as_str() {
         "kv.set" => {
             let e: Set = decode_event(record).ok()?;
-            Some(format!("kv.set {}/{} = {}", e.app, e.key, e.value))
+            Some(format!(
+                "kv.set {}/{} = {}",
+                e.app,
+                e.key,
+                truncate(&e.value, LOG_VALUE_PREVIEW_CHARS)
+            ))
         }
         "kv.deleted" => {
             let e: Deleted = decode_event(record).ok()?;

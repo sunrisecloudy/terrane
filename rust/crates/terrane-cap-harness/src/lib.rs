@@ -7,6 +7,7 @@ use terrane_cap_interface::{
 };
 
 mod args;
+mod doc;
 mod events;
 mod prompts;
 mod state;
@@ -98,6 +99,10 @@ impl Capability for HarnessCapability {
 
     fn describe(&self, record: &EventRecord) -> Option<String> {
         events::describe(record)
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::harness_doc(include_internal)
     }
 }
 

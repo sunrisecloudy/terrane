@@ -1,7 +1,8 @@
 use nanoserde::SerJson;
 use terrane_api::{
-    CapabilityDocInfo, CapabilityExampleInfo, CapabilityInternalInfo, CapabilityLimitInfo,
-    CapabilityList, CapabilityManifestInfo, CapabilityParamInfo, CapabilityResourceInfo,
+    CapabilityCommandHelpInfo, CapabilityCommandInfo, CapabilityDocInfo, CapabilityEventInfo,
+    CapabilityExampleInfo, CapabilityInternalInfo, CapabilityLimitInfo, CapabilityList,
+    CapabilityManifestInfo, CapabilityParamInfo, CapabilityQueryInfo, CapabilityResourceInfo,
     CapabilityResourceMethodInfo, CapabilitySchemaInfo, CapabilitySummary,
 };
 use terrane_core::{
@@ -24,6 +25,7 @@ pub fn capability_list(include_internal: bool) -> CapabilityList {
                     .map(|resource| resource.namespace.clone())
                     .collect(),
                 commands: doc.manifest.commands,
+                queries: doc.manifest.queries,
                 events: doc.manifest.events,
             })
             .collect(),
@@ -72,11 +74,50 @@ pub fn render_capability_info(
     }
 }
 
+pub fn capability_command_help_json(name: &str) -> Result<String, String> {
+    capability_command_help(name).map(|help| help.serialize_json())
+}
+
 fn normalize_format(format: &str) -> &str {
     match format.trim() {
         "" => "json",
         other => other,
     }
+}
+
+fn capability_command_help(name: &str) -> Result<CapabilityCommandHelpInfo, String> {
+    let (namespace, _) = name.split_once('.').ok_or_else(|| {
+        format!("invalid command name '{name}': expected dotted capability command like app.add")
+    })?;
+    let doc = terrane_core::capability_doc(namespace, false).map_err(|e| e.to_string())?;
+    let command = doc
+        .commands
+        .into_iter()
+        .find(|command| command.name == name)
+        .ok_or_else(|| format!("unknown capability command: {name}"))?;
+    let argument_order = command
+        .params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect();
+    Ok(CapabilityCommandHelpInfo {
+        name: command.name,
+        summary: command.summary,
+        argument_order,
+        params: command.params.into_iter().map(param_info).collect(),
+        returns: command.returns,
+        errors: command.errors,
+        emits: command.emits,
+        effects: command.effects,
+        examples: command.examples.into_iter().map(example_info).collect(),
+        notes: vec![
+            "Pass capability_command.args as a JSON array of strings in the documented order."
+                .to_string(),
+            "Examples show exact literal flag tokens such as --source when a command uses them."
+                .to_string(),
+            "help:true never dispatches, commits, appends events, or runs effects.".to_string(),
+        ],
+    })
 }
 
 fn capability_doc_info(doc: CapabilityDoc) -> CapabilityDocInfo {
@@ -99,6 +140,43 @@ fn capability_doc_info(doc: CapabilityDoc) -> CapabilityDocInfo {
                 .map(resource_method_info)
                 .collect(),
         },
+        commands: doc
+            .commands
+            .into_iter()
+            .map(|command| CapabilityCommandInfo {
+                name: command.name,
+                summary: command.summary,
+                params: command.params.into_iter().map(param_info).collect(),
+                returns: command.returns,
+                errors: command.errors,
+                emits: command.emits,
+                effects: command.effects,
+                examples: command.examples.into_iter().map(example_info).collect(),
+            })
+            .collect(),
+        queries: doc
+            .queries
+            .into_iter()
+            .map(|query| CapabilityQueryInfo {
+                name: query.name,
+                summary: query.summary,
+                params: query.params.into_iter().map(param_info).collect(),
+                returns: query.returns,
+                errors: query.errors,
+                examples: query.examples.into_iter().map(example_info).collect(),
+            })
+            .collect(),
+        events: doc
+            .events
+            .into_iter()
+            .map(|event| CapabilityEventInfo {
+                kind: event.kind,
+                summary: event.summary,
+                params: event.params.into_iter().map(param_info).collect(),
+                effects: event.effects,
+                examples: event.examples.into_iter().map(example_info).collect(),
+            })
+            .collect(),
         resources: doc.resources.into_iter().map(resource_info).collect(),
         schemas: doc.schemas.into_iter().map(schema_info).collect(),
         examples: doc.examples.into_iter().map(example_info).collect(),
@@ -184,25 +262,10 @@ fn render_markdown(doc: &CapabilityDoc) -> String {
         "- Namespace: `{}`\n- Status: {}\n- Version: {}\n\n",
         doc.namespace, doc.status, doc.version
     ));
-    if !doc.resources.is_empty() {
-        out.push_str("## Resource Methods\n\n");
-        out.push_str("| Method | Kind | Summary |\n| --- | --- | --- |\n");
-        for resource in &doc.resources {
-            for method in &resource.methods {
-                let params = method
-                    .params
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                out.push_str(&format!(
-                    "| `ctx.resource.{}.{}({})` | {} | {} |\n",
-                    resource.namespace, method.name, params, method.kind, method.summary
-                ));
-            }
-        }
-        out.push('\n');
-    }
+    render_command_docs(&mut out, doc);
+    render_query_docs(&mut out, doc);
+    render_event_docs(&mut out, doc);
+    render_resource_docs(&mut out, doc, true);
     if !doc.schemas.is_empty() {
         out.push_str("## Schemas\n\n");
         for schema in &doc.schemas {
@@ -237,6 +300,13 @@ fn render_markdown(doc: &CapabilityDoc) -> String {
         }
         out.push('\n');
     }
+    if !doc.compatibility.is_empty() {
+        out.push_str("## Compatibility\n\n");
+        for item in &doc.compatibility {
+            out.push_str(&format!("- {item}\n"));
+        }
+        out.push('\n');
+    }
     if !doc.internal.is_empty() {
         out.push_str("## Internal Notes\n\n");
         for note in &doc.internal {
@@ -256,6 +326,7 @@ fn render_skill(doc: &CapabilityDoc) -> String {
     out.push_str("## Contract\n\n");
     out.push_str(&format!("- Namespace: `{}`\n", doc.namespace));
     out.push_str(&format!("- Status: {}\n", doc.status));
+    out.push_str(&format!("- Version: {}\n", doc.version));
     if let Some(resource) = doc.resources.first() {
         out.push_str(&format!(
             "- App resource: `ctx.resource.{}`\n",
@@ -263,25 +334,10 @@ fn render_skill(doc: &CapabilityDoc) -> String {
         ));
     }
     out.push('\n');
-    if !doc.resources.is_empty() {
-        out.push_str("## Methods\n\n");
-        out.push_str("| Method | Kind | Summary |\n| --- | --- | --- |\n");
-        for resource in &doc.resources {
-            for method in &resource.methods {
-                let params = method
-                    .params
-                    .iter()
-                    .map(|p| p.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                out.push_str(&format!(
-                    "| `{}({})` | {} | {} |\n",
-                    method.name, params, method.kind, method.summary
-                ));
-            }
-        }
-        out.push('\n');
-    }
+    render_command_docs(&mut out, doc);
+    render_query_docs(&mut out, doc);
+    render_event_docs(&mut out, doc);
+    render_resource_docs(&mut out, doc, false);
     if !doc.schemas.is_empty() {
         out.push_str("## Schemas\n\n");
         for schema in &doc.schemas {
@@ -304,6 +360,219 @@ fn render_skill(doc: &CapabilityDoc) -> String {
         for constraint in &doc.constraints {
             out.push_str(&format!("- {constraint}\n"));
         }
+        out.push('\n');
+    }
+    if !doc.limits.is_empty() {
+        out.push_str("## Limits\n\n");
+        for limit in &doc.limits {
+            out.push_str(&format!(
+                "- `{}`: {} ({})\n",
+                limit.name, limit.value, limit.reason
+            ));
+        }
+        out.push('\n');
+    }
+    if !doc.compatibility.is_empty() {
+        out.push_str("## Compatibility\n\n");
+        for item in &doc.compatibility {
+            out.push_str(&format!("- {item}\n"));
+        }
+        out.push('\n');
+    }
+    if !doc.internal.is_empty() {
+        out.push_str("## Internal Notes\n\n");
+        for note in &doc.internal {
+            out.push_str(&format!("### {}\n\n{}\n\n", note.title, note.body));
+        }
     }
     out.trim_end().to_string()
+}
+
+fn render_command_docs(out: &mut String, doc: &CapabilityDoc) {
+    if doc.commands.is_empty() {
+        return;
+    }
+    out.push_str("## Commands\n\n");
+    out.push_str(
+        "| Command | Params | Returns | Emits | Effects | Errors | Summary |\n\
+         | --- | --- | --- | --- | --- | --- | --- |\n",
+    );
+    for command in &doc.commands {
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} | {} | {} | {} |\n",
+            table_cell(&command.name),
+            params_inline(&command.params),
+            return_label(&command.returns),
+            code_list(&command.emits, "none"),
+            text_list(&command.effects, "none"),
+            text_list(&command.errors, "none"),
+            table_cell(&command.summary),
+        ));
+    }
+    out.push('\n');
+    for command in &doc.commands {
+        if command.examples.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("### `{}` Examples\n\n", command.name));
+        render_examples(out, &command.examples, 4);
+    }
+}
+
+fn render_query_docs(out: &mut String, doc: &CapabilityDoc) {
+    if doc.queries.is_empty() {
+        return;
+    }
+    out.push_str("## Queries\n\n");
+    out.push_str(
+        "| Query | Params | Returns | Errors | Summary |\n\
+         | --- | --- | --- | --- | --- |\n",
+    );
+    for query in &doc.queries {
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} | {} |\n",
+            table_cell(&query.name),
+            params_inline(&query.params),
+            return_label(&query.returns),
+            text_list(&query.errors, "none"),
+            table_cell(&query.summary),
+        ));
+    }
+    out.push('\n');
+    for query in &doc.queries {
+        if query.examples.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("### `{}` Examples\n\n", query.name));
+        render_examples(out, &query.examples, 4);
+    }
+}
+
+fn render_event_docs(out: &mut String, doc: &CapabilityDoc) {
+    if doc.events.is_empty() {
+        return;
+    }
+    out.push_str("## Events\n\n");
+    out.push_str("| Event | Payload | Effects | Summary |\n| --- | --- | --- | --- |\n");
+    for event in &doc.events {
+        out.push_str(&format!(
+            "| `{}` | {} | {} | {} |\n",
+            table_cell(&event.kind),
+            params_inline(&event.params),
+            text_list(&event.effects, "none"),
+            table_cell(&event.summary),
+        ));
+    }
+    out.push('\n');
+    for event in &doc.events {
+        if event.examples.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("### `{}` Examples\n\n", event.kind));
+        render_examples(out, &event.examples, 4);
+    }
+}
+
+fn render_resource_docs(out: &mut String, doc: &CapabilityDoc, fully_qualified: bool) {
+    if doc.resources.is_empty() {
+        return;
+    }
+    out.push_str("## Resource Methods\n\n");
+    out.push_str(
+        "| Method | Kind | Params | Returns | Errors | Summary |\n\
+         | --- | --- | --- | --- | --- | --- |\n",
+    );
+    for resource in &doc.resources {
+        for method in &resource.methods {
+            let method_name = if fully_qualified {
+                format!("ctx.resource.{}.{}()", resource.namespace, method.name)
+            } else {
+                format!("{}()", method.name)
+            };
+            out.push_str(&format!(
+                "| `{}` | {} | {} | {} | {} | {} |\n",
+                table_cell(&method_name),
+                table_cell(&method.kind),
+                params_inline(&method.params),
+                return_label(&method.returns),
+                text_list(&method.errors, "none"),
+                table_cell(&method.summary),
+            ));
+        }
+    }
+    out.push('\n');
+}
+
+fn params_inline(params: &[ParamDoc]) -> String {
+    if params.is_empty() {
+        return "none".to_string();
+    }
+    params
+        .iter()
+        .map(|param| {
+            let mut out = format!("`{}`", table_cell(&param.name));
+            if !param.required {
+                out.push_str(" optional");
+            }
+            if !param.schema_ref.is_empty() {
+                out.push_str(&format!(" ({})", table_cell(&param.schema_ref)));
+            }
+            if !param.summary.is_empty() {
+                out.push_str(&format!(": {}", table_cell(&param.summary)));
+            }
+            out
+        })
+        .collect::<Vec<_>>()
+        .join("<br>")
+}
+
+fn return_label(value: &str) -> String {
+    if value.trim().is_empty() {
+        "none".to_string()
+    } else {
+        table_cell(value)
+    }
+}
+
+fn code_list(values: &[String], empty: &str) -> String {
+    if values.is_empty() {
+        return empty.to_string();
+    }
+    values
+        .iter()
+        .map(|value| format!("`{}`", table_cell(value)))
+        .collect::<Vec<_>>()
+        .join("<br>")
+}
+
+fn text_list(values: &[String], empty: &str) -> String {
+    if values.is_empty() {
+        return empty.to_string();
+    }
+    values
+        .iter()
+        .map(|value| table_cell(value))
+        .collect::<Vec<_>>()
+        .join("<br>")
+}
+
+fn render_examples(out: &mut String, examples: &[ExampleDoc], heading_level: usize) {
+    let marker = "#".repeat(heading_level);
+    for example in examples {
+        out.push_str(&format!("{} {}\n\n", marker, example.title));
+        if !example.summary.is_empty() {
+            out.push_str(&format!("{}\n\n", example.summary));
+        }
+        out.push_str(&format!(
+            "```{}\n{}\n```\n\n",
+            example.language, example.code
+        ));
+        if !example.expected.is_empty() {
+            out.push_str(&format!("Expected: {}\n\n", example.expected));
+        }
+    }
+}
+
+fn table_cell(value: &str) -> String {
+    value.replace('\n', "<br>").replace('|', "\\|")
 }

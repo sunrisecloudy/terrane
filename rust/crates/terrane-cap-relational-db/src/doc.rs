@@ -1,6 +1,6 @@
 use terrane_cap_interface::{
-    CapabilityDoc, CapabilityManifestDoc, ExampleDoc, InternalNote, LimitDoc, ParamDoc,
-    ResourceDoc, ResourceMethodDoc, SchemaDoc,
+    command_doc, CapabilityDoc, CapabilityManifestDoc, CommandDoc, ExampleDoc, InternalNote,
+    LimitDoc, ParamDoc, ResourceDoc, ResourceMethodDoc, SchemaDoc,
 };
 
 use crate::{resource_methods, RDB_PREFIX};
@@ -20,16 +20,15 @@ pub fn relational_doc(include_internal: bool) -> CapabilityDoc {
             "host-implementer".to_string(),
         ],
         manifest: CapabilityManifestDoc {
-            commands: vec![
-                "relational_db.defineTable".to_string(),
-                "relational_db.put".to_string(),
-                "relational_db.delete".to_string(),
-            ],
-            queries: Vec::new(),
-            events: Vec::new(),
+            commands: command_names(),
+            queries: query_names(),
+            events: event_names(),
             subscriptions: Vec::new(),
             resource_methods: methods.clone(),
         },
+        commands: relational_commands(),
+        queries: Vec::new(),
+        events: Vec::new(),
         resources: vec![ResourceDoc {
             namespace: "relational_db".to_string(),
             summary: "Backend resource surface for typed tables and indexed queries.".to_string(),
@@ -65,6 +64,8 @@ pub fn relational_doc(include_internal: bool) -> CapabilityDoc {
                 .to_string(),
             "Rows and specs are stored as canonical JSON for deterministic replay.".to_string(),
             "Reads are derived from folded kv state and are not recorded as events.".to_string(),
+            "The relational_db namespace owns command handlers and resource methods, but it does not own query names or event kinds in the current manifest; writes commit kv.set and kv.deleted records."
+                .to_string(),
             "In-place table spec changes are rejected after rows exist until a migration engine lands."
                 .to_string(),
             "Queries must be served by the selected primary or secondary index and stay within table limits."
@@ -87,6 +88,7 @@ pub fn relational_doc(include_internal: bool) -> CapabilityDoc {
                 .to_string(),
             "Secondary indexes are explicit objects in specJson, not ad hoc flags on fields."
                 .to_string(),
+            "Structured command docs describe relational_db command handlers; event ownership remains with kv because durable writes are kv.set and kv.deleted records.".to_string(),
         ],
         internal: if include_internal {
             vec![InternalNote {
@@ -100,6 +102,84 @@ pub fn relational_doc(include_internal: bool) -> CapabilityDoc {
             Vec::new()
         },
     }
+}
+
+fn command_names() -> Vec<String> {
+    vec![
+        "relational_db.defineTable".to_string(),
+        "relational_db.put".to_string(),
+        "relational_db.delete".to_string(),
+    ]
+}
+
+fn query_names() -> Vec<String> {
+    Vec::new()
+}
+
+fn event_names() -> Vec<String> {
+    Vec::new()
+}
+
+fn relational_commands() -> Vec<CommandDoc> {
+    vec![
+        command_doc(
+            "relational_db.defineTable",
+            &[
+                param("app", "Target app id.", "app_id"),
+                param("table", "Validated table name.", "table_name"),
+                param(
+                    "specJson",
+                    "Complete TableSpec v1 JSON string.",
+                    "terrane.relational_db.tableSpec.v1",
+                ),
+            ],
+            "events",
+            "Create or idempotently update an empty table from a complete specJson document.",
+        )
+        .with_errors(&[
+            "missing app",
+            "invalid spec",
+            "unsupported in-place migration",
+        ])
+        .with_emits(&["kv.set"]),
+        command_doc(
+            "relational_db.put",
+            &[
+                param("app", "Target app id.", "app_id"),
+                param("table", "Target table name.", "table_name"),
+                param(
+                    "rowJson",
+                    "JSON object row to validate and store.",
+                    "row_json",
+                ),
+            ],
+            "events",
+            "Validate and upsert one row while maintaining primary, secondary, and unique indexes.",
+        )
+        .with_errors(&[
+            "missing app",
+            "missing table",
+            "invalid row",
+            "unique conflict",
+        ])
+        .with_emits(&["kv.set", "kv.deleted"]),
+        command_doc(
+            "relational_db.delete",
+            &[
+                param("app", "Target app id.", "app_id"),
+                param("table", "Target table name.", "table_name"),
+                param(
+                    "keyJson",
+                    "Primary key object or encoded key tuple JSON.",
+                    "primary_key_json",
+                ),
+            ],
+            "events",
+            "Delete one row by primary key and remove its secondary and unique index entries.",
+        )
+        .with_errors(&["missing app", "missing table", "invalid primary key"])
+        .with_emits(&["kv.deleted"]),
+    ]
 }
 
 fn resource_method_docs() -> Vec<ResourceMethodDoc> {

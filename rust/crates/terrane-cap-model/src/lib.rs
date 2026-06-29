@@ -14,6 +14,8 @@ use terrane_cap_interface::{
     EventRecord, EventSpec, Result, StateStore,
 };
 
+mod doc;
+
 /// The agents this capability knows how to drive.
 pub const AGENTS: [&str; 2] = ["claude", "codex"];
 
@@ -82,6 +84,10 @@ impl Capability for ModelCapability {
                 kind: "app.removed",
             }],
         }
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::model_doc(include_internal)
     }
 
     fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {

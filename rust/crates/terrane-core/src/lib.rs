@@ -630,25 +630,45 @@ impl<R: EffectRunner> Core<R> {
     /// written unless the command succeeds.
     pub fn dispatch(&mut self, request: Request) -> Result<Vec<EventRecord>> {
         self.last_output = None;
-        let namespace = namespace_of(&request.name)?;
-
-        let bus = RegistryBus::new(&self.registry, &self.state);
-        let ctx = CommandCtx {
-            state: &self.state,
-            bus: &bus,
-        };
-        let decision = self
-            .registry
-            .get(namespace)?
-            .decide(ctx, &request.name, &request.args)?;
+        let namespace = namespace_of(&request.name)?.to_string();
+        let decision = self.decide(request)?;
         match decision {
             Decision::Commit(records) => self.commit(records),
             Decision::Effect(effect) => {
                 let records = self.runner.run(&effect, &self.state)?;
                 self.commit(records)
             }
-            Decision::Runtime(request) => self.run_runtime(namespace, request),
+            Decision::Runtime(request) => self.run_runtime(&namespace, request),
         }
+    }
+
+    /// Route a command to its owning capability and return the decision without
+    /// committing, running effects, or invoking runtimes.
+    pub fn decide(&self, request: Request) -> Result<Decision> {
+        let namespace = namespace_of(&request.name)?;
+        let bus = RegistryBus::new(&self.registry, &self.state);
+        let ctx = CommandCtx {
+            state: &self.state,
+            bus: &bus,
+        };
+        self.registry
+            .get(namespace)?
+            .decide(ctx, &request.name, &request.args)
+    }
+
+    /// Run a read-only capability query against the current state.
+    pub fn query(&self, capability: &str, query: &str, args: &[String]) -> Result<QueryValue> {
+        let name = match query.split_once('.') {
+            Some((namespace, name)) if namespace == capability => name,
+            Some((namespace, _)) => {
+                return Err(Error::InvalidInput(format!(
+                    "query {query} does not belong to capability {capability} (got {namespace})"
+                )));
+            }
+            None => query,
+        };
+        let bus = RegistryBus::new(&self.registry, &self.state);
+        bus.query(capability, name, args)
     }
 
     fn run_runtime(
@@ -667,12 +687,32 @@ impl<R: EffectRunner> Core<R> {
             .source
             .clone()
             .ok_or_else(|| Error::Runtime(format!("app {} has no --source bundle", app.id)))?;
+        let source_files = match terrane_cap_kv::app_bundle_app_id(&source) {
+            Some(source_app) if source_app == app.id => {
+                let files = terrane_cap_kv::app_bundle_files(&self.state, &app.id)?;
+                if files.is_empty() {
+                    return Err(Error::Runtime(format!(
+                        "app {} has kv bundle source but no stored bundle files",
+                        app.id
+                    )));
+                }
+                Some(files)
+            }
+            Some(source_app) => {
+                return Err(Error::Runtime(format!(
+                    "app {} points at kv bundle for different app {}",
+                    app.id, source_app
+                )))
+            }
+            None => None,
+        };
         let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
             request.app.clone(),
             self.state.clone(),
         )));
         let ctx = RuntimeCtx {
             source,
+            source_files,
             app_name: app.name.clone(),
             host: host.clone(),
         };

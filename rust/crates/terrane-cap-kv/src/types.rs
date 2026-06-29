@@ -6,7 +6,10 @@ use std::str::FromStr;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{state_ref, AppId, Error, EventRecord, Result, StateStore};
 
-use crate::{delete_event, MAX_SCAN_LIMIT, RESERVED_PREFIX};
+use crate::{
+    delete_event, APP_BUNDLE_KEY_PREFIX, APP_BUNDLE_SOURCE_PREFIX, DEFAULT_KV_STORAGE_PATH,
+    MAX_SCAN_LIMIT, RESERVED_PREFIX,
+};
 
 /// The physical storage engine selected for a logical `kv` store.
 ///
@@ -31,7 +34,7 @@ impl KvStorageBackend {
     pub fn required_feature(&self) -> Option<&'static str> {
         match self {
             KvStorageBackend::Memory => None,
-            KvStorageBackend::Sqlite => Some("sqlite-storage"),
+            KvStorageBackend::Sqlite => None,
             KvStorageBackend::RocksDb => Some("rocksdb-storage"),
         }
     }
@@ -39,7 +42,7 @@ impl KvStorageBackend {
     pub fn is_available(&self) -> bool {
         match self {
             KvStorageBackend::Memory => true,
-            KvStorageBackend::Sqlite => cfg!(feature = "sqlite-storage"),
+            KvStorageBackend::Sqlite => true,
             KvStorageBackend::RocksDb => cfg!(feature = "rocksdb-storage"),
         }
     }
@@ -87,8 +90,8 @@ pub struct KvStorageBinding {
 impl Default for KvStorageBinding {
     fn default() -> Self {
         KvStorageBinding {
-            backend: KvStorageBackend::Memory,
-            path: None,
+            backend: KvStorageBackend::Sqlite,
+            path: Some(DEFAULT_KV_STORAGE_PATH.to_string()),
         }
     }
 }
@@ -113,7 +116,7 @@ impl KvStorageBinding {
     pub fn resolved_path(&self, home: &Path) -> Option<PathBuf> {
         let default_name = match self.backend {
             KvStorageBackend::Memory => return None,
-            KvStorageBackend::Sqlite => "kv.sqlite3",
+            KvStorageBackend::Sqlite => DEFAULT_KV_STORAGE_PATH,
             KvStorageBackend::RocksDb => "kv.rocksdb",
         };
         let configured = self.path.as_deref().unwrap_or(default_name);
@@ -158,6 +161,45 @@ pub struct KvState {
 
 pub fn is_reserved_key(key: &str) -> bool {
     key.starts_with(RESERVED_PREFIX)
+}
+
+pub fn app_bundle_source(app: &str) -> String {
+    format!("{APP_BUNDLE_SOURCE_PREFIX}{app}")
+}
+
+pub fn app_bundle_app_id(source: &str) -> Option<&str> {
+    source.strip_prefix(APP_BUNDLE_SOURCE_PREFIX)
+}
+
+pub fn app_bundle_key(path: &str) -> Result<String> {
+    let path = path.trim();
+    if path.is_empty()
+        || path.starts_with('/')
+        || path == "."
+        || path == ".."
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(Error::InvalidInput(format!(
+            "invalid app bundle file path for kv storage: {path:?}"
+        )));
+    }
+    Ok(format!("{APP_BUNDLE_KEY_PREFIX}{path}"))
+}
+
+pub fn app_bundle_files(state: &dyn StateStore, app: &str) -> Result<BTreeMap<String, String>> {
+    let mut files = BTreeMap::new();
+    let Some(map) = state_ref::<KvState>(state, "kv")?.data.get(app) else {
+        return Ok(files);
+    };
+    for (key, value) in map {
+        let Some(path) = key.strip_prefix(APP_BUNDLE_KEY_PREFIX) else {
+            continue;
+        };
+        files.insert(path.to_string(), value.clone());
+    }
+    Ok(files)
 }
 
 pub fn get_value(state: &dyn StateStore, app: &str, key: &str) -> Result<Option<String>> {

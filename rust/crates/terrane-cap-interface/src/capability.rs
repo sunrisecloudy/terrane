@@ -12,9 +12,7 @@ pub trait Capability {
         CapManifest::empty()
     }
 
-    fn doc(&self, include_internal: bool) -> CapabilityDoc {
-        CapabilityDoc::from_manifest(self.namespace(), self.manifest(), include_internal)
-    }
+    fn doc(&self, include_internal: bool) -> CapabilityDoc;
 
     fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision>;
 

@@ -26,6 +26,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             Err("usage: terrane cap (list | info <namespace>) [--format json|markdown|skill] [--include-internal]".into())
         }
         ["app", "install", path] => run_install(path),
+        ["app", "install-kv", path, rest @ ..] => run_install_kv(path, rest),
         ["contract", "export"] => run_contract_export(),
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
@@ -57,6 +58,15 @@ pub fn dispatch(command: &str, args: &[&str]) -> Result<(), String> {
 
 pub fn run_install(path: &str) -> Result<(), String> {
     println!("{}", crate::install_app(path)?.message());
+    Ok(())
+}
+
+pub fn run_install_kv(path: &str, rest: &[&str]) -> Result<(), String> {
+    let (storage_backend, storage_path) = parse_install_kv_options(rest)?;
+    println!(
+        "{}",
+        crate::install_app_to_kv(path, storage_backend, storage_path)?.message()
+    );
     Ok(())
 }
 
@@ -294,6 +304,32 @@ fn parse_optional_storage_path(tail: &[&str]) -> Result<Option<String>, String> 
     }
 }
 
+fn parse_install_kv_options(rest: &[&str]) -> Result<(Option<String>, Option<String>), String> {
+    let mut storage_backend = None;
+    let mut storage_path = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--storage" | "--backend" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--storage requires a backend".into());
+                };
+                storage_backend = Some((*value).to_string());
+                i += 2;
+            }
+            "--path" | "--storage-path" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--path requires a storage path".into());
+                };
+                storage_path = Some((*value).to_string());
+                i += 2;
+            }
+            other => return Err(format!("unknown app install-kv option: {other}")),
+        }
+    }
+    Ok((storage_backend, storage_path))
+}
+
 fn print_kv_storage_plan(plan: &terrane_cap_kv::KvStoragePlan) {
     println!("  default -> {}", plan.default.describe());
     if plan.apps.is_empty() {
@@ -370,6 +406,8 @@ pub fn print_help() {
          Commands are <namespace> <verb> [args…], routed to the capability that\n\
          owns that namespace. Built-in capabilities:\n\n\
          \x20 terrane app install <path>                       copy a bundle into the home & catalog it\n\
+         \x20 terrane app install-kv <path> [--storage <backend>] [--path <path>]\n\
+         \x20                                                  store a JS bundle in reserved cap-kv keys\n\
          \x20 terrane app add <id> <name…> [--source <path>]   catalog an app by path (dev)\n\
          \x20 terrane app remove <id>                          remove an app\n\
          \x20 terrane kv set <app> <key> <value…>              store a value\n\

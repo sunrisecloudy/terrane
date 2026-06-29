@@ -18,6 +18,7 @@ use terrane_cap_interface::{
 use terrane_cap_interface::Error;
 
 mod commands;
+mod doc;
 mod events;
 mod resources;
 mod state;
@@ -71,6 +72,10 @@ impl Capability for CrdtCapability {
                 kind: "app.removed",
             }],
         }
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::crdt_doc(include_internal)
     }
 
     fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {

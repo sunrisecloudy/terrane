@@ -13,6 +13,7 @@ use wasmtime::{Caller, Config, Engine, Linker, Memory, Module, Store};
 type AnyResult<T> = wasmtime::Result<T>;
 
 mod bundle;
+mod doc;
 
 pub use bundle::{read_manifest, BundleManifest, WasmRuntimeBundle};
 
@@ -54,9 +55,18 @@ impl Capability for WasmRuntimeCapability {
     }
 
     fn run_runtime(&self, ctx: RuntimeCtx, request: RuntimeRequest) -> Result<RuntimeOutput> {
+        if ctx.source_files.is_some() {
+            return Err(Error::Runtime(
+                "kv-backed app bundles currently support js runtime only".into(),
+            ));
+        }
         let bundle = bundle::load_bundle(&ctx.source)?;
         let output = run_wasm_bundle(&request.input, &bundle, ctx.host)?;
         Ok(RuntimeOutput { output })
+    }
+
+    fn doc(&self, include_internal: bool) -> terrane_cap_interface::CapabilityDoc {
+        doc::wasm_runtime_doc(include_internal)
     }
 }
 
