@@ -16,8 +16,8 @@ Formats active Terrane source files:
   - JS/JSX/MJS/TS/TSX/JSON/HTML/CSS/Markdown/YAML with deno fmt
   - macOS Swift sources and tests with swift format
 
-Generated dist files, vendored assets, build outputs, local state, target dirs,
-and legacy reference code are intentionally skipped.
+Generated dist files, vendored assets, build outputs, local state, and target
+dirs are intentionally skipped.
 USAGE
   exit 0
 fi
@@ -58,7 +58,6 @@ done < <(
     -path "$ROOT/.forge-wf" -prune -o \
     -path "$ROOT/.git" -prune -o \
     -path "$ROOT/.terrane" -prune -o \
-    -path "$ROOT/legacy" -prune -o \
     -path '*/target/*' -prune -o \
     -path '*/dist/*' -prune -o \
     -path '*/vendor/*' -prune -o \

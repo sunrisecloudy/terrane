@@ -38,12 +38,7 @@ rust/          # the fresh Rust workspace (the only product code)
     terrane-core/           # shared vocabulary + deterministic engine + host_runtime
     terrane-cap-*/          # standalone capabilities over terrane-cap-interface
     terrane-host/           # host services, `terrane` binary, C ABI, sync, preview, MCP
-legacy/                # the previous build, swept aside intact as reference only
 ```
-
-`legacy/` is read-only reference. We mine it for hard-won details (CRDT merge,
-canonicalization, conformance cases) and adopt pieces deliberately — it is not a
-dependency and not a foundation.
 
 ## Build
 
