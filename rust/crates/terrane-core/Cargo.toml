@@ -22,6 +22,7 @@ terrane-cap-crdt.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-js-runtime.workspace = true
+terrane-cap-relational-db.workspace = true
 terrane-cap-model.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
@@ -31,4 +32,5 @@ borsh.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 wat = "1.252.0"
+serde_json.workspace = true
 loro = "1.13.6"

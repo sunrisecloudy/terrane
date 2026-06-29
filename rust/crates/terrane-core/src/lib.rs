@@ -265,6 +265,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_kv::KvCapability));
+    registry.register(Box::new(terrane_cap_relational_db::RelationalDbCapability));
     registry.register(Box::new(terrane_cap_crdt::CrdtCapability));
     registry.register(Box::new(terrane_cap_replica::ReplicaCapability));
     registry.register(Box::new(terrane_cap_net::NetCapability));
@@ -372,8 +373,7 @@ pub fn capability_namespaces() -> Vec<&'static str> {
         .collect()
 }
 
-/// Capability documentation for registered runtime capabilities plus planned
-/// capabilities whose docs are intentionally exposed before runtime injection.
+/// Capability documentation for registered runtime capabilities.
 pub fn capability_docs(include_internal: bool) -> Vec<CapabilityDoc> {
     let registry = default_registry();
     let mut docs: Vec<CapabilityDoc> = registry

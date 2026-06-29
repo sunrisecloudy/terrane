@@ -1,5 +1,0 @@
-{
-  "$id": "table_name.schema.json",
-  "type": "string",
-  "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-}

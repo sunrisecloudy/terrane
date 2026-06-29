@@ -150,6 +150,21 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.kv.get(key)` | read |
 | `ctx.resource.kv.all()` | read |
 | `ctx.resource.kv.rm(key)` | write |
+| `ctx.resource.kv.scan(prefix, limit)` | read |
+| `ctx.resource.kv.range(start, endExclusive, limit)` | read |
+| `ctx.resource.kv.keys(prefix, limit)` | read |
+
+#### `ctx.resource.relational_db`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.relational_db.defineTable(table, specJson)` | write |
+| `ctx.resource.relational_db.put(table, rowJson)` | write |
+| `ctx.resource.relational_db.delete(table, keyJson)` | write |
+| `ctx.resource.relational_db.get(table, keyJson)` | read |
+| `ctx.resource.relational_db.query(table, index, queryJson)` | read |
+| `ctx.resource.relational_db.tables()` | read |
+| `ctx.resource.relational_db.spec(table)` | read |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as

@@ -51,7 +51,10 @@ fn resource_manifest_exposes_expected_backend_methods() {
             ("write", "set"),
             ("read", "get"),
             ("read", "all"),
-            ("write", "rm")
+            ("write", "rm"),
+            ("read", "scan"),
+            ("read", "range"),
+            ("read", "keys")
         ]
     );
 }
@@ -170,5 +173,64 @@ fn storage_bindings_are_owned_by_kv_capability() {
             backend: KvStorageBackend::Memory,
             path: None
         }
+    );
+}
+
+#[test]
+fn public_reads_hide_reserved_keys_and_scan_is_bounded() {
+    let mut store = Store::default();
+    store.kv.data.insert(
+        "demo".into(),
+        BTreeMap::from([
+            ("a/1".into(), "one".into()),
+            ("a/2".into(), "two".into()),
+            ("b/1".into(), "three".into()),
+            ("__terrane/rdb/v1/table/users/spec".into(), "secret".into()),
+        ]),
+    );
+    let bus = AppBus;
+    let ctx = ResourceReadCtx {
+        state: &store,
+        bus: &bus,
+        app: "demo",
+    };
+
+    assert_eq!(
+        KvCapability
+            .read_resource(ctx, "get", &["__terrane/rdb/v1/table/users/spec".into()])
+            .unwrap(),
+        ReadValue::OptString(None)
+    );
+    assert_eq!(
+        KvCapability
+            .read_resource(ctx, "scan", &["a/".into(), "1".into()])
+            .unwrap(),
+        ReadValue::StringMap(BTreeMap::from([("a/1".into(), "one".into())]))
+    );
+    assert_eq!(
+        KvCapability
+            .read_resource(ctx, "keys", &["a/".into(), "10".into()])
+            .unwrap(),
+        ReadValue::StringList(vec!["a/1".into(), "a/2".into()])
+    );
+    assert!(KvCapability
+        .read_resource(ctx, "scan", &["__terrane/".into()])
+        .is_err());
+}
+
+#[test]
+fn internal_helpers_can_use_reserved_prefixes() {
+    let mut store = Store::default();
+    let record = set_event("demo", "__terrane/rdb/v1/table/users/spec", "{}").unwrap();
+    KvCapability.fold(&mut store, &record).unwrap();
+    assert_eq!(
+        get_value(&store, "demo", "__terrane/rdb/v1/table/users/spec").unwrap(),
+        Some("{}".into())
+    );
+    assert_eq!(
+        scan_prefix(&store, "demo", "__terrane/rdb/v1/", 10)
+            .unwrap()
+            .len(),
+        1
     );
 }

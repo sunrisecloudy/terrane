@@ -189,10 +189,7 @@ fn define_imports(linker: &mut Linker<WasmState>) -> AnyResult<()> {
                 return Ok(-(checked_host_i32(bytes.len(), "resource_read output length")?));
             }
             write_bytes(&mut caller, out_ptr as i32, bytes)?;
-            Ok(checked_host_i32(
-                bytes.len(),
-                "resource_read output length",
-            )?)
+            checked_host_i32(bytes.len(), "resource_read output length")
         },
     )?;
     Ok(())

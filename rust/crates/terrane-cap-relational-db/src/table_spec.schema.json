@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "terrane.relational_db.tableSpec.v1",
+  "title": "Terrane Relational DB TableSpec v1",
+  "type": "object",
+  "required": ["specVersion", "schemaVersion", "fields", "primaryKey"],
+  "additionalProperties": false,
+  "properties": {
+    "specVersion": { "const": 1 },
+    "schemaVersion": { "type": "integer", "minimum": 1 },
+    "name": { "$ref": "#/$defs/name" },
+    "description": { "type": "string" },
+    "fields": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/field" }
+    },
+    "primaryKey": { "$ref": "#/$defs/key" },
+    "indexes": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/index" },
+      "default": {}
+    },
+    "constraints": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/name" },
+      "additionalProperties": { "$ref": "#/$defs/constraint" },
+      "default": {}
+    },
+    "options": { "$ref": "#/$defs/options", "default": {} }
+  },
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_]{0,63}$" },
+    "fieldType": { "enum": ["string", "number", "integer", "boolean", "json", "object", "array"] },
+    "keyPart": {
+      "oneOf": [
+        { "$ref": "#/$defs/name" },
+        {
+          "type": "object",
+          "required": ["field"],
+          "additionalProperties": false,
+          "properties": {
+            "field": { "$ref": "#/$defs/name" },
+            "order": { "const": "asc", "default": "asc" },
+            "nulls": { "const": "reject", "default": "reject" }
+          }
+        }
+      ]
+    },
+    "key": {
+      "type": "object",
+      "required": ["partition"],
+      "additionalProperties": false,
+      "properties": {
+        "partition": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/keyPart" } },
+        "sort": { "type": "array", "items": { "$ref": "#/$defs/keyPart" }, "default": [] }
+      }
+    },
+    "field": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "$ref": "#/$defs/fieldType" },
+        "description": { "type": "string" },
+        "required": { "type": "boolean", "default": false },
+        "nullable": { "type": "boolean", "default": false },
+        "default": true,
+        "enum": { "type": "array", "items": true, "default": [] },
+        "minLength": { "type": "integer", "minimum": 0 },
+        "maxLength": { "type": "integer", "minimum": 0 },
+        "pattern": { "type": "string" },
+        "format": { "enum": ["date-time", "date", "email", "uri", "uuid"] },
+        "minimum": { "type": "number" },
+        "maximum": { "type": "number" },
+        "exclusiveMinimum": { "type": "number" },
+        "exclusiveMaximum": { "type": "number" },
+        "multipleOf": { "type": "number", "exclusiveMinimum": 0 },
+        "minItems": { "type": "integer", "minimum": 0 },
+        "maxItems": { "type": "integer", "minimum": 0 },
+        "itemType": { "$ref": "#/$defs/fieldType" }
+      }
+    },
+    "projection": {
+      "oneOf": [
+        { "type": "object", "required": ["type"], "additionalProperties": false, "properties": { "type": { "const": "keys" } } },
+        { "type": "object", "required": ["type"], "additionalProperties": false, "properties": { "type": { "const": "all" } } },
+        { "type": "object", "required": ["type", "fields"], "additionalProperties": false, "properties": { "type": { "const": "include" }, "fields": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/name" } } } }
+      ],
+      "default": { "type": "keys" }
+    },
+    "index": {
+      "type": "object",
+      "required": ["partition"],
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string" },
+        "partition": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/keyPart" } },
+        "sort": { "type": "array", "items": { "$ref": "#/$defs/keyPart" }, "default": [] },
+        "unique": { "type": "boolean", "default": false },
+        "sparse": { "type": "boolean", "default": true },
+        "projection": { "$ref": "#/$defs/projection" },
+        "status": { "const": "active", "default": "active" }
+      }
+    },
+    "constraint": {
+      "oneOf": [
+        { "type": "object", "required": ["type", "fields"], "additionalProperties": false, "properties": { "type": { "const": "unique" }, "fields": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/name" } }, "sparse": { "type": "boolean", "default": true } } },
+        { "type": "object", "required": ["type", "fields"], "additionalProperties": false, "properties": { "type": { "const": "requiredTogether" }, "fields": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/name" } } } }
+      ]
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unknownFields": { "enum": ["preserve", "reject"], "default": "preserve" },
+        "maxRowBytes": { "type": "integer", "minimum": 1, "maximum": 1048576, "default": 65536 },
+        "defaultQueryLimit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+        "maxQueryLimit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 500 },
+        "canonicalJson": { "const": true, "default": true }
+      }
+    }
+  }
+}

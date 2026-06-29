@@ -34,7 +34,7 @@ fn capability_doc_tools_return_public_and_internal_views() {
     )
     .unwrap();
     assert!(
-        public.contains("table_spec.schema.json"),
+        public.contains("terrane.relational_db.tableSpec.v1"),
         "public: {public}"
     );
     assert!(!public.contains("Reserved kv layout"), "public: {public}");

@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use terrane_cap_interface::{state_ref, AppId, Error, Result, StateStore};
+use terrane_cap_interface::{state_ref, AppId, Error, EventRecord, Result, StateStore};
+
+use crate::{delete_event, MAX_SCAN_LIMIT, RESERVED_PREFIX};
 
 /// The physical storage engine selected for a logical `kv` store.
 ///
@@ -152,6 +154,74 @@ pub struct KvStoragePlan {
 pub struct KvState {
     pub data: BTreeMap<AppId, BTreeMap<String, String>>,
     pub storage: KvStorageState,
+}
+
+pub fn is_reserved_key(key: &str) -> bool {
+    key.starts_with(RESERVED_PREFIX)
+}
+
+pub fn get_value(state: &dyn StateStore, app: &str, key: &str) -> Result<Option<String>> {
+    Ok(state_ref::<KvState>(state, "kv")?
+        .data
+        .get(app)
+        .and_then(|m| m.get(key).cloned()))
+}
+
+pub fn scan_prefix(
+    state: &dyn StateStore,
+    app: &str,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>> {
+    let limit = bounded_limit(limit);
+    let mut out = Vec::new();
+    let Some(map) = state_ref::<KvState>(state, "kv")?.data.get(app) else {
+        return Ok(out);
+    };
+    for (key, value) in map.range(prefix.to_string()..) {
+        if !key.starts_with(prefix) || out.len() >= limit {
+            break;
+        }
+        out.push((key.clone(), value.clone()));
+    }
+    Ok(out)
+}
+
+pub fn scan_range(
+    state: &dyn StateStore,
+    app: &str,
+    start: &str,
+    end_exclusive: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>> {
+    let limit = bounded_limit(limit);
+    let mut out = Vec::new();
+    let Some(map) = state_ref::<KvState>(state, "kv")?.data.get(app) else {
+        return Ok(out);
+    };
+    for (key, value) in map.range(start.to_string()..end_exclusive.to_string()) {
+        if out.len() >= limit {
+            break;
+        }
+        out.push((key.clone(), value.clone()));
+    }
+    Ok(out)
+}
+
+pub fn delete_prefix_events(
+    state: &dyn StateStore,
+    app: &str,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<EventRecord>> {
+    scan_prefix(state, app, prefix, limit)?
+        .into_iter()
+        .map(|(key, _)| delete_event(app.to_string(), key))
+        .collect()
+}
+
+pub(crate) fn bounded_limit(limit: usize) -> usize {
+    limit.clamp(1, MAX_SCAN_LIMIT)
 }
 
 /// Storage plan for core/host projection setup.

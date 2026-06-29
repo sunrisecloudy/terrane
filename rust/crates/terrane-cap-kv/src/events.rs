@@ -1,6 +1,6 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
-    decode_app_removed, decode_event, state_mut, EventRecord, Result, StateStore,
+    decode_app_removed, decode_event, encode_event, state_mut, EventRecord, Result, StateStore,
 };
 
 use crate::{KvState, KvStorageBackend, KvStorageBinding};
@@ -28,6 +28,35 @@ pub(crate) struct StorageConfigured {
 #[derive(BorshSerialize, BorshDeserialize)]
 pub(crate) struct StorageCleared {
     pub app: Option<String>,
+}
+
+/// Internal helper for platform capabilities that intentionally write KV keys,
+/// including reserved prefixes. Public `kv.*` commands still reject them.
+pub fn set_event(
+    app: impl Into<String>,
+    key: impl Into<String>,
+    value: impl Into<String>,
+) -> Result<EventRecord> {
+    encode_event(
+        "kv.set",
+        &Set {
+            app: app.into(),
+            key: key.into(),
+            value: value.into(),
+        },
+    )
+}
+
+/// Internal helper for platform capabilities that intentionally delete KV keys,
+/// including reserved prefixes.
+pub fn delete_event(app: impl Into<String>, key: impl Into<String>) -> Result<EventRecord> {
+    encode_event(
+        "kv.deleted",
+        &Deleted {
+            app: app.into(),
+            key: key.into(),
+        },
+    )
 }
 
 pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {

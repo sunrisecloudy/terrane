@@ -12,10 +12,16 @@ mod resources;
 mod storage;
 mod types;
 
+pub const RESERVED_PREFIX: &str = "__terrane/";
+pub(crate) const DEFAULT_SCAN_LIMIT: usize = 100;
+pub(crate) const MAX_SCAN_LIMIT: usize = 500;
+
+pub use events::{delete_event, set_event};
 pub use storage::{sync_full_storage, sync_storage_after_commit};
+pub(crate) use types::bounded_limit;
 pub use types::{
-    storage_binding, storage_plan, KvState, KvStorageBackend, KvStorageBinding, KvStoragePlan,
-    KvStorageState,
+    delete_prefix_events, get_value, is_reserved_key, scan_prefix, scan_range, storage_binding,
+    storage_plan, KvState, KvStorageBackend, KvStorageBinding, KvStoragePlan, KvStorageState,
 };
 
 pub struct KvCapability;

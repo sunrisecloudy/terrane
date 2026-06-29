@@ -31,6 +31,12 @@ impl<'js> IntoJs<'js> for JsReadValue {
     }
 }
 
+#[derive(Clone)]
+struct InstallResourceCtx {
+    host: RuntimeHostHandle,
+    first_error: Rc<RefCell<Option<Error>>>,
+}
+
 pub fn run_js_bundle(
     app: &str,
     input: &[String],
@@ -119,10 +125,11 @@ fn install_resources(
     first_error: Rc<RefCell<Option<Error>>>,
 ) -> Result<()> {
     let resource = Object::new(ctx.clone()).map_err(js_err)?;
+    let install_ctx = InstallResourceCtx { host, first_error };
     let surface: Vec<(String, Vec<ResourceMethod>)> = resources
         .iter()
         .filter_map(|ns| {
-            let api = host.resource_methods(ns).ok()?;
+            let api = install_ctx.host.resource_methods(ns).ok()?;
             (!api.is_empty()).then(|| (ns.clone(), api))
         })
         .collect();
@@ -134,28 +141,10 @@ fn install_resources(
             let params = method.params();
             match method {
                 ResourceMethod::Write { name, .. } => {
-                    install_write(
-                        ctx,
-                        &obj,
-                        &ns,
-                        name,
-                        &call,
-                        params,
-                        host.clone(),
-                        first_error.clone(),
-                    )?;
+                    install_write(ctx, &obj, &ns, name, &call, params, install_ctx.clone())?;
                 }
                 ResourceMethod::Read { name, .. } => {
-                    install_read(
-                        ctx,
-                        &obj,
-                        &ns,
-                        name,
-                        &call,
-                        params,
-                        host.clone(),
-                        first_error.clone(),
-                    )?;
+                    install_read(ctx, &obj, &ns, name, &call, params, install_ctx.clone())?;
                 }
             }
         }
@@ -174,19 +163,21 @@ fn install_write<'js>(
     method_name: &'static str,
     call: &str,
     params: &'static [&'static str],
-    host: RuntimeHostHandle,
-    first_error: Rc<RefCell<Option<Error>>>,
+    install_ctx: InstallResourceCtx,
 ) -> Result<()> {
     let namespace = namespace.to_string();
     let call = call.to_string();
     let f = Function::new(ctx.clone(), move |args: Rest<Value>| {
         match string_args(&call, params, &args.0) {
             Ok(strs) => {
-                if let Err(e) = host.write_resource(&namespace, method_name, &strs) {
-                    capture(&first_error, e);
+                if let Err(e) = install_ctx
+                    .host
+                    .write_resource(&namespace, method_name, &strs)
+                {
+                    capture(&install_ctx.first_error, e);
                 }
             }
-            Err(e) => capture(&first_error, e),
+            Err(e) => capture(&install_ctx.first_error, e),
         }
     })
     .map_err(js_err)?;
@@ -200,22 +191,24 @@ fn install_read<'js>(
     method_name: &'static str,
     call: &str,
     params: &'static [&'static str],
-    host: RuntimeHostHandle,
-    first_error: Rc<RefCell<Option<Error>>>,
+    install_ctx: InstallResourceCtx,
 ) -> Result<()> {
     let namespace = namespace.to_string();
     let call = call.to_string();
     let f = Function::new(ctx.clone(), move |args: Rest<Value>| -> JsReadValue {
         match string_args(&call, params, &args.0) {
-            Ok(strs) => match host.read_resource(&namespace, method_name, &strs) {
+            Ok(strs) => match install_ctx
+                .host
+                .read_resource(&namespace, method_name, &strs)
+            {
                 Ok(value) => JsReadValue(value),
                 Err(e) => {
-                    capture(&first_error, e);
+                    capture(&install_ctx.first_error, e);
                     JsReadValue(ReadValue::OptString(None))
                 }
             },
             Err(e) => {
-                capture(&first_error, e);
+                capture(&install_ctx.first_error, e);
                 JsReadValue(ReadValue::OptString(None))
             }
         }

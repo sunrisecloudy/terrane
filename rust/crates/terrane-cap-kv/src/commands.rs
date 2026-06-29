@@ -2,26 +2,25 @@ use terrane_cap_interface::{
     arg, encode_event, ensure_app_exists, join_tail, state_ref, CommandCtx, Decision, Error, Result,
 };
 
-use crate::events::{Deleted, Set, StorageCleared, StorageConfigured};
-use crate::{KvState, KvStorageBackend};
+use crate::events::{StorageCleared, StorageConfigured};
+use crate::{delete_event, is_reserved_key, set_event, KvState, KvStorageBackend, RESERVED_PREFIX};
 
 pub(crate) fn decide_set(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
     let key = arg(args, 1, "key")?;
+    reject_public_reserved(&key)?;
     let value = join_tail(args, 2);
     ensure_app_exists(ctx.bus, &app)?;
     if key.trim().is_empty() {
         return Err(Error::InvalidInput("key must not be empty".into()));
     }
-    Ok(Decision::Commit(vec![encode_event(
-        "kv.set",
-        &Set { app, key, value },
-    )?]))
+    Ok(Decision::Commit(vec![set_event(app, key, value)?]))
 }
 
 pub(crate) fn decide_delete(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
     let key = arg(args, 1, "key")?;
+    reject_public_reserved(&key)?;
     let missing = state_ref::<KvState>(ctx.state, "kv")?
         .data
         .get(&app)
@@ -30,10 +29,7 @@ pub(crate) fn decide_delete(ctx: CommandCtx<'_>, args: &[String]) -> Result<Deci
     if missing {
         return Err(Error::KeyNotFound(app, key));
     }
-    Ok(Decision::Commit(vec![encode_event(
-        "kv.deleted",
-        &Deleted { app, key },
-    )?]))
+    Ok(Decision::Commit(vec![delete_event(app, key)?]))
 }
 
 pub(crate) fn decide_storage_set(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
@@ -124,4 +120,14 @@ fn parse_storage_path(args: &[String], index: usize) -> Result<Option<String>> {
         ));
     }
     Ok(Some(path.to_string()))
+}
+
+fn reject_public_reserved(key: &str) -> Result<()> {
+    if is_reserved_key(key) {
+        Err(Error::InvalidInput(format!(
+            "kv key prefix {RESERVED_PREFIX:?} is reserved for platform data"
+        )))
+    } else {
+        Ok(())
+    }
 }

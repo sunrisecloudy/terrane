@@ -14,5 +14,6 @@ mod kv;
 mod log;
 mod model;
 mod net;
+mod relational_db;
 mod replica;
 mod wasm_runtime;
