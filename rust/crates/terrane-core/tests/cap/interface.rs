@@ -3,8 +3,8 @@
 
 use terrane_cap_app::AppRecord;
 use terrane_cap_interface::{
-    CapBus, CapManifest, Capability, CommandCtx, CommandSpec, EventPattern, EventSpec, QuerySpec,
-    QueryValue, StateStore,
+    CapBus, CapManifest, Capability, CapabilityDoc, CapabilityManifestDoc, CommandCtx, CommandSpec,
+    EventPattern, EventSpec, QuerySpec, QueryValue, StateStore,
 };
 use terrane_cap_replica::initialized_event;
 use terrane_core::{
@@ -76,6 +76,46 @@ impl Capability for TestCap {
                 .iter()
                 .map(|&kind| EventPattern { kind })
                 .collect(),
+        }
+    }
+
+    fn doc(&self, _include_internal: bool) -> CapabilityDoc {
+        CapabilityDoc {
+            namespace: self.namespace.to_string(),
+            title: self.namespace.to_string(),
+            summary: format!("Test capability `{}`.", self.namespace),
+            status: "test".to_string(),
+            version: "0.0.0".to_string(),
+            audience: vec!["test".to_string()],
+            manifest: CapabilityManifestDoc {
+                commands: self
+                    .commands
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect(),
+                queries: self
+                    .queries
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect(),
+                events: self.events.iter().map(|name| (*name).to_string()).collect(),
+                subscriptions: self
+                    .subscriptions
+                    .iter()
+                    .map(|name| (*name).to_string())
+                    .collect(),
+                resource_methods: Vec::new(),
+            },
+            commands: Vec::new(),
+            queries: Vec::new(),
+            events: Vec::new(),
+            resources: Vec::new(),
+            schemas: Vec::new(),
+            examples: Vec::new(),
+            constraints: Vec::new(),
+            limits: Vec::new(),
+            compatibility: Vec::new(),
+            internal: Vec::new(),
         }
     }
 
@@ -209,6 +249,45 @@ fn capability_docs_include_registered_relational_docs() {
         .schemas
         .iter()
         .any(|schema| schema.id == "document.schema.json"));
+    assert!(document
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("Planned resource availability warning")));
+    let document_create_command = document
+        .commands
+        .iter()
+        .find(|command| command.name == "document.create")
+        .expect("document create command doc");
+    assert!(document_create_command
+        .emits
+        .iter()
+        .any(|event| event == "document.created"));
+    assert!(document_create_command
+        .errors
+        .iter()
+        .any(|error| error.contains("planned capability not granted")));
+    assert!(document
+        .events
+        .iter()
+        .any(|event| event.kind == "document.deleted"));
+    let document_create = document
+        .manifest
+        .resource_methods
+        .iter()
+        .find(|method| method.name == "create")
+        .expect("document create method");
+    assert_eq!(document_create.returns, "void");
+    assert!(document_create
+        .errors
+        .iter()
+        .any(|error| error.contains("planned capability not granted")));
+    let document_get = document
+        .manifest
+        .resource_methods
+        .iter()
+        .find(|method| method.name == "get")
+        .expect("document get method");
+    assert_eq!(document_get.returns, "string|null");
     let rdb = docs
         .iter()
         .find(|doc| doc.namespace == "relational_db")
@@ -235,6 +314,126 @@ fn capability_docs_include_registered_relational_docs() {
         .internal
         .iter()
         .any(|note| note.title.contains("Likely backing store")));
+}
+
+#[test]
+fn all_capability_docs_are_explicit_and_operational() {
+    for doc in capability_docs(true) {
+        assert!(
+            !doc.summary.contains("Capability namespace `"),
+            "{} still looks like a generated fallback summary",
+            doc.namespace
+        );
+        assert!(
+            !doc.internal
+                .iter()
+                .any(|note| note.title.contains("Generated from manifest")),
+            "{} still exposes fallback internal notes",
+            doc.namespace
+        );
+
+        for command_name in &doc.manifest.commands {
+            let command = doc
+                .commands
+                .iter()
+                .find(|command| &command.name == command_name)
+                .unwrap_or_else(|| {
+                    panic!("{} missing command doc for {command_name}", doc.namespace)
+                });
+            assert!(!command.summary.trim().is_empty(), "{command_name} summary");
+            assert!(!command.returns.trim().is_empty(), "{command_name} returns");
+            assert!(!command.errors.is_empty(), "{command_name} errors");
+            for param in &command.params {
+                assert!(
+                    !param.summary.trim().is_empty(),
+                    "{command_name}.{} summary",
+                    param.name
+                );
+            }
+        }
+
+        for query_name in &doc.manifest.queries {
+            let query = doc
+                .queries
+                .iter()
+                .find(|query| &query.name == query_name)
+                .unwrap_or_else(|| panic!("{} missing query doc for {query_name}", doc.namespace));
+            assert!(!query.summary.trim().is_empty(), "{query_name} summary");
+            assert!(!query.returns.trim().is_empty(), "{query_name} returns");
+            assert!(!query.errors.is_empty(), "{query_name} errors");
+            for param in &query.params {
+                assert!(
+                    !param.summary.trim().is_empty(),
+                    "{query_name}.{} summary",
+                    param.name
+                );
+            }
+        }
+
+        for event_kind in &doc.manifest.events {
+            let event = doc
+                .events
+                .iter()
+                .find(|event| &event.kind == event_kind)
+                .unwrap_or_else(|| panic!("{} missing event doc for {event_kind}", doc.namespace));
+            assert!(!event.summary.trim().is_empty(), "{event_kind} summary");
+            assert!(
+                !event.params.is_empty() || !event.examples.is_empty(),
+                "{event_kind} needs payload docs or examples"
+            );
+            for param in &event.params {
+                assert!(
+                    !param.summary.trim().is_empty(),
+                    "{event_kind}.{} summary",
+                    param.name
+                );
+            }
+        }
+
+        if !doc.resources.is_empty() {
+            assert!(
+                !doc.examples.is_empty(),
+                "{} resource docs need at least one app-building example",
+                doc.namespace
+            );
+        }
+        for resource in &doc.resources {
+            assert!(
+                !resource.summary.trim().is_empty(),
+                "{} resource summary",
+                doc.namespace
+            );
+            for method in &resource.methods {
+                assert!(
+                    !method.summary.trim().is_empty(),
+                    "{}.{} summary",
+                    resource.namespace,
+                    method.name
+                );
+                assert!(
+                    !method.returns.trim().is_empty(),
+                    "{}.{} returns",
+                    resource.namespace,
+                    method.name
+                );
+                assert!(
+                    !method.errors.is_empty(),
+                    "{}.{} errors",
+                    resource.namespace,
+                    method.name
+                );
+                for param in &method.params {
+                    assert!(
+                        !param.summary.trim().is_empty(),
+                        "{}.{}({}) summary",
+                        resource.namespace,
+                        method.name,
+                        param.name
+                    );
+                }
+            }
+        }
+    }
 }
 
 #[test]

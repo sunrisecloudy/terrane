@@ -122,7 +122,7 @@ fn bus_helpers_validate_expected_query_types() {
 }
 
 #[test]
-fn capability_doc_defaults_are_generated_from_manifest() {
+fn capability_doc_is_required_and_structured() {
     struct DocCap;
 
     impl Capability for DocCap {
@@ -145,6 +145,98 @@ fn capability_doc_defaults_are_generated_from_manifest() {
             }
         }
 
+        fn doc(&self, include_internal: bool) -> CapabilityDoc {
+            let command_example = ExampleDoc {
+                title: "Run doc command".into(),
+                summary: "Records a doc.ran event.".into(),
+                language: "text".into(),
+                code: "doc.run key".into(),
+                expected: "doc.ran".into(),
+            };
+            let query_example = ExampleDoc {
+                title: "Check doc existence".into(),
+                summary: "Returns whether a key exists.".into(),
+                language: "text".into(),
+                code: "doc.exists key".into(),
+                expected: "true".into(),
+            };
+            let event_example = ExampleDoc {
+                title: "Doc ran payload".into(),
+                summary: "The event stores the affected key.".into(),
+                language: "json".into(),
+                code: r#"{"key":"demo"}"#.into(),
+                expected: "folded state changes".into(),
+            };
+            CapabilityDoc {
+                namespace: "doc".into(),
+                title: "Doc".into(),
+                summary: "Structured docs for the doc test capability.".into(),
+                status: "stable".into(),
+                version: "0.1.0".into(),
+                audience: vec!["agent".into()],
+                manifest: CapabilityManifestDoc {
+                    commands: vec!["doc.run".into()],
+                    events: vec!["doc.ran".into()],
+                    queries: vec!["doc.exists".into()],
+                    subscriptions: vec!["app.removed".into()],
+                    resource_methods: vec![resource_method(
+                        "get",
+                        "read",
+                        &[param("key", "Lookup key.", "doc.key")],
+                        "Read one doc entry.",
+                    )],
+                },
+                commands: vec![command_doc(
+                    "doc.run",
+                    &[param("key", "Lookup key.", "doc.key")],
+                    "Decision",
+                    "Record one doc command.",
+                )
+                .with_errors(&["invalid input"])
+                .with_emits(&["doc.ran"])
+                .with_effects(&["updates doc state"])
+                .with_examples(&[command_example])],
+                queries: vec![query_doc(
+                    "doc.exists",
+                    &[param("key", "Lookup key.", "doc.key")],
+                    "bool",
+                    "Check whether a doc entry exists.",
+                )
+                .with_errors(&["missing key"])
+                .with_examples(&[query_example])],
+                events: vec![event_doc(
+                    "doc.ran",
+                    &[param("key", "Lookup key.", "doc.key")],
+                    "A doc command completed.",
+                )
+                .with_effects(&["folds into doc state"])
+                .with_examples(&[event_example])],
+                resources: vec![ResourceDoc {
+                    namespace: "doc".into(),
+                    summary: "Backend resource surface for doc.".into(),
+                    methods: vec![resource_method(
+                        "get",
+                        "read",
+                        &[param("key", "Lookup key.", "doc.key")],
+                        "Read one doc entry.",
+                    )],
+                }],
+                schemas: Vec::new(),
+                examples: Vec::new(),
+                constraints: Vec::new(),
+                limits: Vec::new(),
+                compatibility: Vec::new(),
+                internal: if include_internal {
+                    vec![InternalNote {
+                        title: "Fixture".into(),
+                        body: "Internal fixture note.".into(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+            }
+        }
+
         fn decide(&self, _ctx: CommandCtx<'_>, name: &str, _args: &[String]) -> Result<Decision> {
             Err(Error::InvalidInput(format!("unknown command: {name}")))
         }
@@ -160,6 +252,16 @@ fn capability_doc_defaults_are_generated_from_manifest() {
     assert_eq!(public.manifest.events, vec!["doc.ran"]);
     assert_eq!(public.manifest.queries, vec!["doc.exists"]);
     assert_eq!(public.manifest.subscriptions, vec!["app.removed"]);
+    assert_eq!(public.commands[0].name, "doc.run");
+    assert_eq!(public.commands[0].returns, "Decision");
+    assert_eq!(public.commands[0].emits, vec!["doc.ran"]);
+    assert_eq!(public.commands[0].effects, vec!["updates doc state"]);
+    assert_eq!(public.commands[0].examples[0].title, "Run doc command");
+    assert_eq!(public.queries[0].name, "doc.exists");
+    assert_eq!(public.queries[0].returns, "bool");
+    assert_eq!(public.queries[0].errors, vec!["missing key"]);
+    assert_eq!(public.events[0].kind, "doc.ran");
+    assert_eq!(public.events[0].params[0].schema_ref, "doc.key");
     assert_eq!(public.resources[0].methods[0].name, "get");
     assert_eq!(public.resources[0].methods[0].kind, "read");
     assert_eq!(public.resources[0].methods[0].params[0].name, "key");

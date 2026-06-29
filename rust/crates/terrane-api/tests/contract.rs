@@ -4,8 +4,12 @@
 use nanoserde::{DeJson, SerJson};
 use terrane_api::{
     host_contract, mcp_tools, Action, ApiError, AppActions, AppSummary, AppsResponse,
-    CapabilityDocInfo, CapabilityManifestInfo, HealthResponse, InvokeRequest, InvokeResponse,
-    TOOL_APP_ACTIONS, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_INFO, TOOL_INVOKE, TOOL_LIST_APPS,
+    CapabilityCommandHelpInfo, CapabilityCommandInfo, CapabilityDocInfo, CapabilityEventInfo,
+    CapabilityExampleInfo, CapabilityManifestInfo, CapabilityParamInfo, CapabilityQueryInfo,
+    HealthResponse, InvokeRequest, InvokeResponse, TOOL_APP_ACTIONS, TOOL_APP_BUNDLE_VALIDATE,
+    TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST,
+    TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE,
+    TOOL_LIST_APPS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
 };
 
 #[test]
@@ -79,11 +83,19 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
     assert_eq!(
         names,
         vec![
+            TOOL_WORKFLOWS_LIST,
+            TOOL_WORKFLOW_INFO,
+            TOOL_APP_RECIPE,
+            TOOL_APP_SCAFFOLD,
+            TOOL_APP_BUNDLE_VALIDATE,
+            TOOL_APP_REGISTER,
             TOOL_LIST_APPS,
             TOOL_APP_ACTIONS,
             TOOL_INVOKE,
             TOOL_CAPABILITIES_LIST,
-            TOOL_CAPABILITY_INFO
+            TOOL_CAPABILITY_INFO,
+            TOOL_CAPABILITY_QUERY,
+            TOOL_CAPABILITY_COMMAND
         ]
     );
 
@@ -93,6 +105,31 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
         SchemaProbe::deserialize_json(tool.input_schema)
             .unwrap_or_else(|e| panic!("tool {} has a malformed input schema: {e}", tool.name));
     }
+
+    let command_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_CAPABILITY_COMMAND)
+        .expect("capability_command tool exists");
+    assert!(
+        command_tool.description.contains("help")
+            && command_tool.description.contains("ordered params")
+            && command_tool.input_schema.contains(r#""help""#),
+        "capability_command should advertise first-hop command help: {} / {}",
+        command_tool.description,
+        command_tool.input_schema
+    );
+
+    let workflow_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_WORKFLOW_INFO)
+        .expect("workflow_info tool exists");
+    assert!(
+        workflow_tool.description.contains("executable recipe")
+            && workflow_tool.input_schema.contains("make_js_kv_app"),
+        "workflow_info should advertise weak-model recipes: {} / {}",
+        workflow_tool.description,
+        workflow_tool.input_schema
+    );
 }
 
 /// A permissive probe — we only need each schema string to parse as a JSON
@@ -129,11 +166,19 @@ fn host_contract_lists_the_v1_subset() {
     assert_eq!(
         tool_names,
         vec![
+            TOOL_WORKFLOWS_LIST,
+            TOOL_WORKFLOW_INFO,
+            TOOL_APP_RECIPE,
+            TOOL_APP_SCAFFOLD,
+            TOOL_APP_BUNDLE_VALIDATE,
+            TOOL_APP_REGISTER,
             TOOL_LIST_APPS,
             TOOL_APP_ACTIONS,
             TOOL_INVOKE,
             TOOL_CAPABILITIES_LIST,
-            TOOL_CAPABILITY_INFO
+            TOOL_CAPABILITY_INFO,
+            TOOL_CAPABILITY_QUERY,
+            TOOL_CAPABILITY_COMMAND
         ]
     );
 
@@ -157,6 +202,68 @@ fn capability_doc_info_round_trips() {
             subscriptions: vec![],
             resource_methods: vec![],
         },
+        commands: vec![CapabilityCommandInfo {
+            name: "kv.set".into(),
+            summary: "Store one key.".into(),
+            params: vec![
+                CapabilityParamInfo {
+                    name: "key".into(),
+                    summary: "Key to store.".into(),
+                    required: true,
+                    schema_ref: "kv.key".into(),
+                },
+                CapabilityParamInfo {
+                    name: "value".into(),
+                    summary: "Value to store.".into(),
+                    required: true,
+                    schema_ref: "string".into(),
+                },
+            ],
+            returns: "Decision".into(),
+            errors: vec!["invalid input".into()],
+            emits: vec!["kv.set".into()],
+            effects: vec!["updates folded kv state".into()],
+            examples: vec![CapabilityExampleInfo {
+                title: "Set key".into(),
+                summary: "Stores a value.".into(),
+                language: "text".into(),
+                code: "kv.set greeting hello".into(),
+                expected: "kv.set event".into(),
+            }],
+        }],
+        queries: vec![CapabilityQueryInfo {
+            name: "kv.exists".into(),
+            summary: "Check key presence.".into(),
+            params: vec![CapabilityParamInfo {
+                name: "key".into(),
+                summary: "Key to check.".into(),
+                required: true,
+                schema_ref: "kv.key".into(),
+            }],
+            returns: "bool".into(),
+            errors: vec![],
+            examples: vec![],
+        }],
+        events: vec![CapabilityEventInfo {
+            kind: "kv.set".into(),
+            summary: "A key was stored.".into(),
+            params: vec![
+                CapabilityParamInfo {
+                    name: "key".into(),
+                    summary: "Stored key.".into(),
+                    required: true,
+                    schema_ref: "kv.key".into(),
+                },
+                CapabilityParamInfo {
+                    name: "value".into(),
+                    summary: "Stored value.".into(),
+                    required: true,
+                    schema_ref: "string".into(),
+                },
+            ],
+            effects: vec!["folds into the kv projection".into()],
+            examples: vec![],
+        }],
         resources: vec![],
         schemas: vec![],
         examples: vec![],
@@ -168,6 +275,42 @@ fn capability_doc_info_round_trips() {
     assert_eq!(
         CapabilityDocInfo::deserialize_json(&doc.serialize_json()).unwrap(),
         doc
+    );
+}
+
+#[test]
+fn capability_command_help_info_round_trips() {
+    let help = CapabilityCommandHelpInfo {
+        name: "app.add".into(),
+        summary: "Record a saved app catalog entry.".into(),
+        argument_order: vec![
+            "id".into(),
+            "name".into(),
+            "source".into(),
+            "runtime".into(),
+        ],
+        params: vec![CapabilityParamInfo {
+            name: "id".into(),
+            summary: "Stable app id.".into(),
+            required: true,
+            schema_ref: "app_id".into(),
+        }],
+        returns: "commit".into(),
+        errors: vec!["duplicate app".into()],
+        emits: vec!["app.added".into()],
+        effects: vec![],
+        examples: vec![CapabilityExampleInfo {
+            title: "Dry-run add".into(),
+            summary: "Validate before committing.".into(),
+            language: "json".into(),
+            code: r#"{"name":"app.add","args":["demo","Demo"],"dryRun":true}"#.into(),
+            expected: r#"{"dryRun":true,"records":1}"#.into(),
+        }],
+        notes: vec!["help:true never dispatches.".into()],
+    };
+    assert_eq!(
+        CapabilityCommandHelpInfo::deserialize_json(&help.serialize_json()).unwrap(),
+        help
     );
 }
 

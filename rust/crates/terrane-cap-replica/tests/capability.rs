@@ -87,3 +87,36 @@ fn replica_capability_initializes_and_queries_peer() {
         Decision::Commit(Vec::new())
     );
 }
+
+#[test]
+fn replica_doc_covers_stable_identity_and_effect_boundary() {
+    let doc = ReplicaCapability.doc(false);
+
+    assert_eq!(doc.namespace, "replica");
+    assert_eq!(doc.manifest.commands, vec!["replica.init".to_string()]);
+    assert_eq!(doc.manifest.queries, vec!["replica.peer".to_string()]);
+    assert_eq!(doc.manifest.events, vec!["replica.initialized".to_string()]);
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("Effect::NewReplicaId")));
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("Replay never re-mints identity")));
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("stable replica identity")));
+    assert!(doc
+        .compatibility
+        .iter()
+        .any(|entry| entry.contains("crdt capability reads replica.peer")));
+    assert!(doc.internal.is_empty());
+
+    assert!(ReplicaCapability
+        .doc(true)
+        .internal
+        .iter()
+        .any(|note| note.title.contains("Effect boundary")));
+}

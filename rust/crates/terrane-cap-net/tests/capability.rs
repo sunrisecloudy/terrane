@@ -116,3 +116,37 @@ fn net_capability_rejects_missing_apps_and_cleans_removed_apps() {
     .unwrap();
     assert!(store.net.fetches.is_empty());
 }
+
+#[test]
+fn net_doc_covers_recorded_http_effects_and_app_cleanup() {
+    let doc = NetCapability.doc(false);
+
+    assert_eq!(doc.namespace, "net");
+    assert_eq!(doc.manifest.commands, vec!["net.fetch".to_string()]);
+    assert_eq!(doc.manifest.events, vec!["net.fetched".to_string()]);
+    assert_eq!(doc.manifest.subscriptions, vec!["app.removed".to_string()]);
+    assert!(doc.manifest.queries.is_empty());
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("Effect")));
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("never by replay")));
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("Folding app.removed removes")));
+    assert!(doc
+        .compatibility
+        .iter()
+        .any(|entry| entry.contains("recording net.fetched")));
+    assert!(doc.internal.is_empty());
+
+    assert!(NetCapability
+        .doc(true)
+        .internal
+        .iter()
+        .any(|note| note.title.contains("Replay boundary")));
+}

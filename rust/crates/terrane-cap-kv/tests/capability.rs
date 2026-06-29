@@ -8,6 +8,7 @@ use terrane_cap_interface::{
 };
 use terrane_cap_kv::{
     storage_binding, storage_plan, KvCapability, KvState, KvStorageBackend, KvStorageBinding,
+    DEFAULT_KV_STORAGE_PATH,
 };
 
 #[derive(Default)]
@@ -157,6 +158,19 @@ fn kv_capability_requires_existing_app_and_key_for_writes() {
 }
 
 #[test]
+fn kv_default_storage_is_sqlite_at_terrane_db() {
+    let store = Store::default();
+
+    assert_eq!(
+        storage_plan(&store).unwrap().default,
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some(DEFAULT_KV_STORAGE_PATH.into())
+        }
+    );
+}
+
+#[test]
 fn kv_capability_records_user_storage_bindings() {
     let cap = KvCapability;
     let bus = AppBus { exists: true };
@@ -220,24 +234,32 @@ fn kv_capability_records_user_storage_bindings() {
     );
 }
 
-#[cfg(not(feature = "sqlite-storage"))]
 #[test]
-fn kv_capability_rejects_sqlite_storage_without_feature() {
+fn kv_capability_accepts_sqlite_storage_by_default() {
     let cap = KvCapability;
     let bus = AppBus { exists: true };
-    let store = Store::default();
+    let mut store = Store::default();
 
-    assert_eq!(
-        cap.decide(
+    let Decision::Commit(events) = cap
+        .decide(
             CommandCtx {
                 state: &store,
                 bus: &bus,
             },
             "kv.storage.set",
-            &["default".into(), "sqlite".into()],
+            &["default".into(), "sqlite".into(), "kv.sqlite3".into()],
         )
-        .unwrap_err(),
-        Error::InvalidInput("kv storage backend sqlite requires feature sqlite-storage".into())
+        .unwrap()
+    else {
+        panic!("sqlite kv.storage.set should commit");
+    };
+    cap.fold(&mut store, &events[0]).unwrap();
+    assert_eq!(
+        storage_plan(&store).unwrap().default,
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some("kv.sqlite3".into())
+        }
     );
 }
 

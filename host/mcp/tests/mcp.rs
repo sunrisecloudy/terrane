@@ -4,9 +4,10 @@
 //! (e.g. Claude Code) performs.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use rusqlite::{Connection, OptionalExtension};
 use tempfile::tempdir;
 use terrane_core::Core;
 use terrane_core::Request;
@@ -31,6 +32,18 @@ fn read_line(out: &mut impl BufRead) -> String {
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
     line
+}
+
+fn sqlite_value(path: &Path, app: &str, key: &str) -> Option<String> {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT value FROM kv_entries WHERE app = ?1 AND key = ?2",
+            [app, key],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
 }
 
 #[test]
@@ -88,8 +101,15 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         tools.contains("list_apps")
             && tools.contains("app_actions")
             && tools.contains("invoke")
+            && tools.contains("workflows_list")
+            && tools.contains("workflow_info")
+            && tools.contains("app_scaffold")
+            && tools.contains("app_bundle_validate")
+            && tools.contains("app_register")
             && tools.contains("capabilities_list")
-            && tools.contains("capability_info"),
+            && tools.contains("capability_info")
+            && tools.contains("capability_query")
+            && tools.contains("capability_command"),
         "tools/list: {tools}"
     );
 
@@ -100,6 +120,72 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let apps = read_line(&mut out);
     assert!(apps.contains("todo-cli-collaborate"), "list_apps: {apps}");
+    assert!(
+        apps.contains(r#""structuredContent""#),
+        "list_apps structured content: {apps}"
+    );
+
+    // workflow_info gives weak models an exact recipe before low-level tools.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"workflow","method":"tools/call","params":{"name":"workflow_info","arguments":{"name":"make_js_kv_app"}}}"#,
+    );
+    let workflow = read_line(&mut out);
+    assert!(
+        workflow.contains("app_bundle_validate")
+            && workflow.contains("app_register")
+            && workflow.contains(r#""structuredContent""#),
+        "workflow_info: {workflow}"
+    );
+
+    // capability_query → read-only core query over stdio transport.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"query","method":"tools/call","params":{"name":"capability_query","arguments":{"capability":"app","query":"exists","args":["todo-cli-collaborate"]}}}"#,
+    );
+    let query = read_line(&mut out);
+    assert!(
+        query.contains(r#"\"value\":true"#) && query.contains(r#""isError":false"#),
+        "capability_query: {query}"
+    );
+
+    // capability_command dryRun validates without committing.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"dry","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"app.add","args":["mcp-dry","MCP Dry"],"dryRun":true}}}"#,
+    );
+    let dry = read_line(&mut out);
+    assert!(
+        dry.contains(r#"\"dryRun\":true"#) && dry.contains(r#""isError":false"#),
+        "capability_command dryRun: {dry}"
+    );
+
+    // capability_command → real writes use the default SQLite KV projection at
+    // <TERRANE_HOME>/terrane.db.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"kv-app","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"app.add","args":["mcp-kv-default","MCP KV Default"]}}}"#,
+    );
+    let kv_app = read_line(&mut out);
+    assert!(
+        kv_app.contains(r#""isError":false"#),
+        "capability_command app.add: {kv_app}"
+    );
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"kv-set","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"kv.set","args":["mcp-kv-default","note","stored in terrane.db"]}}}"#,
+    );
+    let kv_set = read_line(&mut out);
+    assert!(
+        kv_set.contains(r#""isError":false"#),
+        "capability_command kv.set: {kv_set}"
+    );
+    let sqlite = home.join("terrane.db");
+    assert!(sqlite.is_file(), "default KV sqlite file should exist");
+    assert_eq!(
+        sqlite_value(&sqlite, "mcp-kv-default", "note"),
+        Some("stored in terrane.db".into())
+    );
 
     // app_actions → the app describes its verbs programmatically (from __actions__).
     send(

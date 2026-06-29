@@ -28,9 +28,12 @@ fn cap_info_returns_relational_db_document() {
     let (ok, out, err) = host(home, &["cap", "info", "relational_db", "--format", "json"]);
     assert!(ok, "stderr: {err}");
     assert!(out.contains(r#""namespace":"relational_db""#), "out: {out}");
-    assert!(out.contains(r#""status":"planned""#), "out: {out}");
-    assert!(out.contains("table_spec.schema.json"), "out: {out}");
-    assert!(out.contains("query.schema.json"), "out: {out}");
+    assert!(out.contains(r#""status":"stable""#), "out: {out}");
+    assert!(
+        out.contains("terrane.relational_db.tableSpec.v1"),
+        "out: {out}"
+    );
+    assert!(out.contains("terrane.relational_db.query.v1"), "out: {out}");
     assert!(!out.contains("Reserved kv layout"), "out: {out}");
 
     let (ok, skill, err) = host(home, &["cap", "info", "relational_db", "--format", "skill"]);
@@ -41,7 +44,7 @@ fn cap_info_returns_relational_db_document() {
         "skill: {skill}"
     );
     assert!(
-        skill.contains("schemas/table_spec.schema.json"),
+        skill.contains("schemas/terrane.relational_db.tableSpec.v1"),
         "skill: {skill}"
     );
 

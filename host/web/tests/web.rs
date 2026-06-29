@@ -680,9 +680,60 @@ fn serves_catalog_ui_and_invoke_over_http() {
         body.contains("list_apps")
             && body.contains("app_actions")
             && body.contains("invoke")
+            && body.contains("workflows_list")
+            && body.contains("workflow_info")
+            && body.contains("app_scaffold")
+            && body.contains("app_bundle_validate")
+            && body.contains("app_register")
             && body.contains("capabilities_list")
-            && body.contains("capability_info"),
+            && body.contains("capability_info")
+            && body.contains("capability_query")
+            && body.contains("capability_command"),
         "mcp tools/list: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"query","method":"tools/call","params":{"name":"capability_query","arguments":{"capability":"app","query":"exists","args":["todo-cli-collaborate"]}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp capability_query: {body}");
+    assert!(
+        body.contains(r#"\"value\":true"#)
+            && body.contains(r#""isError":false"#)
+            && body.contains(r#""structuredContent""#),
+        "mcp capability_query: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"workflow","method":"tools/call","params":{"name":"workflow_info","arguments":{"name":"make_js_kv_app"}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp workflow_info: {body}");
+    assert!(
+        body.contains("app_register") && body.contains(r#""structuredContent""#),
+        "mcp workflow_info: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"dry","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"app.add","args":["web-dry","Web Dry"],"dryRun":true}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp capability_command dryRun: {body}");
+    assert!(
+        body.contains(r#"\"dryRun\":true"#) && body.contains(r#""isError":false"#),
+        "mcp capability_command dryRun: {body}"
     );
 
     let (status, body) = http(

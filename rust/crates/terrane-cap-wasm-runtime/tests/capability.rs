@@ -118,6 +118,7 @@ fn wasm_runtime_loads_bundle_manifest_and_module_file() {
         .run_runtime(
             RuntimeCtx {
                 source: dir.path().to_str().unwrap().to_string(),
+                source_files: None,
                 app_name: "WASM Demo".to_string(),
                 host: no_resource_host(),
             },

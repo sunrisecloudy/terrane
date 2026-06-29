@@ -1,18 +1,15 @@
 //! e2e smoke for `kv`. Logic detail is covered by `rust/crates/terrane-core/tests/cap/kv.rs`.
 
-#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 use std::path::{Path, PathBuf};
 
 #[cfg(feature = "rocksdb-storage")]
 use rocksdb::{Direction, IteratorMode, Options, DB};
-#[cfg(feature = "sqlite-storage")]
 use rusqlite::{Connection, OptionalExtension};
 use tempfile::tempdir;
 
 use crate::helpers::terrane;
 
 /// Absolute path to a repo app bundle (`apps/<name>`).
-#[cfg(any(feature = "sqlite-storage", feature = "rocksdb-storage"))]
 fn app_source(name: &str) -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")) // .../rust/crates/terrane-host
         .join("../../../apps")
@@ -35,21 +32,6 @@ fn kv_e2e_smoke() {
     assert!(out.contains("kv.set"), "out: {out}");
 }
 
-#[cfg(not(feature = "sqlite-storage"))]
-#[test]
-fn sqlite_storage_projection_requires_feature() {
-    let dir = tempdir().unwrap();
-    let home = dir.path();
-    let (ok, out, err) = terrane(home, &["kv", "storage", "set", "--default", "sqlite"]);
-
-    assert!(!ok, "sqlite storage should be feature gated: {out}");
-    assert!(
-        err.contains("kv storage backend sqlite requires feature sqlite-storage"),
-        "stderr: {err}"
-    );
-}
-
-#[cfg(feature = "sqlite-storage")]
 #[test]
 fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
     let dir = tempdir().unwrap();
@@ -84,7 +66,7 @@ fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
         Vec::<(String, String)>::new()
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "add", "buy milk"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "add", "buy milk"]);
     assert!(ok, "host run add failed: {err}");
     assert_eq!(out.trim(), "added #1 buy milk");
     assert_eq!(
@@ -96,7 +78,7 @@ fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
         Some("buy milk".into())
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "list"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "list"]);
     assert!(ok, "host run list failed: {err}");
     assert_eq!(out.trim(), "#1 buy milk");
     assert_eq!(
@@ -107,7 +89,7 @@ fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
         ]
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "add", "ship it"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "add", "ship it"]);
     assert!(ok, "host run add #2 failed: {err}");
     assert_eq!(out.trim(), "added #2 ship it");
     assert_eq!(
@@ -119,7 +101,7 @@ fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
         Some("ship it".into())
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "done", "1"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "done", "1"]);
     assert!(ok, "host run done failed: {err}");
     assert_eq!(out.trim(), "done #1");
     assert_eq!(sqlite_value(&sqlite_path, "todo-cli", "item:1"), None);
@@ -203,7 +185,7 @@ fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() 
         Vec::<(String, String)>::new()
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "add", "buy milk"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "add", "buy milk"]);
     assert!(ok, "host run add failed: {err}");
     assert_eq!(out.trim(), "added #1 buy milk");
     assert!(
@@ -214,7 +196,7 @@ fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() 
         Some("1".into())
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "list"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "list"]);
     assert!(ok, "host run list failed: {err}");
     assert_eq!(out.trim(), "#1 buy milk");
     assert_eq!(
@@ -225,7 +207,7 @@ fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() 
         ]
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "add", "ship it"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "add", "ship it"]);
     assert!(ok, "host run add #2 failed: {err}");
     assert_eq!(out.trim(), "added #2 ship it");
     assert_eq!(
@@ -237,7 +219,7 @@ fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() 
         Some("2".into())
     );
 
-    let (ok, out, err) = terrane(home, &["host", "run", "todo-cli", "done", "1"]);
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "done", "1"]);
     assert!(ok, "host run done failed: {err}");
     assert_eq!(out.trim(), "done #1");
     assert_eq!(rocksdb_value(&rocks_path, "todo-cli", "item:1"), None);
@@ -267,7 +249,6 @@ fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() 
     );
 }
 
-#[cfg(feature = "sqlite-storage")]
 fn sqlite_value(path: &Path, app: &str, key: &str) -> Option<String> {
     Connection::open(path)
         .unwrap()
@@ -280,7 +261,6 @@ fn sqlite_value(path: &Path, app: &str, key: &str) -> Option<String> {
         .unwrap()
 }
 
-#[cfg(feature = "sqlite-storage")]
 fn sqlite_rows(path: &Path, app: &str) -> Vec<(String, String)> {
     let conn = Connection::open(path).unwrap();
     let mut stmt = conn

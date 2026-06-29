@@ -1,11 +1,30 @@
 //! Engine tests for the `kv` capability, including the broadcast-fold cascade.
 
 use tempfile::tempdir;
-use terrane_cap_kv::{KvStorageBackend, KvStorageBinding};
+use terrane_cap_kv::{KvStorageBackend, KvStorageBinding, DEFAULT_KV_STORAGE_PATH};
 use terrane_core::Core;
 use terrane_core::Error;
 
 use crate::helpers::req;
+
+#[test]
+fn default_kv_storage_uses_sqlite_terrane_db_relative_to_log_home() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let core = Core::open(&log).unwrap();
+
+    assert_eq!(
+        core.kv_storage_plan().default,
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some(DEFAULT_KV_STORAGE_PATH.into())
+        }
+    );
+    assert!(
+        dir.path().join(DEFAULT_KV_STORAGE_PATH).is_file(),
+        "default sqlite projection should be created next to the log"
+    );
+}
 
 #[test]
 fn kv_records_and_cascades_via_broadcast_fold() {
@@ -75,20 +94,31 @@ fn kv_storage_plan_is_cap_owned_and_replayed_for_core_use() {
     assert!(!core.kv_storage_plan().apps.contains_key("notes"));
 }
 
-#[cfg(not(feature = "sqlite-storage"))]
 #[test]
-fn sqlite_storage_requires_feature_before_commit() {
+fn sqlite_storage_backend_is_available_by_default() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
+    let sqlite = dir.path().join("notes.sqlite3");
     let mut core = Core::open(&log).unwrap();
 
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
+    core.dispatch(req(
+        "kv.storage.set",
+        &["app", "notes", "sqlite", sqlite.to_str().unwrap()],
+    ))
+    .unwrap();
+    core.dispatch(req("kv.set", &["notes", "theme", "dark"]))
+        .unwrap();
+
+    assert!(sqlite.is_file(), "sqlite projection should exist on disk");
     assert_eq!(
-        core.dispatch(req("kv.storage.set", &["default", "sqlite"])),
-        Err(Error::InvalidInput(
-            "kv storage backend sqlite requires feature sqlite-storage".into()
-        ))
+        core.kv_storage_plan().apps["notes"],
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some(sqlite.to_str().unwrap().to_string())
+        }
     );
-    assert!(core.log_lines().unwrap().is_empty());
+    assert!(core.replay_matches().unwrap());
 }
 
 #[cfg(not(feature = "rocksdb-storage"))]

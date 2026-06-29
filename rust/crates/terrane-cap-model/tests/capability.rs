@@ -136,3 +136,37 @@ fn model_capability_rejects_invalid_requests_and_cleans_removed_apps() {
     .unwrap();
     assert!(store.model.turns.is_empty());
 }
+
+#[test]
+fn model_doc_covers_recorded_model_effects_and_app_cleanup() {
+    let doc = ModelCapability.doc(false);
+
+    assert_eq!(doc.namespace, "model");
+    assert_eq!(doc.manifest.commands, vec!["model.ask".to_string()]);
+    assert_eq!(doc.manifest.events, vec!["model.responded".to_string()]);
+    assert_eq!(doc.manifest.subscriptions, vec!["app.removed".to_string()]);
+    assert!(doc.manifest.queries.is_empty());
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("ModelCall") || constraint.contains("agent CLI")));
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("never by replay")));
+    assert!(doc
+        .constraints
+        .iter()
+        .any(|constraint| constraint.contains("Folding app.removed removes")));
+    assert!(doc
+        .limits
+        .iter()
+        .any(|limit| limit.name == "supportedAgents" && limit.value.contains("codex")));
+    assert!(doc.internal.is_empty());
+
+    assert!(ModelCapability
+        .doc(true)
+        .internal
+        .iter()
+        .any(|note| note.title.contains("Replay boundary")));
+}

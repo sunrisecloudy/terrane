@@ -86,6 +86,86 @@ fn install_copies_the_bundle_into_the_home_and_runs_from_anywhere() {
 }
 
 #[test]
+fn install_kv_stores_bundle_in_cap_kv_and_runs_from_anywhere() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let elsewhere_dir = tempdir().unwrap();
+    let elsewhere = elsewhere_dir.path();
+    let apps = apps_dir();
+
+    let (ok, out, err) = host(home, &apps, &["app", "install-kv", "todo-cli-collaborate"]);
+    assert!(ok, "install-kv failed: {err}");
+    assert!(
+        out.contains("installed todo-cli-collaborate -> kv://app-bundle/todo-cli-collaborate"),
+        "out: {out}"
+    );
+
+    assert!(
+        !home
+            .join("apps/todo-cli-collaborate/manifest.json")
+            .exists(),
+        "install-kv should not copy the bundle into home/apps"
+    );
+    let (_, state, _) = host(home, elsewhere, &["state"]);
+    assert!(
+        state.contains(
+            "todo-cli-collaborate — Todo (CLI, collaborative)  [kv://app-bundle/todo-cli-collaborate]"
+        ),
+        "catalog should point at kv source: {state}"
+    );
+
+    let (ok, out, err) = host(
+        home,
+        elsewhere,
+        &["run", "todo-cli-collaborate", "add", "buy milk"],
+    );
+    assert!(ok, "run failed from kv bundle: {err}");
+    assert_eq!(out.trim(), "added: buy milk");
+    let (_, out, _) = host(home, elsewhere, &["run", "todo-cli-collaborate", "list"]);
+    assert_eq!(out.trim(), "#1 buy milk");
+}
+
+#[test]
+fn install_kv_can_project_bundle_storage_to_sqlite_disk() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let elsewhere_dir = tempdir().unwrap();
+    let elsewhere = elsewhere_dir.path();
+    let apps = apps_dir();
+
+    let (ok, out, err) = host(
+        home,
+        &apps,
+        &[
+            "app",
+            "install-kv",
+            "todo-cli-collaborate",
+            "--storage",
+            "sqlite",
+            "--path",
+            "kv/bundles.sqlite3",
+        ],
+    );
+    assert!(ok, "install-kv sqlite failed: {err}");
+    assert!(out.contains("installed todo-cli-collaborate"), "out: {out}");
+
+    let sqlite = home.join("kv/bundles.sqlite3");
+    assert!(sqlite.exists(), "sqlite projection should exist on disk");
+    assert!(
+        fs::metadata(&sqlite).unwrap().len() > 0,
+        "sqlite projection should not be empty"
+    );
+
+    let (ok, out, err) = host(
+        home,
+        elsewhere,
+        &["run", "todo-cli-collaborate", "add", "from sqlite"],
+    );
+    assert!(ok, "run failed from sqlite-backed kv bundle: {err}");
+    assert_eq!(out.trim(), "added: from sqlite");
+}
+
+#[test]
 fn install_rejects_manifest_id_path_traversal() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");

@@ -104,6 +104,23 @@ fn set_rejects_empty_keys_before_recording_event() {
 }
 
 #[test]
+fn default_storage_binding_uses_sqlite_terrane_db() {
+    let binding = KvStorageBinding::default();
+
+    assert_eq!(
+        binding,
+        KvStorageBinding {
+            backend: KvStorageBackend::Sqlite,
+            path: Some(DEFAULT_KV_STORAGE_PATH.into())
+        }
+    );
+    assert_eq!(
+        binding.resolved_path(std::path::Path::new("/tmp/home")),
+        Some(std::path::PathBuf::from("/tmp/home").join(DEFAULT_KV_STORAGE_PATH))
+    );
+}
+
+#[test]
 fn storage_bindings_are_owned_by_kv_capability() {
     let cap = KvCapability;
     let bus = AppBus;
@@ -233,4 +250,23 @@ fn internal_helpers_can_use_reserved_prefixes() {
             .len(),
         1
     );
+}
+
+#[test]
+fn set_event_descriptions_truncate_values_for_logs() {
+    let preview = "x".repeat(LOG_VALUE_PREVIEW_CHARS);
+    let record = set_event(
+        "demo",
+        format!("{APP_BUNDLE_KEY_PREFIX}main.js"),
+        format!("{preview}hidden-tail"),
+    )
+    .unwrap();
+
+    let description = KvCapability.describe(&record).unwrap();
+
+    assert_eq!(
+        description,
+        format!("kv.set demo/{APP_BUNDLE_KEY_PREFIX}main.js = {preview}...")
+    );
+    assert!(!description.contains("hidden-tail"));
 }
