@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/package.provision_registry.response.schema.json",
-  "title": "package.provision_registry response",
-  "description": "Preview schema for package.provision_registry. Legacy webapp: provision the package registry. Full schema pending.",
-  "type": "object"
-}

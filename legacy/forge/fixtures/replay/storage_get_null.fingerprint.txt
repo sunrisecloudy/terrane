@@ -1,1 +1,0 @@
-{"calls":[{"args":["missing"],"method":"storage.get","response":null,"seq":0}],"code_hash":"sha256:64f341cdb26da3e4c882cde289564c9a22a44ab7069a17959cfddb6c56b323a2","input":{"key":"missing"},"outcome":{"result":{"ok":true,"value":{"key":"missing","value":null}},"status":"completed"},"random_seed":99,"time_start":300}

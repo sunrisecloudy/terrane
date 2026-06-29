@@ -1,6 +1,0 @@
-{
-  "id": "remote-stylesheet",
-  "expectedError": "forbidden_remote_stylesheet",
-  "description": "Remote stylesheets are rejected by package policy.",
-  "html": "<link rel=\"stylesheet\" href=\"https://cdn.example.com/app.css\">"
-}

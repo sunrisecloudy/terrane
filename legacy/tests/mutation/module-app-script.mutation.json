@@ -1,6 +1,0 @@
-{
-  "id": "module-app-script",
-  "description": "Generated app HTML must not load app.js as a module or with extra script attributes.",
-  "expectedError": "forbidden_app_script_attribute",
-  "html": "<script src=\"app.js\" type=\"module\"></script>"
-}

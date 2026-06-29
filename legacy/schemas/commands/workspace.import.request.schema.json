@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/workspace.import.request.schema.json",
-  "title": "workspace.import request",
-  "description": "Preview schema for workspace.import. Import a workspace backup archive. Full schema pending.",
-  "type": "object"
-}

@@ -1,7 +1,0 @@
-{
-  "kind": "roundtrip",
-  "tree": {
-    "type": "Text",
-    "text": "Hello, forge"
-  }
-}

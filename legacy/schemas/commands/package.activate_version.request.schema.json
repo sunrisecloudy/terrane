@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/package.activate_version.request.schema.json",
-  "title": "package.activate_version request",
-  "description": "Preview schema for package.activate_version. Legacy webapp: activate a package version. Full schema pending.",
-  "type": "object"
-}

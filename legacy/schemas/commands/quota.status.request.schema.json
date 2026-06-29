@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/quota.status.request.schema.json",
-  "title": "quota.status request",
-  "description": "Preview schema for quota.status. Report workspace quota usage vs trusted limits. Full schema pending.",
-  "type": "object"
-}

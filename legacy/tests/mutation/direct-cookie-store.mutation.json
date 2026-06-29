@@ -1,6 +1,0 @@
-{
-  "id": "direct-cookie-store",
-  "description": "Generated apps must not use the Cookie Store API directly.",
-  "expectedError": "forbidden_storage_api",
-  "source": "cookieStore.get('session')"
-}

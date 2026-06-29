@@ -1,8 +1,0 @@
-{
-  "kind": "roundtrip",
-  "tree": {
-    "type": "TextField",
-    "value": "Ada",
-    "onChange": "profile.name.changed"
-  }
-}

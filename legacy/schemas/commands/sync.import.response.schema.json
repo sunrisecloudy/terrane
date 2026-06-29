@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/sync.import.response.schema.json",
-  "title": "sync.import response",
-  "description": "Preview schema for sync.import. Import authorized CRDT sync chunks. Full schema pending.",
-  "type": "object"
-}

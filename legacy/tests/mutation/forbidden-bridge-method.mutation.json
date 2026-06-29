@@ -1,5 +1,0 @@
-{
-  "id": "forbidden-bridge-method",
-  "expectedError": "forbidden_bridge_method",
-  "source": "AppRuntime.call('shell.exec',{command:'ls'})"
-}

@@ -1,5 +1,0 @@
-{
-  "id": "eval-usage",
-  "expectedError": "forbidden_eval",
-  "source": "eval('alert(1)')"
-}

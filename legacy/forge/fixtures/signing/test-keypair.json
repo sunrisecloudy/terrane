@@ -1,9 +1,0 @@
-{
-  "warning": "TEST-ONLY Ed25519 keypair. Do not use outside fixtures.",
-  "algorithm": "ed25519",
-  "key_id": "test-ed25519-2026-06",
-  "private_key_pem": "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f\n-----END PRIVATE KEY-----\n",
-  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAA6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=\n-----END PUBLIC KEY-----\n",
-  "alternate_public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAcSZR9FC6BbY4mLme9fe6RWMujiUn9/cVzWcexAJMxR4=\n-----END PUBLIC KEY-----\n",
-  "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-}

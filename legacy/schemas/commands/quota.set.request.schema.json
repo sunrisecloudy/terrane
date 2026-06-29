@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/quota.set.request.schema.json",
-  "title": "quota.set request",
-  "description": "Preview schema for quota.set. Configure trusted quota policy override (Owner-only). Full schema pending.",
-  "type": "object"
-}

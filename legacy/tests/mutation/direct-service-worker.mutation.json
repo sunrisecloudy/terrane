@@ -1,6 +1,0 @@
-{
-  "id": "direct-service-worker",
-  "description": "Generated apps must not register service workers.",
-  "expectedError": "forbidden_service_worker",
-  "source": "navigator.serviceWorker.register('/sw.js')"
-}

@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/legacy.core_step.request.schema.json",
-  "title": "legacy.core_step request",
-  "description": "Preview schema for legacy.core_step. Bridge compatibility shim for legacy webapp core.step. Full schema pending.",
-  "type": "object"
-}

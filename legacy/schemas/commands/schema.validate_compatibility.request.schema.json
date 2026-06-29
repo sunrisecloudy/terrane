@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/schema.validate_compatibility.request.schema.json",
-  "title": "schema.validate_compatibility request",
-  "description": "Preview schema for schema.validate_compatibility. Validate proposed schema compatibility. Full schema pending.",
-  "type": "object"
-}

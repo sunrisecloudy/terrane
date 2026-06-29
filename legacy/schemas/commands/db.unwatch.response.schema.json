@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/db.unwatch.response.schema.json",
-  "title": "db.unwatch response",
-  "description": "Preview schema for db.unwatch. Cancel a live query registration (idempotent). Full schema pending.",
-  "type": "object"
-}

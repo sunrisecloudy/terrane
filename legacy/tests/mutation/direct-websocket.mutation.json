@@ -1,6 +1,0 @@
-{
-  "id": "direct-websocket",
-  "description": "Generated apps must not open WebSocket connections directly.",
-  "expectedError": "forbidden_network_api",
-  "source": "new WebSocket('wss://example.com/socket')"
-}

@@ -1,9 +1,0 @@
-{
-  "expected": {
-    "status": "rejected",
-    "errorCode": "content_tampered"
-  },
-  "scenario": "Sign a valid package, mutate app.js, then attempt to mount.",
-  "id": "post-signature-tamper",
-  "expectedError": "content_tampered"
-}

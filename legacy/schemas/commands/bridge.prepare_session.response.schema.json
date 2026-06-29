@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/bridge.prepare_session.response.schema.json",
-  "title": "bridge.prepare_session response",
-  "description": "Preview schema for bridge.prepare_session. Phase C bridge: prepare a bridge session. Full schema pending.",
-  "type": "object"
-}

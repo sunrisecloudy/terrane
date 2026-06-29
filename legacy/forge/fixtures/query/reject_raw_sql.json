@@ -1,7 +1,0 @@
-{
-  "case": "reject_raw_sql",
-  "description": "SQL-like string form rejects raw SQL outside the validated subset.",
-  "seed": [],
-  "query": {"sql_like":"DROP TABLE records; SELECT * FROM tasks","plan":null},
-  "expect": {"error":{"code":"ValidationError","message_contains":"raw SQL is not exposed"},"warnings":[]}
-}

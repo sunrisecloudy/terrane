@@ -1,5 +1,0 @@
-{
-  "id": "missing-manifest-field",
-  "expectedError": "missing_manifest_field",
-  "description": "Manifest missing required name/version/runtime fields."
-}

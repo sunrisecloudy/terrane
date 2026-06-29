@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/bridge.validate_envelope.response.schema.json",
-  "title": "bridge.validate_envelope response",
-  "description": "Preview schema for bridge.validate_envelope. Phase C bridge: validate a bridge message envelope. Full schema pending.",
-  "type": "object"
-}

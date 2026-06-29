@@ -1,1 +1,0 @@
-{"calls":[{"args":null,"method":"random.next","response":0.28149653637029604,"seq":0}],"code_hash":"sha256:41cc4226ccb8cfff338132ef47720cddf4ce1bea00ae6a0dd28efa33d15554a4","input":{},"outcome":{"result":{"ok":true,"value":{"bucket":"low","seeded":0.28149653637029604}},"status":"completed"},"random_seed":48879,"time_start":10}

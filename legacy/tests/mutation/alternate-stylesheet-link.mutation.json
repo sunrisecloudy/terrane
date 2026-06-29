@@ -1,6 +1,0 @@
-{
-  "id": "alternate-stylesheet-link",
-  "description": "Generated app HTML must not load any stylesheet except styles.css.",
-  "expectedError": "forbidden_stylesheet_href",
-  "html": "<link rel=\"stylesheet\" href=\"theme.css\">"
-}

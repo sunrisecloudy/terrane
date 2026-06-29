@@ -1,6 +1,0 @@
-{
-  "id": "direct-eventsource",
-  "description": "Generated apps must not open EventSource streams directly.",
-  "expectedError": "forbidden_network_api",
-  "source": "new EventSource('https://example.com/events')"
-}

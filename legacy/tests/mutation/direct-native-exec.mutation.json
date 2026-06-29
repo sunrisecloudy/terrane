@@ -1,6 +1,0 @@
-{
-  "id": "direct-native-exec",
-  "description": "Generated apps must not call native execution escape hatches directly.",
-  "expectedError": "forbidden_native_bridge",
-  "source": "native.exec('open', {})"
-}

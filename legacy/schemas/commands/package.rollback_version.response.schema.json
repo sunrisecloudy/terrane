@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/package.rollback_version.response.schema.json",
-  "title": "package.rollback_version response",
-  "description": "Preview schema for package.rollback_version. Legacy webapp: roll back to a prior version. Full schema pending.",
-  "type": "object"
-}

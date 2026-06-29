@@ -1,5 +1,0 @@
-{
-  "id": "external-cdn-script",
-  "expectedError": "forbidden_remote_script",
-  "html": "<script src='https://cdn.example.com/x.js'></script>"
-}

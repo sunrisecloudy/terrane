@@ -1,6 +1,0 @@
-{
-  "id": "direct-localstorage",
-  "description": "Generated apps must not use localStorage directly.",
-  "expectedError": "forbidden_storage_api",
-  "source": "localStorage.setItem('notes-lite:notes', '[]')"
-}

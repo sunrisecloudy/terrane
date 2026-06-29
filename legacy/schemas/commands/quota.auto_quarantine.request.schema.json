@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/quota.auto_quarantine.request.schema.json",
-  "title": "quota.auto_quarantine request",
-  "description": "Preview schema for quota.auto_quarantine. Auto-quarantine applets exceeding quota policy. Full schema pending.",
-  "type": "object"
-}

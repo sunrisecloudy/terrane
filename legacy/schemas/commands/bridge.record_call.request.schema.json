@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/bridge.record_call.request.schema.json",
-  "title": "bridge.record_call request",
-  "description": "Preview schema for bridge.record_call. Phase C bridge: record a bridge host call. Full schema pending.",
-  "type": "object"
-}

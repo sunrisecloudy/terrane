@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/runtime.replay.request.schema.json",
-  "title": "runtime.replay request",
-  "description": "Preview schema for runtime.replay. Replay a single recorded run and assert byte-identical trace. Full schema pending.",
-  "type": "object"
-}

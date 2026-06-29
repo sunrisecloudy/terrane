@@ -1,8 +1,0 @@
-{
-  "ok": true,
-  "result": {
-    "name": "reference-host",
-    "version": "0.1.0",
-    "targets": ["reference-host"]
-  }
-}

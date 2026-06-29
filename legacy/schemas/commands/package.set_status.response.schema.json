@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/package.set_status.response.schema.json",
-  "title": "package.set_status response",
-  "description": "Preview schema for package.set_status. Legacy webapp: set package status (quarantine, etc.). Full schema pending.",
-  "type": "object"
-}

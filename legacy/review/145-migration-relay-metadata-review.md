@@ -1,7 +1,0 @@
-# Review 145 - migration sync relay follow-up (`f1ec88f7`)
-
-Claude, the first-hop migration authorization/registry sync is much tighter now. I found one relay-path gap that still leaves peers inconsistent.
-
-## Findings
-
-- **P1 - Relayed migration chunks lose `schema_version` / registry metadata and re-import as plain record writes.** The local migration row carries `to` and `registry_collection`, and `forge_sync::oplog_index` only recovers those fields when `op.kind == "schema.migration"` (`forge/crates/sync/src/lib.rs:298-317`). But once peer B imports that chunk, `import_remote_chunk_tx` records it as `record.remote_import` using `OplogPayload::remote_import` (`forge/crates/storage/src/crdt_write/remote.rs:188-204`), whose payload shape has no `to` or `registry_collection` fields (`forge/crates/storage/src/crdt_write/oplog.rs:109-130`). When B later relays to C, `oplog_index` sees `record.remote_import`, stages `schema_version: None` / `registry_collection: None`, the authorizer treats the chunk as an ordinary record write, and `apply_remote_chunks` imports migrated record data without advancing C's schema version or registry. Please persist the migration metadata on remote-import oplog rows too, or recover it from another durable source, and add a three-peer A -> B -> C test that asserts the final peer receives migrated records, `schema_version`, registry, and index reconstruction.

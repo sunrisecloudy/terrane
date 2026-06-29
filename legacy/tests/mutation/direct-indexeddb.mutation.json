@@ -1,6 +1,0 @@
-{
-  "id": "direct-indexeddb",
-  "description": "Generated apps must not use IndexedDB directly.",
-  "expectedError": "forbidden_storage_api",
-  "source": "indexedDB.open('unsafe-generated-app-store')"
-}

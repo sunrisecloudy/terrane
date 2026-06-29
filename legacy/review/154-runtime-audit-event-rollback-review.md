@@ -1,6 +1,0 @@
-## Review: a658dd70 runtime audit atomicity
-
-### Finding
-
-- **P2: `runtime.run` audit events are emitted before the run/audit transaction commits.** `cmd_runtime_run` now builds egress audit rows before `Store::transact` and then appends them with `save_run_tx` (`forge/crates/core/src/commands/runtime_run.rs:206-213`). But `build_run_egress_audit` calls `build_producer_audit_record` for deny, `secret.use`, and `network.egress` rows (`forge/crates/core/src/commands/runtime_run.rs:351-375`, `397-419`, `439-455`), and that helper emits the transient event immediately (`forge/crates/core/src/workspace.rs:855-893`). If `save_run_tx` or any `append_audit_tx` fails, the SQLite transaction rolls back while the in-memory `EventSink` has already published `network.egress` / `secret.used` events and advanced the logical clock. That is the rollback behavior the new lifecycle deferred-emission helper explicitly avoids (`forge/crates/core/src/workspace.rs:895-906`), and it leaves shells/tests able to observe audit events that have no durable audit row. Please use the same deferred-emit shape for `runtime.run`: reserve/build explicit logical times, append run + rows in the transaction, then emit matching events only after the transaction succeeds; add a forced-failure test that asserts both no rows and no events.
-

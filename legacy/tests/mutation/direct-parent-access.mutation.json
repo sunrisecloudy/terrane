@@ -1,6 +1,0 @@
-{
-  "id": "direct-parent-access",
-  "description": "Generated apps must not reach outside the sandbox through parent/top/opener.",
-  "expectedError": "forbidden_parent_access",
-  "source": "window.parent.postMessage({ unsafe: true }, '*')"
-}

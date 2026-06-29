@@ -1,6 +1,0 @@
-{
-  "id": "direct-cookie",
-  "description": "Generated apps must not read or write document.cookie directly.",
-  "expectedError": "forbidden_storage_api",
-  "source": "document.cookie = 'session=unsafe'"
-}

@@ -1,6 +1,0 @@
-{
-  "id": "remote-html-resource",
-  "expectedError": "forbidden_external_resource",
-  "description": "Generated app HTML must not load remote or absolute resources through ordinary href/src attributes.",
-  "html": "<img src=\"https://tracker.example/pixel.png\" alt=\"\">"
-}

@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/db.watch.response.schema.json",
-  "title": "db.watch response",
-  "description": "Preview schema for db.watch. Register a reactive live query over a row query. Full schema pending.",
-  "type": "object"
-}

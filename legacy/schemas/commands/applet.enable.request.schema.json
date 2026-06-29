@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.local/schemas/commands/applet.enable.request.schema.json",
-  "title": "applet.enable request",
-  "description": "Preview schema for applet.enable. Transition an installed applet to enabled state. Full schema pending.",
-  "type": "object"
-}
