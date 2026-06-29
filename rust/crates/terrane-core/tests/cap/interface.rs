@@ -196,22 +196,22 @@ fn registry_bus_reports_unknown_capability_or_query() {
 }
 
 #[test]
-fn capability_docs_include_registered_and_planned_docs() {
+fn capability_docs_include_registered_relational_docs() {
     let docs = capability_docs(false);
     assert!(docs.iter().any(|doc| doc.namespace == "kv"));
     let rdb = docs
         .iter()
         .find(|doc| doc.namespace == "relational_db")
-        .expect("planned relational_db doc");
-    assert_eq!(rdb.status, "planned");
+        .expect("relational_db doc");
+    assert_eq!(rdb.status, "stable");
     assert!(rdb
         .schemas
         .iter()
-        .any(|schema| schema.id == "table_spec.schema.json"));
+        .any(|schema| schema.id == "terrane.relational_db.tableSpec.v1"));
     assert!(rdb
         .schemas
         .iter()
-        .any(|schema| schema.id == "query.schema.json"));
+        .any(|schema| schema.id == "terrane.relational_db.query.v1"));
     assert!(rdb.internal.is_empty());
 
     let internal = capability_doc("relational_db", true).unwrap();

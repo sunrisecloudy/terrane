@@ -15,7 +15,17 @@ fn surface_is_derived_from_the_live_declarations() {
 
     // Every registered capability is listed.
     for ns in [
-        "app", "build", "builder", "harness", "kv", "crdt", "net", "model", "host", "replica",
+        "app",
+        "build",
+        "builder",
+        "harness",
+        "kv",
+        "relational_db",
+        "crdt",
+        "net",
+        "model",
+        "host",
+        "replica",
     ] {
         assert!(
             s.capabilities.iter().any(|c| c == ns),
@@ -27,12 +37,12 @@ fn surface_is_derived_from_the_live_declarations() {
         .capability_docs
         .iter()
         .find(|doc| doc.namespace == "relational_db")
-        .expect("planned relational_db docs");
-    assert_eq!(rdb.status, "planned");
+        .expect("relational_db docs");
+    assert_eq!(rdb.status, "stable");
     assert!(rdb
         .schemas
         .iter()
-        .any(|schema| schema.id == "table_spec.schema.json"));
+        .any(|schema| schema.id == "terrane.relational_db.tableSpec.v1"));
     assert!(rdb.internal.is_empty());
 
     // The resource surface carries the declared backend methods.
@@ -60,6 +70,12 @@ fn surface_is_derived_from_the_live_declarations() {
         .methods
         .iter()
         .any(|m| m.name == "compileTs" && m.kind == "read"));
+    assert!(s.capability_docs.iter().any(|d| {
+        d.namespace == "relational_db"
+            && d.schemas
+                .iter()
+                .any(|schema| schema.id == "terrane.relational_db.tableSpec.v1")
+    }));
 
     // The app + sync contracts.
     assert_eq!(s.app.actions_verb, terrane_api::ACTIONS_VERB);

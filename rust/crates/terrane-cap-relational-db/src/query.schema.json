@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "terrane.relational_db.query.v1",
+  "title": "Terrane Relational DB Query v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "partition": {
+      "description": "Required values for the selected primary or secondary index partition key. Use an array in key order, an object keyed by field name, or a scalar for one-part keys."
+    },
+    "sortPrefix": {
+      "description": "Optional exact tuple prefix for the selected sort key. Cannot be combined with sortStart or sortEnd."
+    },
+    "sortStart": {
+      "description": "Optional inclusive sort tuple lower bound unless startExclusive is true."
+    },
+    "sortEnd": {
+      "description": "Optional exclusive sort tuple upper bound unless endInclusive is true."
+    },
+    "startExclusive": { "type": "boolean", "default": false },
+    "endInclusive": { "type": "boolean", "default": false },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 500 },
+    "reverse": { "type": "boolean", "default": false },
+    "select": { "enum": ["rows", "projection", "keys"], "default": "rows" }
+  }
+}

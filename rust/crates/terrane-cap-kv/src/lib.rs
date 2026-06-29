@@ -18,6 +18,11 @@ mod storage;
 
 pub use storage::{sync_full_storage, sync_storage_after_commit};
 
+/// Prefix reserved for platform-owned data inside an app's KV namespace.
+pub const RESERVED_PREFIX: &str = "__terrane/";
+const DEFAULT_SCAN_LIMIT: usize = 100;
+const MAX_SCAN_LIMIT: usize = 500;
+
 /// The physical storage engine selected for a logical `kv` store.
 ///
 /// App bundles never see this. Apps ask for the logical `kv` resource; users
@@ -152,6 +157,99 @@ struct Deleted {
     key: String,
 }
 
+/// Internal helper for platform capabilities that intentionally write KV keys,
+/// including reserved prefixes. Public `kv.*` commands still reject them.
+pub fn set_event(
+    app: impl Into<String>,
+    key: impl Into<String>,
+    value: impl Into<String>,
+) -> Result<EventRecord> {
+    encode_event(
+        "kv.set",
+        &Set {
+            app: app.into(),
+            key: key.into(),
+            value: value.into(),
+        },
+    )
+}
+
+/// Internal helper for platform capabilities that intentionally delete KV keys,
+/// including reserved prefixes.
+pub fn delete_event(app: impl Into<String>, key: impl Into<String>) -> Result<EventRecord> {
+    encode_event(
+        "kv.deleted",
+        &Deleted {
+            app: app.into(),
+            key: key.into(),
+        },
+    )
+}
+
+pub fn is_reserved_key(key: &str) -> bool {
+    key.starts_with(RESERVED_PREFIX)
+}
+
+pub fn get_value(state: &dyn StateStore, app: &str, key: &str) -> Result<Option<String>> {
+    Ok(state_ref::<KvState>(state, "kv")?
+        .data
+        .get(app)
+        .and_then(|m| m.get(key).cloned()))
+}
+
+pub fn scan_prefix(
+    state: &dyn StateStore,
+    app: &str,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>> {
+    let limit = bounded_limit(limit);
+    let mut out = Vec::new();
+    let Some(map) = state_ref::<KvState>(state, "kv")?.data.get(app) else {
+        return Ok(out);
+    };
+    for (key, value) in map.range(prefix.to_string()..) {
+        if !key.starts_with(prefix) || out.len() >= limit {
+            break;
+        }
+        out.push((key.clone(), value.clone()));
+    }
+    Ok(out)
+}
+
+pub fn scan_range(
+    state: &dyn StateStore,
+    app: &str,
+    start: &str,
+    end_exclusive: &str,
+    limit: usize,
+) -> Result<Vec<(String, String)>> {
+    let limit = bounded_limit(limit);
+    let mut out = Vec::new();
+    let Some(map) = state_ref::<KvState>(state, "kv")?.data.get(app) else {
+        return Ok(out);
+    };
+    for (key, value) in map.range(start.to_string()..end_exclusive.to_string()) {
+        if out.len() >= limit {
+            break;
+        }
+        out.push((key.clone(), value.clone()));
+    }
+    Ok(out)
+}
+
+pub fn delete_prefix_events(
+    state: &dyn StateStore,
+    app: &str,
+    prefix: &str,
+    limit: usize,
+) -> Result<Vec<EventRecord>> {
+    scan_prefix(state, app, prefix, limit)?
+        .into_iter()
+        .map(|(key, _)| delete_event(app.to_string(), key))
+        .collect()
+}
+
 #[derive(BorshSerialize, BorshDeserialize)]
 struct StorageConfigured {
     app: Option<String>,
@@ -208,19 +306,18 @@ impl Capability for KvCapability {
             "kv.set" => {
                 let app = arg(args, 0, "app")?;
                 let key = arg(args, 1, "key")?;
+                reject_public_reserved(&key)?;
                 let value = args.get(2..).unwrap_or_default().join(" ");
                 ensure_app_exists(ctx.bus, &app)?;
                 if key.trim().is_empty() {
                     return Err(Error::InvalidInput("key must not be empty".into()));
                 }
-                Ok(Decision::Commit(vec![encode_event(
-                    "kv.set",
-                    &Set { app, key, value },
-                )?]))
+                Ok(Decision::Commit(vec![set_event(app, key, value)?]))
             }
             "kv.rm" | "kv.delete" => {
                 let app = arg(args, 0, "app")?;
                 let key = arg(args, 1, "key")?;
+                reject_public_reserved(&key)?;
                 let missing = state_ref::<KvState>(ctx.state, "kv")?
                     .data
                     .get(&app)
@@ -229,10 +326,7 @@ impl Capability for KvCapability {
                 if missing {
                     return Err(Error::KeyNotFound(app, key));
                 }
-                Ok(Decision::Commit(vec![encode_event(
-                    "kv.deleted",
-                    &Deleted { app, key },
-                )?]))
+                Ok(Decision::Commit(vec![delete_event(app, key)?]))
             }
             "kv.storage.set" => decide_storage_set(ctx, args),
             "kv.storage.clear" => decide_storage_clear(ctx, args),
@@ -339,6 +433,9 @@ impl Capability for KvCapability {
         match name {
             "get" => read_get(ctx.state, ctx.app, args),
             "all" => read_all(ctx.state, ctx.app, args),
+            "scan" => read_scan(ctx.state, ctx.app, args),
+            "range" => read_range(ctx.state, ctx.app, args),
+            "keys" => read_keys(ctx.state, ctx.app, args),
             other => Err(Error::InvalidInput(format!(
                 "unknown resource read: kv.{other}"
             ))),
@@ -452,6 +549,18 @@ fn resource_methods() -> Vec<ResourceMethod> {
             name: "rm",
             params: &["key"],
         },
+        ResourceMethod::Read {
+            name: "scan",
+            params: &["prefix", "limit"],
+        },
+        ResourceMethod::Read {
+            name: "range",
+            params: &["start", "endExclusive", "limit"],
+        },
+        ResourceMethod::Read {
+            name: "keys",
+            params: &["prefix", "limit"],
+        },
     ]
 }
 
@@ -469,26 +578,97 @@ pub fn storage_binding(state: &dyn StateStore, app: Option<&str>) -> Result<KvSt
     Ok(state_ref::<KvState>(state, "kv")?.storage.binding_for(app))
 }
 
-/// `ctx.resource.kv.get(key)` — the value for `key` in `app`'s store, or none.
+/// `ctx.resource.kv.get(key)` - the value for `key` in `app`'s store, or none.
 fn read_get(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
     let key = args.first().map(String::as_str).unwrap_or_default();
-    Ok(ReadValue::OptString(
-        state_ref::<KvState>(state, "kv")?
-            .data
-            .get(app)
-            .and_then(|m| m.get(key).cloned()),
-    ))
+    if is_reserved_key(key) {
+        return Ok(ReadValue::OptString(None));
+    }
+    Ok(ReadValue::OptString(get_value(state, app, key)?))
 }
 
-/// `ctx.resource.kv.all()` — every key/value pair in `app`'s store.
+/// `ctx.resource.kv.all()` - every non-reserved key/value pair in `app`'s store.
 fn read_all(state: &dyn StateStore, app: &str, _args: &[String]) -> Result<ReadValue> {
-    Ok(ReadValue::StringMap(
+    Ok(ReadValue::StringMap(public_pairs(
         state_ref::<KvState>(state, "kv")?
             .data
             .get(app)
             .cloned()
             .unwrap_or_default(),
+    )))
+}
+
+fn read_scan(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
+    let prefix = args.first().map(String::as_str).unwrap_or_default();
+    reject_public_reserved(prefix)?;
+    let limit = parse_limit(args.get(1))?;
+    Ok(ReadValue::StringMap(
+        scan_prefix(state, app, prefix, limit)?
+            .into_iter()
+            .filter(|(key, _)| !is_reserved_key(key))
+            .collect(),
     ))
+}
+
+fn read_range(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
+    let start = args.first().map(String::as_str).unwrap_or_default();
+    let end = args.get(1).map(String::as_str).unwrap_or_default();
+    reject_public_reserved(start)?;
+    reject_public_reserved(end)?;
+    if end <= start {
+        return Err(Error::InvalidInput(
+            "range endExclusive must sort after start".into(),
+        ));
+    }
+    let limit = parse_limit(args.get(2))?;
+    Ok(ReadValue::StringMap(
+        scan_range(state, app, start, end, limit)?
+            .into_iter()
+            .filter(|(key, _)| !is_reserved_key(key))
+            .collect(),
+    ))
+}
+
+fn read_keys(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
+    let prefix = args.first().map(String::as_str).unwrap_or_default();
+    reject_public_reserved(prefix)?;
+    let limit = parse_limit(args.get(1))?;
+    Ok(ReadValue::StringList(
+        scan_prefix(state, app, prefix, limit)?
+            .into_iter()
+            .map(|(key, _)| key)
+            .filter(|key| !is_reserved_key(key))
+            .collect(),
+    ))
+}
+
+fn public_pairs(map: BTreeMap<String, String>) -> BTreeMap<String, String> {
+    map.into_iter()
+        .filter(|(key, _)| !is_reserved_key(key))
+        .collect()
+}
+
+fn reject_public_reserved(key: &str) -> Result<()> {
+    if is_reserved_key(key) {
+        Err(Error::InvalidInput(format!(
+            "kv key prefix {RESERVED_PREFIX:?} is reserved for platform data"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_limit(raw: Option<&String>) -> Result<usize> {
+    match raw.map(String::as_str).filter(|s| !s.is_empty()) {
+        Some(s) => s.parse::<usize>().map(bounded_limit).map_err(|_| {
+            Error::InvalidInput(format!("limit must be a positive integer, got {s:?}"))
+        }),
+        None => Ok(DEFAULT_SCAN_LIMIT),
+    }
+}
+
+fn bounded_limit(limit: usize) -> usize {
+    limit.clamp(1, MAX_SCAN_LIMIT)
 }
 
 #[cfg(test)]
