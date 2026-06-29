@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::Capability;
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, ensure_app_exists, state_mut, AppId, CapManifest, CommandCtx,
-    CommandSpec, Decision, Effect, Error, EventPattern, EventRecord, EventSpec, Result, StateStore,
+    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, AppId,
+    CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern, EventRecord,
+    EventSpec, Result, StateStore,
 };
 
 /// A recorded network response, rebuilt by folding a `net.fetched` event.
@@ -101,11 +102,7 @@ impl Capability for NetCapability {
                     );
             }
             "app.removed" => {
-                #[derive(BorshDeserialize)]
-                struct Removed {
-                    id: String,
-                }
-                let e: Removed = decode_event(record)?;
+                let e = decode_app_removed(record)?;
                 state_mut::<NetState>(state, "net")?.fetches.remove(&e.id);
             }
             _ => {}

@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::Capability;
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, ensure_app_exists, state_mut, truncate, AppId, CapManifest,
-    CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern, EventRecord, EventSpec, Result,
-    StateStore,
+    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, join_tail, state_mut,
+    truncate, AppId, CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern,
+    EventRecord, EventSpec, Result, StateStore,
 };
 
 /// The agents this capability knows how to drive.
@@ -89,7 +89,7 @@ impl Capability for ModelCapability {
             "model.ask" => {
                 let app = arg(args, 0, "app")?;
                 let agent = arg(args, 1, "agent (claude|codex)")?;
-                let prompt = args.get(2..).unwrap_or_default().join(" ");
+                let prompt = join_tail(args, 2);
                 // Validate purely; the agent runs at the edge.
                 ensure_app_exists(ctx.bus, &app)?;
                 if !AGENTS.contains(&agent.as_str()) {
@@ -122,11 +122,7 @@ impl Capability for ModelCapability {
                     });
             }
             "app.removed" => {
-                #[derive(BorshDeserialize)]
-                struct Removed {
-                    id: String,
-                }
-                let e: Removed = decode_event(record)?;
+                let e = decode_app_removed(record)?;
                 state_mut::<ModelState>(state, "model")?.turns.remove(&e.id);
             }
             _ => {}
