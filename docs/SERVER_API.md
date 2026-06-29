@@ -70,18 +70,44 @@ from stdin/stdout; the web host exposes the same behavior at `POST /mcp`.
 
 Tools:
 
-| Tool                | Input                                            | Returns                                                    |
-| ------------------- | ------------------------------------------------ | ---------------------------------------------------------- |
-| `list_apps`         | `{}`                                             | the installed apps (id, name, has_ui)                      |
-| `app_actions`       | `{ app }`                                        | the app's actions (verbs + args), as the app declares them |
-| `invoke`            | `{ app, verb, args[] }`                          | the backend's output string                                |
-| `capabilities_list` | `{ includeInternal? }`                           | capability namespaces, statuses, and short summaries       |
-| `capability_info`   | `{ namespace, format?, includeInternal? }`       | one capability's docs as `json`, `markdown`, or `skill`    |
+| Tool                 | Input                                            | Returns                                                    |
+| -------------------- | ------------------------------------------------ | ---------------------------------------------------------- |
+| `workflows_list`     | `{}`                                             | guided workflow ids and first calls                        |
+| `workflow_info`      | `{ name }`                                       | exact `tools/call` recipe steps for one workflow           |
+| `app_recipe`         | `{ kind? }`                                      | app-building happy-path guidance                           |
+| `app_scaffold`       | `{ id, name, kind?, withUi? }`                   | generated bundle files as JSON                             |
+| `app_bundle_validate` | `{ path }`                                      | bundle manifest/ref validation                             |
+| `app_register`       | `{ source, id?, name?, runtime?, dryRun? }`      | validated `app.add` dispatch or dry-run                    |
+| `list_apps`          | `{}`                                             | the installed apps (id, name, has_ui)                      |
+| `app_actions`        | `{ app }`                                        | the app's actions (verbs + args), as the app declares them |
+| `invoke`             | `{ app, verb, args[] }`                          | the backend's output string                                |
+| `capabilities_list`  | `{ includeInternal? }`                           | capability namespaces, statuses, and short summaries       |
+| `capability_info`    | `{ namespace, format?, includeInternal? }`       | one capability's docs as `json`, `markdown`, or `skill`    |
+| `capability_query`   | `{ capability, query, args[] }`                  | a read-only capability query result as JSON text           |
+| `capability_command` | `{ name, args[], dryRun?, help? }`               | ordered command help, record count/output, or dry-run validation |
 
 The intended order is **list → discover → act**: `list_apps` to find an app,
 `app_actions` to learn its verbs, `invoke` to run one. `app_actions` calls the
 app's reserved `__actions__` verb (see the App API), so the action list is the
 app's own — not hard-coded in the host.
+
+For weaker or blank-context models, the intended order starts one step earlier:
+`workflows_list` → `workflow_info` → exact tool calls. The `make_js_kv_app`
+workflow routes agents through `app_scaffold`, `app_bundle_validate`,
+`app_register` with `dryRun: true`, `app_register` commit, `app_actions`, and
+`invoke`.
+
+JSON-returning tools include `structuredContent` alongside the compatibility
+text block, so clients do not need to parse JSON out of MCP text content.
+Tool-shape errors include a concrete `tools/call` example where possible.
+
+`capability_query` and `capability_command` are advanced capability-operation
+tools. `capability_query` is read-only and cannot append records. `capability_command`
+runs through the same core dispatcher as CLI commands. Use `help: true` with a
+dotted command name, for example `{ "name": "app.add", "help": true }`, to fetch
+ordered argv params, returns, errors, emitted events, effects, and examples
+without dispatching. Use `dryRun: true` to validate simple commit commands
+without committing; effect/runtime commands reject dry-run.
 
 Capability documentation follows the same generated-source rule:
 `capabilities_list` discovers namespaces and `capability_info` returns the
