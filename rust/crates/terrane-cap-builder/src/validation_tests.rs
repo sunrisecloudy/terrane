@@ -1,13 +1,23 @@
 use super::*;
 
 fn generated_json() -> String {
-    r#"{"files":[
-{"path":"manifest.json","content":"{\"id\":\"demo\",\"name\":\"Demo\",\"version\":\"0.1.0\",\"runtime\":\"js\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[\"kv\"]}"},
-{"path":"main.js","content":"var actions={hello:{summary:\"Say hello.\",args:[],run:function(){return \"hi\";}}};"},
-{"path":"index.html","content":"<!doctype html><title>Demo</title><script src=\"app.js\"></script>"},
-{"path":"style.css","content":"body { font-family: system-ui; }"}
-]}"#
-    .to_string()
+    let manifest = concat!(
+        r#"{"id":"demo","name":"Demo","version":"0.1.0","#,
+        r#""runtime":"js","backend":"main.js","ui":"index.html","#,
+        r#""resources":["kv"]}"#
+    );
+    let main_js = concat!(
+        r#"var actions={hello:{summary:"Say hello.","#,
+        r#"args:[],run:function(){return "hi";}}};"#
+    );
+    format!(
+        r#"{{"files":[
+{{"path":"manifest.json","content":{manifest:?}}},
+{{"path":"main.js","content":{main_js:?}}},
+{{"path":"index.html","content":"<!doctype html><title>Demo</title><script src=\"app.js\"></script>"}},
+{{"path":"style.css","content":"body {{ font-family: system-ui; }}"}}
+]}}"#
+    )
 }
 
 #[test]
@@ -15,6 +25,13 @@ fn parses_and_validates_generated_bundle_files() {
     let files = parse_generated_files(&generated_json(), "demo", "Demo").unwrap();
     assert_eq!(files.len(), 4);
     assert_eq!(files[0].path, "index.html");
+    assert!(files.iter().any(|f| f.path == "manifest.json"));
+}
+
+#[test]
+fn accepts_planned_document_resource_in_generated_manifests() {
+    let with_document = generated_json().replace("\\\"kv\\\"", "\\\"document\\\"");
+    let files = parse_generated_files(&with_document, "demo", "Demo").unwrap();
     assert!(files.iter().any(|f| f.path == "manifest.json"));
 }
 

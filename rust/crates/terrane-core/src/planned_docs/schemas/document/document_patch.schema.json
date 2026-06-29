@@ -1,0 +1,17 @@
+{
+  "$id": "document_patch.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "body": {
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "document_meta.schema.json"
+    }
+  }
+}

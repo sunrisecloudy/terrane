@@ -33,6 +33,16 @@ fn surface_is_derived_from_the_live_declarations() {
         );
     }
     assert!(s.capability_docs.iter().any(|doc| doc.namespace == "kv"));
+    let document = s
+        .capability_docs
+        .iter()
+        .find(|doc| doc.namespace == "document")
+        .expect("planned document docs");
+    assert_eq!(document.status, "planned");
+    assert!(document
+        .schemas
+        .iter()
+        .any(|schema| schema.id == "document.schema.json"));
     let rdb = s
         .capability_docs
         .iter()

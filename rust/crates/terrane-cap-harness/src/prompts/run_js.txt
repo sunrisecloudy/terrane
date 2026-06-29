@@ -13,6 +13,8 @@ Available globals:
 - ctx.resource.kv.rm(key)
 - ctx.resource.kv.all()
 - ctx.resource.build.compileTs(path, source)
+- ctx.resource.document may be available for document-heavy apps that declare the
+  planned "document" resource; check that it exists before calling it.
 
 The JS must define `function handle(input) { ... }` or an `actions` table. It
 must return a string. To produce files, write each file through kv using keys in

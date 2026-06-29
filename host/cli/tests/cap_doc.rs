@@ -64,6 +64,23 @@ fn cap_info_returns_relational_db_document() {
 }
 
 #[test]
+fn cap_info_returns_document_capability_completion_doc() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    let (ok, out, err) = host(home, &["cap", "info", "document", "--format", "json"]);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains(r#""namespace":"document""#), "out: {out}");
+    assert!(out.contains(r#""status":"planned""#), "out: {out}");
+    assert!(out.contains("document.schema.json"), "out: {out}");
+
+    let (ok, skill, err) = host(home, &["cap", "info", "document", "--format", "skill"]);
+    assert!(ok, "stderr: {err}");
+    assert!(skill.contains("# document"), "skill: {skill}");
+    assert!(skill.contains("ctx.resource.document"), "skill: {skill}");
+}
+
+#[test]
 fn cap_list_exposes_capability_summaries() {
     let dir = tempdir().unwrap();
     let home = dir.path();
@@ -71,5 +88,6 @@ fn cap_list_exposes_capability_summaries() {
     let (ok, out, err) = host(home, &["cap", "list", "--format", "json"]);
     assert!(ok, "stderr: {err}");
     assert!(out.contains(r#""namespace":"kv""#), "out: {out}");
+    assert!(out.contains(r#""namespace":"document""#), "out: {out}");
     assert!(out.contains(r#""namespace":"relational_db""#), "out: {out}");
 }

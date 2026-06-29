@@ -1,0 +1,7 @@
+{
+  "$id": "query_result.schema.json",
+  "type": "array",
+  "items": {
+    "type": "object"
+  }
+}

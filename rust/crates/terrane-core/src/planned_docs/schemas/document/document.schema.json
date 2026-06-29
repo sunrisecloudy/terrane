@@ -1,0 +1,21 @@
+{
+  "$id": "document.schema.json",
+  "type": "object",
+  "required": ["id", "title", "body", "metadata"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "$ref": "document_id.schema.json"
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "body": {
+      "type": "string"
+    },
+    "metadata": {
+      "$ref": "document_meta.schema.json"
+    }
+  }
+}

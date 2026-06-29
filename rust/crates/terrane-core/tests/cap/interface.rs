@@ -200,6 +200,15 @@ fn registry_bus_reports_unknown_capability_or_query() {
 fn capability_docs_include_registered_and_planned_docs() {
     let docs = capability_docs(false);
     assert!(docs.iter().any(|doc| doc.namespace == "kv"));
+    let document = docs
+        .iter()
+        .find(|doc| doc.namespace == "document")
+        .expect("planned document doc");
+    assert_eq!(document.status, "planned");
+    assert!(document
+        .schemas
+        .iter()
+        .any(|schema| schema.id == "document.schema.json"));
     let rdb = docs
         .iter()
         .find(|doc| doc.namespace == "relational_db")
@@ -220,6 +229,12 @@ fn capability_docs_include_registered_and_planned_docs() {
         .internal
         .iter()
         .any(|note| note.title.contains("Reserved kv layout")));
+
+    let document_internal = capability_doc("document", true).unwrap();
+    assert!(document_internal
+        .internal
+        .iter()
+        .any(|note| note.title.contains("Likely backing store")));
 }
 
 #[test]

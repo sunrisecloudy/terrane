@@ -1,0 +1,5 @@
+{
+  "$id": "row.schema.json",
+  "type": "object",
+  "minProperties": 1
+}

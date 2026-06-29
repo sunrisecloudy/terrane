@@ -133,7 +133,7 @@ pub fn validate_files(
         )));
     }
     for resource in manifest.resources {
-        if !matches!(resource.as_str(), "kv" | "crdt") {
+        if !matches!(resource.as_str(), "kv" | "crdt" | "document") {
             return Err(Error::InvalidInput(format!(
                 "unsupported generated app resource: {resource}"
             )));
