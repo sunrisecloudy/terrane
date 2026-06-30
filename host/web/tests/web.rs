@@ -971,9 +971,73 @@ fn admin_can_grant_missing_app_resource() {
     );
     assert_eq!(status, 403, "locked admin approve should fail: {body}");
 
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/admin/agents",
+        Some(r#"{"id":"codex-local","display_name":"Codex Local"}"#),
+    );
+    assert_eq!(
+        status, 403,
+        "locked admin agent register should fail: {body}"
+    );
+
     let (status, body) = http(&addr, "POST", "/__terrane/admin/local/unlock", None);
     assert_eq!(status, 200, "admin unlock: {body}");
     assert!(body.contains(r#""locked":false"#), "admin unlock: {body}");
+
+    let agent = "agent:local-owner:codex-local";
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/admin/agents",
+        Some(
+            r#"{"id":"codex-local","display_name":"Codex Local","max_role":"developer","can_install_apps":"true","can_request_permissions":"true","can_grant_permissions":"false"}"#,
+        ),
+    );
+    assert_eq!(status, 200, "admin agent register: {body}");
+    assert!(
+        body.contains(agent) && body.contains(r#""status":"active"#),
+        "admin agent register: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/agents", None);
+    assert_eq!(status, 200, "admin agents: {body}");
+    assert!(
+        body.contains(agent) && body.contains("Codex Local"),
+        "admin agents should list local agent: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/admin/agents/{agent}/delegate"),
+        Some(
+            r#"{"max_role":"operator","can_install_apps":"false","can_request_permissions":"true","can_grant_permissions":"false"}"#,
+        ),
+    );
+    assert_eq!(status, 200, "admin agent delegate: {body}");
+    assert!(
+        body.contains(r#""max_role":"operator"#) && body.contains(r#""can_install_apps":false"#),
+        "admin agent delegate: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/admin/grants",
+        Some(&format!(
+            r#"{{"app":"todo","namespace":"kv","subject":"{agent}"}}"#
+        )),
+    );
+    assert_eq!(status, 200, "admin grant agent resource: {body}");
+
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/grants", None);
+    assert_eq!(status, 200, "admin grants after agent grant: {body}");
+    assert!(
+        body.contains(agent) && body.contains(r#""namespace":"kv"#),
+        "admin grants should include agent grant: {body}"
+    );
 
     let (status, body) = http(
         &addr,
@@ -1013,6 +1077,14 @@ fn admin_can_grant_missing_app_resource() {
     let (status, body) = http(
         &addr,
         "DELETE",
+        &format!("/__terrane/admin/agents/{agent}"),
+        None,
+    );
+    assert_eq!(status, 403, "locked admin agent revoke should fail: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "DELETE",
         "/__terrane/admin/grants",
         Some(r#"{"app":"todo","namespace":"kv"}"#),
     );
@@ -1020,6 +1092,18 @@ fn admin_can_grant_missing_app_resource() {
 
     let (status, body) = http(&addr, "POST", "/__terrane/admin/local/unlock", None);
     assert_eq!(status, 200, "admin unlock before revoke: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "DELETE",
+        &format!("/__terrane/admin/agents/{agent}"),
+        None,
+    );
+    assert_eq!(status, 200, "admin agent revoke: {body}");
+    assert!(
+        body.contains(agent) && body.contains(r#""status":"revoked"#),
+        "admin agent revoke: {body}"
+    );
 
     let (status, body) = http(
         &addr,

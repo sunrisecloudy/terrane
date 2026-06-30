@@ -21,6 +21,7 @@ const READ_ONLY_VERBS: &[&str] = &["read"];
 pub struct AuthState {
     pub grants: BTreeMap<String, AuthGrant>,
     pub permission_requests: BTreeMap<String, AuthPermissionRequest>,
+    pub agents: BTreeMap<String, AuthAgent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,20 @@ pub struct AuthPermissionRequest {
     pub decided_by: String,
     pub decision_reason: String,
     pub decision_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthAgent {
+    pub org: String,
+    pub agent: String,
+    pub display_name: String,
+    pub owner_user: String,
+    pub max_role: String,
+    pub can_install_apps: bool,
+    pub can_request_permissions: bool,
+    pub can_grant_permissions: bool,
+    pub status: String,
+    pub source: String,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -107,6 +122,37 @@ struct PermissionDecision {
     source: String,
 }
 
+#[derive(BorshSerialize, BorshDeserialize)]
+struct AgentRegistered {
+    org: String,
+    agent: String,
+    display_name: String,
+    owner_user: String,
+    max_role: String,
+    can_install_apps: bool,
+    can_request_permissions: bool,
+    can_grant_permissions: bool,
+    source: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct AgentDelegated {
+    org: String,
+    agent: String,
+    max_role: String,
+    can_install_apps: bool,
+    can_request_permissions: bool,
+    can_grant_permissions: bool,
+    source: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct AgentRevoked {
+    org: String,
+    agent: String,
+    source: String,
+}
+
 pub struct AuthCapability;
 
 impl Capability for AuthCapability {
@@ -133,6 +179,15 @@ impl Capability for AuthCapability {
                 CommandSpec {
                     name: "auth.permission.cancel",
                 },
+                CommandSpec {
+                    name: "auth.agent.register",
+                },
+                CommandSpec {
+                    name: "auth.agent.delegate",
+                },
+                CommandSpec {
+                    name: "auth.agent.revoke",
+                },
             ],
             events: vec![
                 EventSpec {
@@ -152,6 +207,15 @@ impl Capability for AuthCapability {
                 },
                 EventSpec {
                     kind: "auth.permission.cancelled",
+                },
+                EventSpec {
+                    kind: "auth.agent.registered",
+                },
+                EventSpec {
+                    kind: "auth.agent.delegated",
+                },
+                EventSpec {
+                    kind: "auth.agent.revoked",
                 },
             ],
             queries: Vec::new(),
@@ -175,6 +239,9 @@ impl Capability for AuthCapability {
             "auth.permission.approve" => decide_permission_approve(ctx, args),
             "auth.permission.deny" => decide_permission_decision(ctx, args, "denied"),
             "auth.permission.cancel" => decide_permission_decision(ctx, args, "cancelled"),
+            "auth.agent.register" => decide_agent_register(ctx, args),
+            "auth.agent.delegate" => decide_agent_delegate(ctx, args),
+            "auth.agent.revoke" => decide_agent_revoke(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }
@@ -209,6 +276,15 @@ impl Capability for AuthCapability {
             "auth.permission.cancelled" => decode_event::<PermissionDecision>(record)
                 .ok()
                 .map(|e| format!("cancelled permission request {}", e.request_id)),
+            "auth.agent.registered" => decode_event::<AgentRegistered>(record)
+                .ok()
+                .map(|e| format!("registered agent {}", e.agent)),
+            "auth.agent.delegated" => decode_event::<AgentDelegated>(record)
+                .ok()
+                .map(|e| format!("updated agent delegation {}", e.agent)),
+            "auth.agent.revoked" => decode_event::<AgentRevoked>(record)
+                .ok()
+                .map(|e| format!("revoked agent {}", e.agent)),
             _ => None,
         }
     }
@@ -238,6 +314,7 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         Some(raw) => parse_verbs(raw)?,
         None => default_verbs_for_namespace(&namespace),
     };
+    ensure_grantable_subject(ctx.state, &subject)?;
     let resource_id = namespace_resource_id(&namespace);
     let key = grant_key(
         terrane_cap_interface::LOCAL_ORG,
@@ -442,6 +519,94 @@ fn decide_permission_decision(
     )?]))
 }
 
+fn decide_agent_register(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let agent = non_empty(arg(args, 0, "agent")?, "agent")?;
+    let display_name = non_empty_or_arg(args, 1, &agent);
+    let owner_user = non_empty_or_arg(args, 2, LOCAL_OWNER_SUBJECT);
+    let max_role = non_empty_or_arg(args, 3, "developer");
+    let can_install_apps = parse_bool_arg(args, 4, true)?;
+    let can_request_permissions = parse_bool_arg(args, 5, true)?;
+    let can_grant_permissions = parse_bool_arg(args, 6, false)?;
+    validate_agent_id(&agent)?;
+    validate_segment_input("owner_user", &owner_user)?;
+    validate_segment_input("max_role", &max_role)?;
+    if state_ref::<AuthState>(ctx.state, "auth")?
+        .agents
+        .get(&agent)
+        .is_some_and(|record| record.status == "active")
+    {
+        return Ok(Decision::Commit(Vec::new()));
+    }
+    Ok(Decision::Commit(vec![agent_registered_event(
+        AgentRegistered {
+            org: terrane_cap_interface::LOCAL_ORG.to_string(),
+            agent,
+            display_name,
+            owner_user,
+            max_role,
+            can_install_apps,
+            can_request_permissions,
+            can_grant_permissions,
+            source: LOCAL_SOURCE.to_string(),
+        },
+    )?]))
+}
+
+fn decide_agent_delegate(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let agent = non_empty(arg(args, 0, "agent")?, "agent")?;
+    let max_role = non_empty_or_arg(args, 1, "developer");
+    let can_install_apps = parse_bool_arg(args, 2, true)?;
+    let can_request_permissions = parse_bool_arg(args, 3, true)?;
+    let can_grant_permissions = parse_bool_arg(args, 4, false)?;
+    validate_agent_id(&agent)?;
+    validate_segment_input("max_role", &max_role)?;
+    let existing = state_ref::<AuthState>(ctx.state, "auth")?
+        .agents
+        .get(&agent)
+        .cloned()
+        .ok_or_else(|| Error::InvalidInput(format!("unknown agent: {agent}")))?;
+    if existing.status != "active" {
+        return Err(Error::InvalidInput(format!("agent {agent} is revoked")));
+    }
+    if existing.max_role == max_role
+        && existing.can_install_apps == can_install_apps
+        && existing.can_request_permissions == can_request_permissions
+        && existing.can_grant_permissions == can_grant_permissions
+    {
+        return Ok(Decision::Commit(Vec::new()));
+    }
+    Ok(Decision::Commit(vec![agent_delegated_event(
+        AgentDelegated {
+            org: terrane_cap_interface::LOCAL_ORG.to_string(),
+            agent,
+            max_role,
+            can_install_apps,
+            can_request_permissions,
+            can_grant_permissions,
+            source: LOCAL_SOURCE.to_string(),
+        },
+    )?]))
+}
+
+fn decide_agent_revoke(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let agent = non_empty(arg(args, 0, "agent")?, "agent")?;
+    validate_agent_id(&agent)?;
+    let Some(existing) = state_ref::<AuthState>(ctx.state, "auth")?
+        .agents
+        .get(&agent)
+    else {
+        return Ok(Decision::Commit(Vec::new()));
+    };
+    if existing.status == "revoked" {
+        return Ok(Decision::Commit(Vec::new()));
+    }
+    Ok(Decision::Commit(vec![agent_revoked_event(AgentRevoked {
+        org: terrane_cap_interface::LOCAL_ORG.to_string(),
+        agent,
+        source: LOCAL_SOURCE.to_string(),
+    })?]))
+}
+
 fn granted_event(event: Granted) -> Result<EventRecord> {
     encode_event("auth.granted", &event)
 }
@@ -456,6 +621,18 @@ fn permission_requested_event(event: PermissionRequested) -> Result<EventRecord>
 
 fn permission_decision_event(kind: &str, event: PermissionDecision) -> Result<EventRecord> {
     encode_event(kind, &event)
+}
+
+fn agent_registered_event(event: AgentRegistered) -> Result<EventRecord> {
+    encode_event("auth.agent.registered", &event)
+}
+
+fn agent_delegated_event(event: AgentDelegated) -> Result<EventRecord> {
+    encode_event("auth.agent.delegated", &event)
+}
+
+fn agent_revoked_event(event: AgentRevoked) -> Result<EventRecord> {
+    encode_event("auth.agent.revoked", &event)
 }
 
 fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
@@ -519,6 +696,46 @@ fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
             let event: PermissionDecision = decode_event(record)?;
             set_permission_status(state, event, "cancelled")?;
         }
+        "auth.agent.registered" => {
+            let event: AgentRegistered = decode_event(record)?;
+            state_mut::<AuthState>(state, "auth")?.agents.insert(
+                event.agent.clone(),
+                AuthAgent {
+                    org: event.org,
+                    agent: event.agent,
+                    display_name: event.display_name,
+                    owner_user: event.owner_user,
+                    max_role: event.max_role,
+                    can_install_apps: event.can_install_apps,
+                    can_request_permissions: event.can_request_permissions,
+                    can_grant_permissions: event.can_grant_permissions,
+                    status: "active".to_string(),
+                    source: event.source,
+                },
+            );
+        }
+        "auth.agent.delegated" => {
+            let event: AgentDelegated = decode_event(record)?;
+            if let Some(agent) = state_mut::<AuthState>(state, "auth")?
+                .agents
+                .get_mut(&event.agent)
+            {
+                agent.max_role = event.max_role;
+                agent.can_install_apps = event.can_install_apps;
+                agent.can_request_permissions = event.can_request_permissions;
+                agent.can_grant_permissions = event.can_grant_permissions;
+                agent.source = event.source;
+            }
+        }
+        "auth.agent.revoked" => {
+            let event: AgentRevoked = decode_event(record)?;
+            let auth = state_mut::<AuthState>(state, "auth")?;
+            if let Some(agent) = auth.agents.get_mut(&event.agent) {
+                agent.status = "revoked".to_string();
+                agent.source = event.source;
+            }
+            auth.grants.retain(|_, grant| grant.subject != event.agent);
+        }
         "app.removed" => {
             let event = decode_app_removed(record)?;
             let auth = state_mut::<AuthState>(state, "auth")?;
@@ -554,6 +771,9 @@ pub fn namespace_granted(
     app: &str,
     namespace: &str,
 ) -> Result<bool> {
+    if principal.subject.starts_with("agent:") && !agent_is_active(state, &principal.subject)? {
+        return Ok(false);
+    }
     let resource_id = namespace_resource_id(namespace);
     let key = grant_key(&principal.org, &principal.subject, app, &resource_id);
     Ok(state_ref::<AuthState>(state, "auth")?
@@ -583,6 +803,21 @@ pub fn permission_requests(state: &dyn StateStore) -> Result<Vec<AuthPermissionR
         .collect::<Vec<_>>();
     requests.sort_by(|a, b| a.request_id.cmp(&b.request_id));
     Ok(requests)
+}
+
+pub fn auth_agents(state: &dyn StateStore) -> Result<Vec<AuthAgent>> {
+    let mut agents = state_ref::<AuthState>(state, "auth")?
+        .agents
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    agents.sort_by(|a, b| a.agent.cmp(&b.agent));
+    Ok(agents)
+}
+
+pub fn agent_subject(owner_user: &str, agent_id: &str) -> String {
+    let owner = owner_user.strip_prefix("user:").unwrap_or(owner_user);
+    format!("agent:{owner}:{agent_id}")
 }
 
 pub fn grant_key(org: &str, subject: &str, app: &str, resource_id: &str) -> String {
@@ -688,6 +923,62 @@ fn parse_namespaces(raw: &str) -> Result<Vec<String>> {
         validate_segment_input("namespace", namespace)?;
     }
     Ok(namespaces)
+}
+
+fn ensure_grantable_subject(state: &dyn StateStore, subject: &str) -> Result<()> {
+    if subject.starts_with("agent:") && !agent_is_active(state, subject)? {
+        return Err(Error::InvalidInput(format!(
+            "agent subject is not active: {subject}"
+        )));
+    }
+    Ok(())
+}
+
+fn agent_is_active(state: &dyn StateStore, agent: &str) -> Result<bool> {
+    Ok(state_ref::<AuthState>(state, "auth")?
+        .agents
+        .get(agent)
+        .is_some_and(|record| record.status == "active"))
+}
+
+fn non_empty_or_arg(args: &[String], index: usize, fallback: &str) -> String {
+    args.get(index)
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn parse_bool_arg(args: &[String], index: usize, fallback: bool) -> Result<bool> {
+    let Some(value) = args.get(index).map(|value| value.trim()) else {
+        return Ok(fallback);
+    };
+    if value.is_empty() {
+        return Ok(fallback);
+    }
+    match value {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        other => Err(Error::InvalidInput(format!(
+            "boolean argument {index} must be true or false, got {other:?}"
+        ))),
+    }
+}
+
+fn validate_agent_id(agent: &str) -> Result<()> {
+    if !agent.starts_with("agent:") {
+        return Err(Error::InvalidInput(format!(
+            "agent subject must start with agent:, got {agent:?}"
+        )));
+    }
+    if !agent
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'-' | b'_' | b'.'))
+    {
+        return Err(Error::InvalidInput(format!(
+            "agent subject must use only ASCII letters, digits, ':', '-', '_', or '.', got {agent:?}"
+        )));
+    }
+    validate_segment_input("agent", agent)
 }
 
 fn permission_resource(namespace: String) -> Result<AuthPermissionResource> {

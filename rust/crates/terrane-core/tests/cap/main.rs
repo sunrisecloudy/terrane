@@ -10,6 +10,7 @@ mod builder;
 mod crdt;
 mod grant_resources;
 mod grant_spec_inventory;
+mod grant_verbs_match_specs;
 mod harness;
 mod host;
 mod interface;

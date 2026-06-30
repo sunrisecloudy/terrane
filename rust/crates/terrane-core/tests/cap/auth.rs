@@ -4,7 +4,7 @@
 //! `terrane-cap-auth/src/lib.rs`.
 
 use tempfile::tempdir;
-use terrane_cap_auth::{namespace_granted, permission_request};
+use terrane_cap_auth::{agent_subject, auth_agents, namespace_granted, permission_request};
 use terrane_core::{Core, ExecutionPrincipal, LOCAL_OWNER_SUBJECT};
 
 use crate::helpers::req;
@@ -263,4 +263,113 @@ fn build_permission_request_records_read_only_verbs() {
         .unwrap();
     assert_eq!(request.resources[0].namespace, "build");
     assert_eq!(request.resources[0].verbs, vec!["read"]);
+}
+
+#[test]
+fn agent_register_delegate_and_revoke_replay() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    let agent = agent_subject(LOCAL_OWNER_SUBJECT, "codex-local");
+
+    let events = core
+        .dispatch(req(
+            "auth.agent.register",
+            &[&agent, "Codex Local", LOCAL_OWNER_SUBJECT],
+        ))
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let agents = auth_agents(core.state()).unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].agent, agent);
+    assert_eq!(agents[0].status, "active");
+    assert!(agents[0].can_request_permissions);
+    assert!(!agents[0].can_grant_permissions);
+
+    let duplicate = core
+        .dispatch(req(
+            "auth.agent.register",
+            &[&agent, "Codex Local", LOCAL_OWNER_SUBJECT],
+        ))
+        .unwrap();
+    assert!(duplicate.is_empty(), "register is idempotent");
+
+    let events = core
+        .dispatch(req(
+            "auth.agent.delegate",
+            &[&agent, "operator", "false", "true", "false"],
+        ))
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let agents = auth_agents(core.state()).unwrap();
+    assert_eq!(agents[0].max_role, "operator");
+    assert!(!agents[0].can_install_apps);
+    assert!(agents[0].can_request_permissions);
+
+    let events = core.dispatch(req("auth.agent.revoke", &[&agent])).unwrap();
+    assert_eq!(events.len(), 1);
+    let agents = auth_agents(core.state()).unwrap();
+    assert_eq!(agents[0].status, "revoked");
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn agent_grants_use_agent_subject() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    let agent = agent_subject(LOCAL_OWNER_SUBJECT, "codex-local");
+    core.dispatch(req(
+        "auth.agent.register",
+        &[&agent, "Codex Local", LOCAL_OWNER_SUBJECT],
+    ))
+    .unwrap();
+    core.dispatch(req("auth.grant", &[&agent, "demo", "kv"]))
+        .unwrap();
+
+    let principal = ExecutionPrincipal {
+        org: "local".to_string(),
+        subject: agent,
+        source: "local".to_string(),
+    };
+    assert!(namespace_granted(core.state(), &principal, "demo", "kv").unwrap());
+}
+
+#[test]
+fn revoked_agent_loses_grants_and_cannot_receive_new_grants() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    let agent = agent_subject(LOCAL_OWNER_SUBJECT, "codex-local");
+    let principal = ExecutionPrincipal {
+        org: "local".to_string(),
+        subject: agent.clone(),
+        source: "local".to_string(),
+    };
+
+    assert!(
+        core.dispatch(req("auth.grant", &[&agent, "demo", "kv"]))
+            .is_err(),
+        "unregistered agents cannot receive grants"
+    );
+
+    core.dispatch(req(
+        "auth.agent.register",
+        &[&agent, "Codex Local", LOCAL_OWNER_SUBJECT],
+    ))
+    .unwrap();
+    core.dispatch(req("auth.grant", &[&agent, "demo", "kv"]))
+        .unwrap();
+    assert!(namespace_granted(core.state(), &principal, "demo", "kv").unwrap());
+
+    core.dispatch(req("auth.agent.revoke", &[&agent])).unwrap();
+    assert!(
+        !namespace_granted(core.state(), &principal, "demo", "kv").unwrap(),
+        "revoked agents must not keep runtime access through old grants"
+    );
+    assert!(
+        core.dispatch(req("auth.grant", &[&agent, "demo", "kv"]))
+            .is_err(),
+        "revoked agents cannot receive fresh grants"
+    );
+    assert!(core.replay_matches().unwrap());
 }

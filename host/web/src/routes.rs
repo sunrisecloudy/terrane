@@ -77,6 +77,16 @@ pub fn route(
         }
         (Method::Get, ["__terrane", "admin", "apps"]) => crate::admin::apps(core),
         (Method::Get, ["__terrane", "admin", "grants"]) => crate::admin::grants(core),
+        (Method::Get, ["__terrane", "admin", "agents"]) => crate::admin::agents(core),
+        (Method::Post, ["__terrane", "admin", "agents"]) => {
+            crate::admin::register_agent(core, admin_session, request)
+        }
+        (Method::Post, ["__terrane", "admin", "agents", agent, "delegate"]) => {
+            crate::admin::delegate_agent(core, admin_session, agent, request)
+        }
+        (Method::Delete, ["__terrane", "admin", "agents", agent]) => {
+            crate::admin::revoke_agent(core, admin_session, agent)
+        }
         (Method::Get, ["__terrane", "admin", "requests"]) => {
             crate::admin::requests(core, admin_base_url)
         }

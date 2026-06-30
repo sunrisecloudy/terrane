@@ -28,6 +28,7 @@ pub mod sync;
 pub use edge::EdgeRunner;
 pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 pub use sync::{serve_conn, sync_conn};
+pub use terrane_cap_auth::agent_subject;
 pub use terrane_core::LOCAL_OWNER_SUBJECT;
 
 pub type HostCore = Core<EdgeRunner>;

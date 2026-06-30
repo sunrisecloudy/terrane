@@ -60,6 +60,24 @@ struct AdminGrantsResponse {
 }
 
 #[derive(Debug, Clone, SerJson)]
+struct AdminAgent {
+    org: String,
+    agent: String,
+    display_name: String,
+    owner_user: String,
+    max_role: String,
+    can_install_apps: bool,
+    can_request_permissions: bool,
+    can_grant_permissions: bool,
+    status: String,
+}
+
+#[derive(Debug, Clone, SerJson)]
+struct AdminAgentsResponse {
+    agents: Vec<AdminAgent>,
+}
+
+#[derive(Debug, Clone, SerJson)]
 struct GrantResponse {
     records: usize,
     output: Option<String>,
@@ -77,6 +95,26 @@ struct GrantRequest {
 struct DecisionRequest {
     #[nserde(default)]
     reason: String,
+}
+
+#[derive(Debug, Clone, DeJson)]
+struct AgentRequest {
+    #[nserde(default)]
+    agent: String,
+    #[nserde(default)]
+    id: String,
+    #[nserde(default)]
+    display_name: String,
+    #[nserde(default)]
+    owner_user: String,
+    #[nserde(default)]
+    max_role: String,
+    #[nserde(default)]
+    can_install_apps: String,
+    #[nserde(default)]
+    can_request_permissions: String,
+    #[nserde(default)]
+    can_grant_permissions: String,
 }
 
 impl AdminSessionState {
@@ -164,9 +202,123 @@ pub fn grants(core: &terrane_host::HostCore) -> Resp {
     json_ok(&AdminGrantsResponse { grants })
 }
 
+pub fn agents(core: &terrane_host::HostCore) -> Resp {
+    let mut agents = core
+        .state()
+        .auth
+        .agents
+        .values()
+        .map(|agent| AdminAgent {
+            org: agent.org.clone(),
+            agent: agent.agent.clone(),
+            display_name: agent.display_name.clone(),
+            owner_user: agent.owner_user.clone(),
+            max_role: agent.max_role.clone(),
+            can_install_apps: agent.can_install_apps,
+            can_request_permissions: agent.can_request_permissions,
+            can_grant_permissions: agent.can_grant_permissions,
+            status: agent.status.clone(),
+        })
+        .collect::<Vec<_>>();
+    agents.sort_by(|a, b| a.agent.cmp(&b.agent));
+    json_ok(&AdminAgentsResponse { agents })
+}
+
 pub fn requests(core: &terrane_host::HostCore, admin_base_url: &str) -> Resp {
     match terrane_host::permission::permission_requests(core, admin_base_url) {
         Ok(response) => json_ok(&response),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+pub fn register_agent(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request: &mut Request,
+) -> Resp {
+    if state.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    let parsed = match read_agent_request(request, "bad agent body") {
+        Ok(parsed) => parsed,
+        Err(resp) => return resp,
+    };
+    let owner_user = if parsed.owner_user.trim().is_empty() {
+        LOCAL_OWNER_SUBJECT.to_string()
+    } else {
+        parsed.owner_user.trim().to_string()
+    };
+    let agent = if parsed.agent.trim().is_empty() {
+        terrane_host::agent_subject(&owner_user, fallback_agent_id(&parsed.id))
+    } else {
+        parsed.agent.trim().to_string()
+    };
+    let display_name = if parsed.display_name.trim().is_empty() {
+        agent.clone()
+    } else {
+        parsed.display_name.trim().to_string()
+    };
+    let max_role = if parsed.max_role.trim().is_empty() {
+        "developer".to_string()
+    } else {
+        parsed.max_role.trim().to_string()
+    };
+    let args = vec![
+        agent,
+        display_name,
+        owner_user,
+        max_role,
+        bool_arg(&parsed.can_install_apps, true),
+        bool_arg(&parsed.can_request_permissions, true),
+        bool_arg(&parsed.can_grant_permissions, false),
+    ];
+    match terrane_host::dispatch_on_core(core, "auth.agent.register", &args) {
+        Ok(_) => agents(core),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+pub fn delegate_agent(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    agent: &str,
+    request: &mut Request,
+) -> Resp {
+    if state.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    let parsed = match read_agent_request(request, "bad delegate body") {
+        Ok(parsed) => parsed,
+        Err(resp) => return resp,
+    };
+    let max_role = if parsed.max_role.trim().is_empty() {
+        "developer".to_string()
+    } else {
+        parsed.max_role.trim().to_string()
+    };
+    let args = vec![
+        agent.to_string(),
+        max_role,
+        bool_arg(&parsed.can_install_apps, true),
+        bool_arg(&parsed.can_request_permissions, true),
+        bool_arg(&parsed.can_grant_permissions, false),
+    ];
+    match terrane_host::dispatch_on_core(core, "auth.agent.delegate", &args) {
+        Ok(_) => agents(core),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+pub fn revoke_agent(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    agent: &str,
+) -> Resp {
+    if state.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    match terrane_host::dispatch_on_core(core, "auth.agent.revoke", &[agent.to_string()]) {
+        Ok(_) => agents(core),
         Err(e) => json_error(400, &e),
     }
 }
@@ -317,5 +469,42 @@ fn decide_request(
         Ok(Some(view)) => json_ok(&view),
         Ok(None) => json_error(404, "permission request not found"),
         Err(e) => json_error(400, &e),
+    }
+}
+
+fn read_agent_request(request: &mut Request, error_label: &str) -> Result<AgentRequest, Resp> {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return Err(json_error(400, "cannot read request body"));
+    }
+    if body.trim().is_empty() {
+        return Ok(AgentRequest {
+            agent: String::new(),
+            id: String::new(),
+            display_name: String::new(),
+            owner_user: String::new(),
+            max_role: String::new(),
+            can_install_apps: String::new(),
+            can_request_permissions: String::new(),
+            can_grant_permissions: String::new(),
+        });
+    }
+    AgentRequest::deserialize_json(&body)
+        .map_err(|e| json_error(400, &format!("{error_label}: {e}")))
+}
+
+fn fallback_agent_id(raw: &str) -> &str {
+    if raw.trim().is_empty() {
+        "codex-local"
+    } else {
+        raw.trim()
+    }
+}
+
+fn bool_arg(raw: &str, fallback: bool) -> String {
+    if raw.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        raw.to_string()
     }
 }

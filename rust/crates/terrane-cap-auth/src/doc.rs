@@ -23,6 +23,9 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
                 "auth.permission.approve".to_string(),
                 "auth.permission.deny".to_string(),
                 "auth.permission.cancel".to_string(),
+                "auth.agent.register".to_string(),
+                "auth.agent.delegate".to_string(),
+                "auth.agent.revoke".to_string(),
             ],
             queries: Vec::new(),
             events: vec![
@@ -32,6 +35,9 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
                 "auth.permission.approved".to_string(),
                 "auth.permission.denied".to_string(),
                 "auth.permission.cancelled".to_string(),
+                "auth.agent.registered".to_string(),
+                "auth.agent.delegated".to_string(),
+                "auth.agent.revoked".to_string(),
             ],
             subscriptions: vec!["app.removed".to_string()],
             resource_methods: Vec::new(),
@@ -110,6 +116,60 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             )
             .with_errors(&["unknown request", "request not pending"])
             .with_emits(&["auth.permission.cancelled"]),
+            command_doc(
+                "auth.agent.register",
+                &[
+                    param("agent", "Agent subject id.", "subject_id"),
+                    param("display_name", "Human-readable local label.", "string"),
+                    param("owner_user", "Owning user subject.", "subject_id"),
+                    param("max_role", "Delegation role ceiling.", "role"),
+                    param("can_install_apps", "Whether the agent may install apps.", "bool"),
+                    param(
+                        "can_request_permissions",
+                        "Whether the agent may create permission requests.",
+                        "bool",
+                    ),
+                    param(
+                        "can_grant_permissions",
+                        "Whether the agent may grant permissions directly.",
+                        "bool",
+                    ),
+                ],
+                "commit",
+                "Register an idempotent local AI-agent subject with delegated authority.",
+            )
+            .with_errors(&["missing agent", "unsafe agent subject"])
+            .with_emits(&["auth.agent.registered"]),
+            command_doc(
+                "auth.agent.delegate",
+                &[
+                    param("agent", "Agent subject id.", "subject_id"),
+                    param("max_role", "Delegation role ceiling.", "role"),
+                    param("can_install_apps", "Whether the agent may install apps.", "bool"),
+                    param(
+                        "can_request_permissions",
+                        "Whether the agent may create permission requests.",
+                        "bool",
+                    ),
+                    param(
+                        "can_grant_permissions",
+                        "Whether the agent may grant permissions directly.",
+                        "bool",
+                    ),
+                ],
+                "commit",
+                "Update an active agent delegation.",
+            )
+            .with_errors(&["unknown agent", "revoked agent"])
+            .with_emits(&["auth.agent.delegated"]),
+            command_doc(
+                "auth.agent.revoke",
+                &[param("agent", "Agent subject id.", "subject_id")],
+                "commit",
+                "Mark an agent delegation revoked without deleting its audit history.",
+            )
+            .with_errors(&["unsafe agent subject"])
+            .with_emits(&["auth.agent.revoked"]),
         ],
         queries: Vec::new(),
         events: vec![
@@ -157,6 +217,33 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
                 &[param("request_id", "Stable request id.", "string")],
                 "Durable request cancellation fact.",
             ),
+            event_doc(
+                "auth.agent.registered",
+                &[
+                    param("org", "Organization boundary.", "string"),
+                    param("agent", "Agent subject id.", "subject_id"),
+                    param("owner_user", "Owning user subject.", "subject_id"),
+                    param("max_role", "Delegation role ceiling.", "role"),
+                ],
+                "Durable local AI-agent registration fact.",
+            ),
+            event_doc(
+                "auth.agent.delegated",
+                &[
+                    param("org", "Organization boundary.", "string"),
+                    param("agent", "Agent subject id.", "subject_id"),
+                    param("max_role", "Delegation role ceiling.", "role"),
+                ],
+                "Durable update to an active AI-agent delegation.",
+            ),
+            event_doc(
+                "auth.agent.revoked",
+                &[
+                    param("org", "Organization boundary.", "string"),
+                    param("agent", "Agent subject id.", "subject_id"),
+                ],
+                "Durable AI-agent revocation fact.",
+            ),
         ],
         resources: Vec::<ResourceDoc>::new(),
         schemas: Vec::<SchemaDoc>::new(),
@@ -176,6 +263,8 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             "The v1 gate is namespace-level and does not enforce descriptive verbs.".to_string(),
             "Folding app.removed removes grants scoped to the removed app.".to_string(),
             "Approving a permission request emits ordinary auth.granted facts; deny/cancel never grant access."
+                .to_string(),
+            "AI agents are separate subjects from their owner user and are governed by agent delegation plus resource grants."
                 .to_string(),
             "Authorization is checked only during live runtime resource installation, never during fold/replay."
                 .to_string(),
