@@ -67,8 +67,10 @@ pub struct AuthPermissionRequest {
     pub org: String,
     pub subject: String,
     pub app: String,
+    pub app_name: String,
     pub operation: String,
     pub source: String,
+    pub resume_token_hash: String,
     pub resources: Vec<AuthPermissionResource>,
     pub status: String,
     pub decided_by: String,
@@ -117,6 +119,19 @@ struct Revoked {
 
 #[derive(BorshSerialize, BorshDeserialize)]
 struct PermissionRequested {
+    request_id: String,
+    org: String,
+    subject: String,
+    app: String,
+    app_name: String,
+    operation: String,
+    source: String,
+    resume_token_hash: String,
+    resources: Vec<AuthPermissionResource>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct PermissionRequestedV1 {
     request_id: String,
     org: String,
     subject: String,
@@ -294,9 +309,9 @@ impl Capability for AuthCapability {
                     e.subject, e.resource_id, e.app
                 )
             }),
-            "auth.permission.requested" => decode_event::<PermissionRequested>(record)
+            "auth.permission.requested" => decode_permission_requested(record)
                 .ok()
-                .map(|e| format!("permission request {} for app {}", e.request_id, e.app)),
+                .map(|e| format!("permission request {} for app {}", e.request_id, e.app_name)),
             "auth.permission.approved" => decode_event::<PermissionDecision>(record)
                 .ok()
                 .map(|e| format!("approved permission request {}", e.request_id)),
@@ -438,12 +453,16 @@ fn decide_permission_request(ctx: CommandCtx<'_>, args: &[String]) -> Result<Dec
     let operation = non_empty(arg(args, 3, "operation")?, "operation")?;
     let source = non_empty(arg(args, 4, "source")?, "source")?;
     let namespaces = parse_namespaces(&arg(args, 5, "resources")?)?;
+    let app_name = non_empty_or_arg(args, 6, &app);
+    let resume_token_hash = args.get(7).cloned().unwrap_or_default();
     ensure_app_exists(ctx.bus, &app)?;
     validate_segment_input("request_id", &request_id)?;
     validate_segment_input("subject", &subject)?;
     validate_segment_input("app", &app)?;
+    validate_segment_input("app_name", &app_name)?;
     validate_segment_input("operation", &operation)?;
     validate_segment_input("source", &source)?;
+    validate_segment_input("resume_token_hash", &resume_token_hash)?;
     if state_ref::<AuthState>(ctx.state, "auth")?
         .permission_requests
         .contains_key(&request_id)
@@ -461,8 +480,10 @@ fn decide_permission_request(ctx: CommandCtx<'_>, args: &[String]) -> Result<Dec
             org: terrane_cap_interface::LOCAL_ORG.to_string(),
             subject,
             app,
+            app_name,
             operation,
             source,
+            resume_token_hash,
             resources,
         },
     )?]))
@@ -693,6 +714,26 @@ fn agent_revoked_event(event: AgentRevoked) -> Result<EventRecord> {
     encode_event("auth.agent.revoked", &event)
 }
 
+fn decode_permission_requested(record: &EventRecord) -> Result<PermissionRequested> {
+    match decode_event::<PermissionRequested>(record) {
+        Ok(event) => Ok(event),
+        Err(_) => {
+            let old: PermissionRequestedV1 = decode_event(record)?;
+            Ok(PermissionRequested {
+                app_name: old.app.clone(),
+                resume_token_hash: String::new(),
+                request_id: old.request_id,
+                org: old.org,
+                subject: old.subject,
+                app: old.app,
+                operation: old.operation,
+                source: old.source,
+                resources: old.resources,
+            })
+        }
+    }
+}
+
 fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
     match record.kind.as_str() {
         "auth.member.added" => {
@@ -735,7 +776,7 @@ fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
             state_mut::<AuthState>(state, "auth")?.grants.remove(&key);
         }
         "auth.permission.requested" => {
-            let event: PermissionRequested = decode_event(record)?;
+            let event = decode_permission_requested(record)?;
             let key = event.request_id.clone();
             state_mut::<AuthState>(state, "auth")?
                 .permission_requests
@@ -746,8 +787,10 @@ fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
                         org: event.org,
                         subject: event.subject,
                         app: event.app,
+                        app_name: event.app_name,
                         operation: event.operation,
                         source: event.source,
+                        resume_token_hash: event.resume_token_hash,
                         resources: event.resources,
                         status: "pending".to_string(),
                         decided_by: String::new(),
@@ -1104,13 +1147,15 @@ fn permission_request_projection_value(request: &AuthPermissionRequest) -> Strin
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        r#"{{"requestId":"{}","org":"{}","subject":"{}","app":"{}","operation":"{}","source":"{}","resources":[{}],"status":"{}","decidedBy":"{}","decisionReason":"{}","decisionSource":"{}"}}"#,
+        r#"{{"requestId":"{}","org":"{}","subject":"{}","app":"{}","appName":"{}","operation":"{}","source":"{}","resumeTokenHash":"{}","resources":[{}],"status":"{}","decidedBy":"{}","decisionReason":"{}","decisionSource":"{}"}}"#,
         json_string(&request.request_id),
         json_string(&request.org),
         json_string(&request.subject),
         json_string(&request.app),
+        json_string(&request.app_name),
         json_string(&request.operation),
         json_string(&request.source),
+        json_string(&request.resume_token_hash),
         resources,
         json_string(&request.status),
         json_string(&request.decided_by),

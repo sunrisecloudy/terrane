@@ -60,3 +60,51 @@ fn terrane_host_runs_todo_cli_backend() {
 
     assert!(host(home, &["replay"]).0, "replay failed");
 }
+
+#[test]
+fn terrane_host_run_reports_permission_request_and_wait_timeout() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let src = todo_cli_source();
+
+    assert!(
+        host(
+            home,
+            &["app", "add", "todo-cli", "Todo (CLI)", "--source", &src]
+        )
+        .0
+    );
+
+    let (ok, _out, err) = host(
+        home,
+        &["run", "--permission-ui", "print", "todo-cli", "list"],
+    );
+    assert!(!ok, "run without grant should fail closed");
+    assert!(
+        err.contains("permission required")
+            && err.contains("request id:")
+            && err.contains("/__terrane/admin/requests/")
+            && err.contains("source: cli")
+            && err.contains("permission_required"),
+        "permission stderr should be actionable: {err}"
+    );
+
+    let (ok, _out, err) = host(
+        home,
+        &[
+            "run",
+            "--permission-ui",
+            "none",
+            "--permission-wait",
+            "--permission-timeout",
+            "0",
+            "todo-cli",
+            "list",
+        ],
+    );
+    assert!(!ok, "wait should fail after timeout");
+    assert!(
+        err.contains("timed out waiting for request"),
+        "timeout stderr: {err}"
+    );
+}

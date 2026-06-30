@@ -5,7 +5,9 @@ use terrane_api::{HealthResponse, InvokeRequest, InvokeResponse, CONTRACT_VERSIO
 use terrane_host::{PreviewFile, PreviewStore};
 use tiny_http::{Method, Request, Response};
 
-use crate::http::{authorized, header, json_error, json_ok, Resp};
+use crate::http::{
+    admin_authorized, authorized, cors, cors_preflight, header, json_error, json_ok, Resp,
+};
 use crate::shim::{inject_app_shim, inject_preview_shim};
 use crate::static_files::{content_type, safe_within};
 
@@ -23,6 +25,12 @@ struct BuilderGenerateRequest {
     harness: String,
     #[nserde(default)]
     agent: String,
+}
+
+#[derive(DeJson)]
+struct PreviewDecisionRequest {
+    #[nserde(default)]
+    reason: String,
 }
 
 pub struct RouteState<'a> {
@@ -62,7 +70,11 @@ pub fn route(
     }
 
     let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if is_admin_control_route(&method, segs.as_slice()) && !admin_authorized(request) {
+        return json_error(403, "admin header required");
+    }
     match (&method, segs.as_slice()) {
+        (Method::Options, _) if is_app_bridge_route(segs.as_slice()) => cors_preflight(),
         (Method::Get, ["healthz"]) => json_ok(&HealthResponse {
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
@@ -78,6 +90,7 @@ pub fn route(
         (Method::Get, ["__terrane", "admin", "apps"]) => crate::admin::apps(core),
         (Method::Get, ["__terrane", "admin", "grants"]) => crate::admin::grants(core),
         (Method::Get, ["__terrane", "admin", "agents"]) => crate::admin::agents(core),
+        (Method::Get, ["__terrane", "admin", "audit"]) => crate::admin::audit(core),
         (Method::Post, ["__terrane", "admin", "agents"]) => {
             crate::admin::register_agent(core, admin_session, request)
         }
@@ -88,17 +101,34 @@ pub fn route(
             crate::admin::revoke_agent(core, admin_session, agent)
         }
         (Method::Get, ["__terrane", "admin", "requests"]) => {
-            crate::admin::requests(core, admin_base_url)
+            admin_requests(core, previews, admin_base_url)
         }
         (Method::Post, ["__terrane", "admin", "requests", request_id, "approve"]) => {
-            crate::admin::approve_request(core, admin_session, request_id, request, admin_base_url)
+            approve_request(
+                core,
+                previews,
+                admin_session,
+                request_id,
+                request,
+                admin_base_url,
+            )
         }
-        (Method::Post, ["__terrane", "admin", "requests", request_id, "deny"]) => {
-            crate::admin::deny_request(core, admin_session, request_id, request, admin_base_url)
-        }
-        (Method::Post, ["__terrane", "admin", "requests", request_id, "cancel"]) => {
-            crate::admin::cancel_request(core, admin_session, request_id, request, admin_base_url)
-        }
+        (Method::Post, ["__terrane", "admin", "requests", request_id, "deny"]) => deny_request(
+            core,
+            previews,
+            admin_session,
+            request_id,
+            request,
+            admin_base_url,
+        ),
+        (Method::Post, ["__terrane", "admin", "requests", request_id, "cancel"]) => cancel_request(
+            core,
+            previews,
+            admin_session,
+            request_id,
+            request,
+            admin_base_url,
+        ),
         (Method::Post, ["__terrane", "admin", "grants"]) => {
             crate::admin::grant(core, admin_session, request)
         }
@@ -106,15 +136,18 @@ pub fn route(
             crate::admin::revoke(core, admin_session, request)
         }
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => crate::admin::page(),
-        (Method::Post, ["__terrane", "builder", "generate"]) => builder_generate(core, request),
-        (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),
+        (Method::Post, ["__terrane", "builder", "generate"]) => {
+            cors(builder_generate(core, request))
+        }
+        (Method::Post, ["__terrane", "previews"]) => cors(create_preview(core, previews, request)),
         (Method::Get, ["__terrane", "previews", id, "frame"]) => serve_preview(previews, id, ""),
         (Method::Get, ["__terrane", "previews", id, "frame", rest @ ..]) => {
             serve_preview(previews, id, &rest.join("/"))
         }
         (Method::Post, ["__terrane", "previews", id, "invoke"]) => {
-            invoke_preview(previews, id, request)
+            cors(invoke_preview(previews, id, request, admin_base_url))
         }
+        (Method::Delete, ["__terrane", "previews", id]) => destroy_preview(previews, id),
         (Method::Get | Method::Post, ["__terrane", "previews", ..]) => json_error(404, "not found"),
         (Method::Get, ["apps"]) => json_ok(&terrane_host::list_apps(core)),
         (Method::Post, ["mcp"]) => mcp(core, request),
@@ -127,13 +160,182 @@ pub fn route(
             serve_ui(core, id, &rest.join("/"), live_reload)
         }
         (Method::Get, ["apps", _id, "__terrane", ..]) => json_error(404, "not found"),
-        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request, admin_base_url),
+        (Method::Post, ["apps", id, "invoke"]) => cors(invoke(core, id, request, admin_base_url)),
         (Method::Get, ["apps", id]) => crate::shell::response(core, id),
         (Method::Get, ["apps", id, rest @ ..]) => {
             serve_bundle_asset(core, id, &rest.join("/"), live_reload)
         }
         _ => json_error(404, "not found"),
     }
+}
+
+fn admin_requests(
+    core: &terrane_host::HostCore,
+    previews: &PreviewStore,
+    admin_base_url: &str,
+) -> Resp {
+    match terrane_host::permission::permission_requests(core, admin_base_url) {
+        Ok(mut response) => {
+            response
+                .requests
+                .extend(previews.permission_requests(admin_base_url));
+            response
+                .requests
+                .sort_by(|a, b| a.request_id.cmp(&b.request_id));
+            json_ok(&response)
+        }
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn approve_request(
+    core: &mut terrane_host::HostCore,
+    previews: &mut PreviewStore,
+    admin_session: &crate::admin::AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    decide_request(
+        core,
+        previews,
+        admin_session,
+        request_id,
+        request,
+        admin_base_url,
+        PreviewStore::approve_permission_request,
+        crate::admin::approve_request,
+    )
+}
+
+fn deny_request(
+    core: &mut terrane_host::HostCore,
+    previews: &mut PreviewStore,
+    admin_session: &crate::admin::AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    decide_request(
+        core,
+        previews,
+        admin_session,
+        request_id,
+        request,
+        admin_base_url,
+        PreviewStore::deny_permission_request,
+        crate::admin::deny_request,
+    )
+}
+
+fn cancel_request(
+    core: &mut terrane_host::HostCore,
+    previews: &mut PreviewStore,
+    admin_session: &crate::admin::AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    decide_request(
+        core,
+        previews,
+        admin_session,
+        request_id,
+        request,
+        admin_base_url,
+        PreviewStore::cancel_permission_request,
+        crate::admin::cancel_request,
+    )
+}
+
+fn decide_request(
+    core: &mut terrane_host::HostCore,
+    previews: &mut PreviewStore,
+    admin_session: &crate::admin::AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+    preview_decide: fn(
+        &mut PreviewStore,
+        &str,
+        &str,
+        &str,
+    )
+        -> Result<Option<terrane_host::permission::PermissionRequestView>, String>,
+    installed_decide: fn(
+        &mut terrane_host::HostCore,
+        &crate::admin::AdminSessionState,
+        &str,
+        &mut Request,
+        &str,
+    ) -> Resp,
+) -> Resp {
+    if previews
+        .permission_request(request_id, admin_base_url)
+        .is_none()
+    {
+        return installed_decide(core, admin_session, request_id, request, admin_base_url);
+    }
+    if admin_session.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    let reason = match preview_decision_reason(request) {
+        Ok(reason) => reason,
+        Err(resp) => return resp,
+    };
+    match preview_decide(previews, request_id, &reason, admin_base_url) {
+        Ok(Some(view)) => json_ok(&view),
+        Ok(None) => json_error(404, "permission request not found"),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn preview_decision_reason(request: &mut Request) -> Result<String, Resp> {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return Err(json_error(400, "cannot read request body"));
+    }
+    if body.trim().is_empty() {
+        return Ok(String::new());
+    }
+    PreviewDecisionRequest::deserialize_json(&body)
+        .map(|parsed| parsed.reason)
+        .map_err(|e| json_error(400, &format!("bad decision body: {e}")))
+}
+
+fn is_admin_control_route(method: &Method, segs: &[&str]) -> bool {
+    if segs.len() < 2 || segs[0] != "__terrane" || segs[1] != "admin" {
+        return false;
+    }
+    match (method, segs) {
+        (Method::Get, ["__terrane", "admin", "session"])
+        | (Method::Post, ["__terrane", "admin", "local", "lock"])
+        | (Method::Post, ["__terrane", "admin", "local", "unlock"])
+        | (Method::Get, ["__terrane", "admin", "apps"])
+        | (Method::Get, ["__terrane", "admin", "grants"])
+        | (Method::Get, ["__terrane", "admin", "agents"])
+        | (Method::Get, ["__terrane", "admin", "audit"])
+        | (Method::Post, ["__terrane", "admin", "agents"])
+        | (Method::Post, ["__terrane", "admin", "agents", _, "delegate"])
+        | (Method::Delete, ["__terrane", "admin", "agents", _])
+        | (Method::Get, ["__terrane", "admin", "requests"])
+        | (Method::Post, ["__terrane", "admin", "requests", _, "approve"])
+        | (Method::Post, ["__terrane", "admin", "requests", _, "deny"])
+        | (Method::Post, ["__terrane", "admin", "requests", _, "cancel"])
+        | (Method::Post, ["__terrane", "admin", "grants"])
+        | (Method::Delete, ["__terrane", "admin", "grants"]) => true,
+        _ => false,
+    }
+}
+
+fn is_app_bridge_route(segs: &[&str]) -> bool {
+    matches!(
+        segs,
+        ["apps", _, "invoke"]
+            | ["__terrane", "previews"]
+            | ["__terrane", "previews", _, "invoke"]
+            | ["__terrane", "builder", "generate"]
+    )
 }
 
 /// `POST /__terrane/builder/generate` - generate a draft app through core.
@@ -193,7 +395,12 @@ fn create_preview(
 }
 
 /// `POST /__terrane/previews/{id}/invoke` - run the generated preview backend.
-fn invoke_preview(previews: &mut PreviewStore, id: &str, request: &mut Request) -> Resp {
+fn invoke_preview(
+    previews: &mut PreviewStore,
+    id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return json_error(400, "cannot read request body");
@@ -203,10 +410,30 @@ fn invoke_preview(previews: &mut PreviewStore, id: &str, request: &mut Request) 
         Err(e) => return json_error(400, &format!("bad invoke body: {e}")),
     };
 
+    match previews.permission_required_with_admin_base(id, admin_base_url) {
+        Ok(Some(required)) => {
+            let body = required.serialize_json();
+            return Response::from_data(body.into_bytes())
+                .with_status_code(403)
+                .with_header(header("Content-Type", "application/json"));
+        }
+        Ok(None) => {}
+        Err(e) if e.starts_with("no such preview:") => return json_error(404, &e),
+        Err(e) => return json_error(400, &e),
+    }
+
     match previews.invoke_backend(id, &parsed.verb, &parsed.args) {
         Ok(output) => json_ok(&InvokeResponse { output }),
         Err(e) if e.starts_with("no such preview:") => json_error(404, &e),
         Err(e) => json_error(500, &e),
+    }
+}
+
+fn destroy_preview(previews: &mut PreviewStore, id: &str) -> Resp {
+    match previews.destroy_preview(id) {
+        Ok(()) => Response::from_string("").with_status_code(204),
+        Err(e) if e.starts_with("no such preview:") => json_error(404, &e),
+        Err(e) => json_error(400, &e),
     }
 }
 
@@ -240,7 +467,7 @@ fn mcp(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
         return json_error(400, "cannot read request body");
     }
 
-    match terrane_host::mcp::handle_json_rpc(core, &body) {
+    match terrane_host::mcp::handle_json_rpc_with_source(core, &body, "mcp_http") {
         Some(response) => Response::from_data(response.into_bytes())
             .with_header(header("Content-Type", "application/json")),
         None => Response::from_string("").with_status_code(202),
@@ -263,12 +490,13 @@ fn invoke(
         Err(e) => return json_error(400, &format!("bad invoke body: {e}")),
     };
 
-    match terrane_host::invoke_app_checked_with_admin_base(
+    match terrane_host::invoke_app_checked_with_admin_base_and_source(
         core,
         id,
         &parsed.verb,
         &parsed.args,
         admin_base_url,
+        "web",
     ) {
         Ok(output) => json_ok(&InvokeResponse { output }),
         Err(terrane_host::InvokeFailure::PermissionRequired(required)) => {

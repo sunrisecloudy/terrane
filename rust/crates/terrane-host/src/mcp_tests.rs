@@ -332,6 +332,7 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
     assert!(
         denied_actions.contains("permission_required")
             && denied_actions.contains("adminUrl")
+            && denied_actions.contains(r#"\"source\":\"mcp_stdio\""#)
             && denied_actions.contains(r#""requestStatus":"pending"#)
             && denied_actions.contains("permission_check"),
         "app_actions should return structured permission request: {denied_actions}"

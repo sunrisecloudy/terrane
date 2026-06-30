@@ -183,9 +183,7 @@ fn dispatch_request_on_core(
     core: &mut HostCore,
     request: Request,
 ) -> Result<CommandOutcome, String> {
-    let records = core
-        .dispatch(request)
-        .map_err(|e| e.to_string())?;
+    let records = core.dispatch(request).map_err(|e| e.to_string())?;
     Ok(CommandOutcome {
         records,
         output: core.take_last_output(),
@@ -213,10 +211,7 @@ fn dry_run_request_on_core(
     request: Request,
     command: &str,
 ) -> Result<CommandDryRunOutcome, String> {
-    match core
-        .decide(request)
-        .map_err(|e| e.to_string())?
-    {
+    match core.decide(request).map_err(|e| e.to_string())? {
         Decision::Commit(records) => Ok(CommandDryRunOutcome {
             records: records.len(),
         }),
@@ -265,10 +260,21 @@ pub fn invoke_app_checked_with_admin_base(
     args: &[String],
     admin_base_url: &str,
 ) -> Result<String, InvokeFailure> {
+    invoke_app_checked_with_admin_base_and_source(core, app, verb, args, admin_base_url, "host")
+}
+
+pub fn invoke_app_checked_with_admin_base_and_source(
+    core: &mut HostCore,
+    app: &str,
+    verb: &str,
+    args: &[String],
+    admin_base_url: &str,
+    source: &str,
+) -> Result<String, InvokeFailure> {
     let mut input = Vec::with_capacity(args.len() + 1);
     input.push(verb.to_string());
     input.extend(args.iter().cloned());
-    invoke_app_input_checked_with_admin_base(core, app, &input, admin_base_url)
+    invoke_app_input_checked_with_admin_base_and_source(core, app, &input, admin_base_url, source)
 }
 
 /// Run an app backend with the exact runtime input vector.
@@ -294,6 +300,16 @@ pub fn invoke_app_input_checked_with_admin_base(
     input: &[String],
     admin_base_url: &str,
 ) -> Result<String, InvokeFailure> {
+    invoke_app_input_checked_with_admin_base_and_source(core, app, input, admin_base_url, "host")
+}
+
+pub fn invoke_app_input_checked_with_admin_base_and_source(
+    core: &mut HostCore,
+    app: &str,
+    input: &[String],
+    admin_base_url: &str,
+    source: &str,
+) -> Result<String, InvokeFailure> {
     if !core.state().app.apps.contains_key(app) {
         return Err(InvokeFailure::Other(format!("no such app: {app}")));
     }
@@ -302,7 +318,7 @@ pub fn invoke_app_input_checked_with_admin_base(
         core,
         app,
         operation,
-        "host",
+        source,
         admin_base_url,
     )
     .map_err(InvokeFailure::Other)?
@@ -343,7 +359,23 @@ pub fn app_actions_checked_with_admin_base(
     app: &str,
     admin_base_url: &str,
 ) -> Result<String, InvokeFailure> {
-    invoke_app_checked_with_admin_base(core, app, terrane_api::ACTIONS_VERB, &[], admin_base_url)
+    app_actions_checked_with_admin_base_and_source(core, app, admin_base_url, "host")
+}
+
+pub fn app_actions_checked_with_admin_base_and_source(
+    core: &mut HostCore,
+    app: &str,
+    admin_base_url: &str,
+    source: &str,
+) -> Result<String, InvokeFailure> {
+    invoke_app_checked_with_admin_base_and_source(
+        core,
+        app,
+        terrane_api::ACTIONS_VERB,
+        &[],
+        admin_base_url,
+        source,
+    )
 }
 
 /// Ask the core builder capability to generate a draft app and return the

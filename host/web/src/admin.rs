@@ -78,6 +78,17 @@ struct AdminAgentsResponse {
 }
 
 #[derive(Debug, Clone, SerJson)]
+struct AdminAuditEntry {
+    index: usize,
+    line: String,
+}
+
+#[derive(Debug, Clone, SerJson)]
+struct AdminAuditResponse {
+    entries: Vec<AdminAuditEntry>,
+}
+
+#[derive(Debug, Clone, SerJson)]
 struct GrantResponse {
     records: usize,
     output: Option<String>,
@@ -224,11 +235,34 @@ pub fn agents(core: &terrane_host::HostCore) -> Resp {
     json_ok(&AdminAgentsResponse { agents })
 }
 
-pub fn requests(core: &terrane_host::HostCore, admin_base_url: &str) -> Resp {
-    match terrane_host::permission::permission_requests(core, admin_base_url) {
-        Ok(response) => json_ok(&response),
-        Err(e) => json_error(400, &e),
+pub fn audit(core: &terrane_host::HostCore) -> Resp {
+    match core.log_lines() {
+        Ok(lines) => {
+            let entries = lines
+                .into_iter()
+                .enumerate()
+                .filter(|(_, line)| is_auth_audit_line(line))
+                .map(|(index, line)| AdminAuditEntry {
+                    index: index + 1,
+                    line,
+                })
+                .collect();
+            json_ok(&AdminAuditResponse { entries })
+        }
+        Err(e) => json_error(400, &e.to_string()),
     }
+}
+
+fn is_auth_audit_line(line: &str) -> bool {
+    line.starts_with("added ")
+        || line.starts_with("granted ")
+        || line.starts_with("revoked ")
+        || line.starts_with("permission request ")
+        || line.starts_with("approved permission request ")
+        || line.starts_with("denied permission request ")
+        || line.starts_with("cancelled permission request ")
+        || line.starts_with("registered agent ")
+        || line.starts_with("updated agent delegation ")
 }
 
 pub fn register_agent(

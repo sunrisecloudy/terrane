@@ -27,6 +27,14 @@ use crate::{BundleManifest, HostCore};
 /// substring scan or whole-message nanoserde: `id` is captured as its exact
 /// source token so it echoes back verbatim whatever its type.
 pub fn handle_json_rpc(core: &mut HostCore, raw: &str) -> Option<String> {
+    handle_json_rpc_with_source(core, raw, "mcp_stdio")
+}
+
+pub fn handle_json_rpc_with_source(
+    core: &mut HostCore,
+    raw: &str,
+    permission_source: &str,
+) -> Option<String> {
     let fields = top_level_fields(raw);
     let field = |name: &str| fields.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
 
@@ -45,7 +53,9 @@ pub fn handle_json_rpc(core: &mut HostCore, raw: &str) -> Option<String> {
         }
         Some("prompts/list") => id.map(|id| ok(id, &prompts_list_result())),
         Some("prompts/get") => id.map(|id| prompt_get(id, field("params").unwrap_or("{}"))),
-        Some("tools/call") => id.map(|id| tool_call(core, id, field("params").unwrap_or("{}"))),
+        Some("tools/call") => {
+            id.map(|id| tool_call(core, id, field("params").unwrap_or("{}"), permission_source))
+        }
         // Notifications (no id) are silently accepted; a request with an
         // unknown/!string method still gets a proper error reply.
         _ => id.map(|id| {
@@ -367,7 +377,7 @@ fn prompt_get(id: &str, params_raw: &str) -> String {
 /// Handle `tools/call`. `params_raw` is the isolated top-level `params` object,
 /// so argument failures can be surfaced as MCP tool errors instead of JSON-RPC
 /// protocol errors.
-fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
+fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source: &str) -> String {
     let params = match parse_call_params(params_raw) {
         Ok(params) => params,
         Err(e) => return error(id, -32602, &e),
@@ -530,7 +540,12 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
                 Ok(app) => app,
                 Err(e) => return tool_text(id, &e, true),
             };
-            match crate::app_actions_checked(core, &app) {
+            match crate::app_actions_checked_with_admin_base_and_source(
+                core,
+                &app,
+                crate::permission::DEFAULT_ADMIN_BASE_URL,
+                permission_source,
+            ) {
                 Ok(output) => tool_json_if_possible(id, &output, false),
                 Err(crate::InvokeFailure::PermissionRequired(required)) => {
                     tool_json(id, &required.serialize_json(), true)
@@ -555,7 +570,14 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
                 Ok(argv) => argv,
                 Err(e) => return tool_text(id, &e, true),
             };
-            match crate::invoke_app_checked(core, &app, &verb, &argv) {
+            match crate::invoke_app_checked_with_admin_base_and_source(
+                core,
+                &app,
+                &verb,
+                &argv,
+                crate::permission::DEFAULT_ADMIN_BASE_URL,
+                permission_source,
+            ) {
                 Ok(output) => tool_text(id, &output, false),
                 Err(crate::InvokeFailure::PermissionRequired(required)) => {
                     tool_json(id, &required.serialize_json(), true)

@@ -121,7 +121,34 @@ fn write_built_react_fixture(root: &Path) -> PathBuf {
 
 /// Minimal blocking HTTP/1.0 client (Connection: close → read to EOF).
 fn http(addr: &str, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
+    if needs_admin_header(path) {
+        http_with_headers(
+            addr,
+            method,
+            path,
+            body,
+            &[("X-Terrane-Admin", "local-admin")],
+        )
+    } else {
+        http_with_headers(addr, method, path, body, &[])
+    }
+}
+
+fn http_without_admin(addr: &str, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
     http_with_headers(addr, method, path, body, &[])
+}
+
+fn needs_admin_header(path: &str) -> bool {
+    path.starts_with("/__terrane/admin/")
+        || matches!(
+            path,
+            "/__terrane/admin/session"
+                | "/__terrane/admin/apps"
+                | "/__terrane/admin/grants"
+                | "/__terrane/admin/agents"
+                | "/__terrane/admin/audit"
+                | "/__terrane/admin/requests"
+        )
 }
 
 fn http_with_headers(
@@ -338,6 +365,100 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
 }
 
 #[test]
+fn preview_with_resources_requires_admin_review_before_runtime_access() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (mut child, addr) = spawn_web(home);
+
+    let create = preview_body(&[
+        (
+            "manifest.json",
+            r#"{"id":"needs-kv","name":"Needs KV","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#,
+        ),
+        (
+            "main.js",
+            r#"var kv = ctx.resource.kv;
+function handle(input) {
+  if (input[0] === "set") { kv.set(input[1], input[2]); return "ok"; }
+  if (input[0] === "get") { return kv.get(input[1]) || ""; }
+  return "?";
+}
+"#,
+        ),
+        (
+            "index.html",
+            "<!doctype html><html><body>Needs KV</body></html>",
+        ),
+    ]);
+
+    let (status, body) = http(&addr, "POST", "/__terrane/previews", Some(&create));
+    assert_eq!(status, 200, "create preview: {body}");
+    let preview_id = json_string_field(&body, "id");
+
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/requests", None);
+    assert_eq!(status, 200, "preview requests: {body}");
+    assert!(
+        body.contains(&preview_id)
+            && body.contains(r#""source":"preview""#)
+            && body.contains(r#""status":"pending""#),
+        "preview request should be listed: {body}"
+    );
+    let request_id = json_string_field(&body, "requestId");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/previews/{preview_id}/invoke"),
+        Some(r#"{"verb":"set","args":["answer","42"]}"#),
+    );
+    assert_eq!(status, 403, "preview invoke should need approval: {body}");
+    assert!(
+        body.contains("permission_required")
+            && body.contains(r#""source":"preview""#)
+            && body.contains(&request_id),
+        "preview permission body: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/admin/requests/{request_id}/approve"),
+        Some(r#"{"reason":"ok"}"#),
+    );
+    assert_eq!(status, 200, "preview approve: {body}");
+    assert!(
+        body.contains(r#""status":"approved""#),
+        "preview approve: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/previews/{preview_id}/invoke"),
+        Some(r#"{"verb":"set","args":["answer","42"]}"#),
+    );
+    assert_eq!(status, 200, "preview invoke after approve: {body}");
+    assert!(body.contains("ok"), "preview invoke after approve: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "DELETE",
+        &format!("/__terrane/previews/{preview_id}"),
+        None,
+    );
+    assert_eq!(status, 204, "preview destroy: {body}");
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/requests", None);
+    assert_eq!(status, 200, "requests after destroy: {body}");
+    assert!(
+        !body.contains(&request_id),
+        "destroy should clear preview request/grant: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn builder_generate_route_rejects_invalid_request_before_harness() {
     let dir = tempdir().unwrap();
     let home = dir.path();
@@ -388,6 +509,12 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
     assert!(
         body.contains("id=\"app-frame\""),
         "bmi shell iframe missing: {body}"
+    );
+    assert!(
+        body.contains(
+            "sandbox=\"allow-scripts allow-forms allow-modals allow-popups allow-downloads\""
+        ),
+        "bmi shell iframe should be sandboxed away from admin origin: {body}"
     );
     assert!(
         body.contains("/apps/\" + encodeURIComponent(currentId) + \"/__terrane/frame/"),
@@ -520,6 +647,25 @@ fn serves_catalog_ui_and_invoke_over_http() {
         body.contains("id=\"app-frame\""),
         "app frame missing: {body}"
     );
+    assert!(
+        body.contains(
+            "sandbox=\"allow-scripts allow-forms allow-modals allow-popups allow-downloads\""
+        ),
+        "app frame should be sandboxed away from admin origin: {body}"
+    );
+    let (status, body) = http_with_headers(
+        &addr,
+        "OPTIONS",
+        "/apps/todo/invoke",
+        None,
+        &[
+            ("Origin", "null"),
+            ("Access-Control-Request-Headers", "content-type"),
+        ],
+    );
+    assert_eq!(status, 204, "app invoke preflight: {body}");
+    let (status, _body) = http_without_admin(&addr, "OPTIONS", "/__terrane/admin/grants", None);
+    assert_eq!(status, 404, "admin routes should not expose CORS preflight");
 
     // Private in-memory preview routes: create a generated bundle, serve the
     // iframe HTML/assets, inject the preview invoke shim, and invoke its backend.
@@ -916,6 +1062,12 @@ fn admin_can_grant_missing_app_resource() {
     assert_eq!(status, 200, "admin page: {body}");
     assert!(body.contains("Terrane Admin"), "admin page: {body}");
 
+    let (status, body) = http_without_admin(&addr, "GET", "/__terrane/admin/session", None);
+    assert_eq!(
+        status, 403,
+        "admin control route should require header: {body}"
+    );
+
     let (status, body) = http(&addr, "GET", "/__terrane/admin/session", None);
     assert_eq!(status, 200, "admin session: {body}");
     assert!(
@@ -939,6 +1091,7 @@ fn admin_can_grant_missing_app_resource() {
     assert_eq!(status, 403, "invoke should need permission: {body}");
     assert!(
         body.contains("permission_required")
+            && body.contains(r#""source":"web""#)
             && body.contains(&format!("http://{addr}/__terrane/admin/requests/")),
         "permission body: {body}"
     );
@@ -1122,6 +1275,46 @@ fn admin_can_grant_missing_app_resource() {
     assert_eq!(
         status, 403,
         "invoke after revoke should need permission: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/audit", None);
+    assert_eq!(status, 200, "admin audit: {body}");
+    assert!(
+        body.contains("permission request")
+            && body.contains("approved permission request")
+            && body.contains("registered agent")
+            && body.contains("updated agent delegation")
+            && body.contains("revoked agent")
+            && body.contains("revoked user:local-owner access"),
+        "admin audit should include auth history: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn mcp_http_permission_request_reports_http_source() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install(&mut core, "todo");
+    }
+
+    let (mut child, addr) = spawn_web(home);
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"mcp-missing","method":"tools/call","params":{"name":"app_actions","arguments":{"app":"todo"}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp app_actions missing grant: {body}");
+    assert!(
+        body.contains("permission_required") && body.contains(r#"\"source\":\"mcp_http\""#),
+        "mcp http permission source: {body}"
     );
 
     let _ = child.kill();

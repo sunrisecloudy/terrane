@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use nanoserde::{DeJson, SerJson};
@@ -6,6 +6,7 @@ use terrane_cap_app::AppRecord;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
 use terrane_core::{
     fold_records_in_memory, ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost, State,
+    LOCAL_OWNER_SUBJECT,
 };
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["html", "htm", "css", "js", "mjs", "json", "svg"];
@@ -38,10 +39,16 @@ pub struct PreviewStore {
 
 struct Preview {
     id: String,
+    name: String,
     files: BTreeMap<String, String>,
     ui: String,
     state: State,
     bundle: JsRuntimeBundle,
+    requested_resources: Vec<String>,
+    allowed_resources: BTreeSet<String>,
+    permission_status: String,
+    decided_by: String,
+    decision_reason: String,
 }
 
 #[derive(DeJson)]
@@ -129,7 +136,7 @@ impl PreviewStore {
             id.clone(),
             AppRecord {
                 id: id.clone(),
-                name,
+                name: name.clone(),
                 source: None,
                 runtime: "js".to_string(),
             },
@@ -139,14 +146,26 @@ impl PreviewStore {
             name: manifest.name.clone(),
             resources: manifest.resources.clone(),
         };
+        let requested_resources = grantable_preview_resources(&manifest.resources);
+        let permission_status = if requested_resources.is_empty() {
+            "approved".to_string()
+        } else {
+            "pending".to_string()
+        };
         self.previews.insert(
             id.clone(),
             Preview {
                 id: id.clone(),
+                name,
                 files,
                 ui,
                 state,
                 bundle,
+                requested_resources,
+                allowed_resources: BTreeSet::new(),
+                permission_status,
+                decided_by: String::new(),
+                decision_reason: String::new(),
             },
         );
 
@@ -154,6 +173,141 @@ impl PreviewStore {
             frame_url: format!("terrane-preview://{id}/frame/"),
             id,
         })
+    }
+
+    pub fn destroy_preview(&mut self, id: &str) -> Result<(), String> {
+        self.previews
+            .remove(id)
+            .map(|_| ())
+            .ok_or_else(|| format!("no such preview: {id}"))
+    }
+
+    pub fn permission_required_with_admin_base(
+        &self,
+        id: &str,
+        admin_base_url: &str,
+    ) -> Result<Option<crate::permission::PermissionRequired>, String> {
+        let preview = self.preview(id)?;
+        let missing = preview
+            .requested_resources
+            .iter()
+            .filter(|namespace| !preview.allowed_resources.contains(*namespace))
+            .cloned()
+            .collect::<Vec<_>>();
+        if missing.is_empty() {
+            return Ok(None);
+        }
+        let request_id = preview_request_id(preview, &missing);
+        let admin_url = crate::permission::admin_url(admin_base_url, &request_id);
+        let resume_token_hash = crate::permission::resume_token_hash(&request_id);
+        let grant_commands = missing
+            .iter()
+            .map(|namespace| format!("approve preview {id} {namespace}"))
+            .collect::<Vec<_>>();
+        Ok(Some(crate::permission::PermissionRequired {
+            kind: "permission_required".to_string(),
+            status: "permission_required".to_string(),
+            request_id,
+            app: preview.id.clone(),
+            app_name: preview.name.clone(),
+            org: terrane_core::LOCAL_ORG.to_string(),
+            subject: LOCAL_OWNER_SUBJECT.to_string(),
+            source: "preview".to_string(),
+            missing_resources: missing.clone(),
+            admin_url: admin_url.clone(),
+            grant_commands,
+            request_status: preview.permission_status.clone(),
+            resume_tool: "permission_check".to_string(),
+            resume_token_hash,
+            message: format!(
+                "permission required for preview {}: grant {}; open {}",
+                preview.id,
+                missing.join(", "),
+                admin_url
+            ),
+        }))
+    }
+
+    pub fn permission_requests(
+        &self,
+        admin_base_url: &str,
+    ) -> Vec<crate::permission::PermissionRequestView> {
+        let mut requests = self
+            .previews
+            .values()
+            .filter_map(|preview| preview_request_view(preview, admin_base_url))
+            .collect::<Vec<_>>();
+        requests.sort_by(|a, b| a.request_id.cmp(&b.request_id));
+        requests
+    }
+
+    pub fn permission_request(
+        &self,
+        request_id: &str,
+        admin_base_url: &str,
+    ) -> Option<crate::permission::PermissionRequestView> {
+        self.previews
+            .values()
+            .filter_map(|preview| preview_request_view(preview, admin_base_url))
+            .find(|view| view.request_id == request_id)
+    }
+
+    pub fn approve_permission_request(
+        &mut self,
+        request_id: &str,
+        reason: &str,
+        admin_base_url: &str,
+    ) -> Result<Option<crate::permission::PermissionRequestView>, String> {
+        self.decide_permission_request(request_id, "approved", reason, admin_base_url)
+    }
+
+    pub fn deny_permission_request(
+        &mut self,
+        request_id: &str,
+        reason: &str,
+        admin_base_url: &str,
+    ) -> Result<Option<crate::permission::PermissionRequestView>, String> {
+        self.decide_permission_request(request_id, "denied", reason, admin_base_url)
+    }
+
+    pub fn cancel_permission_request(
+        &mut self,
+        request_id: &str,
+        reason: &str,
+        admin_base_url: &str,
+    ) -> Result<Option<crate::permission::PermissionRequestView>, String> {
+        self.decide_permission_request(request_id, "cancelled", reason, admin_base_url)
+    }
+
+    fn decide_permission_request(
+        &mut self,
+        request_id: &str,
+        status: &str,
+        reason: &str,
+        admin_base_url: &str,
+    ) -> Result<Option<crate::permission::PermissionRequestView>, String> {
+        let Some(preview) = self.previews.values_mut().find(|preview| {
+            preview_request_view(preview, admin_base_url)
+                .is_some_and(|view| view.request_id == request_id)
+        }) else {
+            return Ok(None);
+        };
+        if preview.permission_status == status {
+            return Ok(preview_request_view(preview, admin_base_url));
+        }
+        if preview.permission_status != "pending" {
+            return Err(format!(
+                "permission request {request_id} is {}",
+                preview.permission_status
+            ));
+        }
+        preview.permission_status = status.to_string();
+        preview.decided_by = LOCAL_OWNER_SUBJECT.to_string();
+        preview.decision_reason = reason.to_string();
+        if status == "approved" {
+            preview.allowed_resources = preview.requested_resources.iter().cloned().collect();
+        }
+        Ok(preview_request_view(preview, admin_base_url))
     }
 
     pub fn read_asset(&self, id: &str, rel_path: &str) -> Result<PreviewAsset, String> {
@@ -192,7 +346,7 @@ impl PreviewStore {
                 preview.id.clone(),
                 preview.state.clone(),
                 ExecutionPrincipal::local_owner(),
-                preview.bundle.resources.clone(),
+                preview.allowed_resources.iter().cloned(),
             ),
         ));
         let output = run_js_bundle(&preview.id, &input, &preview.bundle, host.clone())
@@ -213,6 +367,67 @@ impl PreviewStore {
             .get_mut(id)
             .ok_or_else(|| format!("no such preview: {id}"))
     }
+}
+
+fn grantable_preview_resources(resources: &[String]) -> Vec<String> {
+    let grantable: BTreeSet<_> = terrane_core::grant_resource_namespaces()
+        .into_iter()
+        .collect();
+    let mut resources = resources
+        .iter()
+        .filter(|namespace| grantable.contains(namespace.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    resources.sort();
+    resources.dedup();
+    resources
+}
+
+fn preview_request_view(
+    preview: &Preview,
+    admin_base_url: &str,
+) -> Option<crate::permission::PermissionRequestView> {
+    if preview.requested_resources.is_empty() {
+        return None;
+    }
+    let request_id = preview_request_id(preview, &preview.requested_resources);
+    Some(crate::permission::PermissionRequestView {
+        admin_url: crate::permission::admin_url(admin_base_url, &request_id),
+        request_id: request_id.clone(),
+        org: terrane_core::LOCAL_ORG.to_string(),
+        subject: LOCAL_OWNER_SUBJECT.to_string(),
+        app: preview.id.clone(),
+        app_name: preview.name.clone(),
+        operation: "preview".to_string(),
+        source: "preview".to_string(),
+        resume_token_hash: crate::permission::resume_token_hash(&request_id),
+        resources: preview
+            .requested_resources
+            .iter()
+            .filter_map(|namespace| preview_resource_view(namespace))
+            .collect(),
+        status: preview.permission_status.clone(),
+        decided_by: preview.decided_by.clone(),
+        decision_reason: preview.decision_reason.clone(),
+    })
+}
+
+fn preview_resource_view(
+    namespace: &str,
+) -> Option<crate::permission::PermissionRequestResourceView> {
+    let spec = terrane_core::grant_resource_specs()
+        .into_iter()
+        .find(|spec| spec.namespace == namespace)?;
+    Some(crate::permission::PermissionRequestResourceView {
+        namespace: spec.namespace.to_string(),
+        selector_schema_id: spec.selector_schema_id.to_string(),
+        resource_id: spec.namespace.to_string(),
+        verbs: spec.verbs.iter().map(|verb| (*verb).to_string()).collect(),
+    })
+}
+
+fn preview_request_id(preview: &Preview, resources: &[String]) -> String {
+    crate::permission::permission_request_id(&preview.id, LOCAL_OWNER_SUBJECT, resources)
 }
 
 impl Preview {

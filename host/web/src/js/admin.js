@@ -4,6 +4,7 @@ const state = {
   grants: [],
   agents: [],
   requests: [],
+  audit: [],
   session: null,
 };
 
@@ -11,6 +12,7 @@ const content = document.getElementById("content");
 const title = document.getElementById("view-title");
 const authority = document.getElementById("authority");
 const lockButton = document.getElementById("lock-toggle");
+const adminHeaders = { "X-Terrane-Admin": "local-admin" };
 
 document.querySelectorAll("nav button[data-view]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -30,23 +32,29 @@ lockButton.addEventListener("click", async () => {
 });
 
 async function refresh() {
-  const [session, apps, grants, agents, requests] = await Promise.all([
+  const [session, apps, grants, agents, requests, audit] = await Promise.all([
     fetchJson("/__terrane/admin/session"),
     fetchJson("/__terrane/admin/apps"),
     fetchJson("/__terrane/admin/grants"),
     fetchJson("/__terrane/admin/agents"),
     fetchJson("/__terrane/admin/requests"),
+    fetchJson("/__terrane/admin/audit"),
   ]);
   state.session = session;
   state.apps = apps.apps || [];
   state.grants = grants.grants || [];
   state.agents = agents.agents || [];
   state.requests = requests.requests || [];
+  state.audit = audit.entries || [];
   render();
 }
 
 async function fetchJson(path, options) {
-  const response = await fetch(path, { cache: "no-store", ...options });
+  const response = await fetch(path, {
+    cache: "no-store",
+    ...options,
+    headers: { ...adminHeaders, ...((options && options.headers) || {}) },
+  });
   if (!response.ok) throw new Error(await response.text());
   return response.json();
 }
@@ -59,6 +67,7 @@ function render() {
   if (state.view === "grants") return renderGrants();
   if (state.view === "agents") return renderAgents();
   if (state.view === "requests") return renderRequests();
+  if (state.view === "audit") return renderAudit();
   renderApps();
 }
 
@@ -254,7 +263,7 @@ function requestTable(requests) {
   for (const request of requests) {
     const row = document.createElement("tr");
     row.append(cell(request.requestId, request.subject));
-    row.append(cell(request.app, request.operation));
+    row.append(cell(request.appName || request.app, `${request.app} / ${request.operation} / ${request.source || "unknown"}`));
     const resourceCell = document.createElement("td");
     const tokens = document.createElement("div");
     tokens.className = "tokens";
@@ -266,7 +275,7 @@ function requestTable(requests) {
     }
     resourceCell.append(tokens);
     row.append(resourceCell);
-    row.append(cell(request.status, request.decisionReason || ""));
+    row.append(cell(request.status, request.decisionReason || request.resumeTokenHash || ""));
     const actions = document.createElement("td");
     if (request.status === "pending") {
       for (const [label, action, className] of [
@@ -297,6 +306,20 @@ function requestTable(requests) {
   }
   table.append(body);
   return table;
+}
+
+function renderAudit() {
+  const table = document.createElement("table");
+  table.innerHTML = "<thead><tr><th>#</th><th>Event</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const entry of state.audit) {
+    const row = document.createElement("tr");
+    row.append(cell(String(entry.index)));
+    row.append(cell(entry.line));
+    body.append(row);
+  }
+  table.append(body);
+  content.replaceChildren(state.audit.length ? table : muted("No audit events yet"));
 }
 
 function activeAgents() {

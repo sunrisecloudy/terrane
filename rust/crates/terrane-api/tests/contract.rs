@@ -286,6 +286,7 @@ fn capability_doc_info_round_trips() {
             events: vec!["kv.set".into()],
             subscriptions: vec![],
             resource_methods: vec![],
+            grant_resources: vec![],
         },
         commands: vec![CapabilityCommandInfo {
             name: "kv.set".into(),

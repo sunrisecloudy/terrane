@@ -5,6 +5,8 @@ use terrane_api::ApiError;
 use tiny_http::{Header, Request, Response};
 
 pub type Resp = Response<Cursor<Vec<u8>>>;
+pub const ADMIN_HEADER: &str = "X-Terrane-Admin";
+pub const ADMIN_HEADER_VALUE: &str = "local-admin";
 
 pub fn authorized(request: &Request, token: Option<&str>) -> bool {
     let Some(token) = token.filter(|t| !t.is_empty()) else {
@@ -15,6 +17,13 @@ pub fn authorized(request: &Request, token: Option<&str>) -> bool {
         .headers()
         .iter()
         .any(|h| h.field.equiv("Authorization") && h.value.as_str() == expected)
+}
+
+pub fn admin_authorized(request: &Request) -> bool {
+    request
+        .headers()
+        .iter()
+        .any(|h| h.field.equiv(ADMIN_HEADER) && h.value.as_str() == ADMIN_HEADER_VALUE)
 }
 
 pub fn json_ok<T: SerJson>(value: &T) -> Resp {
@@ -30,6 +39,16 @@ pub fn json_error(code: u16, message: &str) -> Resp {
     Response::from_data(body.into_bytes())
         .with_status_code(code)
         .with_header(header("Content-Type", "application/json"))
+}
+
+pub fn cors(resp: Resp) -> Resp {
+    resp.with_header(header("Access-Control-Allow-Origin", "*"))
+        .with_header(header("Access-Control-Allow-Headers", "content-type"))
+        .with_header(header("Access-Control-Allow-Methods", "POST, OPTIONS"))
+}
+
+pub fn cors_preflight() -> Resp {
+    cors(Response::from_string("").with_status_code(204))
 }
 
 pub fn header(field: &str, value: &str) -> Header {

@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use nanoserde::{DeJson, SerJson};
 use terrane_cap_kv::{app_bundle_app_id, app_bundle_files};
@@ -17,8 +18,11 @@ pub struct PermissionRequired {
     #[nserde(rename = "requestId")]
     pub request_id: String,
     pub app: String,
+    #[nserde(rename = "appName")]
+    pub app_name: String,
     pub org: String,
     pub subject: String,
+    pub source: String,
     #[nserde(rename = "missingResources")]
     pub missing_resources: Vec<String>,
     #[nserde(rename = "adminUrl")]
@@ -29,6 +33,8 @@ pub struct PermissionRequired {
     pub request_status: String,
     #[nserde(rename = "resumeTool")]
     pub resume_tool: String,
+    #[nserde(rename = "resumeTokenHash")]
+    pub resume_token_hash: String,
     pub message: String,
 }
 
@@ -55,8 +61,12 @@ pub struct PermissionRequestView {
     pub org: String,
     pub subject: String,
     pub app: String,
+    #[nserde(rename = "appName")]
+    pub app_name: String,
     pub operation: String,
     pub source: String,
+    #[nserde(rename = "resumeTokenHash")]
+    pub resume_token_hash: String,
     pub resources: Vec<PermissionRequestResourceView>,
     pub status: String,
     #[nserde(rename = "adminUrl")]
@@ -109,6 +119,14 @@ pub fn permission_required_for_app_with_admin_base(
 
     let request_id = permission_request_id(app, &principal.subject, &missing);
     let admin_url = admin_url(admin_base_url, &request_id);
+    let app_name = core
+        .state()
+        .app
+        .apps
+        .get(app)
+        .map(|record| record.name.clone())
+        .unwrap_or_else(|| app.to_string());
+    let resume_token_hash = resume_token_hash(&request_id);
     let request_status = terrane_cap_auth::permission_request(core.state(), &request_id)
         .map_err(|e| e.to_string())?
         .map(|request| request.status)
@@ -123,13 +141,16 @@ pub fn permission_required_for_app_with_admin_base(
         status: "permission_required".to_string(),
         request_id,
         app: app.to_string(),
+        app_name,
         org: principal.org,
         subject: principal.subject,
+        source: String::new(),
         missing_resources: missing,
         admin_url: admin_url.clone(),
         grant_commands,
         request_status,
         resume_tool: "permission_check".to_string(),
+        resume_token_hash,
         message: format!("permission required for app {app}: grant {resources}; open {admin_url}"),
     }))
 }
@@ -146,6 +167,7 @@ pub fn request_permission_for_app_with_admin_base(
     else {
         return Ok(None);
     };
+    required.source = source.to_string();
     let resources = required.missing_resources.join(",");
     crate::dispatch_on_core(
         core,
@@ -157,6 +179,8 @@ pub fn request_permission_for_app_with_admin_base(
             operation.to_string(),
             source.to_string(),
             resources,
+            required.app_name.clone(),
+            required.resume_token_hash.clone(),
         ],
     )?;
     if let Some(request) = terrane_cap_auth::permission_request(core.state(), &required.request_id)
@@ -232,6 +256,27 @@ pub fn cancel_permission_request(
     permission_request_view(core, request_id, admin_base_url)
 }
 
+pub fn wait_for_permission_decision_at_home(
+    home: impl AsRef<Path>,
+    request_id: &str,
+    admin_base_url: &str,
+    timeout: Duration,
+) -> Result<Option<PermissionRequestView>, String> {
+    let home = home.as_ref();
+    let start = Instant::now();
+    loop {
+        let core = crate::open_at_home(home)?;
+        let view = permission_request_view(&core, request_id, admin_base_url)?;
+        if view.as_ref().is_some_and(|view| view.status != "pending") {
+            return Ok(view);
+        }
+        if start.elapsed() >= timeout {
+            return Ok(view);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 pub fn app_requested_resources(core: &HostCore, app: &str) -> Result<Vec<String>, String> {
     let record = core
         .state()
@@ -282,6 +327,10 @@ pub fn permission_request_id(app: &str, subject: &str, missing: &[String]) -> St
     )
 }
 
+pub fn resume_token_hash(request_id: &str) -> String {
+    format!("{:016x}", stable_hash(request_id.as_bytes()))
+}
+
 fn safe_token(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for byte in raw.bytes() {
@@ -316,8 +365,10 @@ fn request_view(
         org: request.org,
         subject: request.subject,
         app: request.app,
+        app_name: request.app_name,
         operation: request.operation,
         source: request.source,
+        resume_token_hash: request.resume_token_hash,
         resources: request
             .resources
             .into_iter()

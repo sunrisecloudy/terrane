@@ -123,6 +123,27 @@ fn invoke_backend_keeps_preview_state_without_appending_real_log() {
 
     let mut store = PreviewStore::new();
     let created = store.create_preview(files(), core.state()).unwrap();
+    let requests = store.permission_requests("http://127.0.0.1:49152");
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].status, "pending");
+    assert_eq!(requests[0].source, "preview");
+    assert_eq!(requests[0].app, created.id);
+    assert!(
+        store
+            .invoke_backend(
+                &created.id,
+                "set",
+                &["answer".to_string(), "42".to_string()],
+            )
+            .is_err(),
+        "preview resources should be default-deny until approved"
+    );
+    let request_id = requests[0].request_id.clone();
+    let approved = store
+        .approve_permission_request(&request_id, "ok", "http://127.0.0.1:49152")
+        .unwrap()
+        .unwrap();
+    assert_eq!(approved.status, "approved");
     let out = store
         .invoke_backend(
             &created.id,
@@ -141,6 +162,10 @@ fn invoke_backend_keeps_preview_state_without_appending_real_log() {
 
     assert!(core.replay_matches().unwrap());
     assert!(!core.state().kv.data.contains_key(&created.id));
+    store.destroy_preview(&created.id).unwrap();
+    assert!(store
+        .permission_request(&request_id, "http://127.0.0.1:49152")
+        .is_none());
 }
 
 #[test]

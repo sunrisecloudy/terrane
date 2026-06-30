@@ -92,7 +92,12 @@ fn open_at_home_seeds_local_owner_membership_once() {
         1,
         "local owner membership seed should be recorded exactly once"
     );
-    assert_eq!(terrane_cap_auth::auth_members(reopened.state()).unwrap().len(), 1);
+    assert_eq!(
+        terrane_cap_auth::auth_members(reopened.state())
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -157,12 +162,21 @@ fn request_permission_persists_pending_and_approve_grants() {
     .unwrap()
     .expect("missing kv should create a request");
     assert_eq!(required.request_status, "pending");
+    assert_eq!(required.app_name, "demo");
+    assert_eq!(required.source, "mcp");
+    assert!(!required.resume_token_hash.is_empty());
 
     let listed =
         terrane_host::permission::permission_requests(&core, "http://127.0.0.1:49152").unwrap();
     assert_eq!(listed.requests.len(), 1);
     assert_eq!(listed.requests[0].request_id, required.request_id);
     assert_eq!(listed.requests[0].status, "pending");
+    assert_eq!(listed.requests[0].app_name, "demo");
+    assert_eq!(listed.requests[0].source, "mcp");
+    assert_eq!(
+        listed.requests[0].resume_token_hash,
+        required.resume_token_hash
+    );
 
     let approved = terrane_host::permission::approve_permission_request(
         &mut core,

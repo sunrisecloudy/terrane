@@ -371,12 +371,17 @@ fn app_builder_preview_abi_stays_in_memory() {
         assert!(asset.contains("client.js"), "asset: {asset}");
 
         let (code, out, err) = call_preview_invoke(h, "preview-demo-1", "set", &["answer", "42"]);
-        assert_eq!(code, TERRANE_OK, "preview set err: {err:?}");
-        assert_eq!(out.as_deref(), Some("ok"));
-
-        let (code, out, err) = call_preview_invoke(h, "preview-demo-1", "get", &["answer"]);
-        assert_eq!(code, TERRANE_OK, "preview get err: {err:?}");
-        assert_eq!(out.as_deref(), Some("42"));
+        assert_ne!(
+            code, TERRANE_OK,
+            "resource-using previews should be default-deny through raw ABI"
+        );
+        assert!(out.is_none(), "no output on denied preview invoke");
+        assert!(
+            err.as_deref()
+                .unwrap_or_default()
+                .contains("cannot read property"),
+            "preview set should fail because ctx.resource.kv is unavailable: {err:?}"
+        );
 
         let after = read_log(&log).unwrap();
         assert_eq!(after, before, "preview must not append to the real log");
