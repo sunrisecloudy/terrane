@@ -9,8 +9,9 @@ mod runtime;
 mod state;
 
 pub use abi::{
-    decode_event, encode_event, namespace_of, AppId, Decision, Effect, Error, EventRecord, Request,
-    Result, RuntimeOutput, RuntimeRequest,
+    decode_event, encode_event, namespace_of, AppId, Decision, Effect, Error, EventRecord,
+    ExecutionPrincipal, Request, Result, RuntimeOutput, RuntimeRequest, LOCAL_ORG,
+    LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
 };
 pub use capability::Capability;
 pub use doc::{

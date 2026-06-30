@@ -42,6 +42,18 @@ fn install_copies_the_bundle_into_the_home_and_runs_from_anywhere() {
     let (ok, out, err) = host(home, &apps, &["app", "install", "todo-cli-collaborate"]);
     assert!(ok, "install failed: {err}");
     assert!(out.contains("installed todo-cli-collaborate"), "out: {out}");
+    let (ok, _, err) = host(
+        home,
+        elsewhere,
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "todo-cli-collaborate",
+            "crdt",
+        ],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     // The bundle now lives inside the home, and the catalog points there.
     assert!(home
@@ -99,6 +111,18 @@ fn install_kv_stores_bundle_in_cap_kv_and_runs_from_anywhere() {
         out.contains("installed todo-cli-collaborate -> kv://app-bundle/todo-cli-collaborate"),
         "out: {out}"
     );
+    let (ok, _, err) = host(
+        home,
+        elsewhere,
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "todo-cli-collaborate",
+            "crdt",
+        ],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     assert!(
         !home
@@ -148,6 +172,18 @@ fn install_kv_can_project_bundle_storage_to_sqlite_disk() {
     );
     assert!(ok, "install-kv sqlite failed: {err}");
     assert!(out.contains("installed todo-cli-collaborate"), "out: {out}");
+    let (ok, _, err) = host(
+        home,
+        elsewhere,
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "todo-cli-collaborate",
+            "crdt",
+        ],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     let sqlite = home.join("kv/bundles.sqlite3");
     assert!(sqlite.exists(), "sqlite projection should exist on disk");

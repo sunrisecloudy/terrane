@@ -4,7 +4,7 @@ use std::path::Path;
 use tempfile::tempdir;
 use terrane_core::Core;
 
-use crate::helpers::req;
+use crate::helpers::{grant_resource, req};
 
 fn pack_wat() -> &'static str {
     r#"
@@ -148,6 +148,7 @@ fn wasm_runtime_records_kv_writes_and_replays() {
         ],
     ))
     .unwrap();
+    grant_resource(&mut core, "wasm-write", "kv");
 
     let records = core
         .dispatch(req("wasm-runtime.run", &["wasm-write"]))
@@ -177,6 +178,7 @@ fn wasm_runtime_reads_real_kv_state() {
         ],
     ))
     .unwrap();
+    grant_resource(&mut core, "wasm-read", "kv");
     core.dispatch(req("kv.set", &["wasm-read", "color", "green"]))
         .unwrap();
 

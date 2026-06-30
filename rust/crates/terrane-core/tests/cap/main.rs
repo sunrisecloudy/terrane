@@ -7,6 +7,7 @@ mod helpers;
 mod app;
 mod builder;
 mod crdt;
+mod grant_resources;
 mod harness;
 mod host;
 mod interface;

@@ -69,6 +69,15 @@ fn add_a_todo_through_mcp_and_read_it_back() {
             ],
         ))
         .unwrap();
+        core.dispatch(Request::new(
+            "auth.grant",
+            vec![
+                "user:local-owner".into(),
+                "todo-cli-collaborate".into(),
+                "crdt".into(),
+            ],
+        ))
+        .unwrap();
     }
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_terrane-mcp"))
@@ -337,6 +346,23 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         multi_commit.contains(r#""isError":false"#) && multi_commit.contains("mcp-multicap"),
         "multicap app_register_inline commit: {multi_commit}"
     );
+    for (id, namespace) in [
+        ("multi-grant-kv", "kv"),
+        ("multi-grant-crdt", "crdt"),
+        ("multi-grant-rdb", "relational_db"),
+    ] {
+        send(
+            &mut stdin,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"{id}","method":"tools/call","params":{{"name":"capability_command","arguments":{{"name":"auth.grant","args":["user:local-owner","mcp-multicap","{namespace}"]}}}}}}"#
+            ),
+        );
+        let grant = read_line(&mut out);
+        assert!(
+            grant.contains(r#""isError":false"#),
+            "multicap auth.grant {namespace}: {grant}"
+        );
+    }
 
     send(
         &mut stdin,
@@ -458,6 +484,15 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     assert!(
         inline_commit.contains(r#""isError":false"#) && inline_commit.contains("mcp-inline"),
         "app_register_inline commit: {inline_commit}"
+    );
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"inline-grant-kv","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"auth.grant","args":["user:local-owner","mcp-inline","kv"]}}}"#,
+    );
+    let inline_grant = read_line(&mut out);
+    assert!(
+        inline_grant.contains(r#""isError":false"#),
+        "inline auth.grant: {inline_grant}"
     );
     send(
         &mut stdin,

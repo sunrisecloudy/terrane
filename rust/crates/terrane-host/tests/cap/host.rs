@@ -36,6 +36,11 @@ fn todo_cli_backend_runs_and_replays() {
     );
     assert!(ok, "app add failed: {err}");
     assert!(out.contains("app.added"), "out: {out}");
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "todo-cli", "kv"],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo-cli", "add", "buy milk"]);
     assert!(ok, "js-runtime run add failed: {err}");
@@ -57,7 +62,7 @@ fn todo_cli_backend_runs_and_replays() {
     assert!(ok);
     assert_eq!(out.trim(), "#2 ship it", "out: {out}");
 
-    // The log holds only app.added + kv.* — no host.* record (Option A).
+    // The log holds app.added + auth.granted + kv.* — no host.* record (Option A).
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
     assert!(log.contains("kv.set todo-cli/seq = 1"), "log: {log}");
@@ -83,6 +88,7 @@ fn todo_app_items_returns_json() {
     let src = app_source("todo");
 
     terrane(home, &["app", "add", "todo", "Todo", "--source", &src]);
+    terrane(home, &["auth", "grant", "user:local-owner", "todo", "kv"]);
     terrane(home, &["js-runtime", "run", "todo", "add", "buy milk"]);
 
     let (ok, out, err) = terrane(home, &["js-runtime", "run", "todo", "items"]);
@@ -130,6 +136,8 @@ fn runaway_backend_is_interrupted() {
         ],
     );
     assert!(ok, "app add failed: {err}");
+    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "loop", "kv"]);
+    assert!(ok, "auth grant failed: {err}");
 
     // Short budget so the test is fast; the run must fail, not wedge.
     let output = Command::new(env!("CARGO_BIN_EXE_terrane"))

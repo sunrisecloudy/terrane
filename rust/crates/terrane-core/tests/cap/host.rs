@@ -10,7 +10,10 @@ use tempfile::tempdir;
 use terrane_cap_app::AppRecord;
 use terrane_cap_crdt::crdt_list_strings;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
-use terrane_core::{fold_records_in_memory, Core, RuntimeHostHandle, RuntimeResourceHost, State};
+use terrane_core::{
+    fold_records_in_memory, Core, ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost,
+    State, LOCAL_OWNER_SUBJECT,
+};
 
 use crate::helpers::req;
 
@@ -55,7 +58,13 @@ fn install_demo(dir: &Path) -> Core {
     let mut core = Core::open(dir.join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["demo", "Demo", "--source", &src]))
         .unwrap();
+    grant_resource(&mut core, "demo", "kv");
     core
+}
+
+fn grant_resource(core: &mut Core, app: &str, namespace: &str) {
+    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, app, namespace]))
+        .unwrap();
 }
 
 #[test]
@@ -142,6 +151,61 @@ fn undeclared_resource_is_not_installed() {
 }
 
 #[test]
+fn declared_but_ungranted_resource_is_not_installed() {
+    let dir = tempdir().unwrap();
+    let src = write_bundle(
+        dir.path(),
+        "locked",
+        r#"{ "id": "locked", "name":"Locked","runtime":"js","backend":"main.js", "resources": ["kv"] }"#,
+        r#"function handle(input) { return String(ctx.resource.kv); }"#,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["locked", "Locked", "--source", &src]))
+        .unwrap();
+
+    core.dispatch(req("js-runtime.run", &["locked"])).unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("undefined"));
+}
+
+#[test]
+fn revoked_resource_is_not_installed_on_next_run() {
+    let dir = tempdir().unwrap();
+    let mut core = install_demo(dir.path());
+
+    core.dispatch(req("js-runtime.run", &["demo", "get", "missing"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("(none)"));
+
+    core.dispatch(req("auth.revoke", &[LOCAL_OWNER_SUBJECT, "demo", "kv"]))
+        .unwrap();
+    let err = core
+        .dispatch(req("js-runtime.run", &["demo", "get", "missing"]))
+        .unwrap_err();
+    assert!(err.to_string().contains("undefined"), "{err}");
+}
+
+#[test]
+fn installed_build_resource_without_grant_is_not_installed() {
+    let dir = tempdir().unwrap();
+    let src = write_bundle(
+        dir.path(),
+        "locked-build",
+        r#"{ "id": "locked-build", "name":"Locked Build","runtime":"js","backend":"main.js", "resources": ["build"] }"#,
+        r#"function handle(input) { return String(ctx.resource.build); }"#,
+    );
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req(
+        "app.add",
+        &["locked-build", "Locked Build", "--source", &src],
+    ))
+    .unwrap();
+
+    core.dispatch(req("js-runtime.run", &["locked-build"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("undefined"));
+}
+
+#[test]
 fn build_resource_compiles_typescript_inside_quickjs() {
     let dir = tempdir().unwrap();
     let backend = r#"
@@ -166,6 +230,7 @@ fn build_resource_compiles_typescript_inside_quickjs() {
         &["build-demo", "Build Demo", "--source", &src],
     ))
     .unwrap();
+    grant_resource(&mut core, "build-demo", "build");
 
     let records = core
         .dispatch(req("js-runtime.run", &["build-demo"]))
@@ -198,6 +263,7 @@ fn backend_crdt_writes_use_query_bus_and_working_state() {
         &["crdt-demo", "CRDT Demo", "--source", &src],
     ))
     .unwrap();
+    grant_resource(&mut core, "crdt-demo", "crdt");
 
     let records = core
         .dispatch(req("js-runtime.run", &["crdt-demo"]))
@@ -268,6 +334,7 @@ fn handle_must_return_a_string() {
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["bad", "Bad", "--source", &src]))
         .unwrap();
+    grant_resource(&mut core, "bad", "kv");
     let result = core.dispatch(req("js-runtime.run", &["bad", "go"]));
     assert!(result.is_err(), "non-string handle() return should error");
 }
@@ -307,6 +374,7 @@ fn actions_table_backend_is_synthesized_and_self_describes() {
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["acts", "Acts Demo", "--source", &src]))
         .unwrap();
+    grant_resource(&mut core, "acts", "kv");
 
     // Dispatch works with no hand-written handle; reads see prior writes.
     core.dispatch(req("js-runtime.run", &["acts", "set", "hi", "there"]))
@@ -379,6 +447,7 @@ var actions = {
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["counter", "Counter", "--source", &src]))
         .unwrap();
+    grant_resource(&mut core, "counter", "kv");
 
     core.dispatch(req("js-runtime.run", &["counter", "reset"]))
         .unwrap();
@@ -453,6 +522,7 @@ fn kv_set_with_non_string_arg_gives_attributable_error() {
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["typed", "Typed", "--source", &src]))
         .unwrap();
+    grant_resource(&mut core, "typed", "kv");
 
     // A non-string key aborts the run with a typed error naming the kv call —
     // not a generic rquickjs conversion message — and commits nothing.
@@ -482,6 +552,7 @@ fn manifest_ignores_nested_backend_key() {
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["nested", "Nested", "--source", &src]))
         .unwrap();
+    grant_resource(&mut core, "nested", "kv");
 
     core.dispatch(req("js-runtime.run", &["nested", "set", "a", "1"]))
         .unwrap();
@@ -502,6 +573,7 @@ fn manifest_decodes_string_escapes() {
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["esc", "Esc", "--source", &src]))
         .unwrap();
+    grant_resource(&mut core, "esc", "kv");
 
     core.dispatch(req("js-runtime.run", &["esc", "set", "a", "1"]))
         .unwrap();
@@ -555,6 +627,9 @@ fn runtime_resource_surface_matches_declarations() {
         &["introspect", "Introspect", "--source", &src],
     ))
     .unwrap();
+    for namespace in &namespaces {
+        grant_resource(&mut core, "introspect", namespace);
+    }
     core.dispatch(req("js-runtime.run", &["introspect", "list"]))
         .unwrap();
     let runtime: BTreeSet<String> = core
@@ -593,10 +668,14 @@ fn memory_backend_run_returns_records_for_caller_owned_fold() {
         resources: vec!["kv".to_string()],
     };
 
-    let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
-        "preview-demo",
-        state.clone(),
-    )));
+    let host = RuntimeHostHandle::new(Box::new(
+        RuntimeResourceHost::new_with_temporary_resource_grants(
+            "preview-demo",
+            state.clone(),
+            ExecutionPrincipal::local_owner(),
+            bundle.resources.clone(),
+        ),
+    ));
     let output = run_js_bundle(
         "preview-demo",
         &["set".to_string(), "a".to_string(), "1".to_string()],
@@ -613,6 +692,33 @@ fn memory_backend_run_returns_records_for_caller_owned_fold() {
 
     fold_records_in_memory(&mut state, &records).unwrap();
     assert_eq!(state.kv.data["preview-demo"]["a"], "1");
+}
+
+#[test]
+fn temporary_build_grant_installs_build_for_memory_run() {
+    let state = State::default();
+    let bundle = JsRuntimeBundle {
+        source: r#"
+            function handle(input) {
+                var result = JSON.parse(ctx.resource.build.compileTs("main.ts", "const value: number = 1;"));
+                return result.ok && result.code.indexOf(": number") < 0 ? "compiled" : "bad";
+            }
+        "#
+        .to_string(),
+        name: "Preview Build Demo".to_string(),
+        resources: vec!["build".to_string()],
+    };
+
+    let host = RuntimeHostHandle::new(Box::new(
+        RuntimeResourceHost::new_with_temporary_resource_grants(
+            "preview-build",
+            state,
+            ExecutionPrincipal::local_owner(),
+            bundle.resources.clone(),
+        ),
+    ));
+    let output = run_js_bundle("preview-build", &[], &bundle, host).unwrap();
+    assert_eq!(output, "compiled");
 }
 
 /// The generated `ctx.resource` section between the markers in `docs/APP_API.md`

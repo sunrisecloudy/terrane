@@ -44,6 +44,11 @@ fn sqlite_storage_projection_is_externally_queryable_after_each_kv_operation() {
         &["app", "add", "todo-cli", "Todo CLI", "--source", &src],
     );
     assert!(ok, "app add failed: {err}");
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "todo-cli", "kv"],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     let (ok, out, err) = terrane(
         home,
@@ -163,6 +168,11 @@ fn rocksdb_storage_projection_is_externally_queryable_after_each_kv_operation() 
         &["app", "add", "todo-cli", "Todo CLI", "--source", &src],
     );
     assert!(ok, "app add failed: {err}");
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "todo-cli", "kv"],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     let (ok, out, err) = terrane(
         home,

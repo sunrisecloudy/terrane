@@ -40,13 +40,14 @@ mod planned_docs;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandCtx, Decision, Effect, Error, EventRecord, ExampleDoc,
-    GrantResourceSpec, InternalNote, LimitDoc, ParamDoc, QueryCtx, QueryValue, ReadValue, Request,
-    ResourceDoc, ResourceMethod, ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx,
-    RuntimeHost, RuntimeHostHandle, RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore,
-    NAMESPACE_SELECTOR_SCHEMA_ID,
+    ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, ParamDoc, QueryCtx, QueryValue,
+    ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc, ResourceReadCtx, Result,
+    RuntimeCtx, RuntimeHost, RuntimeHostHandle, RuntimeOutput, RuntimeRequest, SchemaDoc,
+    StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 use terrane_cap_app::AppState;
+use terrane_cap_auth::AuthState;
 use terrane_cap_builder::BuilderState;
 use terrane_cap_crdt::CrdtState;
 use terrane_cap_harness::HarnessState;
@@ -65,6 +66,7 @@ use terrane_cap_replica::ReplicaState;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
     pub app: AppState,
+    pub auth: AuthState,
     pub builder: BuilderState,
     pub harness: HarnessState,
     pub kv: KvState,
@@ -78,6 +80,7 @@ impl StateStore for State {
     fn get(&self, namespace: &str) -> Option<&dyn Any> {
         match namespace {
             "app" => Some(&self.app),
+            "auth" => Some(&self.auth),
             "builder" => Some(&self.builder),
             "harness" => Some(&self.harness),
             "kv" => Some(&self.kv),
@@ -92,6 +95,7 @@ impl StateStore for State {
     fn get_mut(&mut self, namespace: &str) -> Option<&mut dyn Any> {
         match namespace {
             "app" => Some(&mut self.app),
+            "auth" => Some(&mut self.auth),
             "builder" => Some(&mut self.builder),
             "harness" => Some(&mut self.harness),
             "kv" => Some(&mut self.kv),
@@ -360,6 +364,7 @@ impl CapBus for RegistryBus<'_> {
 pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(terrane_cap_app::AppCapability));
+    registry.register(Box::new(terrane_cap_auth::AuthCapability));
     registry.register(Box::new(terrane_cap_build::BuildCapability));
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
@@ -543,19 +548,42 @@ pub fn fold_records_in_memory(state: &mut State, records: &[EventRecord]) -> Res
 /// real log is untouched until core commits the collected records.
 pub struct RuntimeResourceHost {
     app: String,
+    principal: ExecutionPrincipal,
     state: State,
     registry: Registry,
+    temporary_allowed_resources: BTreeSet<String>,
     recorded: Vec<RecordedWrite>,
 }
 
 impl RuntimeResourceHost {
     pub fn new(app: impl Into<String>, base_state: State) -> Self {
+        Self::new_with_principal(app, base_state, ExecutionPrincipal::local_owner())
+    }
+
+    pub fn new_with_principal(
+        app: impl Into<String>,
+        base_state: State,
+        principal: ExecutionPrincipal,
+    ) -> Self {
         Self {
             app: app.into(),
+            principal,
             state: base_state,
             registry: default_registry(),
+            temporary_allowed_resources: BTreeSet::new(),
             recorded: Vec::new(),
         }
+    }
+
+    pub fn new_with_temporary_resource_grants(
+        app: impl Into<String>,
+        base_state: State,
+        principal: ExecutionPrincipal,
+        resources: impl IntoIterator<Item = String>,
+    ) -> Self {
+        let mut host = Self::new_with_principal(app, base_state, principal);
+        host.temporary_allowed_resources = resources.into_iter().collect();
+        host
     }
 }
 
@@ -574,7 +602,18 @@ impl RuntimeHost for RuntimeResourceHost {
                 "{namespace} exposes ctx.resource.{namespace} without grant resource specs"
             )));
         }
-        Ok(manifest.resources)
+        if self.temporary_allowed_resources.contains(namespace)
+            || dev_allow_requested_resources()
+            || terrane_cap_auth::namespace_granted(
+                &self.state,
+                &self.principal,
+                &self.app,
+                namespace,
+            )?
+        {
+            return Ok(manifest.resources);
+        }
+        Ok(Vec::new())
     }
 
     fn read_resource(
@@ -663,6 +702,16 @@ fn coalesce(writes: Vec<RecordedWrite>) -> Vec<EventRecord> {
         .zip(keep)
         .filter_map(|(write, keep)| keep.then_some(write.record))
         .collect()
+}
+
+#[cfg(debug_assertions)]
+fn dev_allow_requested_resources() -> bool {
+    std::env::var("TERRANE_DEV_ALLOW_REQUESTED_RESOURCES").is_ok_and(|value| value == "1")
+}
+
+#[cfg(not(debug_assertions))]
+fn dev_allow_requested_resources() -> bool {
+    false
 }
 
 /// Read every [`EventRecord`] from the log, in order. The log is a flat sequence
@@ -764,6 +813,7 @@ impl<R: EffectRunner> Core<R> {
     pub fn dispatch(&mut self, request: Request) -> Result<Vec<EventRecord>> {
         self.last_output = None;
         let namespace = namespace_of(&request.name)?.to_string();
+        let principal = request.principal.clone();
         let decision = self.decide(request)?;
         match decision {
             Decision::Commit(records) => self.commit(records),
@@ -771,7 +821,7 @@ impl<R: EffectRunner> Core<R> {
                 let records = self.runner.run(&effect, &self.state)?;
                 self.commit(records)
             }
-            Decision::Runtime(request) => self.run_runtime(&namespace, request),
+            Decision::Runtime(request) => self.run_runtime(&namespace, request, principal),
         }
     }
 
@@ -808,6 +858,7 @@ impl<R: EffectRunner> Core<R> {
         &mut self,
         namespace: &str,
         request: RuntimeRequest,
+        principal: ExecutionPrincipal,
     ) -> Result<Vec<EventRecord>> {
         self.last_output = None;
         let app = self
@@ -839,9 +890,10 @@ impl<R: EffectRunner> Core<R> {
             }
             None => None,
         };
-        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
+        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new_with_principal(
             request.app.clone(),
             self.state.clone(),
+            principal,
         )));
         let ctx = RuntimeCtx {
             source,

@@ -7,7 +7,7 @@ use tempfile::tempdir;
 use terrane_cap_interface::{CapBus, Capability, QueryValue, ReadValue, ResourceReadCtx};
 use terrane_core::Core;
 
-use crate::helpers::req;
+use crate::helpers::{grant_resource, req};
 
 struct ReadBus;
 impl CapBus for ReadBus {
@@ -143,6 +143,7 @@ function handle(input) {{
         ],
     ))
     .unwrap();
+    grant_resource(&mut core, "crm", "relational_db");
     core.dispatch(req("js-runtime.run", &["crm", "seed"]))
         .unwrap();
     let output = core.take_last_output().unwrap();

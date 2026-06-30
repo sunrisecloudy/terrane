@@ -44,6 +44,11 @@ fn terrane_host_runs_todo_cli_backend() {
         )
         .0
     );
+    let (ok, _, err) = host(
+        home,
+        &["auth", "grant", "user:local-owner", "todo-cli", "kv"],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     let (ok, out, err) = host(home, &["run", "todo-cli", "add", "buy milk"]);
     assert!(ok, "stderr: {err}");

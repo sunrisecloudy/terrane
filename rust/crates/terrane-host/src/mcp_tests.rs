@@ -305,6 +305,16 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
         "app_register commit: {commit}"
     );
 
+    let grant = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"weak-grant","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"auth.grant","args":["user:local-owner","weak-demo","kv"]}}}"#,
+    )
+    .unwrap();
+    assert!(
+        grant.contains(r#""isError":false"#),
+        "auth.grant weak-demo: {grant}"
+    );
+
     let apps = handle_json_rpc(
         &mut core,
         r#"{"jsonrpc":"2.0","id":28,"method":"tools/call","params":{"name":"list_apps","arguments":{}}}"#,

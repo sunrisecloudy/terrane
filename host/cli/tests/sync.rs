@@ -35,6 +35,7 @@ const APP: &str = "todo-cli-collaborate";
 
 fn install(home: &Path, src: &str) {
     assert!(host(home, &["app", "add", APP, "Todo", "--source", src]).0);
+    assert!(host(home, &["auth", "grant", "user:local-owner", APP, "crdt"]).0);
 }
 
 #[test]

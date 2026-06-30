@@ -4,7 +4,9 @@ use std::path::{Component, Path};
 use nanoserde::{DeJson, SerJson};
 use terrane_cap_app::AppRecord;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
-use terrane_core::{fold_records_in_memory, RuntimeHostHandle, RuntimeResourceHost, State};
+use terrane_core::{
+    fold_records_in_memory, ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost, State,
+};
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["html", "htm", "css", "js", "mjs", "json", "svg"];
 
@@ -185,10 +187,14 @@ impl PreviewStore {
         let mut input = Vec::with_capacity(args.len() + 1);
         input.push(verb.to_string());
         input.extend(args.iter().cloned());
-        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
-            preview.id.clone(),
-            preview.state.clone(),
-        )));
+        let host = RuntimeHostHandle::new(Box::new(
+            RuntimeResourceHost::new_with_temporary_resource_grants(
+                preview.id.clone(),
+                preview.state.clone(),
+                ExecutionPrincipal::local_owner(),
+                preview.bundle.resources.clone(),
+            ),
+        ));
         let output = run_js_bundle(&preview.id, &input, &preview.bundle, host.clone())
             .map_err(|e| e.to_string())?;
         let records = host.take_records();

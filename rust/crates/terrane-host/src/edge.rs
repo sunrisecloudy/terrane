@@ -24,7 +24,7 @@ use terrane_cap_net::fetched_event;
 use terrane_cap_replica::initialized_event;
 use terrane_core::{Effect, EffectRunner};
 use terrane_core::{Error, EventRecord, Result};
-use terrane_core::{RuntimeHostHandle, RuntimeResourceHost};
+use terrane_core::{ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost};
 
 pub struct EdgeRunner;
 
@@ -223,10 +223,14 @@ fn run_harness_js(
             name,
             resources: vec!["kv".to_string(), "build".to_string()],
         };
-        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new(
-            app_id.to_string(),
-            state.clone(),
-        )));
+        let host = RuntimeHostHandle::new(Box::new(
+            RuntimeResourceHost::new_with_temporary_resource_grants(
+                app_id.to_string(),
+                state.clone(),
+                ExecutionPrincipal::local_owner(),
+                bundle.resources.clone(),
+            ),
+        ));
         let output = run_js_bundle(app_id, &[], &bundle, host.clone())?;
         Ok((js, output, host.take_records()))
     })();

@@ -56,6 +56,17 @@ fn terrane_host_runs_collaborative_todo_backend() {
         )
         .0
     );
+    let (ok, _, err) = host(
+        home,
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "todo-cli-collaborate",
+            "crdt",
+        ],
+    );
+    assert!(ok, "auth grant failed: {err}");
 
     // add → list across runs (state persists via recorded crdt.update events).
     let (ok, out, err) = host(home, &["run", "todo-cli-collaborate", "add", "buy milk"]);

@@ -2853,6 +2853,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-auth"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-build"
 version = "0.1.0"
 dependencies = [
@@ -2966,6 +2974,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "terrane-cap-app",
+ "terrane-cap-auth",
  "terrane-cap-build",
  "terrane-cap-builder",
  "terrane-cap-crdt",

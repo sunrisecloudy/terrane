@@ -204,6 +204,13 @@ fn open_host_run_output_free_round_trip() {
         );
         assert_eq!(code, TERRANE_OK, "app.add err: {err:?}");
         assert_eq!(out.as_deref(), Some("app.added"));
+        let (code, _, err) = call(
+            terrane_dispatch,
+            h,
+            "auth.grant",
+            &["user:local-owner", "demo", "kv"],
+        );
+        assert_eq!(code, TERRANE_OK, "auth.grant err: {err:?}");
 
         // Write via the backend, then read items back as JSON.
         let (code, out, err) = call(terrane_host_run, h, "demo", &["set", "x", "1"]);
@@ -257,6 +264,13 @@ fn open_mints_stable_replica_identity_for_crdt_host_writes() {
         );
         assert_eq!(code, TERRANE_OK, "app.add err: {err:?}");
         assert_eq!(out.as_deref(), Some("app.added"));
+        let (code, _, err) = call(
+            terrane_dispatch,
+            h,
+            "auth.grant",
+            &["user:local-owner", "crdt_demo", "crdt"],
+        );
+        assert_eq!(code, TERRANE_OK, "auth.grant err: {err:?}");
 
         let (code, out, err) = call(terrane_host_run, h, "crdt_demo", &["set", "theme", "dark"]);
         assert_eq!(code, TERRANE_OK, "host_run set err: {err:?}");

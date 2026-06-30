@@ -15,6 +15,7 @@ rocksdb-storage = ["terrane-cap-kv/rocksdb-storage"]
 [dependencies]
 terrane-cap-interface.workspace = true
 terrane-cap-app.workspace = true
+terrane-cap-auth.workspace = true
 terrane-cap-build.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true

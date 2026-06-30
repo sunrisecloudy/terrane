@@ -52,6 +52,14 @@ fn install_named(core: &mut Core, id: &str, name: &str) {
     .unwrap();
 }
 
+fn grant_resource(core: &mut Core, app: &str, namespace: &str) {
+    core.dispatch(Request::new(
+        "auth.grant",
+        vec!["user:local-owner".into(), app.into(), namespace.into()],
+    ))
+    .unwrap();
+}
+
 fn copy_dir(src: &Path, dest: &Path) {
     std::fs::create_dir_all(dest).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
@@ -466,8 +474,10 @@ fn serves_catalog_ui_and_invoke_over_http() {
     {
         let mut core = Core::open(home.join("log.bin")).unwrap();
         install(&mut core, "todo"); // has a UI
+        grant_resource(&mut core, "todo", "kv");
         install_from_source(&mut core, "built-react", &built_react); // built React UI
         install(&mut core, "todo-cli-collaborate"); // crdt add/list
+        grant_resource(&mut core, "todo-cli-collaborate", "crdt");
     }
 
     let (mut child, addr) = spawn_web(home);
@@ -935,6 +945,7 @@ fn web_host_serves_every_declared_route() {
     {
         let mut core = Core::open(home.join("log.bin")).unwrap();
         install(&mut core, "todo"); // has a UI, so the UI route resolves
+        grant_resource(&mut core, "todo", "kv");
     }
     let (mut child, addr) = spawn_web(home);
 

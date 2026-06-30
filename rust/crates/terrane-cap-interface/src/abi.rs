@@ -3,12 +3,41 @@ use borsh::{BorshDeserialize, BorshSerialize};
 /// Identifier for a saved app. Caller-supplied and stable.
 pub type AppId = String;
 
+pub const LOCAL_ORG: &str = "local";
+pub const LOCAL_OWNER_SUBJECT: &str = "user:local-owner";
+pub const LOCAL_SOURCE: &str = "local";
+
+/// The authority under which a live runtime request executes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionPrincipal {
+    pub org: String,
+    pub subject: String,
+    pub source: String,
+}
+
+impl ExecutionPrincipal {
+    pub fn local_owner() -> Self {
+        Self {
+            org: LOCAL_ORG.to_string(),
+            subject: LOCAL_OWNER_SUBJECT.to_string(),
+            source: LOCAL_SOURCE.to_string(),
+        }
+    }
+}
+
+impl Default for ExecutionPrincipal {
+    fn default() -> Self {
+        Self::local_owner()
+    }
+}
+
 /// A command as it arrives at the core: a namespaced name like `"app.add"` plus
 /// the caller's argument tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub name: String,
     pub args: Vec<String>,
+    pub principal: ExecutionPrincipal,
 }
 
 impl Request {
@@ -16,7 +45,13 @@ impl Request {
         Request {
             name: name.into(),
             args,
+            principal: ExecutionPrincipal::local_owner(),
         }
+    }
+
+    pub fn with_principal(mut self, principal: ExecutionPrincipal) -> Self {
+        self.principal = principal;
+        self
     }
 }
 

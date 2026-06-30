@@ -11,7 +11,7 @@ use tempfile::tempdir;
 use terrane_core::Core;
 use terrane_core::Error;
 
-use crate::helpers::req;
+use crate::helpers::{grant_resource, req};
 
 #[test]
 fn crdt_map_records_reads_and_replays() {
@@ -199,6 +199,7 @@ fn host_run_drives_crdt_resource_and_replays() {
         &["notes", "Notes", "--source", path(&bundle)],
     ))
     .unwrap();
+    grant_resource(&mut core, "notes", "crdt");
 
     core.dispatch(req("js-runtime.run", &["notes", "set", "theme", "dark"]))
         .unwrap();
