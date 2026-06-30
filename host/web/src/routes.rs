@@ -77,6 +77,18 @@ pub fn route(
         }
         (Method::Get, ["__terrane", "admin", "apps"]) => crate::admin::apps(core),
         (Method::Get, ["__terrane", "admin", "grants"]) => crate::admin::grants(core),
+        (Method::Get, ["__terrane", "admin", "requests"]) => {
+            crate::admin::requests(core, admin_base_url)
+        }
+        (Method::Post, ["__terrane", "admin", "requests", request_id, "approve"]) => {
+            crate::admin::approve_request(core, admin_session, request_id, request, admin_base_url)
+        }
+        (Method::Post, ["__terrane", "admin", "requests", request_id, "deny"]) => {
+            crate::admin::deny_request(core, admin_session, request_id, request, admin_base_url)
+        }
+        (Method::Post, ["__terrane", "admin", "requests", request_id, "cancel"]) => {
+            crate::admin::cancel_request(core, admin_session, request_id, request, admin_base_url)
+        }
         (Method::Post, ["__terrane", "admin", "grants"]) => {
             crate::admin::grant(core, admin_session, request)
         }

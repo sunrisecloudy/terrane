@@ -21,11 +21,20 @@ fn install_kv_app(dir: &std::path::Path) -> terrane_host::HostCore {
         r#"{"id":"demo","name":"Demo","runtime":"js","backend":"main.js","resources":["kv"]}"#,
     )
     .unwrap();
-    fs::write(bundle.join("main.js"), "export function handle() { return ''; }").unwrap();
+    fs::write(
+        bundle.join("main.js"),
+        "export function handle() { return ''; }",
+    )
+    .unwrap();
     let src = bundle.to_str().unwrap().to_string();
 
     let mut core = open_at_log_path(dir.join("log.bin")).unwrap();
-    dispatch_on_core(&mut core, "app.add", &s(&["demo", "Demo", "--source", &src])).unwrap();
+    dispatch_on_core(
+        &mut core,
+        "app.add",
+        &s(&["demo", "Demo", "--source", &src]),
+    )
+    .unwrap();
     core
 }
 
@@ -49,9 +58,16 @@ fn broker_reports_missing_grant_then_none_after_grant() {
     );
 
     // After granting kv: nothing is required.
-    dispatch_on_core(&mut core, "auth.grant", &s(&[LOCAL_OWNER_SUBJECT, "demo", "kv"])).unwrap();
+    dispatch_on_core(
+        &mut core,
+        "auth.grant",
+        &s(&[LOCAL_OWNER_SUBJECT, "demo", "kv"]),
+    )
+    .unwrap();
     assert!(
-        permission_required_for_app(&core, "demo").unwrap().is_none(),
+        permission_required_for_app(&core, "demo")
+            .unwrap()
+            .is_none(),
         "no permission should be required once kv is granted"
     );
 }

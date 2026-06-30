@@ -6,6 +6,13 @@ use crate::http::{header, json_error, json_ok, Resp};
 
 const ADMIN_HTML: &str = include_str!("templates/admin.html");
 const ADMIN_JS: &str = include_str!("js/admin.js");
+type RequestDecisionFn =
+    fn(
+        &mut terrane_host::HostCore,
+        &str,
+        &str,
+        &str,
+    ) -> Result<Option<terrane_host::permission::PermissionRequestView>, String>;
 
 #[derive(Debug, Default)]
 pub struct AdminSessionState {
@@ -64,6 +71,12 @@ struct GrantRequest {
     namespace: String,
     #[nserde(default)]
     subject: String,
+}
+
+#[derive(Debug, Clone, DeJson)]
+struct DecisionRequest {
+    #[nserde(default)]
+    reason: String,
 }
 
 impl AdminSessionState {
@@ -151,6 +164,13 @@ pub fn grants(core: &terrane_host::HostCore) -> Resp {
     json_ok(&AdminGrantsResponse { grants })
 }
 
+pub fn requests(core: &terrane_host::HostCore, admin_base_url: &str) -> Resp {
+    match terrane_host::permission::permission_requests(core, admin_base_url) {
+        Ok(response) => json_ok(&response),
+        Err(e) => json_error(400, &e),
+    }
+}
+
 pub fn grant(
     core: &mut terrane_host::HostCore,
     state: &AdminSessionState,
@@ -185,6 +205,57 @@ pub fn grant(
     }
 }
 
+pub fn approve_request(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    decide_request(
+        core,
+        state,
+        request_id,
+        request,
+        admin_base_url,
+        terrane_host::permission::approve_permission_request,
+    )
+}
+
+pub fn deny_request(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    decide_request(
+        core,
+        state,
+        request_id,
+        request,
+        admin_base_url,
+        terrane_host::permission::deny_permission_request,
+    )
+}
+
+pub fn cancel_request(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    decide_request(
+        core,
+        state,
+        request_id,
+        request,
+        admin_base_url,
+        terrane_host::permission::cancel_permission_request,
+    )
+}
+
 pub fn revoke(
     core: &mut terrane_host::HostCore,
     state: &AdminSessionState,
@@ -215,6 +286,36 @@ pub fn revoke(
             records: outcome.records.len(),
             output: outcome.output,
         }),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn decide_request(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+    decide: RequestDecisionFn,
+) -> Resp {
+    if state.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let reason = if body.trim().is_empty() {
+        String::new()
+    } else {
+        match DecisionRequest::deserialize_json(&body) {
+            Ok(parsed) => parsed.reason,
+            Err(e) => return json_error(400, &format!("bad decision body: {e}")),
+        }
+    };
+    match decide(core, request_id, &reason, admin_base_url) {
+        Ok(Some(view)) => json_ok(&view),
+        Ok(None) => json_error(404, "permission request not found"),
         Err(e) => json_error(400, &e),
     }
 }

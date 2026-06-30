@@ -62,16 +62,10 @@ fn grant(core: &mut terrane_host::HostCore, app: &str, namespace: &str) {
 #[test]
 fn permission_request_ids_distinguish_lossy_tokens() {
     let missing = vec!["kv".to_string()];
-    let colon = terrane_host::permission::permission_request_id(
-        "crm:app",
-        "user:local-owner",
-        &missing,
-    );
-    let slash = terrane_host::permission::permission_request_id(
-        "crm/app",
-        "user:local-owner",
-        &missing,
-    );
+    let colon =
+        terrane_host::permission::permission_request_id("crm:app", "user:local-owner", &missing);
+    let slash =
+        terrane_host::permission::permission_request_id("crm/app", "user:local-owner", &missing);
 
     assert_ne!(colon, slash);
 }
@@ -117,5 +111,106 @@ fn permission_required_is_none_when_requested_resources_are_granted() {
         )
         .unwrap()
         .is_none()
+    );
+}
+
+#[test]
+fn request_permission_persists_pending_and_approve_grants() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    let source = app_fixture(dir.path(), "demo", &["kv"]);
+    let mut core = terrane_host::open_at_home(&home).unwrap();
+    install(&mut core, "demo", &source);
+
+    let required = terrane_host::permission::request_permission_for_app_with_admin_base(
+        &mut core,
+        "demo",
+        "list",
+        "mcp",
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .expect("missing kv should create a request");
+    assert_eq!(required.request_status, "pending");
+
+    let listed =
+        terrane_host::permission::permission_requests(&core, "http://127.0.0.1:49152").unwrap();
+    assert_eq!(listed.requests.len(), 1);
+    assert_eq!(listed.requests[0].request_id, required.request_id);
+    assert_eq!(listed.requests[0].status, "pending");
+
+    let approved = terrane_host::permission::approve_permission_request(
+        &mut core,
+        &required.request_id,
+        "ok",
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(approved.status, "approved");
+    assert!(
+        terrane_host::permission::permission_required_for_app(&core, "demo")
+            .unwrap()
+            .is_none(),
+        "approval should emit normal auth.granted facts"
+    );
+}
+
+#[test]
+fn deny_and_cancel_keep_permission_required() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    let source = app_fixture(dir.path(), "demo", &["kv"]);
+    let mut core = terrane_host::open_at_home(&home).unwrap();
+    install(&mut core, "demo", &source);
+
+    let required = terrane_host::permission::request_permission_for_app_with_admin_base(
+        &mut core,
+        "demo",
+        "list",
+        "mcp",
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .unwrap();
+    let denied = terrane_host::permission::deny_permission_request(
+        &mut core,
+        &required.request_id,
+        "no",
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(denied.status, "denied");
+    assert!(
+        terrane_host::permission::permission_required_for_app(&core, "demo")
+            .unwrap()
+            .is_some()
+    );
+
+    let source = app_fixture(dir.path(), "demo2", &["kv"]);
+    install(&mut core, "demo2", &source);
+    let required = terrane_host::permission::request_permission_for_app_with_admin_base(
+        &mut core,
+        "demo2",
+        "list",
+        "mcp",
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .unwrap();
+    let cancelled = terrane_host::permission::cancel_permission_request(
+        &mut core,
+        &required.request_id,
+        "stale",
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(cancelled.status, "cancelled");
+    assert!(
+        terrane_host::permission::permission_required_for_app(&core, "demo2")
+            .unwrap()
+            .is_some()
     );
 }

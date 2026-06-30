@@ -6,9 +6,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
     CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec,
-    ExecutionPrincipal, ReadValue, ResourceReadCtx, Result, StateStore, LOCAL_OWNER_SUBJECT,
-    LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
+    EventSpec, ExecutionPrincipal, ReadValue, ResourceReadCtx, Result, StateStore,
+    LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 mod doc;
@@ -16,10 +15,12 @@ mod doc;
 mod tests;
 
 const DEFAULT_VERBS: &[&str] = &["read", "write"];
+const READ_ONLY_VERBS: &[&str] = &["read"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthState {
     pub grants: BTreeMap<String, AuthGrant>,
+    pub permission_requests: BTreeMap<String, AuthPermissionRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +36,31 @@ pub struct AuthGrant {
     pub verbs: Vec<String>,
     pub granted_by: String,
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct AuthPermissionResource {
+    pub namespace: String,
+    pub selector_schema_id: String,
+    pub selector_id: String,
+    pub selector_json: String,
+    pub resource_id: String,
+    pub verbs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthPermissionRequest {
+    pub request_id: String,
+    pub org: String,
+    pub subject: String,
+    pub app: String,
+    pub operation: String,
+    pub source: String,
+    pub resources: Vec<AuthPermissionResource>,
+    pub status: String,
+    pub decided_by: String,
+    pub decision_reason: String,
+    pub decision_source: String,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -62,6 +88,25 @@ struct Revoked {
     source: String,
 }
 
+#[derive(BorshSerialize, BorshDeserialize)]
+struct PermissionRequested {
+    request_id: String,
+    org: String,
+    subject: String,
+    app: String,
+    operation: String,
+    source: String,
+    resources: Vec<AuthPermissionResource>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct PermissionDecision {
+    request_id: String,
+    decided_by: String,
+    reason: String,
+    source: String,
+}
+
 pub struct AuthCapability;
 
 impl Capability for AuthCapability {
@@ -76,6 +121,18 @@ impl Capability for AuthCapability {
                 CommandSpec {
                     name: "auth.revoke",
                 },
+                CommandSpec {
+                    name: "auth.permission.request",
+                },
+                CommandSpec {
+                    name: "auth.permission.approve",
+                },
+                CommandSpec {
+                    name: "auth.permission.deny",
+                },
+                CommandSpec {
+                    name: "auth.permission.cancel",
+                },
             ],
             events: vec![
                 EventSpec {
@@ -83,6 +140,18 @@ impl Capability for AuthCapability {
                 },
                 EventSpec {
                     kind: "auth.revoked",
+                },
+                EventSpec {
+                    kind: "auth.permission.requested",
+                },
+                EventSpec {
+                    kind: "auth.permission.approved",
+                },
+                EventSpec {
+                    kind: "auth.permission.denied",
+                },
+                EventSpec {
+                    kind: "auth.permission.cancelled",
                 },
             ],
             queries: Vec::new(),
@@ -102,6 +171,10 @@ impl Capability for AuthCapability {
         match name {
             "auth.grant" => decide_grant(ctx, args),
             "auth.revoke" => decide_revoke(ctx, args),
+            "auth.permission.request" => decide_permission_request(ctx, args),
+            "auth.permission.approve" => decide_permission_approve(ctx, args),
+            "auth.permission.deny" => decide_permission_decision(ctx, args, "denied"),
+            "auth.permission.cancel" => decide_permission_decision(ctx, args, "cancelled"),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }
@@ -124,6 +197,18 @@ impl Capability for AuthCapability {
                     e.subject, e.resource_id, e.app
                 )
             }),
+            "auth.permission.requested" => decode_event::<PermissionRequested>(record)
+                .ok()
+                .map(|e| format!("permission request {} for app {}", e.request_id, e.app)),
+            "auth.permission.approved" => decode_event::<PermissionDecision>(record)
+                .ok()
+                .map(|e| format!("approved permission request {}", e.request_id)),
+            "auth.permission.denied" => decode_event::<PermissionDecision>(record)
+                .ok()
+                .map(|e| format!("denied permission request {}", e.request_id)),
+            "auth.permission.cancelled" => decode_event::<PermissionDecision>(record)
+                .ok()
+                .map(|e| format!("cancelled permission request {}", e.request_id)),
             _ => None,
         }
     }
@@ -151,10 +236,7 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
 
     let verbs = match args.get(3) {
         Some(raw) => parse_verbs(raw)?,
-        None => DEFAULT_VERBS
-            .iter()
-            .map(|verb| (*verb).to_string())
-            .collect(),
+        None => default_verbs_for_namespace(&namespace),
     };
     let resource_id = namespace_resource_id(&namespace);
     let key = grant_key(
@@ -218,12 +300,162 @@ fn decide_revoke(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     })?]))
 }
 
+fn decide_permission_request(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let request_id = non_empty(arg(args, 0, "request_id")?, "request_id")?;
+    let subject = non_empty(arg(args, 1, "subject")?, "subject")?;
+    let app = non_empty(arg(args, 2, "app")?, "app")?;
+    let operation = non_empty(arg(args, 3, "operation")?, "operation")?;
+    let source = non_empty(arg(args, 4, "source")?, "source")?;
+    let namespaces = parse_namespaces(&arg(args, 5, "resources")?)?;
+    ensure_app_exists(ctx.bus, &app)?;
+    validate_segment_input("request_id", &request_id)?;
+    validate_segment_input("subject", &subject)?;
+    validate_segment_input("app", &app)?;
+    validate_segment_input("operation", &operation)?;
+    validate_segment_input("source", &source)?;
+    if state_ref::<AuthState>(ctx.state, "auth")?
+        .permission_requests
+        .contains_key(&request_id)
+    {
+        return Ok(Decision::Commit(Vec::new()));
+    }
+
+    let resources = namespaces
+        .into_iter()
+        .map(permission_resource)
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Decision::Commit(vec![permission_requested_event(
+        PermissionRequested {
+            request_id,
+            org: terrane_cap_interface::LOCAL_ORG.to_string(),
+            subject,
+            app,
+            operation,
+            source,
+            resources,
+        },
+    )?]))
+}
+
+fn decide_permission_approve(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let request_id = non_empty(arg(args, 0, "request_id")?, "request_id")?;
+    let reason = args.get(1).cloned().unwrap_or_default();
+    let request = match state_ref::<AuthState>(ctx.state, "auth")?
+        .permission_requests
+        .get(&request_id)
+    {
+        Some(request) => request.clone(),
+        None => {
+            return Err(Error::InvalidInput(format!(
+                "unknown permission request: {request_id}"
+            )))
+        }
+    };
+    if request.status == "approved" {
+        return Ok(Decision::Commit(Vec::new()));
+    }
+    if request.status != "pending" {
+        return Err(Error::InvalidInput(format!(
+            "permission request {request_id} is {}",
+            request.status
+        )));
+    }
+
+    let mut records = Vec::new();
+    let grants = &state_ref::<AuthState>(ctx.state, "auth")?.grants;
+    for resource in &request.resources {
+        let key = grant_key(
+            &request.org,
+            &request.subject,
+            &request.app,
+            &resource.resource_id,
+        );
+        if grants.contains_key(&key) {
+            continue;
+        }
+        records.push(granted_event(Granted {
+            org: request.org.clone(),
+            subject: request.subject.clone(),
+            app: request.app.clone(),
+            namespace: resource.namespace.clone(),
+            selector_schema_id: resource.selector_schema_id.clone(),
+            selector_id: resource.selector_id.clone(),
+            selector_json: resource.selector_json.clone(),
+            resource_id: resource.resource_id.clone(),
+            verbs: resource.verbs.clone(),
+            granted_by: LOCAL_OWNER_SUBJECT.to_string(),
+            source: LOCAL_SOURCE.to_string(),
+        })?);
+    }
+    records.push(permission_decision_event(
+        "auth.permission.approved",
+        PermissionDecision {
+            request_id,
+            decided_by: LOCAL_OWNER_SUBJECT.to_string(),
+            reason,
+            source: LOCAL_SOURCE.to_string(),
+        },
+    )?);
+    Ok(Decision::Commit(records))
+}
+
+fn decide_permission_decision(
+    ctx: CommandCtx<'_>,
+    args: &[String],
+    status: &str,
+) -> Result<Decision> {
+    let request_id = non_empty(arg(args, 0, "request_id")?, "request_id")?;
+    let reason = args.get(1).cloned().unwrap_or_default();
+    let request = match state_ref::<AuthState>(ctx.state, "auth")?
+        .permission_requests
+        .get(&request_id)
+    {
+        Some(request) => request,
+        None => {
+            return Err(Error::InvalidInput(format!(
+                "unknown permission request: {request_id}"
+            )))
+        }
+    };
+    if request.status == status {
+        return Ok(Decision::Commit(Vec::new()));
+    }
+    if request.status != "pending" {
+        return Err(Error::InvalidInput(format!(
+            "permission request {request_id} is {}",
+            request.status
+        )));
+    }
+    let kind = match status {
+        "denied" => "auth.permission.denied",
+        "cancelled" => "auth.permission.cancelled",
+        _ => return Err(Error::InvalidInput(format!("bad request status: {status}"))),
+    };
+    Ok(Decision::Commit(vec![permission_decision_event(
+        kind,
+        PermissionDecision {
+            request_id,
+            decided_by: LOCAL_OWNER_SUBJECT.to_string(),
+            reason,
+            source: LOCAL_SOURCE.to_string(),
+        },
+    )?]))
+}
+
 fn granted_event(event: Granted) -> Result<EventRecord> {
     encode_event("auth.granted", &event)
 }
 
 fn revoked_event(event: Revoked) -> Result<EventRecord> {
     encode_event("auth.revoked", &event)
+}
+
+fn permission_requested_event(event: PermissionRequested) -> Result<EventRecord> {
+    encode_event("auth.permission.requested", &event)
+}
+
+fn permission_decision_event(kind: &str, event: PermissionDecision) -> Result<EventRecord> {
+    encode_event(kind, &event)
 }
 
 fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
@@ -253,13 +485,65 @@ fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
             let key = grant_key(&event.org, &event.subject, &event.app, &event.resource_id);
             state_mut::<AuthState>(state, "auth")?.grants.remove(&key);
         }
+        "auth.permission.requested" => {
+            let event: PermissionRequested = decode_event(record)?;
+            let key = event.request_id.clone();
+            state_mut::<AuthState>(state, "auth")?
+                .permission_requests
+                .insert(
+                    key,
+                    AuthPermissionRequest {
+                        request_id: event.request_id,
+                        org: event.org,
+                        subject: event.subject,
+                        app: event.app,
+                        operation: event.operation,
+                        source: event.source,
+                        resources: event.resources,
+                        status: "pending".to_string(),
+                        decided_by: String::new(),
+                        decision_reason: String::new(),
+                        decision_source: String::new(),
+                    },
+                );
+        }
+        "auth.permission.approved" => {
+            let event: PermissionDecision = decode_event(record)?;
+            set_permission_status(state, event, "approved")?;
+        }
+        "auth.permission.denied" => {
+            let event: PermissionDecision = decode_event(record)?;
+            set_permission_status(state, event, "denied")?;
+        }
+        "auth.permission.cancelled" => {
+            let event: PermissionDecision = decode_event(record)?;
+            set_permission_status(state, event, "cancelled")?;
+        }
         "app.removed" => {
             let event = decode_app_removed(record)?;
-            state_mut::<AuthState>(state, "auth")?
-                .grants
-                .retain(|_, grant| grant.app != event.id);
+            let auth = state_mut::<AuthState>(state, "auth")?;
+            auth.grants.retain(|_, grant| grant.app != event.id);
+            auth.permission_requests
+                .retain(|_, request| request.app != event.id);
         }
         _ => {}
+    }
+    Ok(())
+}
+
+fn set_permission_status(
+    state: &mut dyn StateStore,
+    event: PermissionDecision,
+    status: &str,
+) -> Result<()> {
+    if let Some(request) = state_mut::<AuthState>(state, "auth")?
+        .permission_requests
+        .get_mut(&event.request_id)
+    {
+        request.status = status.to_string();
+        request.decided_by = event.decided_by;
+        request.decision_reason = event.reason;
+        request.decision_source = event.source;
     }
     Ok(())
 }
@@ -279,6 +563,26 @@ pub fn namespace_granted(
 
 pub fn namespace_resource_id(namespace: &str) -> String {
     namespace.to_string()
+}
+
+pub fn permission_request(
+    state: &dyn StateStore,
+    request_id: &str,
+) -> Result<Option<AuthPermissionRequest>> {
+    Ok(state_ref::<AuthState>(state, "auth")?
+        .permission_requests
+        .get(request_id)
+        .cloned())
+}
+
+pub fn permission_requests(state: &dyn StateStore) -> Result<Vec<AuthPermissionRequest>> {
+    let mut requests = state_ref::<AuthState>(state, "auth")?
+        .permission_requests
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    requests.sort_by(|a, b| a.request_id.cmp(&b.request_id));
+    Ok(requests)
 }
 
 pub fn grant_key(org: &str, subject: &str, app: &str, resource_id: &str) -> String {
@@ -364,6 +668,45 @@ fn parse_verbs(raw: &str) -> Result<Vec<String>> {
         }
     }
     Ok(verbs)
+}
+
+fn parse_namespaces(raw: &str) -> Result<Vec<String>> {
+    let mut namespaces = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|namespace| !namespace.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    namespaces.sort();
+    namespaces.dedup();
+    if namespaces.is_empty() {
+        return Err(Error::InvalidInput(
+            "permission request resources must not be empty".into(),
+        ));
+    }
+    for namespace in &namespaces {
+        validate_segment_input("namespace", namespace)?;
+    }
+    Ok(namespaces)
+}
+
+fn permission_resource(namespace: String) -> Result<AuthPermissionResource> {
+    Ok(AuthPermissionResource {
+        namespace: namespace.clone(),
+        selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
+        selector_id: String::new(),
+        selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(&namespace)),
+        resource_id: namespace_resource_id(&namespace),
+        verbs: default_verbs_for_namespace(&namespace),
+    })
+}
+
+fn default_verbs_for_namespace(namespace: &str) -> Vec<String> {
+    let verbs = match namespace {
+        "build" => READ_ONLY_VERBS,
+        _ => DEFAULT_VERBS,
+    };
+    verbs.iter().map(|verb| (*verb).to_string()).collect()
 }
 
 fn hex(n: u8) -> char {

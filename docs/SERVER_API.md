@@ -84,6 +84,9 @@ Tools:
 | `list_apps`          | `{}`                                             | the installed apps (id, name, has_ui)                      |
 | `app_actions`        | `{ app }`                                        | the app's actions (verbs + args), as the app declares them |
 | `invoke`             | `{ app, verb, args[] }`                          | the backend's output string                                |
+| `permission_check`   | `{ requestId }`                                  | a permission request's status and admin URL                |
+| `permission_cancel`  | `{ requestId, reason? }`                         | cancel a pending request without granting access           |
+| `permission_requests` | `{}`                                            | local permission requests and statuses                     |
 | `capabilities_list`  | `{ includeInternal? }`                           | capability namespaces, statuses, and short summaries       |
 | `capability_info`    | `{ namespace, format?, includeInternal? }`       | one capability's docs as `json`, `markdown`, or `skill`    |
 | `capability_query`   | `{ capability, query, args[] }`                  | a read-only capability query result as JSON text           |

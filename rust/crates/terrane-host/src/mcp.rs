@@ -12,7 +12,8 @@ use terrane_api::{
     mcp_prompts, mcp_resource_templates, mcp_resources, mcp_tools, MCP_PROTOCOL_VERSION,
     TOOL_APP_ACTIONS, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER,
     TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND,
-    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_WORKFLOWS_LIST,
+    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS,
+    TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
     TOOL_WORKFLOW_INFO,
 };
 use terrane_core::QueryValue;
@@ -560,6 +561,61 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
                     tool_json(id, &required.serialize_json(), true)
                 }
                 Err(crate::InvokeFailure::Other(e)) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_PERMISSION_CHECK => {
+            let args = match args_object(TOOL_PERMISSION_CHECK, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let request_id = match required_string(args, "requestId", TOOL_PERMISSION_CHECK) {
+                Ok(request_id) => request_id,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match crate::permission::permission_request_view(
+                core,
+                &request_id,
+                crate::permission::DEFAULT_ADMIN_BASE_URL,
+            ) {
+                Ok(Some(view)) => tool_json(id, &view.serialize_json(), false),
+                Ok(None) => tool_text(id, "permission request not found", true),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_PERMISSION_CANCEL => {
+            let args = match args_object(TOOL_PERMISSION_CANCEL, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let request_id = match required_string(args, "requestId", TOOL_PERMISSION_CANCEL) {
+                Ok(request_id) => request_id,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let reason = match optional_string(args, "reason", TOOL_PERMISSION_CANCEL) {
+                Ok(reason) => reason,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match crate::permission::cancel_permission_request(
+                core,
+                &request_id,
+                &reason,
+                crate::permission::DEFAULT_ADMIN_BASE_URL,
+            ) {
+                Ok(Some(view)) => tool_json(id, &view.serialize_json(), false),
+                Ok(None) => tool_text(id, "permission request not found", true),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_PERMISSION_REQUESTS => {
+            match args_object(TOOL_PERMISSION_REQUESTS, &params.arguments) {
+                Ok(_) => match crate::permission::permission_requests(
+                    core,
+                    crate::permission::DEFAULT_ADMIN_BASE_URL,
+                ) {
+                    Ok(response) => tool_json(id, &response.serialize_json(), false),
+                    Err(e) => tool_text(id, &e, true),
+                },
+                Err(e) => tool_text(id, &e, true),
             }
         }
         TOOL_CAPABILITIES_LIST => {
@@ -2019,6 +2075,9 @@ fn tool_call_example(tool: &str) -> String {
         TOOL_APP_REGISTER => json!({"source": "/path/to/bundle", "dryRun": true}),
         TOOL_APP_ACTIONS => json!({"app": "APP_ID"}),
         TOOL_INVOKE => json!({"app": "APP_ID", "verb": "read", "args": []}),
+        TOOL_PERMISSION_CHECK => json!({"requestId": "REQUEST_ID"}),
+        TOOL_PERMISSION_CANCEL => json!({"requestId": "REQUEST_ID", "reason": "not needed"}),
+        TOOL_PERMISSION_REQUESTS => json!({}),
         TOOL_CAPABILITIES_LIST => json!({}),
         TOOL_CAPABILITY_INFO => json!({"namespace": "app", "format": "json"}),
         TOOL_CAPABILITY_QUERY => {

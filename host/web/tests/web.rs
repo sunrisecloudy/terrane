@@ -942,6 +942,14 @@ fn admin_can_grant_missing_app_resource() {
             && body.contains(&format!("http://{addr}/__terrane/admin/requests/")),
         "permission body: {body}"
     );
+    let request_id = json_string_field(&body, "requestId");
+
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/requests", None);
+    assert_eq!(status, 200, "admin requests: {body}");
+    assert!(
+        body.contains(&request_id) && body.contains(r#""status":"pending"#),
+        "pending request should be listed: {body}"
+    );
 
     let (status, body) = http(&addr, "POST", "/__terrane/admin/local/lock", None);
     assert_eq!(status, 200, "admin lock: {body}");
@@ -955,20 +963,29 @@ fn admin_can_grant_missing_app_resource() {
     );
     assert_eq!(status, 403, "locked admin grant should fail: {body}");
 
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/admin/requests/{request_id}/approve"),
+        Some(r#"{"reason":"locked"}"#),
+    );
+    assert_eq!(status, 403, "locked admin approve should fail: {body}");
+
     let (status, body) = http(&addr, "POST", "/__terrane/admin/local/unlock", None);
     assert_eq!(status, 200, "admin unlock: {body}");
-    assert!(
-        body.contains(r#""locked":false"#),
-        "admin unlock: {body}"
-    );
+    assert!(body.contains(r#""locked":false"#), "admin unlock: {body}");
 
     let (status, body) = http(
         &addr,
         "POST",
-        "/__terrane/admin/grants",
-        Some(r#"{"app":"todo","namespace":"kv"}"#),
+        &format!("/__terrane/admin/requests/{request_id}/approve"),
+        Some(r#"{"reason":"ok"}"#),
     );
-    assert_eq!(status, 200, "admin grant: {body}");
+    assert_eq!(status, 200, "admin approve: {body}");
+    assert!(
+        body.contains(r#""status":"approved"#),
+        "admin approve: {body}"
+    );
 
     let (status, body) = http(
         &addr,
@@ -1018,7 +1035,10 @@ fn admin_can_grant_missing_app_resource() {
         "/apps/todo/invoke",
         Some(r#"{"verb":"list","args":[]}"#),
     );
-    assert_eq!(status, 403, "invoke after revoke should need permission: {body}");
+    assert_eq!(
+        status, 403,
+        "invoke after revoke should need permission: {body}"
+    );
 
     let _ = child.kill();
     let _ = child.wait();

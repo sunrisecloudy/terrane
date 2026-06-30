@@ -2,6 +2,7 @@ const state = {
   view: "apps",
   apps: [],
   grants: [],
+  requests: [],
   session: null,
 };
 
@@ -28,14 +29,16 @@ lockButton.addEventListener("click", async () => {
 });
 
 async function refresh() {
-  const [session, apps, grants] = await Promise.all([
+  const [session, apps, grants, requests] = await Promise.all([
     fetchJson("/__terrane/admin/session"),
     fetchJson("/__terrane/admin/apps"),
     fetchJson("/__terrane/admin/grants"),
+    fetchJson("/__terrane/admin/requests"),
   ]);
   state.session = session;
   state.apps = apps.apps || [];
   state.grants = grants.grants || [];
+  state.requests = requests.requests || [];
   render();
 }
 
@@ -144,10 +147,65 @@ function renderGrants() {
 function renderRequests() {
   const requestId = location.pathname.split("/").pop();
   if (location.pathname.includes("/requests/") && requestId) {
-    content.replaceChildren(muted(`Request ${requestId}`));
-    return;
+    const request = state.requests.find((item) => item.requestId === requestId);
+    if (request) {
+      content.replaceChildren(requestTable([request]));
+      return;
+    }
   }
-  content.replaceChildren(muted("No pending requests"));
+  content.replaceChildren(state.requests.length ? requestTable(state.requests) : muted("No requests"));
+}
+
+function requestTable(requests) {
+  const table = document.createElement("table");
+  table.innerHTML = "<thead><tr><th>Request</th><th>App</th><th>Resources</th><th>Status</th><th>Actions</th></tr></thead>";
+  const body = document.createElement("tbody");
+  for (const request of requests) {
+    const row = document.createElement("tr");
+    row.append(cell(request.requestId, request.subject));
+    row.append(cell(request.app, request.operation));
+    const resourceCell = document.createElement("td");
+    const tokens = document.createElement("div");
+    tokens.className = "tokens";
+    for (const resource of request.resources || []) {
+      const token = document.createElement("span");
+      token.className = "token missing";
+      token.textContent = `${resource.namespace} ${resource.verbs.join("/")}`;
+      tokens.append(token);
+    }
+    resourceCell.append(tokens);
+    row.append(resourceCell);
+    row.append(cell(request.status, request.decisionReason || ""));
+    const actions = document.createElement("td");
+    if (request.status === "pending") {
+      for (const [label, action, className] of [
+        ["Approve", "approve", "primary"],
+        ["Deny", "deny", ""],
+        ["Cancel", "cancel", ""],
+      ]) {
+        const button = document.createElement("button");
+        button.textContent = label;
+        button.className = className;
+        button.disabled = Boolean(state.session && state.session.locked);
+        button.addEventListener("click", async () => {
+          button.disabled = true;
+          await fetchJson(`/__terrane/admin/requests/${encodeURIComponent(request.requestId)}/${action}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ reason: action }),
+          });
+          await refresh();
+        });
+        actions.append(button);
+      }
+    } else {
+      actions.append(muted(request.decidedBy || "Resolved"));
+    }
+    row.append(actions);
+    body.append(row);
+  }
+  table.append(body);
+  return table;
 }
 
 function cell(primary, secondary) {

@@ -17,7 +17,7 @@
 use nanoserde::{DeJson, SerJson};
 
 /// Version of *this* host API surface. Bumped when a route/tool/shape changes.
-pub const CONTRACT_VERSION: &str = "0.5.0";
+pub const CONTRACT_VERSION: &str = "0.6.0";
 
 /// The MCP protocol revision the MCP host speaks in its `initialize` handshake.
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -107,6 +107,12 @@ pub const TOOL_LIST_APPS: &str = "list_apps";
 pub const TOOL_APP_ACTIONS: &str = "app_actions";
 /// MCP tool: run a verb on an app (so an agent can *act* on it).
 pub const TOOL_INVOKE: &str = "invoke";
+/// MCP tool: check the status of a permission request.
+pub const TOOL_PERMISSION_CHECK: &str = "permission_check";
+/// MCP tool: cancel a pending permission request created by this host.
+pub const TOOL_PERMISSION_CANCEL: &str = "permission_cancel";
+/// MCP tool: list permission requests visible to the local admin surface.
+pub const TOOL_PERMISSION_REQUESTS: &str = "permission_requests";
 /// MCP tool: list guided workflows for weaker/blank-context clients.
 pub const TOOL_WORKFLOWS_LIST: &str = "workflows_list";
 /// MCP tool: return exact MCP-call recipes for one guided workflow.
@@ -223,6 +229,21 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             description: "Run a verb on an app's backend and return its string output, \
                           e.g. {\"app\":\"todo-cli-collaborate\",\"verb\":\"add\",\"args\":[\"buy milk\"]}.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"},"verb":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app","verb"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_PERMISSION_CHECK,
+            description: "Check a permission request returned by app_actions or invoke. Use the requestId from a permission_required response.",
+            input_schema: r#"{"type":"object","properties":{"requestId":{"type":"string","description":"Permission request id returned by permission_required."}},"required":["requestId"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_PERMISSION_CANCEL,
+            description: "Cancel a pending permission request. This does not grant access; approval remains a trusted admin UI action.",
+            input_schema: r#"{"type":"object","properties":{"requestId":{"type":"string","description":"Permission request id returned by permission_required."},"reason":{"type":"string","description":"Optional cancellation reason."}},"required":["requestId"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_PERMISSION_REQUESTS,
+            description: "List local permission requests and their pending/approved/denied/cancelled status.",
+            input_schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_CAPABILITIES_LIST,

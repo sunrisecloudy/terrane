@@ -1,5 +1,18 @@
 use super::{handle_json_rpc, json_string_value, top_level_fields};
 
+fn response_json_field(raw: &str, field: &str) -> String {
+    let key = format!(r#""{field}":""#);
+    let start = raw
+        .find(&key)
+        .unwrap_or_else(|| panic!("missing field {field} in {raw}"))
+        + key.len();
+    let rest = &raw[start..];
+    let end = rest
+        .find('"')
+        .unwrap_or_else(|| panic!("unterminated field {field} in {raw}"));
+    rest[..end].to_string()
+}
+
 #[test]
 fn top_level_parser_ignores_nested_ids() {
     let raw = r#"{"jsonrpc":"2.0","method":"ping","params":{"item":{"id":555}},"id":8}"#;
@@ -196,6 +209,12 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
             && tools.contains("app_register"),
         "tools/list: {tools}"
     );
+    assert!(
+        tools.contains("permission_check")
+            && tools.contains("permission_cancel")
+            && tools.contains("permission_requests"),
+        "tools/list permission tools: {tools}"
+    );
 
     let direct_tool_mistake = handle_json_rpc(
         &mut core,
@@ -311,8 +330,48 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
     )
     .unwrap();
     assert!(
-        denied_actions.contains("permission_required") && denied_actions.contains("adminUrl"),
+        denied_actions.contains("permission_required")
+            && denied_actions.contains("adminUrl")
+            && denied_actions.contains(r#""requestStatus":"pending"#)
+            && denied_actions.contains("permission_check"),
         "app_actions should return structured permission request: {denied_actions}"
+    );
+    let request_id = response_json_field(&denied_actions, "requestId");
+
+    let request_check = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"weak-permission-check","method":"tools/call","params":{{"name":"permission_check","arguments":{{"requestId":{}}}}}}}"#,
+            super::json_str(&request_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        request_check.contains(r#""status":"pending"#) && request_check.contains("weak-demo"),
+        "permission_check: {request_check}"
+    );
+
+    let requests = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"weak-permission-list","method":"tools/call","params":{"name":"permission_requests","arguments":{}}}"#,
+    )
+    .unwrap();
+    assert!(
+        requests.contains(&request_id) && requests.contains(r#""status":"pending"#),
+        "permission_requests: {requests}"
+    );
+
+    let cancel = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"weak-permission-cancel","method":"tools/call","params":{{"name":"permission_cancel","arguments":{{"requestId":{},"reason":"test"}}}}}}"#,
+            super::json_str(&request_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        cancel.contains(r#""status":"cancelled"#),
+        "permission_cancel: {cancel}"
     );
 
     let grant = handle_json_rpc(

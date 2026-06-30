@@ -256,9 +256,15 @@ pub fn invoke_app_input_checked_with_admin_base(
     if !core.state().app.apps.contains_key(app) {
         return Err(InvokeFailure::Other(format!("no such app: {app}")));
     }
-    if let Some(required) =
-        permission::permission_required_for_app_with_admin_base(core, app, admin_base_url)
-            .map_err(InvokeFailure::Other)?
+    let operation = input.first().map(String::as_str).unwrap_or("invoke");
+    if let Some(required) = permission::request_permission_for_app_with_admin_base(
+        core,
+        app,
+        operation,
+        "host",
+        admin_base_url,
+    )
+    .map_err(InvokeFailure::Other)?
     {
         return Err(InvokeFailure::PermissionRequired(Box::new(required)));
     }

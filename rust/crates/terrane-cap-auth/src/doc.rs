@@ -16,9 +16,23 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             "agent".to_string(),
         ],
         manifest: CapabilityManifestDoc {
-            commands: vec!["auth.grant".to_string(), "auth.revoke".to_string()],
+            commands: vec![
+                "auth.grant".to_string(),
+                "auth.revoke".to_string(),
+                "auth.permission.request".to_string(),
+                "auth.permission.approve".to_string(),
+                "auth.permission.deny".to_string(),
+                "auth.permission.cancel".to_string(),
+            ],
             queries: Vec::new(),
-            events: vec!["auth.granted".to_string(), "auth.revoked".to_string()],
+            events: vec![
+                "auth.granted".to_string(),
+                "auth.revoked".to_string(),
+                "auth.permission.requested".to_string(),
+                "auth.permission.approved".to_string(),
+                "auth.permission.denied".to_string(),
+                "auth.permission.cancelled".to_string(),
+            ],
             subscriptions: vec!["app.removed".to_string()],
             resource_methods: Vec::new(),
         },
@@ -48,6 +62,54 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             )
             .with_errors(&["missing subject", "missing app", "missing namespace", "unknown app"])
             .with_emits(&["auth.revoked"]),
+            command_doc(
+                "auth.permission.request",
+                &[
+                    param("request_id", "Stable permission request id.", "string"),
+                    param("subject", "Subject needing access.", "subject_id"),
+                    param("app", "App id the request applies to.", "app_id"),
+                    param("operation", "Requested operation, such as __actions__ or list.", "string"),
+                    param("source", "Host adapter that created the request.", "string"),
+                    param("resources", "Comma-separated namespace.v1 resources.", "csv"),
+                ],
+                "commit",
+                "Record an idempotent pending app permission request.",
+            )
+            .with_errors(&["missing request_id", "missing app", "unknown app"])
+            .with_emits(&["auth.permission.requested"]),
+            command_doc(
+                "auth.permission.approve",
+                &[
+                    param("request_id", "Permission request id.", "string"),
+                    param("reason", "Optional decision reason.", "string"),
+                ],
+                "commit",
+                "Approve a pending request and emit normal auth.granted facts.",
+            )
+            .with_errors(&["unknown request", "request not pending"])
+            .with_emits(&["auth.granted", "auth.permission.approved"]),
+            command_doc(
+                "auth.permission.deny",
+                &[
+                    param("request_id", "Permission request id.", "string"),
+                    param("reason", "Optional decision reason.", "string"),
+                ],
+                "commit",
+                "Deny a pending request without granting runtime access.",
+            )
+            .with_errors(&["unknown request", "request not pending"])
+            .with_emits(&["auth.permission.denied"]),
+            command_doc(
+                "auth.permission.cancel",
+                &[
+                    param("request_id", "Permission request id.", "string"),
+                    param("reason", "Optional cancellation reason.", "string"),
+                ],
+                "commit",
+                "Cancel a pending request without granting runtime access.",
+            )
+            .with_errors(&["unknown request", "request not pending"])
+            .with_emits(&["auth.permission.cancelled"]),
         ],
         queries: Vec::new(),
         events: vec![
@@ -71,6 +133,30 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
                 ],
                 "Durable fact that removes a previously folded grant.",
             ),
+            event_doc(
+                "auth.permission.requested",
+                &[
+                    param("request_id", "Stable request id.", "string"),
+                    param("subject", "Subject needing access.", "subject_id"),
+                    param("app", "App id.", "app_id"),
+                ],
+                "Durable pending permission request workflow fact.",
+            ),
+            event_doc(
+                "auth.permission.approved",
+                &[param("request_id", "Stable request id.", "string")],
+                "Durable request approval fact; grants are emitted separately as auth.granted.",
+            ),
+            event_doc(
+                "auth.permission.denied",
+                &[param("request_id", "Stable request id.", "string")],
+                "Durable request denial fact.",
+            ),
+            event_doc(
+                "auth.permission.cancelled",
+                &[param("request_id", "Stable request id.", "string")],
+                "Durable request cancellation fact.",
+            ),
         ],
         resources: Vec::<ResourceDoc>::new(),
         schemas: Vec::<SchemaDoc>::new(),
@@ -89,6 +175,8 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
                 .to_string(),
             "The v1 gate is namespace-level and does not enforce descriptive verbs.".to_string(),
             "Folding app.removed removes grants scoped to the removed app.".to_string(),
+            "Approving a permission request emits ordinary auth.granted facts; deny/cancel never grant access."
+                .to_string(),
             "Authorization is checked only during live runtime resource installation, never during fold/replay."
                 .to_string(),
         ],
