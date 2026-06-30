@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use nanoserde::DeJson;
+use nanoserde::{DeJson, SerJson};
 use terrane_api::{HealthResponse, InvokeRequest, InvokeResponse, CONTRACT_VERSION};
 use terrane_host::{PreviewFile, PreviewStore};
 use tiny_http::{Method, Request, Response};
@@ -32,6 +32,7 @@ pub fn route(
     require_auth: bool,
     token: Option<&str>,
     live_reload: bool,
+    admin_base_url: &str,
 ) -> Resp {
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
@@ -46,6 +47,12 @@ pub fn route(
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
         }),
+        (Method::Get, ["__terrane", "admin"]) => crate::admin::page(),
+        (Method::Get, ["__terrane", "admin", "session"]) => crate::admin::session(),
+        (Method::Get, ["__terrane", "admin", "apps"]) => crate::admin::apps(core),
+        (Method::Get, ["__terrane", "admin", "grants"]) => crate::admin::grants(core),
+        (Method::Post, ["__terrane", "admin", "grants"]) => crate::admin::grant(core, request),
+        (Method::Get, ["__terrane", "admin", "requests", _request_id]) => crate::admin::page(),
         (Method::Post, ["__terrane", "builder", "generate"]) => builder_generate(core, request),
         (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),
         (Method::Get, ["__terrane", "previews", id, "frame"]) => serve_preview(previews, id, ""),
@@ -67,7 +74,7 @@ pub fn route(
             serve_ui(core, id, &rest.join("/"), live_reload)
         }
         (Method::Get, ["apps", _id, "__terrane", ..]) => json_error(404, "not found"),
-        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request),
+        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request, admin_base_url),
         (Method::Get, ["apps", id]) => crate::shell::response(core, id),
         (Method::Get, ["apps", id, rest @ ..]) => {
             serve_bundle_asset(core, id, &rest.join("/"), live_reload)
@@ -188,7 +195,12 @@ fn mcp(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
 }
 
 /// `POST /apps/{id}/invoke` — run a verb on the app's backend, return its output.
-fn invoke(core: &mut terrane_host::HostCore, id: &str, request: &mut Request) -> Resp {
+fn invoke(
+    core: &mut terrane_host::HostCore,
+    id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return json_error(400, "cannot read request body");
@@ -198,10 +210,24 @@ fn invoke(core: &mut terrane_host::HostCore, id: &str, request: &mut Request) ->
         Err(e) => return json_error(400, &format!("bad invoke body: {e}")),
     };
 
-    match terrane_host::invoke_app(core, id, &parsed.verb, &parsed.args) {
+    match terrane_host::invoke_app_checked_with_admin_base(
+        core,
+        id,
+        &parsed.verb,
+        &parsed.args,
+        admin_base_url,
+    ) {
         Ok(output) => json_ok(&InvokeResponse { output }),
-        Err(e) if e.starts_with("no such app:") => json_error(404, &e),
-        Err(e) => json_error(500, &e),
+        Err(terrane_host::InvokeFailure::PermissionRequired(required)) => {
+            let body = required.serialize_json();
+            Response::from_data(body.into_bytes())
+                .with_status_code(403)
+                .with_header(header("Content-Type", "application/json"))
+        }
+        Err(terrane_host::InvokeFailure::Other(e)) if e.starts_with("no such app:") => {
+            json_error(404, &e)
+        }
+        Err(terrane_host::InvokeFailure::Other(e)) => json_error(500, &e),
     }
 }
 

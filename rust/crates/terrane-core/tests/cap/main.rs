@@ -5,9 +5,11 @@
 mod helpers;
 
 mod app;
+mod auth;
 mod builder;
 mod crdt;
 mod grant_resources;
+mod grant_spec_inventory;
 mod harness;
 mod host;
 mod interface;

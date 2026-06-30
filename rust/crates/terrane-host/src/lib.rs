@@ -21,12 +21,14 @@ pub mod cli;
 pub mod edge;
 pub mod ffi;
 pub mod mcp;
+pub mod permission;
 pub mod preview;
 pub mod sync;
 
 pub use edge::EdgeRunner;
 pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 pub use sync::{serve_conn, sync_conn};
+pub use terrane_core::LOCAL_OWNER_SUBJECT;
 
 pub type HostCore = Core<EdgeRunner>;
 
@@ -68,6 +70,21 @@ pub enum SyncOutcome {
     NothingToSync { app: String, from_home: String },
     AlreadyUpToDate { from_home: String },
     Synced { app: String, from_home: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvokeFailure {
+    PermissionRequired(Box<permission::PermissionRequired>),
+    Other(String),
+}
+
+impl InvokeFailure {
+    pub fn message(&self) -> String {
+        match self {
+            InvokeFailure::PermissionRequired(required) => required.message(),
+            InvokeFailure::Other(message) => message.clone(),
+        }
+    }
 }
 
 impl SyncOutcome {
@@ -188,10 +205,29 @@ pub fn invoke_app(
     verb: &str,
     args: &[String],
 ) -> Result<String, String> {
+    invoke_app_checked(core, app, verb, args).map_err(|e| e.message())
+}
+
+pub fn invoke_app_checked(
+    core: &mut HostCore,
+    app: &str,
+    verb: &str,
+    args: &[String],
+) -> Result<String, InvokeFailure> {
+    invoke_app_checked_with_admin_base(core, app, verb, args, permission::DEFAULT_ADMIN_BASE_URL)
+}
+
+pub fn invoke_app_checked_with_admin_base(
+    core: &mut HostCore,
+    app: &str,
+    verb: &str,
+    args: &[String],
+    admin_base_url: &str,
+) -> Result<String, InvokeFailure> {
     let mut input = Vec::with_capacity(args.len() + 1);
     input.push(verb.to_string());
     input.extend(args.iter().cloned());
-    invoke_app_input(core, app, &input)
+    invoke_app_input_checked_with_admin_base(core, app, &input, admin_base_url)
 }
 
 /// Run an app backend with the exact runtime input vector.
@@ -200,19 +236,47 @@ pub fn invoke_app_input(
     app: &str,
     input: &[String],
 ) -> Result<String, String> {
+    invoke_app_input_checked(core, app, input).map_err(|e| e.message())
+}
+
+pub fn invoke_app_input_checked(
+    core: &mut HostCore,
+    app: &str,
+    input: &[String],
+) -> Result<String, InvokeFailure> {
+    invoke_app_input_checked_with_admin_base(core, app, input, permission::DEFAULT_ADMIN_BASE_URL)
+}
+
+pub fn invoke_app_input_checked_with_admin_base(
+    core: &mut HostCore,
+    app: &str,
+    input: &[String],
+    admin_base_url: &str,
+) -> Result<String, InvokeFailure> {
     if !core.state().app.apps.contains_key(app) {
-        return Err(format!("no such app: {app}"));
+        return Err(InvokeFailure::Other(format!("no such app: {app}")));
+    }
+    if let Some(required) =
+        permission::permission_required_for_app_with_admin_base(core, app, admin_base_url)
+            .map_err(InvokeFailure::Other)?
+    {
+        return Err(InvokeFailure::PermissionRequired(Box::new(required)));
     }
     let runtime = core.state().app.apps[app].runtime.as_str();
     let command = match runtime {
         "js" => "js-runtime.run",
         "wasm" => "wasm-runtime.run",
-        other => return Err(format!("unknown app runtime for {app}: {other}")),
+        other => {
+            return Err(InvokeFailure::Other(format!(
+                "unknown app runtime for {app}: {other}"
+            )))
+        }
     };
     let mut argv = Vec::with_capacity(input.len() + 1);
     argv.push(app.to_string());
     argv.extend(input.iter().cloned());
-    Ok(dispatch_on_core(core, command, &argv)?
+    Ok(dispatch_on_core(core, command, &argv)
+        .map_err(InvokeFailure::Other)?
         .output
         .unwrap_or_default())
 }
@@ -220,7 +284,19 @@ pub fn invoke_app_input(
 /// Return an app's self-declared action metadata by invoking its reserved
 /// `__actions__` verb.
 pub fn app_actions(core: &mut HostCore, app: &str) -> Result<String, String> {
-    invoke_app(core, app, terrane_api::ACTIONS_VERB, &[])
+    app_actions_checked(core, app).map_err(|e| e.message())
+}
+
+pub fn app_actions_checked(core: &mut HostCore, app: &str) -> Result<String, InvokeFailure> {
+    app_actions_checked_with_admin_base(core, app, permission::DEFAULT_ADMIN_BASE_URL)
+}
+
+pub fn app_actions_checked_with_admin_base(
+    core: &mut HostCore,
+    app: &str,
+    admin_base_url: &str,
+) -> Result<String, InvokeFailure> {
+    invoke_app_checked_with_admin_base(core, app, terrane_api::ACTIONS_VERB, &[], admin_base_url)
 }
 
 /// Ask the core builder capability to generate a draft app and return the

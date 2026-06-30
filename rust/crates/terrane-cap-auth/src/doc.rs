@@ -19,7 +19,7 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             commands: vec!["auth.grant".to_string(), "auth.revoke".to_string()],
             queries: Vec::new(),
             events: vec!["auth.granted".to_string(), "auth.revoked".to_string()],
-            subscriptions: Vec::new(),
+            subscriptions: vec!["app.removed".to_string()],
             resource_methods: Vec::new(),
         },
         commands: vec![
@@ -88,6 +88,7 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             "Runtime authorization reads AuthState through a typed helper; public ctx.resource.kv never exposes auth data."
                 .to_string(),
             "The v1 gate is namespace-level and does not enforce descriptive verbs.".to_string(),
+            "Folding app.removed removes grants scoped to the removed app.".to_string(),
             "Authorization is checked only during live runtime resource installation, never during fold/replay."
                 .to_string(),
         ],
@@ -105,7 +106,7 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
         internal: if include_internal {
             vec![InternalNote {
                 title: "Replay invariant".to_string(),
-                body: "fold only applies auth.granted/auth.revoked facts; it never re-runs authorization."
+                body: "fold applies auth.granted/auth.revoked and app.removed cleanup facts; it never re-runs authorization."
                     .to_string(),
             }]
         } else {

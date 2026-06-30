@@ -3000,6 +3000,7 @@ dependencies = [
  "terrane-api",
  "terrane-app-build",
  "terrane-cap-app",
+ "terrane-cap-auth",
  "terrane-cap-builder",
  "terrane-cap-crdt",
  "terrane-cap-harness",

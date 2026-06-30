@@ -529,9 +529,12 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
                 Ok(app) => app,
                 Err(e) => return tool_text(id, &e, true),
             };
-            match crate::app_actions(core, &app) {
+            match crate::app_actions_checked(core, &app) {
                 Ok(output) => tool_json_if_possible(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(crate::InvokeFailure::PermissionRequired(required)) => {
+                    tool_json(id, &required.serialize_json(), true)
+                }
+                Err(crate::InvokeFailure::Other(e)) => tool_text(id, &e, true),
             }
         }
         TOOL_INVOKE => {
@@ -551,9 +554,12 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
                 Ok(argv) => argv,
                 Err(e) => return tool_text(id, &e, true),
             };
-            match crate::invoke_app(core, &app, &verb, &argv) {
+            match crate::invoke_app_checked(core, &app, &verb, &argv) {
                 Ok(output) => tool_text(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(crate::InvokeFailure::PermissionRequired(required)) => {
+                    tool_json(id, &required.serialize_json(), true)
+                }
+                Err(crate::InvokeFailure::Other(e)) => tool_text(id, &e, true),
             }
         }
         TOOL_CAPABILITIES_LIST => {

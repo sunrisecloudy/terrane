@@ -902,6 +902,61 @@ fn non_loopback_bind_requires_bearer_auth_for_mcp() {
 }
 
 #[test]
+fn admin_can_grant_missing_app_resource() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install(&mut core, "todo");
+    }
+
+    let (mut child, addr) = spawn_web(home);
+
+    let (status, body) = http(&addr, "GET", "/__terrane/admin", None);
+    assert_eq!(status, 200, "admin page: {body}");
+    assert!(body.contains("Terrane Admin"), "admin page: {body}");
+
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/apps", None);
+    assert_eq!(status, 200, "admin apps: {body}");
+    assert!(
+        body.contains(r#""namespace":"kv""#) && body.contains(r#""granted":false"#),
+        "admin apps should show missing kv: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/todo/invoke",
+        Some(r#"{"verb":"list","args":[]}"#),
+    );
+    assert_eq!(status, 403, "invoke should need permission: {body}");
+    assert!(
+        body.contains("permission_required")
+            && body.contains(&format!("http://{addr}/__terrane/admin/requests/")),
+        "permission body: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/admin/grants",
+        Some(r#"{"app":"todo","namespace":"kv"}"#),
+    );
+    assert_eq!(status, 200, "admin grant: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/todo/invoke",
+        Some(r#"{"verb":"list","args":[]}"#),
+    );
+    assert_eq!(status, 200, "invoke after grant: {body}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn live_version_changes_when_bundle_file_changes() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");

@@ -12,6 +12,7 @@
 //! `Authorization: Bearer <token>` header on every request. Live reload is on
 //! by default and injects a small polling hook into served HTML.
 
+mod admin;
 mod args;
 mod http;
 mod live_reload;
@@ -49,6 +50,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    let admin_base_url = format!("http://{}", server.server_addr());
     eprintln!(
         "terrane-web: serving {} on http://{} (auth: {}, live reload: {})",
         terrane_host::log_path().display(),
@@ -70,6 +72,7 @@ fn main() {
             require_auth,
             token.as_deref(),
             args.live_reload,
+            &admin_base_url,
         );
         let _ = request.respond(response);
     }

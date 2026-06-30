@@ -4,13 +4,16 @@ use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, ensure_app_exists, state_mut, state_ref, CapManifest,
-    Capability, CommandCtx, CommandSpec, Decision, Error, EventRecord, EventSpec,
+    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
+    CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
+    EventSpec,
     ExecutionPrincipal, ReadValue, ResourceReadCtx, Result, StateStore, LOCAL_OWNER_SUBJECT,
     LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 mod doc;
+#[cfg(test)]
+mod tests;
 
 const DEFAULT_VERBS: &[&str] = &["read", "write"];
 
@@ -85,7 +88,9 @@ impl Capability for AuthCapability {
             queries: Vec::new(),
             resources: Vec::new(),
             grant_resources: Vec::new(),
-            subscriptions: Vec::new(),
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
         }
     }
 
@@ -172,7 +177,7 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         namespace: namespace.clone(),
         selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
         selector_id: String::new(),
-        selector_json: format!(r#"{{"namespace":{namespace:?}}}"#),
+        selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(&namespace)),
         resource_id,
         verbs,
         granted_by: LOCAL_OWNER_SUBJECT.to_string(),
@@ -247,6 +252,12 @@ fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
             let event: Revoked = decode_event(record)?;
             let key = grant_key(&event.org, &event.subject, &event.app, &event.resource_id);
             state_mut::<AuthState>(state, "auth")?.grants.remove(&key);
+        }
+        "app.removed" => {
+            let event = decode_app_removed(record)?;
+            state_mut::<AuthState>(state, "auth")?
+                .grants
+                .retain(|_, grant| grant.app != event.id);
         }
         _ => {}
     }
@@ -375,38 +386,18 @@ fn unhex(byte: u8) -> Result<u8> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn grant_keys_escape_subjects_and_resource_ids() {
-        let subject = "agent:user:local-owner:codex";
-        let resource_id = "prefix:settings/theme";
-        let key = grant_key("local", subject, "crm/app", resource_id);
-
-        assert_eq!(
-            key,
-            "orgs/local/subjects/agent%3Auser%3Alocal-owner%3Acodex/apps/crm%2Fapp/resources/prefix%3Asettings%2Ftheme"
-        );
-        let segments: Vec<_> = key.split('/').collect();
-        assert_eq!(segments.len(), 8);
-        assert_eq!(decode_segment(segments[3]).unwrap(), subject);
-        assert_eq!(decode_segment(segments[5]).unwrap(), "crm/app");
-        assert_eq!(decode_segment(segments[7]).unwrap(), resource_id);
+fn json_string(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
     }
-
-    #[test]
-    fn namespace_v1_resource_id_is_just_namespace() {
-        assert_eq!(namespace_resource_id("kv"), "kv");
-        assert_eq!(
-            grant_key(
-                "local",
-                "user:local-owner",
-                "demo",
-                &namespace_resource_id("kv")
-            ),
-            "orgs/local/subjects/user%3Alocal-owner/apps/demo/resources/kv"
-        );
-    }
+    out
 }

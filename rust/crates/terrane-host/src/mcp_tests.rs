@@ -305,6 +305,16 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
         "app_register commit: {commit}"
     );
 
+    let denied_actions = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"weak-actions-denied","method":"tools/call","params":{"name":"app_actions","arguments":{"app":"weak-demo"}}}"#,
+    )
+    .unwrap();
+    assert!(
+        denied_actions.contains("permission_required") && denied_actions.contains("adminUrl"),
+        "app_actions should return structured permission request: {denied_actions}"
+    );
+
     let grant = handle_json_rpc(
         &mut core,
         r#"{"jsonrpc":"2.0","id":"weak-grant","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"auth.grant","args":["user:local-owner","weak-demo","kv"]}}}"#,
