@@ -6,9 +6,9 @@ use std::path::Path;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
-    CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec, ExecutionPrincipal, ReadValue, ResourceReadCtx, Result, StateStore,
-    LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
+    CapBus, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern,
+    EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, ReadValue, ResourceReadCtx,
+    Result, StateStore, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 use terrane_cap_kv::KvStorageBinding;
 
@@ -16,8 +16,6 @@ mod doc;
 #[cfg(test)]
 mod tests;
 
-const DEFAULT_VERBS: &[&str] = &["read", "write"];
-const READ_ONLY_VERBS: &[&str] = &["read"];
 pub const AUTH_PROJECTION_APP_ID: &str = "__terrane/auth";
 pub const AUTH_PROJECTION_KEY_PREFIX: &str = "__terrane/auth/v1";
 
@@ -341,10 +339,11 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     validate_segment_input("subject", &subject)?;
     validate_segment_input("app", &app)?;
     validate_segment_input("namespace", &namespace)?;
+    let spec = namespace_v1_spec(ctx.bus, &namespace)?;
 
     let verbs = match args.get(3) {
-        Some(raw) => parse_verbs(raw)?,
-        None => default_verbs_for_namespace(&namespace),
+        Some(raw) => parse_grant_verbs(raw, spec.verbs)?,
+        None => spec.verbs.iter().map(|verb| (*verb).to_string()).collect(),
     };
     ensure_grantable_subject(ctx.state, &subject)?;
     let resource_id = namespace_resource_id(&namespace);
@@ -366,7 +365,7 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         subject,
         app,
         namespace: namespace.clone(),
-        selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
+        selector_schema_id: spec.selector_schema_id.to_string(),
         selector_id: String::new(),
         selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(&namespace)),
         resource_id,
@@ -406,6 +405,7 @@ fn decide_revoke(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     validate_segment_input("subject", &subject)?;
     validate_segment_input("app", &app)?;
     validate_segment_input("namespace", &namespace)?;
+    namespace_v1_spec(ctx.bus, &namespace)?;
 
     let resource_id = namespace_resource_id(&namespace);
     let key = grant_key(
@@ -453,7 +453,7 @@ fn decide_permission_request(ctx: CommandCtx<'_>, args: &[String]) -> Result<Dec
 
     let resources = namespaces
         .into_iter()
-        .map(permission_resource)
+        .map(|namespace| permission_resource(ctx.bus, namespace))
         .collect::<Result<Vec<_>>>()?;
     Ok(Decision::Commit(vec![permission_requested_event(
         PermissionRequested {
@@ -1270,23 +1270,38 @@ fn validate_agent_id(agent: &str) -> Result<()> {
     validate_segment_input("agent", agent)
 }
 
-fn permission_resource(namespace: String) -> Result<AuthPermissionResource> {
+fn permission_resource(bus: &dyn CapBus, namespace: String) -> Result<AuthPermissionResource> {
+    let spec = namespace_v1_spec(bus, &namespace)?;
     Ok(AuthPermissionResource {
         namespace: namespace.clone(),
-        selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
+        selector_schema_id: spec.selector_schema_id.to_string(),
         selector_id: String::new(),
         selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(&namespace)),
         resource_id: namespace_resource_id(&namespace),
-        verbs: default_verbs_for_namespace(&namespace),
+        verbs: spec.verbs.iter().map(|verb| (*verb).to_string()).collect(),
     })
 }
 
-fn default_verbs_for_namespace(namespace: &str) -> Vec<String> {
-    let verbs = match namespace {
-        "build" => READ_ONLY_VERBS,
-        _ => DEFAULT_VERBS,
-    };
-    verbs.iter().map(|verb| (*verb).to_string()).collect()
+fn namespace_v1_spec(bus: &dyn CapBus, namespace: &str) -> Result<GrantResourceSpec> {
+    bus.grant_resource_spec(namespace, NAMESPACE_SELECTOR_SCHEMA_ID)?
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "unknown grant resource namespace or selector schema: {namespace}/{NAMESPACE_SELECTOR_SCHEMA_ID}"
+            ))
+        })
+}
+
+fn parse_grant_verbs(raw: &str, allowed: &[&str]) -> Result<Vec<String>> {
+    let verbs = parse_verbs(raw)?;
+    for verb in &verbs {
+        if !allowed.iter().any(|allowed| allowed == verb) {
+            return Err(Error::InvalidInput(format!(
+                "unknown grant verb {verb:?}; allowed verbs: {}",
+                allowed.join(", ")
+            )));
+        }
+    }
+    Ok(verbs)
 }
 
 fn hex(n: u8) -> char {

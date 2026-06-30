@@ -146,7 +146,13 @@ pub unsafe extern "C" fn terrane_dispatch(
             Ok(a) => a,
             Err(code) => return code,
         };
-        dispatch_request(h, Request::new(name, args), false, out_output, out_error)
+        dispatch_request(
+            h,
+            Request::trusted_host(name, args),
+            false,
+            out_output,
+            out_error,
+        )
     }));
     finish(code, out_error)
 }

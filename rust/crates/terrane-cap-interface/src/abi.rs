@@ -31,6 +31,25 @@ impl Default for ExecutionPrincipal {
     }
 }
 
+/// Whether a host/control-plane surface admitted a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandAuthority {
+    Public,
+    TrustedHost,
+}
+
+impl CommandAuthority {
+    pub fn is_trusted_host(self) -> bool {
+        matches!(self, Self::TrustedHost)
+    }
+}
+
+impl Default for CommandAuthority {
+    fn default() -> Self {
+        Self::Public
+    }
+}
+
 /// A command as it arrives at the core: a namespaced name like `"app.add"` plus
 /// the caller's argument tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +57,7 @@ pub struct Request {
     pub name: String,
     pub args: Vec<String>,
     pub principal: ExecutionPrincipal,
+    pub authority: CommandAuthority,
 }
 
 impl Request {
@@ -46,11 +66,21 @@ impl Request {
             name: name.into(),
             args,
             principal: ExecutionPrincipal::local_owner(),
+            authority: CommandAuthority::Public,
         }
+    }
+
+    pub fn trusted_host(name: impl Into<String>, args: Vec<String>) -> Self {
+        Request::new(name, args).with_trusted_host()
     }
 
     pub fn with_principal(mut self, principal: ExecutionPrincipal) -> Self {
         self.principal = principal;
+        self
+    }
+
+    pub fn with_trusted_host(mut self) -> Self {
+        self.authority = CommandAuthority::TrustedHost;
         self
     }
 }

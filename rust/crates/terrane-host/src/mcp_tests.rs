@@ -380,8 +380,8 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
     )
     .unwrap();
     assert!(
-        grant.contains(r#""isError":false"#),
-        "auth.grant weak-demo: {grant}"
+        grant.contains(r#""isError":true"#) && grant.contains("trusted-admin-only"),
+        "auth.grant weak-demo should be blocked: {grant}"
     );
 
     let apps = handle_json_rpc(
@@ -400,7 +400,7 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
     )
     .unwrap();
     assert!(
-        actions.contains(r#""structuredContent""#) && actions.contains("write"),
-        "app_actions: {actions}"
+        actions.contains("permission_required") && actions.contains("permission_check"),
+        "app_actions should keep routing through permission request flow: {actions}"
     );
 }

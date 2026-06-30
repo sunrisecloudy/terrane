@@ -39,11 +39,12 @@ pub mod domain;
 mod planned_docs;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
-    CapabilityManifestDoc, CommandCtx, Decision, Effect, Error, EventRecord, ExampleDoc,
-    ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, ParamDoc, QueryCtx, QueryValue,
-    ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc, ResourceReadCtx, Result,
-    RuntimeCtx, RuntimeHost, RuntimeHostHandle, RuntimeOutput, RuntimeRequest, SchemaDoc,
-    StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
+    CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
+    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, ParamDoc, QueryCtx,
+    QueryValue, ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc,
+    ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle, RuntimeOutput,
+    RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
+    NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 use terrane_cap_app::AppState;
@@ -357,6 +358,19 @@ impl CapBus for RegistryBus<'_> {
             bus: self,
         };
         capability.query(ctx, name, args)
+    }
+
+    fn grant_resource_spec(
+        &self,
+        namespace: &str,
+        selector_schema_id: &str,
+    ) -> Result<Option<GrantResourceSpec>> {
+        let Some(capability) = self.registry.caps.get(namespace).map(AsRef::as_ref) else {
+            return Ok(None);
+        };
+        Ok(capability.grant_resource_specs().into_iter().find(|spec| {
+            spec.namespace == namespace && spec.selector_schema_id == selector_schema_id
+        }))
     }
 }
 
@@ -833,6 +847,7 @@ impl<R: EffectRunner> Core<R> {
     /// Route a command to its owning capability and return the decision without
     /// committing, running effects, or invoking runtimes.
     pub fn decide(&self, request: Request) -> Result<Decision> {
+        admit_command(&request)?;
         let namespace = namespace_of(&request.name)?;
         let bus = RegistryBus::new(&self.registry, &self.state);
         let ctx = CommandCtx {
@@ -991,6 +1006,16 @@ impl<R: EffectRunner> Core<R> {
         }
         Ok(())
     }
+}
+
+fn admit_command(request: &Request) -> Result<()> {
+    if request.name.starts_with("auth.") && !request.authority.is_trusted_host() {
+        return Err(Error::InvalidInput(format!(
+            "{} requires trusted host authority",
+            request.name
+        )));
+    }
+    Ok(())
 }
 
 fn storage_home(log_path: &Path) -> PathBuf {

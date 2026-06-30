@@ -53,7 +53,7 @@ fn install_named(core: &mut Core, id: &str, name: &str) {
 }
 
 fn grant_resource(core: &mut Core, app: &str, namespace: &str) {
-    core.dispatch(Request::new(
+    core.dispatch(Request::trusted_host(
         "auth.grant",
         vec!["user:local-owner".into(), app.into(), namespace.into()],
     ))

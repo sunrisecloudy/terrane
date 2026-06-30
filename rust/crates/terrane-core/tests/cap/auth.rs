@@ -12,7 +12,7 @@ use terrane_cap_auth::{
 use terrane_cap_kv::DEFAULT_KV_STORAGE_PATH;
 use terrane_core::{Core, ExecutionPrincipal, LOCAL_OWNER_SUBJECT};
 
-use crate::helpers::req;
+use crate::helpers::{public_req, req};
 
 #[test]
 fn grant_makes_namespace_granted_and_revoke_narrows() {
@@ -107,6 +107,99 @@ fn grant_requires_existing_app() {
     assert!(core
         .dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "ghost", "kv"]))
         .is_err());
+}
+
+#[test]
+fn public_auth_mutations_require_trusted_host_authority() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+
+    let err = core
+        .dispatch(public_req(
+            "auth.grant",
+            &[LOCAL_OWNER_SUBJECT, "demo", "kv"],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("trusted host authority"), "{err}");
+
+    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "demo", "kv"]))
+        .unwrap();
+}
+
+#[test]
+fn grant_validates_namespace_and_verbs_against_registered_specs() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+
+    let unknown_namespace = core
+        .dispatch(req(
+            "auth.grant",
+            &[LOCAL_OWNER_SUBJECT, "demo", "document"],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        unknown_namespace.contains("unknown grant resource namespace"),
+        "{unknown_namespace}"
+    );
+
+    let unknown_verb = core
+        .dispatch(req(
+            "auth.grant",
+            &[LOCAL_OWNER_SUBJECT, "demo", "kv", "read,delete"],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(unknown_verb.contains("unknown grant verb"), "{unknown_verb}");
+
+    let build_write = core
+        .dispatch(req(
+            "auth.grant",
+            &[LOCAL_OWNER_SUBJECT, "demo", "build", "write"],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        build_write.contains("unknown grant verb"),
+        "{build_write}"
+    );
+
+    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "demo", "build"]))
+        .unwrap();
+    let grant = core
+        .state()
+        .auth
+        .grants
+        .values()
+        .find(|grant| grant.namespace == "build")
+        .expect("build grant");
+    assert_eq!(grant.verbs, vec!["read"]);
+}
+
+#[test]
+fn permission_request_validates_requested_namespaces_against_specs() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+
+    let err = core
+        .dispatch(req(
+            "auth.permission.request",
+            &[
+                "req-demo-document",
+                LOCAL_OWNER_SUBJECT,
+                "demo",
+                "invoke",
+                "web",
+                "document",
+            ],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unknown grant resource namespace"), "{err}");
 }
 
 #[test]

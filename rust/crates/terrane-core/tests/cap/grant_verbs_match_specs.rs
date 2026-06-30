@@ -1,9 +1,8 @@
 //! Recorded grant verbs must match each namespace's registered
-//! `GrantResourceSpec`. This locks auth's `default_verbs_for_namespace`
-//! (a hardcoded namespace→verbs map) against the real spec catalog, so a
+//! `GrantResourceSpec`. Auth defaults now come from the real spec catalog, so a
 //! read-only namespace like `build` can never silently record a spurious
-//! `write` (review-013 PR1), and future spec/verb changes can't drift away
-//! from what grants record. Own file; never inline in `src/`.
+//! `write`, and future spec/verb changes can't drift away from what grants
+//! record. Own file; never inline in `src/`.
 
 use tempfile::tempdir;
 use terrane_core::{grant_resource_specs, Core, LOCAL_OWNER_SUBJECT};

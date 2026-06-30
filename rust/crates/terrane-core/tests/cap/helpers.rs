@@ -4,6 +4,10 @@ use terrane_core::{Core, EffectRunner, Request, LOCAL_OWNER_SUBJECT};
 
 /// Build a `Request` from a dotted name and string args.
 pub(crate) fn req(name: &str, args: &[&str]) -> Request {
+    Request::trusted_host(name, args.iter().map(|s| s.to_string()).collect())
+}
+
+pub(crate) fn public_req(name: &str, args: &[&str]) -> Request {
     Request::new(name, args.iter().map(|s| s.to_string()).collect())
 }
 

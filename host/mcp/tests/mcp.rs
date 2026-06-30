@@ -69,7 +69,7 @@ fn add_a_todo_through_mcp_and_read_it_back() {
             ],
         ))
         .unwrap();
-        core.dispatch(Request::new(
+        core.dispatch(Request::trusted_host(
             "auth.grant",
             vec![
                 "user:local-owner".into(),
@@ -346,23 +346,24 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         multi_commit.contains(r#""isError":false"#) && multi_commit.contains("mcp-multicap"),
         "multicap app_register_inline commit: {multi_commit}"
     );
-    for (id, namespace) in [
-        ("multi-grant-kv", "kv"),
-        ("multi-grant-crdt", "crdt"),
-        ("multi-grant-rdb", "relational_db"),
-    ] {
-        send(
-            &mut stdin,
-            &format!(
-                r#"{{"jsonrpc":"2.0","id":"{id}","method":"tools/call","params":{{"name":"capability_command","arguments":{{"name":"auth.grant","args":["user:local-owner","mcp-multicap","{namespace}"]}}}}}}"#
-            ),
-        );
-        let grant = read_line(&mut out);
-        assert!(
-            grant.contains(r#""isError":false"#),
-            "multicap auth.grant {namespace}: {grant}"
-        );
-    }
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"auth-grant-help","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"auth.grant","help":true}}}"#,
+    );
+    let auth_grant_help = read_line(&mut out);
+    assert!(
+        auth_grant_help.contains("auth.grant") && auth_grant_help.contains(r#""isError":false"#),
+        "auth.grant help remains available: {auth_grant_help}"
+    );
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":"multi-grant-blocked","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"auth.grant","args":["user:local-owner","mcp-multicap","kv"]}}}"#,
+    );
+    let grant = read_line(&mut out);
+    assert!(
+        grant.contains(r#""isError":true"#) && grant.contains("trusted-admin-only"),
+        "multicap auth.grant must be blocked: {grant}"
+    );
 
     send(
         &mut stdin,
@@ -411,58 +412,11 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let multi_actions = read_line(&mut out);
     assert!(
-        multi_actions.contains("seed")
-            && multi_actions.contains("summary")
-            && multi_actions.contains("clearKv")
-            && multi_actions.contains("relational_db"),
-        "multicap app_actions: {multi_actions}"
-    );
-
-    send(
-        &mut stdin,
-        r#"{"jsonrpc":"2.0","id":"multi-seed","method":"tools/call","params":{"name":"invoke","arguments":{"app":"mcp-multicap","verb":"seed","args":["mcp multicap test"]}}}"#,
-    );
-    let multi_seed = read_line(&mut out);
-    assert!(
-        multi_seed.contains("mcp multicap test")
-            && multi_seed.contains("relational")
-            && multi_seed.contains("crdt")
-            && multi_seed.contains("kv"),
-        "multicap seed: {multi_seed}"
-    );
-
-    send(
-        &mut stdin,
-        r#"{"jsonrpc":"2.0","id":"multi-summary","method":"tools/call","params":{"name":"invoke","arguments":{"app":"mcp-multicap","verb":"summary","args":[]}}}"#,
-    );
-    let multi_summary = read_line(&mut out);
-    assert!(
-        multi_summary.contains("mcp multicap test") && multi_summary.contains("Ada"),
-        "multicap summary: {multi_summary}"
-    );
-
-    send(
-        &mut stdin,
-        r#"{"jsonrpc":"2.0","id":"multi-clear","method":"tools/call","params":{"name":"invoke","arguments":{"app":"mcp-multicap","verb":"clearKv","args":[]}}}"#,
-    );
-    let multi_clear = read_line(&mut out);
-    assert!(
-        multi_clear.contains(r#"\"lastNote\":null"#)
-            && multi_clear.contains(r#"\"theme\":null"#)
-            && multi_clear.contains("Ada"),
-        "multicap clearKv: {multi_clear}"
-    );
-
-    send(
-        &mut stdin,
-        r#"{"jsonrpc":"2.0","id":"multi-summary-after-clear","method":"tools/call","params":{"name":"invoke","arguments":{"app":"mcp-multicap","verb":"summary","args":[]}}}"#,
-    );
-    let multi_summary_after_clear = read_line(&mut out);
-    assert!(
-        multi_summary_after_clear.contains(r#"\"lastNote\":null"#)
-            && multi_summary_after_clear.contains("mcp multicap test")
-            && multi_summary_after_clear.contains("Ada"),
-        "multicap summary after clear: {multi_summary_after_clear}"
+        multi_actions.contains("permission_required")
+            && multi_actions.contains("mcp-multicap")
+            && multi_actions.contains("relational_db")
+            && multi_actions.contains("permission_check"),
+        "multicap app_actions should request permission: {multi_actions}"
     );
 
     // app_register_inline lets locked-down MCP clients create apps without
@@ -491,8 +445,8 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let inline_grant = read_line(&mut out);
     assert!(
-        inline_grant.contains(r#""isError":false"#),
-        "inline auth.grant: {inline_grant}"
+        inline_grant.contains(r#""isError":true"#) && inline_grant.contains("trusted-admin-only"),
+        "inline auth.grant must be blocked: {inline_grant}"
     );
     send(
         &mut stdin,
@@ -500,17 +454,10 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let inline_write = read_line(&mut out);
     assert!(
-        inline_write.contains("stored"),
-        "inline write: {inline_write}"
-    );
-    send(
-        &mut stdin,
-        r#"{"jsonrpc":"2.0","id":"inline-read","method":"tools/call","params":{"name":"invoke","arguments":{"app":"mcp-inline","verb":"read","args":[]}}}"#,
-    );
-    let inline_read = read_line(&mut out);
-    assert!(
-        inline_read.contains("hello inline"),
-        "inline read: {inline_read}"
+        inline_write.contains("permission_required")
+            && inline_write.contains("mcp-inline")
+            && inline_write.contains("permission_check"),
+        "inline write should request permission: {inline_write}"
     );
 
     // capability_query → read-only core query over stdio transport.

@@ -709,13 +709,20 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str) -> String {
                     Err(e) => tool_text(id, &e, true),
                 };
             }
+            if name.starts_with("auth.") {
+                return tool_text(
+                    id,
+                    &format!("{name} is trusted-admin-only; use the permission request/admin approval flow"),
+                    true,
+                );
+            }
             if dry_run {
-                match crate::dry_run_on_core(core, &name, &argv) {
+                match crate::dry_run_public_on_core(core, &name, &argv) {
                     Ok(outcome) => tool_json(id, &command_dry_run_json(outcome.records), false),
                     Err(e) => tool_text(id, &e, true),
                 }
             } else {
-                match crate::dispatch_on_core(core, &name, &argv) {
+                match crate::dispatch_public_on_core(core, &name, &argv) {
                     Ok(outcome) => tool_json(
                         id,
                         &command_outcome_json(outcome.records.len(), outcome.output.as_deref()),

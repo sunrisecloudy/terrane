@@ -145,8 +145,11 @@ pub fn ensure_identity(core: &mut HostCore) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     if !terrane_cap_auth::local_owner_member_exists(core.state()).map_err(|e| e.to_string())? {
-        core.dispatch(Request::new("auth.member.ensure-local-owner", Vec::new()))
-            .map_err(|e| e.to_string())?;
+        core.dispatch(Request::trusted_host(
+            "auth.member.ensure-local-owner",
+            Vec::new(),
+        ))
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -163,8 +166,24 @@ pub fn dispatch_on_core(
     args: &[String],
 ) -> Result<CommandOutcome, String> {
     ensure_identity(core)?;
+    dispatch_request_on_core(core, Request::trusted_host(command, args.to_vec()))
+}
+
+pub fn dispatch_public_on_core(
+    core: &mut HostCore,
+    command: &str,
+    args: &[String],
+) -> Result<CommandOutcome, String> {
+    ensure_identity(core)?;
+    dispatch_request_on_core(core, Request::new(command, args.to_vec()))
+}
+
+fn dispatch_request_on_core(
+    core: &mut HostCore,
+    request: Request,
+) -> Result<CommandOutcome, String> {
     let records = core
-        .dispatch(Request::new(command, args.to_vec()))
+        .dispatch(request)
         .map_err(|e| e.to_string())?;
     Ok(CommandOutcome {
         records,
@@ -177,8 +196,24 @@ pub fn dry_run_on_core(
     command: &str,
     args: &[String],
 ) -> Result<CommandDryRunOutcome, String> {
+    dry_run_request_on_core(core, Request::trusted_host(command, args.to_vec()), command)
+}
+
+pub fn dry_run_public_on_core(
+    core: &HostCore,
+    command: &str,
+    args: &[String],
+) -> Result<CommandDryRunOutcome, String> {
+    dry_run_request_on_core(core, Request::new(command, args.to_vec()), command)
+}
+
+fn dry_run_request_on_core(
+    core: &HostCore,
+    request: Request,
+    command: &str,
+) -> Result<CommandDryRunOutcome, String> {
     match core
-        .decide(Request::new(command, args.to_vec()))
+        .decide(request)
         .map_err(|e| e.to_string())?
     {
         Decision::Commit(records) => Ok(CommandDryRunOutcome {
