@@ -2850,6 +2850,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
+ "terrane-cap-kv",
 ]
 
 [[package]]
