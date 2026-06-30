@@ -175,7 +175,8 @@ fn generate_app_with_harness(
                 response.trim()
             )));
         }
-        builder::parse_generated_files(&response, app_id, name)
+        let allowed_resources = terrane_core::grant_resource_namespaces();
+        builder::parse_generated_files(&response, app_id, name, &allowed_resources)
     })();
 
     match result {

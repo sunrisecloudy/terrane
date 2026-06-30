@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
 use nanoserde::DeJson;
@@ -31,17 +31,23 @@ struct Manifest {
     resources: Vec<String>,
 }
 
-pub fn parse_generated_files(raw: &str, app_id: &str, name: &str) -> Result<Vec<BuilderFile>> {
+pub fn parse_generated_files(
+    raw: &str,
+    app_id: &str,
+    name: &str,
+    allowed_resources: &[&str],
+) -> Result<Vec<BuilderFile>> {
     let json = extract_json_object(raw, "builder output")?;
     let payload = GeneratedPayload::deserialize_json(json)
         .map_err(|e| Error::InvalidInput(format!("builder output JSON: {e}")))?;
-    validate_files(payload.files, app_id, name)
+    validate_files(payload.files, app_id, name, allowed_resources)
 }
 
 pub fn validate_files(
     files: Vec<BuilderFile>,
     app_id: &str,
     name: &str,
+    allowed_resources: &[&str],
 ) -> Result<Vec<BuilderFile>> {
     if files.is_empty() {
         return Err(Error::InvalidInput("builder output has no files".into()));
@@ -132,8 +138,9 @@ pub fn validate_files(
             "manifest.ui references missing file: {ui}"
         )));
     }
+    let allowed_resources: BTreeSet<_> = allowed_resources.iter().copied().collect();
     for resource in manifest.resources {
-        if !matches!(resource.as_str(), "kv" | "crdt" | "document") {
+        if !allowed_resources.contains(resource.as_str()) {
             return Err(Error::InvalidInput(format!(
                 "unsupported generated app resource: {resource}"
             )));

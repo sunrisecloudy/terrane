@@ -4,12 +4,12 @@
 use terrane_cap_app::AppRecord;
 use terrane_cap_interface::{
     CapBus, CapManifest, Capability, CapabilityDoc, CapabilityManifestDoc, CommandCtx, CommandSpec,
-    EventPattern, EventSpec, QuerySpec, QueryValue, StateStore,
+    EventPattern, EventSpec, GrantResourceSpec, QuerySpec, QueryValue, ResourceMethod, StateStore,
 };
 use terrane_cap_replica::initialized_event;
 use terrane_core::{
-    capability_doc, capability_docs, default_registry, fold_records_in_memory, Decision, Error,
-    EventRecord, Registry, RegistryBus, Result, State,
+    capability_doc, capability_docs, default_registry, fold_records_in_memory,
+    grant_resource_namespaces, Decision, Error, EventRecord, Registry, RegistryBus, Result, State,
 };
 
 struct TestCap {
@@ -17,6 +17,8 @@ struct TestCap {
     commands: &'static [&'static str],
     events: &'static [&'static str],
     queries: &'static [&'static str],
+    resource_methods: &'static [&'static str],
+    grant_namespace_v1: bool,
     subscriptions: &'static [&'static str],
 }
 
@@ -27,6 +29,8 @@ impl TestCap {
             commands: &[],
             events: &[],
             queries: &[],
+            resource_methods: &[],
+            grant_namespace_v1: false,
             subscriptions: &[],
         }
     }
@@ -43,6 +47,16 @@ impl TestCap {
 
     fn queries(mut self, queries: &'static [&'static str]) -> Self {
         self.queries = queries;
+        self
+    }
+
+    fn resources(mut self, resource_methods: &'static [&'static str]) -> Self {
+        self.resource_methods = resource_methods;
+        self
+    }
+
+    fn grant_namespace_v1(mut self) -> Self {
+        self.grant_namespace_v1 = true;
         self
     }
 
@@ -70,7 +84,20 @@ impl Capability for TestCap {
                 .iter()
                 .map(|&name| QuerySpec { name })
                 .collect(),
-            resources: Vec::new(),
+            resources: self
+                .resource_methods
+                .iter()
+                .map(|&name| ResourceMethod::Read { name, params: &[] })
+                .collect(),
+            grant_resources: if self.grant_namespace_v1 {
+                vec![GrantResourceSpec::namespace_v1(
+                    self.namespace,
+                    &["read"],
+                    "Test resource.",
+                )]
+            } else {
+                Vec::new()
+            },
             subscriptions: self
                 .subscriptions
                 .iter()
@@ -134,6 +161,14 @@ fn default_registry_manifest_is_valid() {
 }
 
 #[test]
+fn default_registry_exposes_registered_grant_resource_namespaces() {
+    assert_eq!(
+        grant_resource_namespaces(),
+        vec!["build", "crdt", "kv", "relational_db"]
+    );
+}
+
+#[test]
 fn registry_rejects_duplicate_manifest_owners() {
     let mut registry = Registry::new();
     registry
@@ -185,6 +220,25 @@ fn registry_validates_subscriptions_without_treating_them_as_event_owners() {
         ))
         .unwrap();
     assert_invalid_contains(registry.validate(), "undeclared event");
+}
+
+#[test]
+fn registry_rejects_resource_methods_without_grant_resource_specs() {
+    let mut registry = Registry::new();
+    registry
+        .try_register(Box::new(TestCap::new("files").resources(&["get"])))
+        .unwrap();
+    assert_invalid_contains(registry.validate(), "without grant resource specs");
+
+    let mut registry = Registry::new();
+    registry
+        .try_register(Box::new(
+            TestCap::new("files")
+                .resources(&["get"])
+                .grant_namespace_v1(),
+        ))
+        .unwrap();
+    registry.validate().unwrap();
 }
 
 #[test]

@@ -11,7 +11,7 @@
 
 use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, CommandSpec, Decision, EventPattern, EventRecord,
-    EventSpec, ReadValue, ResourceReadCtx, Result, StateStore,
+    EventSpec, GrantResourceSpec, ReadValue, ResourceReadCtx, Result, StateStore,
 };
 
 #[cfg(test)]
@@ -68,6 +68,11 @@ impl Capability for CrdtCapability {
             }],
             queries: Vec::new(),
             resources: resources::resource_methods(),
+            grant_resources: vec![GrantResourceSpec::namespace_v1(
+                "crdt",
+                &["read", "write"],
+                "App-scoped CRDT document namespace.",
+            )],
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
             }],

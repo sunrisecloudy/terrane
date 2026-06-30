@@ -3,7 +3,7 @@
 
 use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec, ReadValue, ResourceReadCtx, Result, StateStore,
+    EventSpec, GrantResourceSpec, ReadValue, ResourceReadCtx, Result, StateStore,
 };
 
 mod commands;
@@ -63,6 +63,11 @@ impl Capability for KvCapability {
             ],
             queries: Vec::new(),
             resources: resources::resource_methods(),
+            grant_resources: vec![GrantResourceSpec::namespace_v1(
+                "kv",
+                &["read", "write"],
+                "App-scoped key/value namespace.",
+            )],
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
             }],

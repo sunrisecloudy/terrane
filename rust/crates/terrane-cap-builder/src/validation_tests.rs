@@ -1,5 +1,7 @@
 use super::*;
 
+const ALLOWED_RESOURCES: &[&str] = &["kv", "crdt", "relational_db", "build"];
+
 fn generated_json() -> String {
     let manifest = concat!(
         r#"{"id":"demo","name":"Demo","version":"0.1.0","#,
@@ -22,36 +24,54 @@ fn generated_json() -> String {
 
 #[test]
 fn parses_and_validates_generated_bundle_files() {
-    let files = parse_generated_files(&generated_json(), "demo", "Demo").unwrap();
+    let files =
+        parse_generated_files(&generated_json(), "demo", "Demo", ALLOWED_RESOURCES).unwrap();
     assert_eq!(files.len(), 4);
     assert_eq!(files[0].path, "index.html");
     assert!(files.iter().any(|f| f.path == "manifest.json"));
 }
 
 #[test]
-fn accepts_planned_document_resource_in_generated_manifests() {
+fn rejects_planned_document_resource_without_registered_spec() {
     let with_document = generated_json().replace("\\\"kv\\\"", "\\\"document\\\"");
-    let files = parse_generated_files(&with_document, "demo", "Demo").unwrap();
+    assert!(
+        parse_generated_files(&with_document, "demo", "Demo", ALLOWED_RESOURCES)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported generated app resource")
+    );
+}
+
+#[test]
+fn accepts_registered_resource_specs_in_generated_manifests() {
+    let with_rdb = generated_json().replace("\\\"kv\\\"", "\\\"relational_db\\\"");
+    let files = parse_generated_files(&with_rdb, "demo", "Demo", ALLOWED_RESOURCES).unwrap();
     assert!(files.iter().any(|f| f.path == "manifest.json"));
 }
 
 #[test]
 fn rejects_unsafe_or_mismatched_generated_files() {
     let bad_path = generated_json().replace("style.css", "../escape.css");
-    assert!(parse_generated_files(&bad_path, "demo", "Demo")
-        .unwrap_err()
-        .to_string()
-        .contains("parent-dir"));
+    assert!(
+        parse_generated_files(&bad_path, "demo", "Demo", ALLOWED_RESOURCES)
+            .unwrap_err()
+            .to_string()
+            .contains("parent-dir")
+    );
 
     let bad_id = generated_json().replace("\\\"id\\\":\\\"demo\\\"", "\\\"id\\\":\\\"other\\\"");
-    assert!(parse_generated_files(&bad_id, "demo", "Demo")
-        .unwrap_err()
-        .to_string()
-        .contains("must match"));
+    assert!(
+        parse_generated_files(&bad_id, "demo", "Demo", ALLOWED_RESOURCES)
+            .unwrap_err()
+            .to_string()
+            .contains("must match")
+    );
 
     let bad_resource = generated_json().replace("\\\"kv\\\"", "\\\"net\\\"");
-    assert!(parse_generated_files(&bad_resource, "demo", "Demo")
-        .unwrap_err()
-        .to_string()
-        .contains("unsupported"));
+    assert!(
+        parse_generated_files(&bad_resource, "demo", "Demo", ALLOWED_RESOURCES)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported")
+    );
 }

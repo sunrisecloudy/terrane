@@ -6,6 +6,8 @@ use terrane_cap_builder::{
 };
 use terrane_cap_interface::{CapBus, Capability, CommandCtx, Error, QueryValue, StateStore};
 
+const ALLOWED_RESOURCES: &[&str] = &["kv", "crdt", "relational_db", "build"];
+
 #[derive(Default)]
 struct Store {
     builder: BuilderState,
@@ -52,7 +54,8 @@ fn generated_json() -> String {
 
 #[test]
 fn builder_capability_validates_generated_bundle_and_folds_lifecycle() {
-    let files = parse_generated_files(&generated_json(), "calendar", "Calendar").unwrap();
+    let files = parse_generated_files(&generated_json(), "calendar", "Calendar", ALLOWED_RESOURCES)
+        .unwrap();
     assert_eq!(files.len(), 4);
     assert_eq!(files[0].path, "index.html");
 
@@ -101,6 +104,7 @@ fn builder_capability_rejects_commands_and_records_failures() {
         r#"{"files":[{"path":"manifest.json","content":"{}"}]}"#,
         "calendar",
         "Calendar",
+        ALLOWED_RESOURCES,
     )
     .is_err());
 }

@@ -40,9 +40,10 @@ mod planned_docs;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandCtx, Decision, Effect, Error, EventRecord, ExampleDoc,
-    InternalNote, LimitDoc, ParamDoc, QueryCtx, QueryValue, ReadValue, Request, ResourceDoc,
-    ResourceMethod, ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx, RuntimeHost,
-    RuntimeHostHandle, RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore,
+    GrantResourceSpec, InternalNote, LimitDoc, ParamDoc, QueryCtx, QueryValue, ReadValue, Request,
+    ResourceDoc, ResourceMethod, ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx,
+    RuntimeHost, RuntimeHostHandle, RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore,
+    NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 use terrane_cap_app::AppState;
@@ -184,6 +185,7 @@ impl Registry {
                 validate_dotted_owner(namespace, "event", event.kind)?;
                 insert_unique(&mut events, event.kind, namespace, "event")?;
             }
+            validate_grant_resources(namespace, &manifest.resources, &manifest.grant_resources)?;
             for subscription in &manifest.subscriptions {
                 subscriptions.push((namespace, subscription.kind));
             }
@@ -210,6 +212,103 @@ fn insert_unique(
     if let Some(previous) = owners.insert(name, owner) {
         return Err(Error::InvalidInput(format!(
             "duplicate {label} declaration: {name} owned by both {previous} and {owner}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_grant_resources(
+    namespace: &'static str,
+    resources: &[ResourceMethod],
+    specs: &[GrantResourceSpec],
+) -> Result<()> {
+    if resources.is_empty() {
+        if specs.is_empty() {
+            return Ok(());
+        }
+        return Err(Error::InvalidInput(format!(
+            "{namespace} declares grant resource specs without ctx.resource methods"
+        )));
+    }
+
+    if specs.is_empty() {
+        return Err(Error::InvalidInput(format!(
+            "{namespace} exposes ctx.resource.{namespace} without grant resource specs"
+        )));
+    }
+
+    let mut selector_schemas = BTreeSet::new();
+    let mut covered_verbs = BTreeSet::new();
+    let mut has_namespace_v1 = false;
+
+    for spec in specs {
+        if spec.namespace != namespace {
+            return Err(Error::InvalidInput(format!(
+                "grant resource spec for {} declared by {namespace}",
+                spec.namespace
+            )));
+        }
+        validate_safe_token("grant selector schema id", spec.selector_schema_id)?;
+        if !selector_schemas.insert(spec.selector_schema_id) {
+            return Err(Error::InvalidInput(format!(
+                "duplicate grant selector schema for {namespace}: {}",
+                spec.selector_schema_id
+            )));
+        }
+        if spec.selector_schema_json.trim().is_empty() {
+            return Err(Error::InvalidInput(format!(
+                "grant selector schema {} for {namespace} is empty",
+                spec.selector_schema_id
+            )));
+        }
+        if spec.verbs.is_empty() {
+            return Err(Error::InvalidInput(format!(
+                "grant resource spec {} for {namespace} has no verbs",
+                spec.selector_schema_id
+            )));
+        }
+        if !(spec.compatibility.backward && spec.compatibility.forward) {
+            return Err(Error::InvalidInput(format!(
+                "grant resource spec {} for {namespace} must be backward and forward compatible",
+                spec.selector_schema_id
+            )));
+        }
+        if spec.selector_schema_id == NAMESPACE_SELECTOR_SCHEMA_ID {
+            has_namespace_v1 = true;
+        }
+        for verb in spec.verbs {
+            validate_safe_token("grant resource verb", verb)?;
+            covered_verbs.insert(*verb);
+        }
+    }
+
+    if !has_namespace_v1 {
+        return Err(Error::InvalidInput(format!(
+            "{namespace} exposes ctx.resource.{namespace} without a namespace.v1 grant spec"
+        )));
+    }
+
+    for method in resources {
+        if !covered_verbs.contains(method.kind()) {
+            return Err(Error::InvalidInput(format!(
+                "{namespace}.{} has no grant resource spec for {} access",
+                method.name(),
+                method.kind()
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_safe_token(label: &str, value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return Err(Error::InvalidInput(format!(
+            "{label} is unsafe: {value:?}; use ASCII letters, digits, '.', '-' or '_'"
         )));
     }
     Ok(())
@@ -321,6 +420,33 @@ pub fn declared_resource_surface() -> BTreeSet<String> {
             out.insert(format!("ctx.resource.{ns}.{}", method.name()));
         }
     }
+    out
+}
+
+/// Capability-owned grant resource specs, sorted by namespace then schema id.
+pub fn grant_resource_specs() -> Vec<GrantResourceSpec> {
+    let registry = default_registry();
+    let mut specs = Vec::new();
+    for capability in registry.caps.values() {
+        specs.extend(capability.grant_resource_specs());
+    }
+    specs.sort_by(|a, b| {
+        a.namespace
+            .cmp(b.namespace)
+            .then_with(|| a.selector_schema_id.cmp(b.selector_schema_id))
+    });
+    specs
+}
+
+/// Resource namespaces that generated apps may request because a registered
+/// capability owns a grant spec for them.
+pub fn grant_resource_namespaces() -> Vec<&'static str> {
+    let mut out: Vec<_> = grant_resource_specs()
+        .into_iter()
+        .map(|spec| spec.namespace)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
     out
 }
 
@@ -441,7 +567,14 @@ struct RecordedWrite {
 
 impl RuntimeHost for RuntimeResourceHost {
     fn resource_methods(&self, namespace: &str) -> Result<Vec<ResourceMethod>> {
-        Ok(self.registry.get(namespace)?.resource_api())
+        let capability = self.registry.get(namespace)?;
+        let manifest = capability.manifest();
+        if !manifest.resources.is_empty() && manifest.grant_resources.is_empty() {
+            return Err(Error::InvalidInput(format!(
+                "{namespace} exposes ctx.resource.{namespace} without grant resource specs"
+            )));
+        }
+        Ok(manifest.resources)
     }
 
     fn read_resource(

@@ -1,6 +1,6 @@
 use crate::abi::{Decision, Error, EventRecord, Result, RuntimeOutput, RuntimeRequest};
 use crate::doc::CapabilityDoc;
-use crate::manifest::{CapManifest, ResourceMethod};
+use crate::manifest::{CapManifest, GrantResourceSpec, ResourceMethod};
 use crate::runtime::{CommandCtx, QueryCtx, QueryValue, ReadValue, ResourceReadCtx, RuntimeCtx};
 use crate::state::StateStore;
 
@@ -45,6 +45,10 @@ pub trait Capability {
 
     fn resource_api(&self) -> Vec<ResourceMethod> {
         self.manifest().resources
+    }
+
+    fn grant_resource_specs(&self) -> Vec<GrantResourceSpec> {
+        self.manifest().grant_resources
     }
 
     fn run_runtime(&self, ctx: RuntimeCtx, request: RuntimeRequest) -> Result<RuntimeOutput> {

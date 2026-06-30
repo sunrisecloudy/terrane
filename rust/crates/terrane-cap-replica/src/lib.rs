@@ -52,6 +52,7 @@ impl Capability for ReplicaCapability {
                 name: "replica.peer",
             }],
             resources: Vec::new(),
+            grant_resources: Vec::new(),
             subscriptions: Vec::new(),
         }
     }

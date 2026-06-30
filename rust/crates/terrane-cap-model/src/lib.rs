@@ -80,6 +80,7 @@ impl Capability for ModelCapability {
             }],
             queries: Vec::new(),
             resources: Vec::new(),
+            grant_resources: Vec::new(),
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
             }],

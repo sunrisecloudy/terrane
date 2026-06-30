@@ -29,12 +29,65 @@ pub struct CapManifest {
     pub events: Vec<EventSpec>,
     pub queries: Vec<QuerySpec>,
     pub resources: Vec<ResourceMethod>,
+    pub grant_resources: Vec<GrantResourceSpec>,
     pub subscriptions: Vec<EventPattern>,
 }
 
 impl CapManifest {
     pub fn empty() -> Self {
         Self::default()
+    }
+}
+
+pub const NAMESPACE_SELECTOR_SCHEMA_ID: &str = "namespace.v1";
+
+pub const NAMESPACE_SELECTOR_SCHEMA_JSON: &str = r#"{"type":"object","required":["namespace"],"properties":{"namespace":{"type":"string"}},"additionalProperties":false}"#;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrantResourceCompatibility {
+    pub backward: bool,
+    pub forward: bool,
+}
+
+impl GrantResourceCompatibility {
+    pub const BACKWARD_AND_FORWARD: Self = Self {
+        backward: true,
+        forward: true,
+    };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnknownSelectorSchemaPolicy {
+    Deny,
+}
+
+/// Capability-owned metadata that defines how auth grants target a resource.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantResourceSpec {
+    pub namespace: &'static str,
+    pub selector_schema_id: &'static str,
+    pub selector_schema_json: &'static str,
+    pub verbs: &'static [&'static str],
+    pub compatibility: GrantResourceCompatibility,
+    pub unknown_selector_schema_policy: UnknownSelectorSchemaPolicy,
+    pub summary: &'static str,
+}
+
+impl GrantResourceSpec {
+    pub fn namespace_v1(
+        namespace: &'static str,
+        verbs: &'static [&'static str],
+        summary: &'static str,
+    ) -> Self {
+        Self {
+            namespace,
+            selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID,
+            selector_schema_json: NAMESPACE_SELECTOR_SCHEMA_JSON,
+            verbs,
+            compatibility: GrantResourceCompatibility::BACKWARD_AND_FORWARD,
+            unknown_selector_schema_policy: UnknownSelectorSchemaPolicy::Deny,
+            summary,
+        }
     }
 }
 

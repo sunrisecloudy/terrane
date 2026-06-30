@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::{json, Value};
 use terrane_cap_interface::{
     arg, ensure_app_exists, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error,
-    EventRecord, ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
+    EventRecord, GrantResourceSpec, ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
 mod doc;
@@ -50,6 +50,11 @@ impl Capability for RelationalDbCapability {
             events: Vec::new(),
             queries: Vec::new(),
             resources: resource_methods(),
+            grant_resources: vec![GrantResourceSpec::namespace_v1(
+                "relational_db",
+                &["read", "write"],
+                "App-scoped relational table namespace.",
+            )],
             subscriptions: Vec::new(),
         }
     }

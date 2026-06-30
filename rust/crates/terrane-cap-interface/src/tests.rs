@@ -139,6 +139,11 @@ fn capability_doc_is_required_and_structured() {
                     name: "get",
                     params: &["key"],
                 }],
+                grant_resources: vec![GrantResourceSpec::namespace_v1(
+                    "doc",
+                    &["read"],
+                    "Test resource.",
+                )],
                 subscriptions: vec![EventPattern {
                     kind: "app.removed",
                 }],

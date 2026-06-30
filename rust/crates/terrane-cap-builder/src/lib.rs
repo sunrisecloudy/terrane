@@ -41,6 +41,7 @@ impl Capability for BuilderCapability {
             ],
             queries: Vec::new(),
             resources: Vec::new(),
+            grant_resources: Vec::new(),
             subscriptions: Vec::new(),
         }
     }

@@ -22,7 +22,11 @@ pub use helpers::{
     app_exists, arg, decode_app_removed, ensure_app_exists, extract_json_object, join_tail,
     non_empty, non_empty_or, parse_usize_arg, replica_peer, required_tail, truncate, AppRemoved,
 };
-pub use manifest::{CapManifest, CommandSpec, EventPattern, EventSpec, QuerySpec, ResourceMethod};
+pub use manifest::{
+    CapManifest, CommandSpec, EventPattern, EventSpec, GrantResourceCompatibility,
+    GrantResourceSpec, QuerySpec, ResourceMethod, UnknownSelectorSchemaPolicy,
+    NAMESPACE_SELECTOR_SCHEMA_ID, NAMESPACE_SELECTOR_SCHEMA_JSON,
+};
 pub use runtime::{
     CapBus, CommandCtx, QueryCtx, QueryValue, ReadValue, ResourceReadCtx, RuntimeCtx, RuntimeHost,
     RuntimeHostHandle,

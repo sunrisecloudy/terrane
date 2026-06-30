@@ -56,6 +56,7 @@ impl Capability for HarnessCapability {
             ],
             queries: Vec::new(),
             resources: Vec::new(),
+            grant_resources: Vec::new(),
             subscriptions: Vec::new(),
         }
     }

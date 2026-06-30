@@ -63,6 +63,7 @@ impl Capability for AppCapability {
             ],
             queries: vec![QuerySpec { name: "app.exists" }],
             resources: Vec::new(),
+            grant_resources: Vec::new(),
             subscriptions: Vec::new(),
         }
     }

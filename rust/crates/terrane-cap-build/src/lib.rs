@@ -6,8 +6,8 @@
 
 use nanoserde::SerJson;
 use terrane_cap_interface::{
-    CapManifest, Capability, CommandCtx, Decision, Error, EventRecord, ReadValue, ResourceMethod,
-    ResourceReadCtx, Result, StateStore,
+    CapManifest, Capability, CommandCtx, Decision, Error, EventRecord, GrantResourceSpec,
+    ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
 mod doc;
@@ -25,6 +25,11 @@ impl Capability for BuildCapability {
             events: Vec::new(),
             queries: Vec::new(),
             resources: resource_methods(),
+            grant_resources: vec![GrantResourceSpec::namespace_v1(
+                "build",
+                &["read"],
+                "Pure in-sandbox build helper namespace.",
+            )],
             subscriptions: Vec::new(),
         }
     }

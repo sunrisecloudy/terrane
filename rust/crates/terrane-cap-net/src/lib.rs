@@ -65,6 +65,7 @@ impl Capability for NetCapability {
             }],
             queries: Vec::new(),
             resources: Vec::new(),
+            grant_resources: Vec::new(),
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
             }],
