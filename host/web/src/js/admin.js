@@ -298,6 +298,21 @@ function requestTable(requests) {
         });
         actions.append(button);
       }
+    } else if (request.status === "approved" && request.source === "preview") {
+      const button = document.createElement("button");
+      button.textContent = "Promote";
+      button.className = "primary";
+      button.disabled = Boolean(state.session && state.session.locked);
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        await fetchJson(`/__terrane/admin/requests/${encodeURIComponent(request.requestId)}/promote`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ reason: "promote", app: previewInstallApp(request.app) }),
+        });
+        await refresh();
+      });
+      actions.append(button);
     } else {
       actions.append(muted(request.decidedBy || "Resolved"));
     }
@@ -330,6 +345,11 @@ function hasGrant(subject, app, namespace) {
   return state.grants.some((grant) => (
     grant.subject === subject && grant.app === app && grant.namespace === namespace
   ));
+}
+
+function previewInstallApp(previewId) {
+  const match = String(previewId || "").match(/^preview-(.*)-[0-9]+$/);
+  return match ? match[1] : "";
 }
 
 function grantButton(label, app, namespace, subject) {

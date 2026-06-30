@@ -39,6 +39,7 @@ pub struct PreviewStore {
 
 struct Preview {
     id: String,
+    install_app_id: String,
     name: String,
     files: BTreeMap<String, String>,
     ui: String,
@@ -156,6 +157,7 @@ impl PreviewStore {
             id.clone(),
             Preview {
                 id: id.clone(),
+                install_app_id: manifest.id.trim().to_string(),
                 name,
                 files,
                 ui,
@@ -277,6 +279,44 @@ impl PreviewStore {
         admin_base_url: &str,
     ) -> Result<Option<crate::permission::PermissionRequestView>, String> {
         self.decide_permission_request(request_id, "cancelled", reason, admin_base_url)
+    }
+
+    pub fn promote_permission_request(
+        &self,
+        core: &mut crate::HostCore,
+        request_id: &str,
+        installed_app: &str,
+        admin_base_url: &str,
+    ) -> Result<Option<crate::permission::PermissionRequestView>, String> {
+        let Some(preview) = self.previews.values().find(|preview| {
+            preview_request_view(preview, admin_base_url)
+                .is_some_and(|view| view.request_id == request_id)
+        }) else {
+            return Ok(None);
+        };
+        if preview.permission_status != "approved" {
+            return Err(format!(
+                "permission request {request_id} is {}",
+                preview.permission_status
+            ));
+        }
+        let installed_app = if installed_app.trim().is_empty() {
+            preview.install_app_id.as_str()
+        } else {
+            installed_app.trim()
+        };
+        for namespace in &preview.requested_resources {
+            crate::dispatch_on_core(
+                core,
+                "auth.grant",
+                &[
+                    LOCAL_OWNER_SUBJECT.to_string(),
+                    installed_app.to_string(),
+                    namespace.clone(),
+                ],
+            )?;
+        }
+        Ok(preview_request_view(preview, admin_base_url))
     }
 
     fn decide_permission_request(

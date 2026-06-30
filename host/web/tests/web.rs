@@ -368,12 +368,16 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
 fn preview_with_resources_requires_admin_review_before_runtime_access() {
     let dir = tempdir().unwrap();
     let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install(&mut core, "todo");
+    }
     let (mut child, addr) = spawn_web(home);
 
     let create = preview_body(&[
         (
             "manifest.json",
-            r#"{"id":"needs-kv","name":"Needs KV","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#,
+            r#"{"id":"todo","name":"Todo Preview","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#,
         ),
         (
             "main.js",
@@ -387,7 +391,7 @@ function handle(input) {
         ),
         (
             "index.html",
-            "<!doctype html><html><body>Needs KV</body></html>",
+            "<!doctype html><html><body>Todo Preview</body></html>",
         ),
     ]);
 
@@ -439,6 +443,20 @@ function handle(input) {
     );
     assert_eq!(status, 200, "preview invoke after approve: {body}");
     assert!(body.contains("ok"), "preview invoke after approve: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/admin/requests/{request_id}/promote"),
+        Some(r#"{"reason":"promote","app":"todo"}"#),
+    );
+    assert_eq!(status, 200, "preview promote: {body}");
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/grants", None);
+    assert_eq!(status, 200, "grants after preview promote: {body}");
+    assert!(
+        body.contains(r#""app":"todo""#) && body.contains(r#""namespace":"kv""#),
+        "preview promotion should write installed-app grant: {body}"
+    );
 
     let (status, body) = http(
         &addr,

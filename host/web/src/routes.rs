@@ -31,6 +31,8 @@ struct BuilderGenerateRequest {
 struct PreviewDecisionRequest {
     #[nserde(default)]
     reason: String,
+    #[nserde(default)]
+    app: String,
 }
 
 pub struct RouteState<'a> {
@@ -129,6 +131,16 @@ pub fn route(
             request,
             admin_base_url,
         ),
+        (Method::Post, ["__terrane", "admin", "requests", request_id, "promote"]) => {
+            promote_request(
+                core,
+                previews,
+                admin_session,
+                request_id,
+                request,
+                admin_base_url,
+            )
+        }
         (Method::Post, ["__terrane", "admin", "grants"]) => {
             crate::admin::grant(core, admin_session, request)
         }
@@ -248,6 +260,34 @@ fn cancel_request(
     )
 }
 
+fn promote_request(
+    core: &mut terrane_host::HostCore,
+    previews: &mut PreviewStore,
+    admin_session: &crate::admin::AdminSessionState,
+    request_id: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    if previews
+        .permission_request(request_id, admin_base_url)
+        .is_none()
+    {
+        return json_error(404, "permission request not found");
+    }
+    if admin_session.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    let decision = match preview_decision_request(request) {
+        Ok(decision) => decision,
+        Err(resp) => return resp,
+    };
+    match previews.promote_permission_request(core, request_id, &decision.app, admin_base_url) {
+        Ok(Some(view)) => json_ok(&view),
+        Ok(None) => json_error(404, "permission request not found"),
+        Err(e) => json_error(400, &e),
+    }
+}
+
 fn decide_request(
     core: &mut terrane_host::HostCore,
     previews: &mut PreviewStore,
@@ -279,27 +319,29 @@ fn decide_request(
     if admin_session.locked() {
         return json_error(403, "local admin is locked");
     }
-    let reason = match preview_decision_reason(request) {
-        Ok(reason) => reason,
+    let decision = match preview_decision_request(request) {
+        Ok(decision) => decision,
         Err(resp) => return resp,
     };
-    match preview_decide(previews, request_id, &reason, admin_base_url) {
+    match preview_decide(previews, request_id, &decision.reason, admin_base_url) {
         Ok(Some(view)) => json_ok(&view),
         Ok(None) => json_error(404, "permission request not found"),
         Err(e) => json_error(400, &e),
     }
 }
 
-fn preview_decision_reason(request: &mut Request) -> Result<String, Resp> {
+fn preview_decision_request(request: &mut Request) -> Result<PreviewDecisionRequest, Resp> {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return Err(json_error(400, "cannot read request body"));
     }
     if body.trim().is_empty() {
-        return Ok(String::new());
+        return Ok(PreviewDecisionRequest {
+            reason: String::new(),
+            app: String::new(),
+        });
     }
     PreviewDecisionRequest::deserialize_json(&body)
-        .map(|parsed| parsed.reason)
         .map_err(|e| json_error(400, &format!("bad decision body: {e}")))
 }
 
@@ -322,6 +364,7 @@ fn is_admin_control_route(method: &Method, segs: &[&str]) -> bool {
         | (Method::Post, ["__terrane", "admin", "requests", _, "approve"])
         | (Method::Post, ["__terrane", "admin", "requests", _, "deny"])
         | (Method::Post, ["__terrane", "admin", "requests", _, "cancel"])
+        | (Method::Post, ["__terrane", "admin", "requests", _, "promote"])
         | (Method::Post, ["__terrane", "admin", "grants"])
         | (Method::Delete, ["__terrane", "admin", "grants"]) => true,
         _ => false,
