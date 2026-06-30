@@ -7,6 +7,11 @@ use crate::http::{header, json_error, json_ok, Resp};
 const ADMIN_HTML: &str = include_str!("templates/admin.html");
 const ADMIN_JS: &str = include_str!("js/admin.js");
 
+#[derive(Debug, Default)]
+pub struct AdminSessionState {
+    locked: bool,
+}
+
 #[derive(Debug, Clone, SerJson)]
 struct AdminSession {
     org: String,
@@ -61,19 +66,39 @@ struct GrantRequest {
     subject: String,
 }
 
+impl AdminSessionState {
+    pub fn locked(&self) -> bool {
+        self.locked
+    }
+}
+
 pub fn page() -> Resp {
     let body = ADMIN_HTML.replace("__ADMIN_JS__", ADMIN_JS);
     Response::from_data(body.into_bytes())
         .with_header(header("Content-Type", "text/html; charset=utf-8"))
 }
 
-pub fn session() -> Resp {
-    json_ok(&AdminSession {
+pub fn session(state: &AdminSessionState) -> Resp {
+    json_ok(&session_payload(state))
+}
+
+pub fn lock(state: &mut AdminSessionState) -> Resp {
+    state.locked = true;
+    json_ok(&session_payload(state))
+}
+
+pub fn unlock(state: &mut AdminSessionState) -> Resp {
+    state.locked = false;
+    json_ok(&session_payload(state))
+}
+
+fn session_payload(state: &AdminSessionState) -> AdminSession {
+    AdminSession {
         org: "local".to_string(),
         subject: LOCAL_OWNER_SUBJECT.to_string(),
         source: "local".to_string(),
-        locked: false,
-    })
+        locked: state.locked,
+    }
 }
 
 pub fn apps(core: &terrane_host::HostCore) -> Resp {
@@ -126,7 +151,14 @@ pub fn grants(core: &terrane_host::HostCore) -> Resp {
     json_ok(&AdminGrantsResponse { grants })
 }
 
-pub fn grant(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
+pub fn grant(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request: &mut Request,
+) -> Resp {
+    if state.locked() {
+        return json_error(403, "local admin is locked");
+    }
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return json_error(400, "cannot read request body");
@@ -143,6 +175,40 @@ pub fn grant(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
     match terrane_host::dispatch_on_core(
         core,
         "auth.grant",
+        &[subject, parsed.app, parsed.namespace],
+    ) {
+        Ok(outcome) => json_ok(&GrantResponse {
+            records: outcome.records.len(),
+            output: outcome.output,
+        }),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+pub fn revoke(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request: &mut Request,
+) -> Resp {
+    if state.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed = match GrantRequest::deserialize_json(&body) {
+        Ok(parsed) => parsed,
+        Err(e) => return json_error(400, &format!("bad revoke body: {e}")),
+    };
+    let subject = if parsed.subject.trim().is_empty() {
+        LOCAL_OWNER_SUBJECT.to_string()
+    } else {
+        parsed.subject
+    };
+    match terrane_host::dispatch_on_core(
+        core,
+        "auth.revoke",
         &[subject, parsed.app, parsed.namespace],
     ) {
         Ok(outcome) => json_ok(&GrantResponse {

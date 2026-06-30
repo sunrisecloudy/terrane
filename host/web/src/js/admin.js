@@ -8,6 +8,7 @@ const state = {
 const content = document.getElementById("content");
 const title = document.getElementById("view-title");
 const authority = document.getElementById("authority");
+const lockButton = document.getElementById("lock-toggle");
 
 document.querySelectorAll("nav button[data-view]").forEach((button) => {
   button.addEventListener("click", () => {
@@ -20,6 +21,11 @@ document.querySelectorAll("nav button[data-view]").forEach((button) => {
 });
 
 document.getElementById("refresh").addEventListener("click", refresh);
+lockButton.addEventListener("click", async () => {
+  const locked = Boolean(state.session && state.session.locked);
+  await fetchJson(`/__terrane/admin/local/${locked ? "unlock" : "lock"}`, { method: "POST" });
+  await refresh();
+});
 
 async function refresh() {
   const [session, apps, grants] = await Promise.all([
@@ -41,7 +47,8 @@ async function fetchJson(path, options) {
 
 function render() {
   const session = state.session || { org: "local", subject: "user:local-owner", source: "local" };
-  authority.textContent = `${session.org} / ${session.subject} / ${session.source}`;
+  authority.textContent = `${session.org} / ${session.subject} / ${session.source}${session.locked ? " / locked" : ""}`;
+  lockButton.textContent = session.locked ? "Unlock" : "Lock";
   title.textContent = state.view[0].toUpperCase() + state.view.slice(1);
   if (state.view === "grants") return renderGrants();
   if (state.view === "requests") return renderRequests();
@@ -78,6 +85,7 @@ function renderApps() {
       const button = document.createElement("button");
       button.className = "primary";
       button.textContent = `Grant ${resource.namespace}`;
+      button.disabled = Boolean(state.session && state.session.locked);
       button.addEventListener("click", async () => {
         button.disabled = true;
         await fetchJson("/__terrane/admin/grants", {
@@ -101,13 +109,32 @@ function renderApps() {
 
 function renderGrants() {
   const table = document.createElement("table");
-  table.innerHTML = "<thead><tr><th>App</th><th>Subject</th><th>Resource</th></tr></thead>";
+  table.innerHTML = "<thead><tr><th>App</th><th>Subject</th><th>Resource</th><th>Actions</th></tr></thead>";
   const body = document.createElement("tbody");
   for (const grant of state.grants) {
     const row = document.createElement("tr");
     row.append(cell(grant.app));
     row.append(cell(grant.subject));
     row.append(cell(grant.namespace, grant.resource_id));
+    const actions = document.createElement("td");
+    const button = document.createElement("button");
+    button.textContent = "Revoke";
+    button.disabled = Boolean(state.session && state.session.locked);
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      await fetchJson("/__terrane/admin/grants", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          app: grant.app,
+          namespace: grant.namespace,
+          subject: grant.subject,
+        }),
+      });
+      await refresh();
+    });
+    actions.append(button);
+    row.append(actions);
     body.append(row);
   }
   table.append(body);

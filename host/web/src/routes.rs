@@ -25,15 +25,35 @@ struct BuilderGenerateRequest {
     agent: String,
 }
 
+pub struct RouteState<'a> {
+    pub previews: &'a mut PreviewStore,
+    pub admin_session: &'a mut crate::admin::AdminSessionState,
+}
+
+#[derive(Clone, Copy)]
+pub struct RouteConfig<'a> {
+    pub require_auth: bool,
+    pub token: Option<&'a str>,
+    pub live_reload: bool,
+    pub admin_base_url: &'a str,
+}
+
 pub fn route(
     core: &mut terrane_host::HostCore,
-    previews: &mut PreviewStore,
+    state: RouteState<'_>,
     request: &mut Request,
-    require_auth: bool,
-    token: Option<&str>,
-    live_reload: bool,
-    admin_base_url: &str,
+    config: RouteConfig<'_>,
 ) -> Resp {
+    let RouteState {
+        previews,
+        admin_session,
+    } = state;
+    let RouteConfig {
+        require_auth,
+        token,
+        live_reload,
+        admin_base_url,
+    } = config;
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
 
@@ -48,10 +68,21 @@ pub fn route(
             version: CONTRACT_VERSION.into(),
         }),
         (Method::Get, ["__terrane", "admin"]) => crate::admin::page(),
-        (Method::Get, ["__terrane", "admin", "session"]) => crate::admin::session(),
+        (Method::Get, ["__terrane", "admin", "session"]) => crate::admin::session(admin_session),
+        (Method::Post, ["__terrane", "admin", "local", "lock"]) => {
+            crate::admin::lock(admin_session)
+        }
+        (Method::Post, ["__terrane", "admin", "local", "unlock"]) => {
+            crate::admin::unlock(admin_session)
+        }
         (Method::Get, ["__terrane", "admin", "apps"]) => crate::admin::apps(core),
         (Method::Get, ["__terrane", "admin", "grants"]) => crate::admin::grants(core),
-        (Method::Post, ["__terrane", "admin", "grants"]) => crate::admin::grant(core, request),
+        (Method::Post, ["__terrane", "admin", "grants"]) => {
+            crate::admin::grant(core, admin_session, request)
+        }
+        (Method::Delete, ["__terrane", "admin", "grants"]) => {
+            crate::admin::revoke(core, admin_session, request)
+        }
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => crate::admin::page(),
         (Method::Post, ["__terrane", "builder", "generate"]) => builder_generate(core, request),
         (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),

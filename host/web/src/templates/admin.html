@@ -75,6 +75,12 @@
       font-size: 13px;
       color: color-mix(in srgb, CanvasText 70%, transparent);
     }
+    .bar-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
     h2 {
       font-size: 20px;
       margin: 0 0 14px;
@@ -148,7 +154,10 @@
           <h2 id="view-title">Apps</h2>
           <div id="authority" class="authority">local / user:local-owner / local</div>
         </div>
-        <button id="refresh">Refresh</button>
+        <div class="bar-actions">
+          <button id="refresh">Refresh</button>
+          <button id="lock-toggle">Lock</button>
+        </div>
       </div>
       <section id="content"></section>
     </main>

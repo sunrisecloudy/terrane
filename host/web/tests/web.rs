@@ -916,6 +916,13 @@ fn admin_can_grant_missing_app_resource() {
     assert_eq!(status, 200, "admin page: {body}");
     assert!(body.contains("Terrane Admin"), "admin page: {body}");
 
+    let (status, body) = http(&addr, "GET", "/__terrane/admin/session", None);
+    assert_eq!(status, 200, "admin session: {body}");
+    assert!(
+        body.contains(r#""locked":false"#),
+        "admin should start unlocked: {body}"
+    );
+
     let (status, body) = http(&addr, "GET", "/__terrane/admin/apps", None);
     assert_eq!(status, 200, "admin apps: {body}");
     assert!(
@@ -936,6 +943,25 @@ fn admin_can_grant_missing_app_resource() {
         "permission body: {body}"
     );
 
+    let (status, body) = http(&addr, "POST", "/__terrane/admin/local/lock", None);
+    assert_eq!(status, 200, "admin lock: {body}");
+    assert!(body.contains(r#""locked":true"#), "admin lock: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/admin/grants",
+        Some(r#"{"app":"todo","namespace":"kv"}"#),
+    );
+    assert_eq!(status, 403, "locked admin grant should fail: {body}");
+
+    let (status, body) = http(&addr, "POST", "/__terrane/admin/local/unlock", None);
+    assert_eq!(status, 200, "admin unlock: {body}");
+    assert!(
+        body.contains(r#""locked":false"#),
+        "admin unlock: {body}"
+    );
+
     let (status, body) = http(
         &addr,
         "POST",
@@ -951,6 +977,48 @@ fn admin_can_grant_missing_app_resource() {
         Some(r#"{"verb":"list","args":[]}"#),
     );
     assert_eq!(status, 200, "invoke after grant: {body}");
+
+    let (status, body) = http(&addr, "POST", "/__terrane/admin/local/lock", None);
+    assert_eq!(status, 200, "admin relock: {body}");
+    assert!(body.contains(r#""locked":true"#), "admin relock: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/todo/invoke",
+        Some(r#"{"verb":"list","args":[]}"#),
+    );
+    assert_eq!(
+        status, 200,
+        "lock should not remove existing runtime grant: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "DELETE",
+        "/__terrane/admin/grants",
+        Some(r#"{"app":"todo","namespace":"kv"}"#),
+    );
+    assert_eq!(status, 403, "locked admin revoke should fail: {body}");
+
+    let (status, body) = http(&addr, "POST", "/__terrane/admin/local/unlock", None);
+    assert_eq!(status, 200, "admin unlock before revoke: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "DELETE",
+        "/__terrane/admin/grants",
+        Some(r#"{"app":"todo","namespace":"kv"}"#),
+    );
+    assert_eq!(status, 200, "admin revoke: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/todo/invoke",
+        Some(r#"{"verb":"list","args":[]}"#),
+    );
+    assert_eq!(status, 403, "invoke after revoke should need permission: {body}");
 
     let _ = child.kill();
     let _ = child.wait();

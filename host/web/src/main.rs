@@ -64,15 +64,21 @@ fn main() {
     );
 
     let mut previews = terrane_host::PreviewStore::new();
+    let mut admin_session = admin::AdminSessionState::default();
     for mut request in server.incoming_requests() {
         let response = routes::route(
             &mut core,
-            &mut previews,
+            routes::RouteState {
+                previews: &mut previews,
+                admin_session: &mut admin_session,
+            },
             &mut request,
-            require_auth,
-            token.as_deref(),
-            args.live_reload,
-            &admin_base_url,
+            routes::RouteConfig {
+                require_auth,
+                token: token.as_deref(),
+                live_reload: args.live_reload,
+                admin_base_url: &admin_base_url,
+            },
         );
         let _ = request.respond(response);
     }
