@@ -4,6 +4,7 @@ use terrane_api::{
     CapabilityExampleInfo, CapabilityInternalInfo, CapabilityLimitInfo, CapabilityList,
     CapabilityManifestInfo, CapabilityParamInfo, CapabilityQueryInfo, CapabilityResourceInfo,
     CapabilityResourceMethodInfo, CapabilitySchemaInfo, CapabilitySummary,
+    GrantResourceCompatibilityInfo, GrantResourceSpecInfo,
 };
 use terrane_core::{
     CapabilityDoc, ExampleDoc, InternalNote, LimitDoc, ParamDoc, ResourceDoc, ResourceMethodDoc,
@@ -121,6 +122,7 @@ fn capability_command_help(name: &str) -> Result<CapabilityCommandHelpInfo, Stri
 }
 
 fn capability_doc_info(doc: CapabilityDoc) -> CapabilityDocInfo {
+    let grant_resources = grant_specs_for_namespace(&doc.namespace);
     CapabilityDocInfo {
         namespace: doc.namespace,
         title: doc.title,
@@ -139,6 +141,7 @@ fn capability_doc_info(doc: CapabilityDoc) -> CapabilityDocInfo {
                 .into_iter()
                 .map(resource_method_info)
                 .collect(),
+            grant_resources,
         },
         commands: doc
             .commands
@@ -188,6 +191,7 @@ fn capability_doc_info(doc: CapabilityDoc) -> CapabilityDocInfo {
 }
 
 fn resource_info(resource: ResourceDoc) -> CapabilityResourceInfo {
+    let grant_specs = grant_specs_for_namespace(&resource.namespace);
     CapabilityResourceInfo {
         namespace: resource.namespace,
         summary: resource.summary,
@@ -196,7 +200,32 @@ fn resource_info(resource: ResourceDoc) -> CapabilityResourceInfo {
             .into_iter()
             .map(resource_method_info)
             .collect(),
+        grant_specs,
     }
+}
+
+pub fn grant_spec_info(spec: terrane_core::GrantResourceSpec) -> GrantResourceSpecInfo {
+    GrantResourceSpecInfo {
+        namespace: spec.namespace.to_string(),
+        selector_schema_id: spec.selector_schema_id.to_string(),
+        selector_schema_json: spec.selector_schema_json.to_string(),
+        verbs: spec.verbs.iter().map(|verb| (*verb).to_string()).collect(),
+        compatibility: GrantResourceCompatibilityInfo {
+            backward: spec.compatibility.backward,
+            forward: spec.compatibility.forward,
+        },
+        unknown_selector_schema_policy: format!("{:?}", spec.unknown_selector_schema_policy)
+            .to_ascii_lowercase(),
+        summary: spec.summary.to_string(),
+    }
+}
+
+fn grant_specs_for_namespace(namespace: &str) -> Vec<GrantResourceSpecInfo> {
+    terrane_core::grant_resource_specs()
+        .into_iter()
+        .filter(|spec| spec.namespace == namespace)
+        .map(grant_spec_info)
+        .collect()
 }
 
 fn resource_method_info(method: ResourceMethodDoc) -> CapabilityResourceMethodInfo {

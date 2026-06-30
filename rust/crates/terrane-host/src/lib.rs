@@ -5,6 +5,7 @@
 //! and exposing the public contract surface. Transport adapters such as the CLI,
 //! HTTP server, MCP server, and FFI layer should stay thin and call into here.
 
+use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
@@ -530,6 +531,14 @@ pub fn contract_surface() -> terrane_api::PublicSurface {
         .map(|doc| cap_doc::capability_info(&doc.namespace, false))
         .collect::<Result<Vec<_>, _>>()
         .expect("capability docs should be exported from known namespaces");
+    let mut grant_specs_by_namespace =
+        BTreeMap::<String, Vec<terrane_api::GrantResourceSpecInfo>>::new();
+    for spec in terrane_core::grant_resource_specs() {
+        grant_specs_by_namespace
+            .entry(spec.namespace.to_string())
+            .or_default()
+            .push(cap_doc::grant_spec_info(spec));
+    }
     let resources = terrane_core::resource_surface()
         .into_iter()
         .map(|ns| terrane_api::ResourceNamespace {
@@ -543,6 +552,9 @@ pub fn contract_surface() -> terrane_api::PublicSurface {
                     params: m.params.iter().map(|p| p.to_string()).collect(),
                 })
                 .collect(),
+            grant_specs: grant_specs_by_namespace
+                .remove(ns.namespace)
+                .unwrap_or_default(),
         })
         .collect();
     let capabilities = terrane_core::capability_namespaces()

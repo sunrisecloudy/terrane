@@ -66,6 +66,14 @@ fn surface_is_derived_from_the_live_declarations() {
         .methods
         .iter()
         .any(|m| m.name == "set" && m.kind == "write"));
+    let kv_spec = kv
+        .grant_specs
+        .iter()
+        .find(|spec| spec.selector_schema_id == "namespace.v1")
+        .expect("kv namespace.v1 grant spec");
+    assert_eq!(kv_spec.verbs, vec!["read", "write"]);
+    assert!(kv_spec.compatibility.backward && kv_spec.compatibility.forward);
+    assert_eq!(kv_spec.unknown_selector_schema_policy, "deny");
     let crdt = s
         .resources
         .iter()
@@ -81,6 +89,19 @@ fn surface_is_derived_from_the_live_declarations() {
         .methods
         .iter()
         .any(|m| m.name == "compileTs" && m.kind == "read"));
+    let build_spec = build
+        .grant_specs
+        .iter()
+        .find(|spec| spec.selector_schema_id == "namespace.v1")
+        .expect("build namespace.v1 grant spec");
+    assert_eq!(build_spec.verbs, vec!["read"]);
+    assert!(s.capability_docs.iter().any(|d| {
+        d.namespace == "build"
+            && d.manifest
+                .grant_resources
+                .iter()
+                .any(|spec| spec.selector_schema_id == "namespace.v1")
+    }));
     assert!(s.capability_docs.iter().any(|d| {
         d.namespace == "relational_db"
             && d.schemas

@@ -29,6 +29,7 @@ const CONTRACT_FILES = [
   "docs/APP_API.md",
   "rust/crates/terrane-api/src/lib.rs",
   "rust/crates/terrane-cap-interface/src/lib.rs",
+  "rust/crates/terrane-cap-interface/src/manifest.rs",
   "rust/crates/terrane-core/src/lib.rs",
   "rust/crates/terrane-host/src/cap_doc.rs",
   "rust/crates/terrane-host/src/cli.rs",

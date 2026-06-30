@@ -17,7 +17,7 @@
 use nanoserde::{DeJson, SerJson};
 
 /// Version of *this* host API surface. Bumped when a route/tool/shape changes.
-pub const CONTRACT_VERSION: &str = "0.6.0";
+pub const CONTRACT_VERSION: &str = "0.7.0";
 
 /// The MCP protocol revision the MCP host speaks in its `initialize` handshake.
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -472,6 +472,29 @@ pub struct ResourceMethodInfo {
 pub struct ResourceNamespace {
     pub namespace: String,
     pub methods: Vec<ResourceMethodInfo>,
+    #[nserde(default)]
+    pub grant_specs: Vec<GrantResourceSpecInfo>,
+}
+
+/// Machine-readable grant metadata for one resource namespace selector schema.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct GrantResourceSpecInfo {
+    pub namespace: String,
+    #[nserde(rename = "selectorSchemaId")]
+    pub selector_schema_id: String,
+    #[nserde(rename = "selectorSchemaJson")]
+    pub selector_schema_json: String,
+    pub verbs: Vec<String>,
+    pub compatibility: GrantResourceCompatibilityInfo,
+    #[nserde(rename = "unknownSelectorSchemaPolicy")]
+    pub unknown_selector_schema_policy: String,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, SerJson, DeJson)]
+pub struct GrantResourceCompatibilityInfo {
+    pub backward: bool,
+    pub forward: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
@@ -524,6 +547,8 @@ pub struct CapabilityManifestInfo {
     pub events: Vec<String>,
     pub subscriptions: Vec<String>,
     pub resource_methods: Vec<CapabilityResourceMethodInfo>,
+    #[nserde(default)]
+    pub grant_resources: Vec<GrantResourceSpecInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
@@ -601,6 +626,8 @@ pub struct CapabilityResourceInfo {
     pub namespace: String,
     pub summary: String,
     pub methods: Vec<CapabilityResourceMethodInfo>,
+    #[nserde(default)]
+    pub grant_specs: Vec<GrantResourceSpecInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
