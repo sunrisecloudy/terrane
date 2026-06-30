@@ -1,6 +1,7 @@
 //! The `auth` capability owns durable authorization facts and folded AuthState.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
@@ -9,6 +10,7 @@ use terrane_cap_interface::{
     EventSpec, ExecutionPrincipal, ReadValue, ResourceReadCtx, Result, StateStore,
     LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
+use terrane_cap_kv::KvStorageBinding;
 
 mod doc;
 #[cfg(test)]
@@ -16,12 +18,24 @@ mod tests;
 
 const DEFAULT_VERBS: &[&str] = &["read", "write"];
 const READ_ONLY_VERBS: &[&str] = &["read"];
+pub const AUTH_PROJECTION_APP_ID: &str = "__terrane/auth";
+pub const AUTH_PROJECTION_KEY_PREFIX: &str = "__terrane/auth/v1";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AuthState {
+    pub members: BTreeMap<String, AuthMember>,
     pub grants: BTreeMap<String, AuthGrant>,
     pub permission_requests: BTreeMap<String, AuthPermissionRequest>,
     pub agents: BTreeMap<String, AuthAgent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthMember {
+    pub org: String,
+    pub subject: String,
+    pub role: String,
+    pub status: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +137,14 @@ struct PermissionDecision {
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
+struct MemberAdded {
+    org: String,
+    subject: String,
+    role: String,
+    source: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
 struct AgentRegistered {
     org: String,
     agent: String,
@@ -163,6 +185,9 @@ impl Capability for AuthCapability {
     fn manifest(&self) -> CapManifest {
         CapManifest {
             commands: vec![
+                CommandSpec {
+                    name: "auth.member.ensure-local-owner",
+                },
                 CommandSpec { name: "auth.grant" },
                 CommandSpec {
                     name: "auth.revoke",
@@ -190,6 +215,9 @@ impl Capability for AuthCapability {
                 },
             ],
             events: vec![
+                EventSpec {
+                    kind: "auth.member.added",
+                },
                 EventSpec {
                     kind: "auth.granted",
                 },
@@ -233,6 +261,7 @@ impl Capability for AuthCapability {
 
     fn decide(&self, ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
         match name {
+            "auth.member.ensure-local-owner" => decide_member_ensure_local_owner(ctx, args),
             "auth.grant" => decide_grant(ctx, args),
             "auth.revoke" => decide_revoke(ctx, args),
             "auth.permission.request" => decide_permission_request(ctx, args),
@@ -252,6 +281,9 @@ impl Capability for AuthCapability {
 
     fn describe(&self, record: &EventRecord) -> Option<String> {
         match record.kind.as_str() {
+            "auth.member.added" => decode_event::<MemberAdded>(record)
+                .ok()
+                .map(|e| format!("added {} as {} member in org {}", e.subject, e.role, e.org)),
             "auth.granted" => decode_event::<Granted>(record).ok().map(|e| {
                 format!(
                     "granted {} access to {} for app {}",
@@ -340,6 +372,28 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         resource_id,
         verbs,
         granted_by: LOCAL_OWNER_SUBJECT.to_string(),
+        source: LOCAL_SOURCE.to_string(),
+    })?]))
+}
+
+fn decide_member_ensure_local_owner(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    if !args.is_empty() {
+        return Err(Error::InvalidInput(format!(
+            "auth.member.ensure-local-owner takes no arguments, got {}",
+            args.len()
+        )));
+    }
+    let key = member_key(terrane_cap_interface::LOCAL_ORG, LOCAL_OWNER_SUBJECT);
+    if state_ref::<AuthState>(ctx.state, "auth")?
+        .members
+        .contains_key(&key)
+    {
+        return Ok(Decision::Commit(Vec::new()));
+    }
+    Ok(Decision::Commit(vec![member_added_event(MemberAdded {
+        org: terrane_cap_interface::LOCAL_ORG.to_string(),
+        subject: LOCAL_OWNER_SUBJECT.to_string(),
+        role: "owner".to_string(),
         source: LOCAL_SOURCE.to_string(),
     })?]))
 }
@@ -611,6 +665,10 @@ fn granted_event(event: Granted) -> Result<EventRecord> {
     encode_event("auth.granted", &event)
 }
 
+fn member_added_event(event: MemberAdded) -> Result<EventRecord> {
+    encode_event("auth.member.added", &event)
+}
+
 fn revoked_event(event: Revoked) -> Result<EventRecord> {
     encode_event("auth.revoked", &event)
 }
@@ -637,6 +695,20 @@ fn agent_revoked_event(event: AgentRevoked) -> Result<EventRecord> {
 
 fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
     match record.kind.as_str() {
+        "auth.member.added" => {
+            let event: MemberAdded = decode_event(record)?;
+            let key = member_key(&event.org, &event.subject);
+            state_mut::<AuthState>(state, "auth")?.members.insert(
+                key,
+                AuthMember {
+                    org: event.org,
+                    subject: event.subject,
+                    role: event.role,
+                    status: "active".to_string(),
+                    source: event.source,
+                },
+            );
+        }
         "auth.granted" => {
             let event: Granted = decode_event(record)?;
             let key = grant_key(&event.org, &event.subject, &event.app, &event.resource_id);
@@ -815,9 +887,36 @@ pub fn auth_agents(state: &dyn StateStore) -> Result<Vec<AuthAgent>> {
     Ok(agents)
 }
 
+pub fn auth_members(state: &dyn StateStore) -> Result<Vec<AuthMember>> {
+    let mut members = state_ref::<AuthState>(state, "auth")?
+        .members
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    members.sort_by(|a, b| a.subject.cmp(&b.subject));
+    Ok(members)
+}
+
+pub fn local_owner_member_exists(state: &dyn StateStore) -> Result<bool> {
+    Ok(state_ref::<AuthState>(state, "auth")?
+        .members
+        .contains_key(&member_key(
+            terrane_cap_interface::LOCAL_ORG,
+            LOCAL_OWNER_SUBJECT,
+        )))
+}
+
 pub fn agent_subject(owner_user: &str, agent_id: &str) -> String {
     let owner = owner_user.strip_prefix("user:").unwrap_or(owner_user);
     format!("agent:{owner}:{agent_id}")
+}
+
+pub fn member_key(org: &str, subject: &str) -> String {
+    format!(
+        "orgs/{}/members/{}",
+        encode_segment(org),
+        encode_segment(subject)
+    )
 }
 
 pub fn grant_key(org: &str, subject: &str, app: &str, resource_id: &str) -> String {
@@ -827,6 +926,196 @@ pub fn grant_key(org: &str, subject: &str, app: &str, resource_id: &str) -> Stri
         encode_segment(subject),
         encode_segment(app),
         encode_segment(resource_id)
+    )
+}
+
+pub fn reserved_projection_entries(state: &AuthState) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for member in state.members.values() {
+        out.insert(
+            member_projection_key(member),
+            member_projection_value(member),
+        );
+    }
+    for agent in state.agents.values() {
+        out.insert(
+            agent_member_projection_key(agent),
+            agent_projection_value(agent),
+        );
+        out.insert(
+            agent_delegation_projection_key(agent),
+            agent_projection_value(agent),
+        );
+    }
+    for grant in state.grants.values() {
+        let value = grant_projection_value(grant);
+        out.insert(grant_projection_key(grant), value.clone());
+        out.insert(grant_by_app_projection_key(grant), value);
+    }
+    for request in state.permission_requests.values() {
+        let value = permission_request_projection_value(request);
+        out.insert(permission_request_projection_key(request), value.clone());
+        out.insert(permission_request_by_app_projection_key(request), value);
+    }
+    out
+}
+
+pub fn sync_reserved_projection(
+    home: &Path,
+    binding: &KvStorageBinding,
+    state: &AuthState,
+) -> Result<()> {
+    let entries = reserved_projection_entries(state);
+    terrane_cap_kv::sync_logical_store(home, binding, AUTH_PROJECTION_APP_ID, Some(&entries))
+}
+
+pub fn sync_reserved_projection_after_commit(
+    home: &Path,
+    before_binding: &KvStorageBinding,
+    after_binding: &KvStorageBinding,
+    after_state: &AuthState,
+) -> Result<()> {
+    if before_binding != after_binding {
+        terrane_cap_kv::sync_logical_store(home, before_binding, AUTH_PROJECTION_APP_ID, None)?;
+    }
+    sync_reserved_projection(home, after_binding, after_state)
+}
+
+fn member_projection_key(member: &AuthMember) -> String {
+    format!(
+        "{AUTH_PROJECTION_KEY_PREFIX}/orgs/{}/members/users/{}",
+        encode_segment(&member.org),
+        encode_segment(&member.subject)
+    )
+}
+
+fn member_projection_value(member: &AuthMember) -> String {
+    format!(
+        r#"{{"org":"{}","subject":"{}","role":"{}","status":"{}","source":"{}"}}"#,
+        json_string(&member.org),
+        json_string(&member.subject),
+        json_string(&member.role),
+        json_string(&member.status),
+        json_string(&member.source)
+    )
+}
+
+fn agent_member_projection_key(agent: &AuthAgent) -> String {
+    format!(
+        "{AUTH_PROJECTION_KEY_PREFIX}/orgs/{}/members/agents/{}",
+        encode_segment(&agent.org),
+        encode_segment(&agent.agent)
+    )
+}
+
+fn agent_delegation_projection_key(agent: &AuthAgent) -> String {
+    format!(
+        "{AUTH_PROJECTION_KEY_PREFIX}/orgs/{}/agent_delegations/{}",
+        encode_segment(&agent.org),
+        encode_segment(&agent.agent)
+    )
+}
+
+fn agent_projection_value(agent: &AuthAgent) -> String {
+    format!(
+        r#"{{"org":"{}","agent":"{}","displayName":"{}","ownerUser":"{}","maxRole":"{}","canInstallApps":{},"canRequestPermissions":{},"canGrantPermissions":{},"status":"{}","source":"{}"}}"#,
+        json_string(&agent.org),
+        json_string(&agent.agent),
+        json_string(&agent.display_name),
+        json_string(&agent.owner_user),
+        json_string(&agent.max_role),
+        agent.can_install_apps,
+        agent.can_request_permissions,
+        agent.can_grant_permissions,
+        json_string(&agent.status),
+        json_string(&agent.source)
+    )
+}
+
+fn grant_projection_key(grant: &AuthGrant) -> String {
+    format!(
+        "{AUTH_PROJECTION_KEY_PREFIX}/orgs/{}/grants/subjects/{}/apps/{}/resources/{}",
+        encode_segment(&grant.org),
+        encode_segment(&grant.subject),
+        encode_segment(&grant.app),
+        encode_segment(&grant.resource_id)
+    )
+}
+
+fn grant_by_app_projection_key(grant: &AuthGrant) -> String {
+    format!(
+        "{AUTH_PROJECTION_KEY_PREFIX}/orgs/{}/grants_by_app/apps/{}/subjects/{}/resources/{}",
+        encode_segment(&grant.org),
+        encode_segment(&grant.app),
+        encode_segment(&grant.subject),
+        encode_segment(&grant.resource_id)
+    )
+}
+
+fn grant_projection_value(grant: &AuthGrant) -> String {
+    format!(
+        r#"{{"org":"{}","subject":"{}","app":"{}","resource":{{"namespace":"{}","selectorSchemaId":"{}","selectorId":"{}","selectorJson":{},"resourceId":"{}","verbs":{}}},"grantedBy":"{}","source":"{}","status":"active"}}"#,
+        json_string(&grant.org),
+        json_string(&grant.subject),
+        json_string(&grant.app),
+        json_string(&grant.namespace),
+        json_string(&grant.selector_schema_id),
+        json_string(&grant.selector_id),
+        grant.selector_json,
+        json_string(&grant.resource_id),
+        json_array(&grant.verbs),
+        json_string(&grant.granted_by),
+        json_string(&grant.source)
+    )
+}
+
+fn permission_request_projection_key(request: &AuthPermissionRequest) -> String {
+    format!(
+        "{AUTH_PROJECTION_KEY_PREFIX}/orgs/{}/permission_requests/{}",
+        encode_segment(&request.org),
+        encode_segment(&request.request_id)
+    )
+}
+
+fn permission_request_by_app_projection_key(request: &AuthPermissionRequest) -> String {
+    format!(
+        "{AUTH_PROJECTION_KEY_PREFIX}/orgs/{}/permission_requests_by_app/{}/{}",
+        encode_segment(&request.org),
+        encode_segment(&request.app),
+        encode_segment(&request.request_id)
+    )
+}
+
+fn permission_request_projection_value(request: &AuthPermissionRequest) -> String {
+    let resources = request
+        .resources
+        .iter()
+        .map(|resource| {
+            format!(
+                r#"{{"namespace":"{}","selectorSchemaId":"{}","selectorId":"{}","selectorJson":{},"resourceId":"{}","verbs":{}}}"#,
+                json_string(&resource.namespace),
+                json_string(&resource.selector_schema_id),
+                json_string(&resource.selector_id),
+                resource.selector_json,
+                json_string(&resource.resource_id),
+                json_array(&resource.verbs)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        r#"{{"requestId":"{}","org":"{}","subject":"{}","app":"{}","operation":"{}","source":"{}","resources":[{}],"status":"{}","decidedBy":"{}","decisionReason":"{}","decisionSource":"{}"}}"#,
+        json_string(&request.request_id),
+        json_string(&request.org),
+        json_string(&request.subject),
+        json_string(&request.app),
+        json_string(&request.operation),
+        json_string(&request.source),
+        resources,
+        json_string(&request.status),
+        json_string(&request.decided_by),
+        json_string(&request.decision_reason),
+        json_string(&request.decision_source)
     )
 }
 
@@ -1034,4 +1323,13 @@ fn json_string(raw: &str) -> String {
         }
     }
     out
+}
+
+fn json_array(items: &[String]) -> String {
+    let values = items
+        .iter()
+        .map(|item| format!(r#""{}""#, json_string(item)))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{values}]")
 }

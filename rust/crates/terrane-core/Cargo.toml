@@ -34,3 +34,4 @@ tempfile.workspace = true
 wat = "1.252.0"
 serde_json.workspace = true
 loro = "1.13.6"
+rusqlite.workspace = true

@@ -54,6 +54,8 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
         ],
         constraints: vec![
             "app.add validates id, name, and runtime before recording app.added.".to_string(),
+            "App ids under __terrane/ are reserved for platform-owned logical stores."
+                .to_string(),
             "app.import is effectful: the edge host reads a JS bundle directory, records app.added with a kv:// source, and stores bundle files under reserved cap-kv keys."
                 .to_string(),
             "app.remove only records app.removed for an existing app id.".to_string(),

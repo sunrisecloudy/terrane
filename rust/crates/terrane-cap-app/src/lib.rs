@@ -9,6 +9,7 @@ use terrane_cap_interface::{
     CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue,
     Result, StateStore,
 };
+use terrane_cap_kv::RESERVED_PREFIX;
 
 mod doc;
 
@@ -87,6 +88,7 @@ impl Capability for AppCapability {
                 if id.trim().is_empty() {
                     return Err(Error::InvalidInput("app id must not be empty".into()));
                 }
+                validate_app_id(&id)?;
                 if app_name.trim().is_empty() {
                     return Err(Error::InvalidInput("app name must not be empty".into()));
                 }
@@ -268,6 +270,23 @@ fn parse_import(args: &[String]) -> Result<(String, Option<String>, Option<Strin
         }
     }
     Ok((source, storage_backend, storage_path))
+}
+
+fn validate_app_id(id: &str) -> Result<()> {
+    if id.starts_with(RESERVED_PREFIX) {
+        return Err(Error::InvalidInput(format!(
+            "app id prefix {RESERVED_PREFIX:?} is reserved for platform data"
+        )));
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return Err(Error::InvalidInput(format!(
+            "app id is unsafe: {id:?}; use ASCII letters, digits, '-' or '_'"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -17,6 +17,7 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
         ],
         manifest: CapabilityManifestDoc {
             commands: vec![
+                "auth.member.ensure-local-owner".to_string(),
                 "auth.grant".to_string(),
                 "auth.revoke".to_string(),
                 "auth.permission.request".to_string(),
@@ -29,6 +30,7 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             ],
             queries: Vec::new(),
             events: vec![
+                "auth.member.added".to_string(),
                 "auth.granted".to_string(),
                 "auth.revoked".to_string(),
                 "auth.permission.requested".to_string(),
@@ -43,6 +45,14 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             resource_methods: Vec::new(),
         },
         commands: vec![
+            command_doc(
+                "auth.member.ensure-local-owner",
+                &[],
+                "commit",
+                "Ensure the local owner user has an active owner membership in the local org.",
+            )
+            .with_errors(&["unexpected argument"])
+            .with_emits(&["auth.member.added"]),
             command_doc(
                 "auth.grant",
                 &[
@@ -174,6 +184,15 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
         queries: Vec::new(),
         events: vec![
             event_doc(
+                "auth.member.added",
+                &[
+                    param("org", "Organization boundary.", "string"),
+                    param("subject", "Member subject id.", "subject_id"),
+                    param("role", "Membership role.", "role"),
+                ],
+                "Durable organization membership fact.",
+            ),
+            event_doc(
                 "auth.granted",
                 &[
                     param("org", "Organization boundary.", "string"),
@@ -258,6 +277,8 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
         }],
         constraints: vec![
             "Auth owns auth.* events and folded AuthState.".to_string(),
+            "Auth projects folded facts to reserved internal storage under __terrane/auth using the selected KV backend family."
+                .to_string(),
             "Runtime authorization reads AuthState through a typed helper; public ctx.resource.kv never exposes auth data."
                 .to_string(),
             "The v1 gate is namespace-level and does not enforce descriptive verbs.".to_string(),
@@ -278,6 +299,8 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
             "namespace.v1 resource ids are the namespace itself, for example resources/kv."
                 .to_string(),
             "Grant key path segments are percent-encoded to keep subject and resource ids unambiguous."
+                .to_string(),
+            "Reserved projection keys use __terrane/auth/v1 and are derived from auth events; projection rows are not policy source."
                 .to_string(),
         ],
         internal: if include_internal {

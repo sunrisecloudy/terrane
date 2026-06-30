@@ -22,7 +22,7 @@ pub(crate) const DEFAULT_SCAN_LIMIT: usize = 100;
 pub(crate) const MAX_SCAN_LIMIT: usize = 500;
 
 pub use events::{delete_event, set_event, storage_configured_event};
-pub use storage::{sync_full_storage, sync_storage_after_commit};
+pub use storage::{sync_full_storage, sync_logical_store, sync_storage_after_commit};
 pub(crate) use types::bounded_limit;
 pub use types::{
     app_bundle_app_id, app_bundle_files, app_bundle_key, app_bundle_source, delete_prefix_events,

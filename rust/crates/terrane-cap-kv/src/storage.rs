@@ -44,6 +44,21 @@ pub fn sync_storage_after_commit(home: &Path, before: &KvState, after: &KvState)
     Ok(())
 }
 
+/// Materialize one logical store into a configured KV backend.
+///
+/// Platform-owned projections such as auth use this to share the same backend
+/// family as public app KV without exposing their records through
+/// `ctx.resource.kv`.
+pub fn sync_logical_store(
+    home: &Path,
+    binding: &KvStorageBinding,
+    store: &str,
+    data: Option<&BTreeMap<String, String>>,
+) -> Result<()> {
+    ensure_backend(home, binding)?;
+    sync_app(home, binding, store, data)
+}
+
 fn ensure_configured_backends(home: &Path, state: &KvState) -> Result<()> {
     ensure_backend(home, &state.storage.default)?;
     for binding in state.storage.apps.values() {

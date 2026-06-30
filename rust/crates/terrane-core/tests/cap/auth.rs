@@ -3,8 +3,13 @@
 //! identity. Per the project rule these live here, not inline in
 //! `terrane-cap-auth/src/lib.rs`.
 
+use rusqlite::Connection;
 use tempfile::tempdir;
-use terrane_cap_auth::{agent_subject, auth_agents, namespace_granted, permission_request};
+use terrane_cap_auth::{
+    agent_subject, auth_agents, auth_members, namespace_granted, permission_request,
+    AUTH_PROJECTION_APP_ID, AUTH_PROJECTION_KEY_PREFIX,
+};
+use terrane_cap_kv::DEFAULT_KV_STORAGE_PATH;
 use terrane_core::{Core, ExecutionPrincipal, LOCAL_OWNER_SUBJECT};
 
 use crate::helpers::req;
@@ -34,6 +39,28 @@ fn grant_makes_namespace_granted_and_revoke_narrows() {
         core.replay_matches().unwrap(),
         "auth events replay identically"
     );
+}
+
+#[test]
+fn local_owner_membership_is_idempotent_and_replayable() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+
+    let events = core
+        .dispatch(req("auth.member.ensure-local-owner", &[]))
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let members = auth_members(core.state()).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].subject, LOCAL_OWNER_SUBJECT);
+    assert_eq!(members[0].role, "owner");
+    assert_eq!(members[0].status, "active");
+
+    let duplicate = core
+        .dispatch(req("auth.member.ensure-local-owner", &[]))
+        .unwrap();
+    assert!(duplicate.is_empty(), "local owner seed is idempotent");
+    assert!(core.replay_matches().unwrap());
 }
 
 #[test]
@@ -372,4 +399,56 @@ fn revoked_agent_loses_grants_and_cannot_receive_new_grants() {
         "revoked agents cannot receive fresh grants"
     );
     assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn auth_projects_to_reserved_default_kv_backend_and_public_kv_rejects_prefix() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let sqlite = dir.path().join(DEFAULT_KV_STORAGE_PATH);
+    let mut core = Core::open(&log).unwrap();
+
+    core.dispatch(req("auth.member.ensure-local-owner", &[]))
+        .unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "demo", "kv"]))
+        .unwrap();
+
+    let rows = sqlite_rows(&sqlite, AUTH_PROJECTION_APP_ID);
+    assert!(
+        rows.iter().any(|(key, value)| key.contains(&format!(
+            "{AUTH_PROJECTION_KEY_PREFIX}/orgs/local/members/users/"
+        )) && value.contains(r#""role":"owner""#)),
+        "auth member projection rows: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|(key, value)| key.contains(&format!(
+            "{AUTH_PROJECTION_KEY_PREFIX}/orgs/local/grants/subjects/"
+        )) && value.contains(r#""namespace":"kv""#)),
+        "auth grant projection rows: {rows:?}"
+    );
+
+    assert!(
+        core.dispatch(req("kv.set", &["demo", "__terrane/auth/v1/leak", "nope"],))
+            .is_err(),
+        "public kv commands must not write reserved auth projection keys"
+    );
+
+    core.dispatch(req("kv.storage.set", &["default", "memory"]))
+        .unwrap();
+    assert!(
+        sqlite_rows(&sqlite, AUTH_PROJECTION_APP_ID).is_empty(),
+        "moving default KV backend should clear old auth projection rows"
+    );
+}
+
+fn sqlite_rows(path: &std::path::Path, app: &str) -> Vec<(String, String)> {
+    let conn = Connection::open(path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT key, value FROM kv_entries WHERE app = ?1 ORDER BY key")
+        .unwrap();
+    stmt.query_map([app], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect()
 }

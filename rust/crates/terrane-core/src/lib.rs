@@ -787,6 +787,11 @@ impl<R: EffectRunner> Core<R> {
         let kv_storage_plan = terrane_cap_kv::storage_plan(&state)?;
         let storage_home = storage_home(&log_path);
         terrane_cap_kv::sync_full_storage(&storage_home, &state.kv)?;
+        terrane_cap_auth::sync_reserved_projection(
+            &storage_home,
+            &state.kv.storage.binding_for(None),
+            &state.auth,
+        )?;
         Ok(Core {
             log_path,
             state,
@@ -943,16 +948,24 @@ impl<R: EffectRunner> Core<R> {
     /// Persist records to the log, then fold them into State.
     fn commit(&mut self, records: Vec<EventRecord>) -> Result<Vec<EventRecord>> {
         let before_kv = self.state.kv.clone();
+        let before_auth = self.state.auth.clone();
         self.append(&records)?;
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
         self.kv_storage_plan = terrane_cap_kv::storage_plan(&self.state)?;
-        terrane_cap_kv::sync_storage_after_commit(
-            &storage_home(&self.log_path),
-            &before_kv,
-            &self.state.kv,
-        )?;
+        let home = storage_home(&self.log_path);
+        terrane_cap_kv::sync_storage_after_commit(&home, &before_kv, &self.state.kv)?;
+        let before_auth_binding = before_kv.storage.binding_for(None);
+        let after_auth_binding = self.state.kv.storage.binding_for(None);
+        if before_auth != self.state.auth || before_auth_binding != after_auth_binding {
+            terrane_cap_auth::sync_reserved_projection_after_commit(
+                &home,
+                &before_auth_binding,
+                &after_auth_binding,
+                &self.state.auth,
+            )?;
+        }
         Ok(records)
     }
 

@@ -2839,6 +2839,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
+ "terrane-cap-kv",
 ]
 
 [[package]]
@@ -2847,6 +2848,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
+ "terrane-cap-kv",
 ]
 
 [[package]]
@@ -2966,6 +2968,7 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "loro",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "terrane-cap-app",

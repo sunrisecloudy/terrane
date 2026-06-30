@@ -85,3 +85,21 @@ fn rejects_empty_fields() {
         Err(Error::InvalidInput(_))
     ));
 }
+
+#[test]
+fn rejects_reserved_or_unsafe_app_ids() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+
+    assert!(matches!(
+        core.dispatch(req("app.add", &["__terrane/auth", "Auth Shadow"])),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        core.dispatch(req("app.add", &["bad/path", "Bad Path"])),
+        Err(Error::InvalidInput(_))
+    ));
+    core.dispatch(req("app.add", &["safe_id-1", "Safe"]))
+        .unwrap();
+    assert!(core.state().app.apps.contains_key("safe_id-1"));
+}

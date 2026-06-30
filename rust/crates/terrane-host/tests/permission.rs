@@ -71,6 +71,31 @@ fn permission_request_ids_distinguish_lossy_tokens() {
 }
 
 #[test]
+fn open_at_home_seeds_local_owner_membership_once() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    let log = home.join("log.bin");
+
+    let core = terrane_host::open_at_home(&home).unwrap();
+    let members = terrane_cap_auth::auth_members(core.state()).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].subject, terrane_host::LOCAL_OWNER_SUBJECT);
+    assert_eq!(members[0].role, "owner");
+
+    let reopened = terrane_host::open_at_home(&home).unwrap();
+    assert_eq!(
+        terrane_core::read_log(&log)
+            .unwrap()
+            .iter()
+            .filter(|record| record.kind == "auth.member.added")
+            .count(),
+        1,
+        "local owner membership seed should be recorded exactly once"
+    );
+    assert_eq!(terrane_cap_auth::auth_members(reopened.state()).unwrap().len(), 1);
+}
+
+#[test]
 fn permission_required_reports_only_grantable_missing_resources() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");

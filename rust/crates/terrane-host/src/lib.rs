@@ -144,6 +144,10 @@ pub fn ensure_identity(core: &mut HostCore) -> Result<(), String> {
         core.dispatch(Request::new("replica.init", Vec::new()))
             .map_err(|e| e.to_string())?;
     }
+    if !terrane_cap_auth::local_owner_member_exists(core.state()).map_err(|e| e.to_string())? {
+        core.dispatch(Request::new("auth.member.ensure-local-owner", Vec::new()))
+            .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
