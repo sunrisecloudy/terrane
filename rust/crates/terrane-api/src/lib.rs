@@ -17,7 +17,7 @@
 use nanoserde::{DeJson, SerJson};
 
 /// Version of *this* host API surface. Bumped when a route/tool/shape changes.
-pub const CONTRACT_VERSION: &str = "0.4.0";
+pub const CONTRACT_VERSION: &str = "0.5.0";
 
 /// The MCP protocol revision the MCP host speaks in its `initialize` handshake.
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
@@ -117,6 +117,8 @@ pub const TOOL_APP_RECIPE: &str = "app_recipe";
 pub const TOOL_APP_SCAFFOLD: &str = "app_scaffold";
 /// MCP tool: validate an app bundle path before registration.
 pub const TOOL_APP_BUNDLE_VALIDATE: &str = "app_bundle_validate";
+/// MCP tool: register an app from inline bundle files through the core app.add command.
+pub const TOOL_APP_REGISTER_INLINE: &str = "app_register_inline";
 /// MCP tool: register an app bundle through the core app.add command.
 pub const TOOL_APP_REGISTER: &str = "app_register";
 /// MCP tool: list capability docs.
@@ -142,34 +144,63 @@ pub struct ToolDef {
     pub input_schema: &'static str,
 }
 
+/// A static MCP resource the host advertises. Dynamic capability docs are
+/// advertised as templates below because their namespace set comes from core.
+pub struct ResourceDef {
+    pub uri: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub mime_type: &'static str,
+}
+
+/// An MCP resource template for dynamic Terrane docs.
+pub struct ResourceTemplateDef {
+    pub uri_template: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub mime_type: &'static str,
+}
+
+/// A user-invoked MCP prompt Terrane exposes for guided operations.
+pub struct PromptDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub arguments_schema: &'static str,
+}
+
 /// The tools the MCP host advertises, in the order an agent uses them: list →
 /// discover → act. The `invoke` shape mirrors [`InvokeRequest`] plus an `app`.
 pub fn mcp_tools() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: TOOL_WORKFLOWS_LIST,
-            description: "Start here for blank-context or weaker models. Lists exact MCP workflows such as make_js_kv_app, register_app_bundle, inspect_app_actions, run_app_action, and safe_capability_command.",
+            description: "Start here for blank-context or weaker models. Lists MCP workflows plus chooseByOutcome hints for mapping user goals to recipes, such as KV apps, multi-cap apps, bundle registration, app operation, and safe capability commands.",
             input_schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_WORKFLOW_INFO,
             description: "Return an executable recipe of tools/call steps for one workflow. Example tools/call arguments: {\"name\":\"workflow_info\",\"arguments\":{\"name\":\"make_js_kv_app\"}}.",
-            input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Workflow id from workflows_list, e.g. make_js_kv_app or register_app_bundle."}},"required":["name"],"additionalProperties":false}"#,
+            input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Workflow id from workflows_list, e.g. make_js_kv_app, make_js_multicap_app_no_filesystem, or register_app_bundle."}},"required":["name"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_RECIPE,
-            description: "Return a concise app-building recipe. For most JS apps, call app_scaffold, write its files, app_bundle_validate, app_register, app_actions, then invoke.",
-            input_schema: r#"{"type":"object","properties":{"kind":{"type":"string","description":"Recipe kind. Defaults to js_kv_app."}},"additionalProperties":false}"#,
+            description: "Return a concise app-building recipe. For most JS apps, call app_scaffold, register inline or from a bundle, app_actions, then invoke. For visible UI apps, use app_scaffold withUi:true and call window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") from browser code. For optional KV index keys, use a kvGetOrNull-style helper before JSON.parse.",
+            input_schema: r#"{"type":"object","properties":{"kind":{"type":"string","description":"Recipe kind. Defaults to js_kv_app. Use js_multicap_audit for a kv+crdt+relational_db app."}},"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_SCAFFOLD,
-            description: "Generate a minimal JS app bundle as JSON files without writing to disk. Use this to create manifest.json and main.js before app_bundle_validate.",
-            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. notes-demo."},"name":{"type":"string","description":"Display name, e.g. Notes Demo."},"kind":{"type":"string","description":"Scaffold kind. Defaults to js_kv_notes."},"withUi":{"type":"boolean","description":"Include index.html and style.css. Defaults to false."}},"required":["id","name"],"additionalProperties":false}"#,
+            description: "Generate a JS app bundle as JSON files without writing to disk. Use kind js_kv_notes for KV or js_multicap_audit for a kv+crdt+relational_db app. Set withUi:true for calendars, dashboards, forms, and natural-language input pages. The scaffold demonstrates ui.js separation and defensive KV reads.",
+            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. notes-demo."},"name":{"type":"string","description":"Display name, e.g. Notes Demo."},"kind":{"type":"string","description":"Scaffold kind. Defaults to js_kv_notes. Supported: js_kv_notes, js_kv_app, js_multicap_audit."},"withUi":{"type":"boolean","description":"Include index.html and style.css. Defaults to false."}},"required":["id","name"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_BUNDLE_VALIDATE,
             description: "Validate an app bundle path before registering it. Example tools/call arguments: {\"name\":\"app_bundle_validate\",\"arguments\":{\"path\":\"/tmp/my-app\"}}.",
             input_schema: r#"{"type":"object","properties":{"path":{"type":"string","description":"Directory containing manifest.json and referenced backend/UI files."}},"required":["path"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_REGISTER_INLINE,
+            description: "Register an app from inline bundle files returned by app_scaffold. Use this when the client has no filesystem/shell access. files must be a JSON array of {path,content} objects, not a JSON string; pass structuredContent.files directly. Every retry must include the complete bundle, including manifest.json, backend, manifest.ui, ui.js/style.css, and assets. Validates files, writes them under TERRANE_HOME/apps/<id> on commit, then dispatches app.add through core. Use dryRun true before committing. If the id already exists and you are replacing a failed generated app, inspect app.remove with capability_command help before removing.",
+            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Optional id override; defaults to manifest.id."},"name":{"type":"string","description":"Optional display-name override; defaults to manifest.name or id."},"runtime":{"type":"string","description":"Optional runtime override; defaults to manifest.runtime or js."},"files":{"type":"array","description":"Bundle files as a real JSON array, usually structuredContent.files from app_scaffold. Do not JSON-stringify this array. Each item has path and content; retries must include the complete bundle, not only changed files.","items":{"type":"object","properties":{"path":{"type":"string","description":"Safe relative path such as manifest.json or main.js."},"content":{"type":"string","description":"Complete file content."}},"required":["path","content"],"additionalProperties":false}},"dryRun":{"type":"boolean","description":"Validate and dry-run app.add without writing files or committing. Defaults to false."}},"required":["files"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_REGISTER,
@@ -212,6 +243,95 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             name: TOOL_CAPABILITY_COMMAND,
             description: "Run a Terrane capability command through the core dispatcher. First call tools/call with {\"name\":\"capability_command\",\"arguments\":{\"name\":\"app.add\",\"help\":true}} for ordered params and examples. Set dryRun true to validate simple commit commands without mutation.",
             input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Dotted command name, e.g. app.add or kv.set."},"args":{"type":"array","items":{"type":"string"},"description":"Command argument vector in the order returned by help:true / capability docs. Defaults to []."},"dryRun":{"type":"boolean","description":"Validate without committing when the command can be decided locally. Defaults to false."},"help":{"type":"boolean","description":"Return ordered parameter docs, effects, errors, and examples for name without executing. Defaults to false."}},"required":["name"],"additionalProperties":false}"#,
+        },
+    ]
+}
+
+/// Static overall MCP documentation resources owned by `host/mcp`.
+pub fn mcp_resources() -> Vec<ResourceDef> {
+    vec![
+        ResourceDef {
+            uri: "terrane://docs/index",
+            name: "Terrane MCP Guide",
+            description: "Overall MCP manual: connection model, ownership boundaries, and where to start.",
+            mime_type: "text/markdown",
+        },
+        ResourceDef {
+            uri: "terrane://docs/clients",
+            name: "Terrane MCP Clients",
+            description: "Client configuration notes for stdio, HTTP, Claude, opencode, Codex, and generic JSON-RPC.",
+            mime_type: "text/markdown",
+        },
+        ResourceDef {
+            uri: "terrane://docs/app-building",
+            name: "Terrane MCP App Building",
+            description: "App-building workflows, including inline registration for locked-down clients.",
+            mime_type: "text/markdown",
+        },
+        ResourceDef {
+            uri: "terrane://docs/capability-operations",
+            name: "Terrane MCP Capability Operations",
+            description: "How to use capability docs, read-only queries, and guarded command dispatch.",
+            mime_type: "text/markdown",
+        },
+        ResourceDef {
+            uri: "terrane://docs/security",
+            name: "Terrane MCP Security",
+            description: "Local MCP security, permissions, approval, destructive actions, and logging guidance.",
+            mime_type: "text/markdown",
+        },
+        ResourceDef {
+            uri: "terrane://docs/weak-models",
+            name: "Terrane MCP Weak Models",
+            description: "A constrained-model playbook for no-source, no-shell app creation.",
+            mime_type: "text/markdown",
+        },
+    ]
+}
+
+/// Dynamic MCP resource templates. The concrete content is served by the host
+/// because it has access to core capability docs.
+pub fn mcp_resource_templates() -> Vec<ResourceTemplateDef> {
+    vec![
+        ResourceTemplateDef {
+            uri_template: "terrane://capabilities/{namespace}",
+            name: "Terrane Capability Doc",
+            description:
+                "Capability-owned docs from terrane-cap-*/src/doc.rs rendered as markdown.",
+            mime_type: "text/markdown",
+        },
+        ResourceTemplateDef {
+            uri_template: "terrane://workflows/{name}",
+            name: "Terrane MCP Workflow",
+            description: "Executable workflow recipe from the host MCP layer.",
+            mime_type: "application/json",
+        },
+    ]
+}
+
+/// User-invoked prompt recipes for MCP clients that support prompts.
+pub fn mcp_prompts() -> Vec<PromptDef> {
+    vec![
+        PromptDef {
+            name: "make_js_kv_app",
+            description: "Create, register, inspect, and invoke a small JS app backed by kv.",
+            arguments_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"App id, e.g. notes-demo."},"name":{"type":"string","description":"Display name, e.g. Notes Demo."},"text":{"type":"string","description":"Initial note text to write after registration."}},"additionalProperties":false}"#,
+        },
+        PromptDef {
+            name: "register_app_bundle",
+            description: "Validate and register an existing app bundle directory.",
+            arguments_schema: r#"{"type":"object","properties":{"source":{"type":"string","description":"Bundle directory containing manifest.json."}},"required":["source"],"additionalProperties":false}"#,
+        },
+        PromptDef {
+            name: "inspect_app_actions",
+            description: "List apps and inspect one app's self-declared actions.",
+            arguments_schema: r#"{"type":"object","properties":{"app":{"type":"string","description":"App id to inspect."}},"additionalProperties":false}"#,
+        },
+        PromptDef {
+            name: "safe_capability_command",
+            description:
+                "Use capability_command help and dryRun before dispatching a low-level command.",
+            arguments_schema: r#"{"type":"object","properties":{"command":{"type":"string","description":"Dotted command name, e.g. app.add or kv.set."}},"additionalProperties":false}"#,
         },
     ]
 }
@@ -271,6 +391,31 @@ pub struct McpToolEntry {
     pub description: String,
 }
 
+/// One static MCP resource in the exported contract.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct McpResourceEntry {
+    pub uri: String,
+    pub name: String,
+    pub description: String,
+    pub mime_type: String,
+}
+
+/// One MCP resource template in the exported contract.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct McpResourceTemplateEntry {
+    pub uri_template: String,
+    pub name: String,
+    pub description: String,
+    pub mime_type: String,
+}
+
+/// One MCP prompt in the exported contract.
+#[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
+pub struct McpPromptEntry {
+    pub name: String,
+    pub description: String,
+}
+
 /// The host-API slice of `public-contract.json`: the routes and tools premium
 /// must implement as a superset. The `terrane contract export` step serializes
 /// this (alongside the capability surface from `terrane-core`).
@@ -280,6 +425,12 @@ pub struct HostContract {
     pub mcp_protocol_version: String,
     pub http_routes: Vec<HttpRoute>,
     pub mcp_tools: Vec<McpToolEntry>,
+    #[nserde(default)]
+    pub mcp_resources: Vec<McpResourceEntry>,
+    #[nserde(default)]
+    pub mcp_resource_templates: Vec<McpResourceTemplateEntry>,
+    #[nserde(default)]
+    pub mcp_prompts: Vec<McpPromptEntry>,
 }
 
 // ---------------------------------------------------------------------------
@@ -576,6 +727,31 @@ pub fn host_contract() -> HostContract {
             .map(|t| McpToolEntry {
                 name: t.name.to_string(),
                 description: t.description.to_string(),
+            })
+            .collect(),
+        mcp_resources: mcp_resources()
+            .into_iter()
+            .map(|r| McpResourceEntry {
+                uri: r.uri.to_string(),
+                name: r.name.to_string(),
+                description: r.description.to_string(),
+                mime_type: r.mime_type.to_string(),
+            })
+            .collect(),
+        mcp_resource_templates: mcp_resource_templates()
+            .into_iter()
+            .map(|r| McpResourceTemplateEntry {
+                uri_template: r.uri_template.to_string(),
+                name: r.name.to_string(),
+                description: r.description.to_string(),
+                mime_type: r.mime_type.to_string(),
+            })
+            .collect(),
+        mcp_prompts: mcp_prompts()
+            .into_iter()
+            .map(|p| McpPromptEntry {
+                name: p.name.to_string(),
+                description: p.description.to_string(),
             })
             .collect(),
     }

@@ -1,0 +1,163 @@
+# Terrane MCP Clients
+
+Terrane MCP can run over stdio or HTTP.
+
+## Stdio
+
+Use the `terrane-mcp` binary from `host/mcp`.
+
+```json
+{
+  "mcpServers": {
+    "terrane": {
+      "command": "/absolute/path/to/terrane-mcp",
+      "env": {
+        "TERRANE_HOME": "/absolute/path/to/.terrane"
+      }
+    }
+  }
+}
+```
+
+The stdio host reads newline-delimited JSON-RPC from stdin and writes only
+protocol responses to stdout. Diagnostics go to stderr.
+
+## HTTP
+
+The web host exposes the same MCP implementation at `POST /mcp`.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"tools/list"}
+```
+
+Loopback binds do not require auth. Non-loopback binds require the web host's
+bearer-token auth and existing origin checks.
+
+## Opencode Locked-Agent Pattern
+
+For no-source tests, configure Terrane as a native MCP server and deny file and
+shell tools in the agent. The model should still be able to create an app using
+`app_scaffold` and `app_register_inline`.
+
+Useful denies:
+
+```yaml
+permission:
+  read: deny
+  list: deny
+  glob: deny
+  grep: deny
+  bash: deny
+  webfetch: deny
+  websearch: deny
+  lsp: deny
+  skill: deny
+```
+
+The locked agent should use only Terrane MCP tools and, if the client allows it,
+MCP resources and prompts.
+
+For eval runs, also remove opencode's smaller default output request budget. The
+model/provider still has a real maximum, but the client should request the
+model's advertised output limit:
+
+```json
+{
+  "plugin": [
+    "/absolute/path/to/terrane/host/mcp/evals/opencode/max-output-budget.mjs"
+  ]
+}
+```
+
+The plugin can be combined with the MCP config in the same `.opencode/opencode.json`.
+Without it, long code-generation turns can stop with `finish: "length"` before
+the model calls `app_register_inline`.
+
+### Opencode Eval Diagnostics
+
+When a locked opencode run fails, classify it from opencode state before
+changing Terrane docs or tools.
+
+Useful local paths:
+
+- Session DB: `~/.local/share/opencode/opencode.db`
+- Log file: `~/.local/share/opencode/log/opencode.log`
+- Eval home: the `TERRANE_HOME` configured in the temp `.opencode/opencode.json`
+
+Find the session from the run title, then inspect finish reasons and tool calls:
+
+```sh
+sqlite3 ~/.local/share/opencode/opencode.db \
+  "select id,title,tokens_input,tokens_output,tokens_reasoning,cost,time_updated
+   from session
+   where title like '%Calendar app product request%'
+   order by time_created desc
+   limit 5;"
+```
+
+```sh
+sqlite3 ~/.local/share/opencode/opencode.db \
+  "select id,
+          json_extract(data,'$.role'),
+          json_extract(data,'$.finish'),
+          json_extract(data,'$.tokens.input'),
+          json_extract(data,'$.tokens.output'),
+          json_extract(data,'$.tokens.reasoning'),
+          time_updated
+   from message
+   where session_id='SESSION_ID'
+   order by time_created,id;"
+```
+
+```sh
+sqlite3 ~/.local/share/opencode/opencode.db \
+  "select json_extract(data,'$.type'),
+          json_extract(data,'$.tool'),
+          json_extract(data,'$.state.status'),
+          length(json_extract(data,'$.text'))
+   from part
+   where session_id='SESSION_ID'
+   order by time_created,id;"
+```
+
+Read the results this way:
+
+- `finish = "length"` before `app_register_inline`: client/provider output
+  budget, not a Terrane MCP rejection.
+- A final assistant message with `output = 0`, empty `finish`, and no new tool
+  parts after `app_scaffold`: provider/client stall. Restart from the scaffold
+  result and make `app_register_inline` dry-run the first call.
+- `app_register_inline` returns `isError: true`: Terrane rejected the bundle;
+  keep the error and fix the complete files array.
+- App files absent under `$TERRANE_HOME/apps/<id>` after a failed run: the model
+  never committed registration or registration was rejected.
+
+For locked-agent app-building evals, a good first watchdog is: if the session DB
+has not changed for five minutes after a `stream` line in `opencode.log`, poll
+once more, then stop and classify the run from DB/tool evidence.
+
+## Raw JSON-RPC Smoke
+
+Initialize:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"manual","version":"0"}}}
+```
+
+List tools:
+
+```json
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+```
+
+Read docs:
+
+```json
+{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"terrane://docs/app-building"}}
+```
+
+Get a prompt:
+
+```json
+{"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"make_js_kv_app","arguments":{"id":"notes-demo","name":"Notes Demo"}}}
+```

@@ -668,6 +668,10 @@ fn serves_catalog_ui_and_invoke_over_http() {
     );
     assert_eq!(status, 200, "mcp initialize: {body}");
     assert!(body.contains("\"serverInfo\""), "mcp initialize: {body}");
+    assert!(
+        body.contains("\"resources\"") && body.contains("\"prompts\""),
+        "mcp initialize capabilities: {body}"
+    );
 
     let (status, body) = http(
         &addr,
@@ -684,12 +688,39 @@ fn serves_catalog_ui_and_invoke_over_http() {
             && body.contains("workflow_info")
             && body.contains("app_scaffold")
             && body.contains("app_bundle_validate")
+            && body.contains("app_register_inline")
             && body.contains("app_register")
             && body.contains("capabilities_list")
             && body.contains("capability_info")
             && body.contains("capability_query")
             && body.contains("capability_command"),
         "mcp tools/list: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(r#"{"jsonrpc":"2.0","id":"resources","method":"resources/list"}"#),
+    );
+    assert_eq!(status, 200, "mcp resources/list: {body}");
+    assert!(
+        body.contains("terrane://docs/index") && body.contains("terrane://docs/app-building"),
+        "mcp resources/list: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"prompt","method":"prompts/get","params":{"name":"make_js_kv_app","arguments":{"id":"web-notes","name":"Web Notes"}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp prompts/get: {body}");
+    assert!(
+        body.contains("app_register_inline") && body.contains("web-notes"),
+        "mcp prompts/get: {body}"
     );
 
     let (status, body) = http(
@@ -718,8 +749,26 @@ fn serves_catalog_ui_and_invoke_over_http() {
     );
     assert_eq!(status, 200, "mcp workflow_info: {body}");
     assert!(
-        body.contains("app_register") && body.contains(r#""structuredContent""#),
+        body.contains("app_register_inline")
+            && body.contains("app_register")
+            && body.contains(r#""structuredContent""#),
         "mcp workflow_info: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"workflow-multi","method":"tools/call","params":{"name":"workflow_info","arguments":{"name":"make_js_multicap_app_no_filesystem"}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp multicap workflow_info: {body}");
+    assert!(
+        body.contains("js_multicap_audit")
+            && body.contains("replica.peer")
+            && body.contains("relational_db"),
+        "mcp multicap workflow_info: {body}"
     );
 
     let (status, body) = http(

@@ -64,9 +64,11 @@ window.terrane = {
 ## MCP host (shared tools; stdio and HTTP transports)
 
 The shared MCP surface implements `initialize`, `ping`, `tools/list`, and
-`tools/call` over the same host core, so an MCP client (e.g. Claude Code) can
-**select an app and act on it**. The stdio host reads newline-delimited JSON-RPC
-from stdin/stdout; the web host exposes the same behavior at `POST /mcp`.
+`tools/call`, plus read-only `resources/*` and guided `prompts/*`, over the same
+host core. An MCP client can **select an app and act on it** while also reading
+the host-level MCP manual and capability-owned docs. The stdio host reads
+newline-delimited JSON-RPC from stdin/stdout; the web host exposes the same
+behavior at `POST /mcp`.
 
 Tools:
 
@@ -77,6 +79,7 @@ Tools:
 | `app_recipe`         | `{ kind? }`                                      | app-building happy-path guidance                           |
 | `app_scaffold`       | `{ id, name, kind?, withUi? }`                   | generated bundle files as JSON                             |
 | `app_bundle_validate` | `{ path }`                                      | bundle manifest/ref validation                             |
+| `app_register_inline` | `{ files, id?, name?, runtime?, dryRun? }`      | MCP-only validated app registration from inline files      |
 | `app_register`       | `{ source, id?, name?, runtime?, dryRun? }`      | validated `app.add` dispatch or dry-run                    |
 | `list_apps`          | `{}`                                             | the installed apps (id, name, has_ui)                      |
 | `app_actions`        | `{ app }`                                        | the app's actions (verbs + args), as the app declares them |
@@ -92,10 +95,42 @@ app's reserved `__actions__` verb (see the App API), so the action list is the
 app's own — not hard-coded in the host.
 
 For weaker or blank-context models, the intended order starts one step earlier:
-`workflows_list` → `workflow_info` → exact tool calls. The `make_js_kv_app`
-workflow routes agents through `app_scaffold`, `app_bundle_validate`,
-`app_register` with `dryRun: true`, `app_register` commit, `app_actions`, and
-`invoke`.
+`workflows_list` → choose a workflow from `chooseByOutcome` → `workflow_info` →
+exact tool calls. The `make_js_kv_app` workflow routes agents through
+`app_scaffold`, `app_register_inline` with `dryRun: true`,
+`app_register_inline` commit, `app_actions`, and `invoke`.
+The harder `make_js_multicap_app_no_filesystem` workflow uses
+`app_scaffold` kind `js_multicap_audit` and proves five capability surfaces:
+`app`, `kv`, `crdt`, `relational_db`, and `replica`. Evaluation-style runs
+must invoke `summary` as its own read both before and after `clearKv`. `seed`
+and `clearKv` return JSON summaries too, but they do not replace the explicit
+pre-clear and post-clear `summary` calls that prove readable state around each
+mutation.
+Clients that already have a bundle directory can use `app_bundle_validate` and
+`app_register` instead.
+
+Resources:
+
+| Resource/template                    | Owner      | Contents                                           |
+| ------------------------------------ | ---------- | -------------------------------------------------- |
+| `terrane://docs/index`               | `host/mcp` | overall MCP guide                                  |
+| `terrane://docs/clients`             | `host/mcp` | client configuration and raw JSON-RPC examples     |
+| `terrane://docs/app-building`        | `host/mcp` | app-building workflows                             |
+| `terrane://docs/capability-operations` | `host/mcp` | direct capability query/command guidance         |
+| `terrane://docs/security`            | `host/mcp` | local MCP security and permission notes            |
+| `terrane://docs/weak-models`         | `host/mcp` | locked-down model playbook                         |
+| `terrane://capabilities/{namespace}` | cap crate  | capability-owned docs rendered from `src/doc.rs`   |
+| `terrane://workflows/{name}`         | `host/mcp` | executable workflow JSON                           |
+| `terrane://apps/{id}/actions`        | app        | app-declared action JSON                           |
+
+Prompts:
+
+| Prompt                    | Purpose                                                 |
+| ------------------------- | ------------------------------------------------------- |
+| `make_js_kv_app`          | build, register, inspect, and invoke a JS kv app        |
+| `register_app_bundle`     | validate and register an existing bundle directory      |
+| `inspect_app_actions`     | list apps and inspect an app's verbs                    |
+| `safe_capability_command` | run command help and dry-run before low-level dispatch  |
 
 JSON-returning tools include `structuredContent` alongside the compatibility
 text block, so clients do not need to parse JSON out of MCP text content.
@@ -114,6 +149,9 @@ Capability documentation follows the same generated-source rule:
 canonical `CapabilityDoc` render. `includeInternal` defaults to `false`, so
 implementation notes such as reserved backing-store layouts are hidden from
 agents and app authors unless explicitly requested.
+
+The ownership boundary is intentional: `host/mcp/docs` owns the overall MCP
+manual, while each `terrane-cap-*` crate owns its capability document.
 
 ```jsonc
 // tools/call → invoke

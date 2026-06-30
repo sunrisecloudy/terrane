@@ -71,6 +71,17 @@ pub fn kv_doc(include_internal: bool) -> CapabilityDoc {
                 expected: "The value for this app's settings/theme key only.".to_string(),
             },
             ExampleDoc {
+                title: "Safely read optional index keys".to_string(),
+                summary:
+                    "Generated apps commonly keep index keys such as event_ids. Treat absent index keys as empty before parsing JSON."
+                        .to_string(),
+                language: "js".to_string(),
+                code: include_str!("../examples/kv_optional_index.js").to_string(),
+                expected:
+                    "First-run reads return an empty array; after add, the index stores event ids and reads each event value."
+                        .to_string(),
+            },
+            ExampleDoc {
                 title: "Configure storage projection from the host".to_string(),
                 summary:
                     "Storage commands are host/user commands, not ctx.resource methods. They record replayed binding events."
@@ -89,6 +100,8 @@ pub fn kv_doc(include_internal: bool) -> CapabilityDoc {
                 "Keys beginning with {RESERVED_PREFIX:?} are reserved for platform capabilities. Public kv commands and resource writes reject them, and public reads/scans hide them."
             ),
             "Values are strings. Apps should serialize JSON explicitly when storing structured data."
+                .to_string(),
+            "For optional/index keys, app code should treat a missing value as empty before JSON.parse; a small kvGetOrNull helper is safest for generated apps."
                 .to_string(),
             "Reads are derived from folded state and are not recorded as events.".to_string(),
             "ctx.resource.kv.set and ctx.resource.kv.rm write deterministic kv.set and kv.deleted records through the runtime host."

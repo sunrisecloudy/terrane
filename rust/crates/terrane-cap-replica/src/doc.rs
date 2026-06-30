@@ -33,10 +33,16 @@ pub fn replica_doc(include_internal: bool) -> CapabilityDoc {
             summary: "Initialize the home once before CRDT writes need a Loro PeerID.".to_string(),
             language: "cli".to_string(),
             code: "terrane replica init".to_string(),
-            expected: "records replica.initialized once; later init calls are no-ops".to_string(),
+            expected:
+                "first initialization records replica.initialized; later init calls can return records:0 because the home already has a peer"
+                    .to_string(),
         }],
         constraints: vec![
-            "replica.init returns Effect::NewReplicaId until a peer exists, then commits no events."
+            "replica.init is idempotent: if replica.peer already exists, the command is successful and commits no new events, often surfaced as records:0."
+                .to_string(),
+            "Use capability_query replica.peer after replica.init; a numeric u64 peer is the proof of initialized identity even when replica.init reports records:0."
+                .to_string(),
+            "When no peer exists, replica.init returns Effect::NewReplicaId and the edge records replica.initialized."
                 .to_string(),
             "The edge runner mints the peer id with OS entropy and records replica.initialized."
                 .to_string(),
@@ -72,14 +78,27 @@ fn replica_commands() -> Vec<CommandDoc> {
     vec![command_doc(
         "replica.init",
         &[],
-        "effect|commit",
-        "Ensure this home has one stable peer id, minting it at the edge when absent.",
+        "effect|commit; records:0 is a successful no-op when already initialized",
+        "Ensure this home has one stable peer id, minting it at the edge when absent and doing nothing when a peer already exists.",
     )
     .with_effects(&["NewReplicaId"])
     .with_emits(&["replica.initialized"])
     .with_errors(&[
         "edge runner unavailable when a new peer id must be minted",
         "storage failure while recording replica.initialized",
+    ])
+    .with_examples(&[
+        ExampleDoc {
+            title: "Initialize then read peer".to_string(),
+            summary: "Agents should query replica.peer after init instead of inferring success from record count alone."
+                .to_string(),
+            language: "mcp".to_string(),
+            code: r#"capability_command {"name":"replica.init"}
+capability_query {"capability":"replica","query":"peer","args":[]}"#
+                .to_string(),
+            expected: "replica.peer returns a u64. If init reports records:0, the peer was already present."
+                .to_string(),
+        },
     ])]
 }
 

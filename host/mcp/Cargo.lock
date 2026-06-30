@@ -2997,6 +2997,7 @@ version = "0.1.0"
 dependencies = [
  "nanoserde",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "terrane-api",
  "terrane-core",

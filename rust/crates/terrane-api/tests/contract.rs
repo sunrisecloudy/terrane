@@ -7,9 +7,9 @@ use terrane_api::{
     CapabilityCommandHelpInfo, CapabilityCommandInfo, CapabilityDocInfo, CapabilityEventInfo,
     CapabilityExampleInfo, CapabilityManifestInfo, CapabilityParamInfo, CapabilityQueryInfo,
     HealthResponse, InvokeRequest, InvokeResponse, TOOL_APP_ACTIONS, TOOL_APP_BUNDLE_VALIDATE,
-    TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST,
-    TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE,
-    TOOL_LIST_APPS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
+    TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD,
+    TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY,
+    TOOL_INVOKE, TOOL_LIST_APPS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
 };
 
 #[test]
@@ -88,6 +88,7 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
             TOOL_APP_RECIPE,
             TOOL_APP_SCAFFOLD,
             TOOL_APP_BUNDLE_VALIDATE,
+            TOOL_APP_REGISTER_INLINE,
             TOOL_APP_REGISTER,
             TOOL_LIST_APPS,
             TOOL_APP_ACTIONS,
@@ -125,10 +126,68 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
         .expect("workflow_info tool exists");
     assert!(
         workflow_tool.description.contains("executable recipe")
-            && workflow_tool.input_schema.contains("make_js_kv_app"),
+            && workflow_tool.input_schema.contains("make_js_kv_app")
+            && workflow_tool
+                .input_schema
+                .contains("make_js_multicap_app_no_filesystem"),
         "workflow_info should advertise weak-model recipes: {} / {}",
         workflow_tool.description,
         workflow_tool.input_schema
+    );
+
+    let workflows_list_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_WORKFLOWS_LIST)
+        .expect("workflows_list tool exists");
+    assert!(
+        workflows_list_tool.description.contains("chooseByOutcome"),
+        "workflows_list should advertise outcome-based workflow selection: {}",
+        workflows_list_tool.description
+    );
+
+    let inline_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_REGISTER_INLINE)
+        .expect("app_register_inline tool exists");
+    assert!(
+        inline_tool.description.contains("no filesystem")
+            && inline_tool.description.contains("app.remove")
+            && inline_tool.description.contains("JSON array")
+            && inline_tool.description.contains("complete bundle")
+            && inline_tool.input_schema.contains(r#""files""#),
+        "app_register_inline should advertise MCP-only registration: {} / {}",
+        inline_tool.description,
+        inline_tool.input_schema
+    );
+    assert!(
+        inline_tool.input_schema.contains("Do not JSON-stringify")
+            && inline_tool.input_schema.contains("complete bundle"),
+        "app_register_inline schema should warn against stringified or partial files: {}",
+        inline_tool.input_schema
+    );
+
+    let recipe_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_RECIPE)
+        .expect("app_recipe tool exists");
+    assert!(
+        recipe_tool.description.contains("withUi:true")
+            && recipe_tool.description.contains("window.terrane.invoke")
+            && recipe_tool.description.contains("kvGetOrNull"),
+        "app_recipe should advertise UI app guidance: {}",
+        recipe_tool.description
+    );
+
+    let scaffold_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_SCAFFOLD)
+        .expect("app_scaffold tool exists");
+    assert!(
+        scaffold_tool.description.contains("withUi:true")
+            && scaffold_tool.description.contains("natural-language")
+            && scaffold_tool.description.contains("defensive KV reads"),
+        "app_scaffold should advertise visible app scaffolding: {}",
+        scaffold_tool.description
     );
 }
 
@@ -171,6 +230,7 @@ fn host_contract_lists_the_v1_subset() {
             TOOL_APP_RECIPE,
             TOOL_APP_SCAFFOLD,
             TOOL_APP_BUNDLE_VALIDATE,
+            TOOL_APP_REGISTER_INLINE,
             TOOL_APP_REGISTER,
             TOOL_LIST_APPS,
             TOOL_APP_ACTIONS,
@@ -180,6 +240,24 @@ fn host_contract_lists_the_v1_subset() {
             TOOL_CAPABILITY_QUERY,
             TOOL_CAPABILITY_COMMAND
         ]
+    );
+
+    let resources: Vec<&str> = c.mcp_resources.iter().map(|r| r.uri.as_str()).collect();
+    assert!(resources.contains(&"terrane://docs/index"));
+    assert!(resources.contains(&"terrane://docs/app-building"));
+
+    let templates: Vec<&str> = c
+        .mcp_resource_templates
+        .iter()
+        .map(|r| r.uri_template.as_str())
+        .collect();
+    assert!(templates.contains(&"terrane://capabilities/{namespace}"));
+
+    let prompts: Vec<&str> = c.mcp_prompts.iter().map(|p| p.name.as_str()).collect();
+    assert!(prompts.contains(&"make_js_kv_app"));
+    assert!(
+        !prompts.contains(&"make_js_multicap_app"),
+        "weak-model eval prompts should stay outside the served MCP prompt surface"
     );
 
     // The whole contract serializes (this is what the export folds in).
