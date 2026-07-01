@@ -214,6 +214,7 @@ impl PreviewStore {
             app_name: preview.name.clone(),
             org: terrane_core::LOCAL_ORG.to_string(),
             subject: LOCAL_OWNER_SUBJECT.to_string(),
+            operation: "preview".to_string(),
             source: "preview".to_string(),
             missing_resources: missing.clone(),
             admin_url: admin_url.clone(),

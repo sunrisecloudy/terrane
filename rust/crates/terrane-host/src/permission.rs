@@ -22,6 +22,7 @@ pub struct PermissionRequired {
     pub app_name: String,
     pub org: String,
     pub subject: String,
+    pub operation: String,
     pub source: String,
     #[nserde(rename = "missingResources")]
     pub missing_resources: Vec<String>,
@@ -144,6 +145,7 @@ pub fn permission_required_for_app_with_admin_base(
         app_name,
         org: principal.org,
         subject: principal.subject,
+        operation: String::new(),
         source: String::new(),
         missing_resources: missing,
         admin_url: admin_url.clone(),
@@ -168,6 +170,7 @@ pub fn request_permission_for_app_with_admin_base(
         return Ok(None);
     };
     required.source = source.to_string();
+    required.operation = operation.to_string();
     let resources = required.missing_resources.join(",");
     crate::dispatch_on_core(
         core,
@@ -189,6 +192,159 @@ pub fn request_permission_for_app_with_admin_base(
         required.request_status = request.status;
     }
     Ok(Some(required))
+}
+
+pub fn permission_required_for_namespace_with_admin_base(
+    core: &HostCore,
+    app: &str,
+    namespace: &str,
+    operation: &str,
+    source: &str,
+    admin_base_url: &str,
+) -> Result<Option<PermissionRequired>, String> {
+    permission_required_for_namespace_status(
+        core,
+        app,
+        namespace,
+        operation,
+        source,
+        admin_base_url,
+        None,
+    )
+}
+
+pub fn preview_permission_required_for_namespace_with_admin_base(
+    core: &HostCore,
+    app: &str,
+    namespace: &str,
+    operation: &str,
+    source: &str,
+    admin_base_url: &str,
+) -> Result<Option<PermissionRequired>, String> {
+    permission_required_for_namespace_status(
+        core,
+        app,
+        namespace,
+        operation,
+        source,
+        admin_base_url,
+        Some("preview"),
+    )
+}
+
+pub fn request_permission_for_namespace_with_admin_base(
+    core: &mut HostCore,
+    app: &str,
+    namespace: &str,
+    operation: &str,
+    source: &str,
+    admin_base_url: &str,
+) -> Result<Option<PermissionRequired>, String> {
+    let Some(mut required) = permission_required_for_namespace_with_admin_base(
+        core,
+        app,
+        namespace,
+        operation,
+        source,
+        admin_base_url,
+    )?
+    else {
+        return Ok(None);
+    };
+    let resources = required.missing_resources.join(",");
+    crate::dispatch_on_core(
+        core,
+        "auth.permission.request",
+        &[
+            required.request_id.clone(),
+            required.subject.clone(),
+            app.to_string(),
+            operation.to_string(),
+            source.to_string(),
+            resources,
+            required.app_name.clone(),
+            required.resume_token_hash.clone(),
+        ],
+    )?;
+    if let Some(request) = terrane_cap_auth::permission_request(core.state(), &required.request_id)
+        .map_err(|e| e.to_string())?
+    {
+        required.request_status = request.status;
+    }
+    Ok(Some(required))
+}
+
+fn permission_required_for_namespace_status(
+    core: &HostCore,
+    app: &str,
+    namespace: &str,
+    operation: &str,
+    source: &str,
+    admin_base_url: &str,
+    request_status_override: Option<&str>,
+) -> Result<Option<PermissionRequired>, String> {
+    let grantable: BTreeSet<_> = terrane_core::grant_resource_namespaces()
+        .into_iter()
+        .collect();
+    if !grantable.contains(namespace) {
+        return Err(format!("namespace is not grantable: {namespace}"));
+    }
+    let app_record = core
+        .state()
+        .app
+        .apps
+        .get(app)
+        .ok_or_else(|| format!("no such app: {app}"))?;
+    let principal = ExecutionPrincipal::local_owner();
+    if terrane_cap_auth::namespace_granted(core.state(), &principal, app, namespace)
+        .map_err(|e| e.to_string())?
+    {
+        return Ok(None);
+    }
+
+    let missing = vec![namespace.to_string()];
+    let request_id = permission_request_id(app, &principal.subject, &missing);
+    let admin_url = admin_url(admin_base_url, &request_id);
+    let resume_token_hash = resume_token_hash(&request_id);
+    let request_status = match request_status_override {
+        Some(status) => status.to_string(),
+        None => terrane_cap_auth::permission_request(core.state(), &request_id)
+            .map_err(|e| e.to_string())?
+            .map(|request| request.status)
+            .unwrap_or_else(|| "unrecorded".to_string()),
+    };
+    let grant_commands = vec![format!(
+        "terrane auth grant {LOCAL_OWNER_SUBJECT} {app} {namespace}"
+    )];
+    let preview = request_status_override == Some("preview");
+    let resume_tool = if preview { "" } else { "permission_check" }.to_string();
+    let message = if preview {
+        format!(
+            "permission preview for direct capability command {operation}: grant {namespace}; rerun without dryRun to create an approvable request"
+        )
+    } else {
+        format!(
+            "permission required for direct capability command {operation}: grant {namespace}; open {admin_url}"
+        )
+    };
+    Ok(Some(PermissionRequired {
+        kind: "permission_required".to_string(),
+        status: "permission_required".to_string(),
+        request_id,
+        app: app.to_string(),
+        app_name: app_record.name.clone(),
+        org: principal.org,
+        subject: principal.subject,
+        operation: operation.to_string(),
+        source: source.to_string(),
+        missing_resources: missing,
+        admin_url,
+        grant_commands,
+        request_status,
+        resume_tool,
+        resume_token_hash,
+        message,
+    }))
 }
 
 pub fn permission_request_view(

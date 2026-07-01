@@ -196,6 +196,110 @@ fn request_permission_persists_pending_and_approve_grants() {
 }
 
 #[test]
+fn namespace_permission_preview_is_side_effect_free() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    let mut core = terrane_host::open_at_home(&home).unwrap();
+    terrane_host::dispatch_on_core(&mut core, "app.add", &["demo".into(), "demo".into()]).unwrap();
+
+    let required =
+        terrane_host::permission::preview_permission_required_for_namespace_with_admin_base(
+            &core,
+            "demo",
+            "kv",
+            "capability_command:kv.set",
+            "mcp_stdio",
+            "http://127.0.0.1:49152",
+        )
+        .unwrap()
+        .expect("missing kv should create a preview requirement");
+
+    assert_eq!(required.operation, "capability_command:kv.set");
+    assert_eq!(required.source, "mcp_stdio");
+    assert_eq!(required.missing_resources, vec!["kv"]);
+    assert_eq!(required.request_status, "preview");
+    assert_eq!(required.resume_tool, "");
+    assert!(required.message.contains("rerun without dryRun"));
+    assert!(
+        terrane_cap_auth::permission_request(core.state(), &required.request_id)
+            .unwrap()
+            .is_none(),
+        "preview must not record a pending request"
+    );
+}
+
+#[test]
+fn namespace_permission_request_records_direct_operation() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    let mut core = terrane_host::open_at_home(&home).unwrap();
+    terrane_host::dispatch_on_core(&mut core, "app.add", &["demo".into(), "demo".into()]).unwrap();
+
+    let required = terrane_host::permission::request_permission_for_namespace_with_admin_base(
+        &mut core,
+        "demo",
+        "kv",
+        "capability_command:kv.set",
+        "mcp_http",
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .expect("missing kv should create a request");
+
+    assert_eq!(required.operation, "capability_command:kv.set");
+    assert_eq!(required.source, "mcp_http");
+    assert_eq!(required.missing_resources, vec!["kv"]);
+    assert_eq!(required.request_status, "pending");
+    assert_eq!(required.resume_tool, "permission_check");
+
+    let view = terrane_host::permission::permission_request_view(
+        &core,
+        &required.request_id,
+        "http://127.0.0.1:49152",
+    )
+    .unwrap()
+    .expect("recorded request view");
+    assert_eq!(view.operation, "capability_command:kv.set");
+    assert_eq!(view.source, "mcp_http");
+    assert_eq!(view.resources.len(), 1);
+    assert_eq!(view.resources[0].namespace, "kv");
+}
+
+#[test]
+fn namespace_permission_reports_none_when_granted_and_errors_for_unknown_app() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    let mut core = terrane_host::open_at_home(&home).unwrap();
+    terrane_host::dispatch_on_core(&mut core, "app.add", &["demo".into(), "demo".into()]).unwrap();
+    grant(&mut core, "demo", "kv");
+
+    assert!(
+        terrane_host::permission::permission_required_for_namespace_with_admin_base(
+            &core,
+            "demo",
+            "kv",
+            "capability_command:kv.set",
+            "mcp_stdio",
+            "http://127.0.0.1:49152",
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        terrane_host::permission::permission_required_for_namespace_with_admin_base(
+            &core,
+            "missing",
+            "kv",
+            "capability_command:kv.set",
+            "mcp_stdio",
+            "http://127.0.0.1:49152",
+        )
+        .unwrap_err(),
+        "no such app: missing"
+    );
+}
+
+#[test]
 fn deny_and_cancel_keep_permission_required() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");
