@@ -10,8 +10,8 @@ This directory owns the overall MCP manual:
 - which MCP concepts Terrane uses
 - the app-building workflow
 - guarded capability operation
-- security and permission guidance
-- weak-model and no-source operation
+- security and permission guidance (default-deny resources + grant handshake)
+- constrained-model and no-source operation
 
 Capability semantics do not live here. Each capability owns its own document in
 its `terrane-cap-*` crate through `Capability::doc(include_internal)`. MCP serves
@@ -43,6 +43,12 @@ For app building:
 7. Inspect with `app_actions`.
 8. Act with `invoke`.
 
+Step 8 can come back with `isError: true` and a `permission_required` object
+instead of a result: the app declared a resource (such as `kv`) in its manifest,
+but declaring a resource no longer auto-grants it — resources are default-deny.
+Do not treat this as a dead end. See the [Permissions](#permissions) section
+below for exactly what to do next.
+
 Pass `app_register_inline.files` as the actual `structuredContent.files` array,
 not as a JSON string. On registration retry, include the complete bundle file
 array again, including `manifest.json`, backend, UI, and assets.
@@ -64,6 +70,110 @@ For capability operation:
 4. Use `capability_command` only after `help: true` and, when supported,
    `dryRun: true`.
 
+## Permissions
+
+Terrane resources are **default-deny**. An app's `manifest.json` only *requests*
+a namespace (`kv`, `crdt`, `relational_db`, `build`); it does not grant it. Until
+an admin grants that namespace to the executing subject for that app, the app
+backend sees no `ctx.resource.<namespace>` methods, and `invoke` / `app_actions`
+return an error instead of a result. Granting is a **trusted-admin-only** action:
+an MCP client cannot grant itself. This is expected and recoverable — follow the
+handshake below.
+
+### Detecting a denied resource
+
+`invoke` and `app_actions` return the denial as a tool result with
+`isError: true`. The payload is a `permission_required` object, present both as
+`structuredContent` and as JSON text in `content[0].text`:
+
+```json
+{
+  "content": [{ "type": "text", "text": "<permission_required JSON>" }],
+  "structuredContent": {
+    "type": "permission_required",
+    "status": "permission_required",
+    "requestId": "local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "app": "notes-demo",
+    "appName": "Notes Demo",
+    "org": "local",
+    "subject": "user:local-owner",
+    "source": "mcp_stdio",
+    "missingResources": ["kv"],
+    "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "grantCommands": ["terrane auth grant user:local-owner notes-demo kv"],
+    "requestStatus": "pending",
+    "resumeTool": "permission_check",
+    "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
+  },
+  "isError": true
+}
+```
+
+When you see `structuredContent.type == "permission_required"`, read
+`missingResources`, `grantCommands`, and `adminUrl` — do not retry blindly and do
+not give up. Surfacing this response also *records* a pending permission request,
+so `requestStatus` becomes `pending` and it is immediately checkable and
+approvable.
+
+### Getting a grant (three exact paths)
+
+The local subject is always `user:local-owner`. Grantable namespaces and their
+verbs: `kv` (`read`, `write`), `crdt` (`read`, `write`), `relational_db`
+(`read`, `write`), `build` (`read`, read-only).
+
+1. **CLI** — run each string in `grantCommands` verbatim, one per missing
+   namespace. The command form is:
+
+   ```
+   terrane auth grant user:local-owner <app> <namespace>
+   ```
+
+   Example: `terrane auth grant user:local-owner notes-demo kv`. Arg order is
+   `subject, app, namespace, [verbs]`; omitting verbs grants the namespace's full
+   verb set. The CLI is a trusted host, so this is allowed.
+
+2. **Admin UI** — open `adminUrl` and approve. This is a trusted admin action on
+   the web host and requires the admin surface (control routes require the
+   `X-Terrane-Admin: local-admin` header). The requesting agent cannot approve on
+   its own behalf.
+
+3. **Poll from MCP** — call `permission_check` with
+   `{ "requestId": structuredContent.requestId }` and wait until `status` is
+   `approved`. A human or admin still performs the approval via path 1 or 2; MCP
+   only observes it.
+
+Then **retry `invoke`** with the same `app`, `verb`, and `args` — it now
+succeeds.
+
+### MCP permission tools
+
+None of these grant access; they observe and manage requests.
+
+- `permission_check` — input `{ "requestId": "<id>" }`; returns the request view
+  (with `status`) or the text error `permission request not found`.
+- `permission_cancel` — input `{ "requestId": "<id>", "reason"?: "<text>" }`;
+  cancels a pending request. Approval still remains a trusted admin UI action.
+- `permission_requests` — input `{}`; returns
+  `{ "requests": [...] }` for all local requests.
+
+Status values to handle: `pending`, `approved`, `denied`, `cancelled` (plus
+`unrecorded` only on `permission_required.requestStatus` before a request is
+recorded).
+
+### Do not
+
+Do **not** try to grant via `capability_command` with an `auth.*` name (e.g.
+`auth.grant`). The MCP `capability_command` tool refuses any `auth.*` command as
+trusted-admin-only. Use the CLI `grantCommands`, the admin UI at `adminUrl`, or
+`permission_check` polling instead.
+
+For the full grant handshake with step-by-step recipes, see
+`terrane://docs/agent-playbook` (`AGENT_PLAYBOOK.md`) and
+`terrane://docs/app-building` (`APP_BUILDING.md`). For the security rationale
+behind default-deny and trusted-admin approval, see `terrane://docs/security`
+(`SECURITY.md`).
+
 ## Resource Index
 
 - `terrane://docs/index`
@@ -71,7 +181,7 @@ For capability operation:
 - `terrane://docs/app-building`
 - `terrane://docs/capability-operations`
 - `terrane://docs/security`
-- `terrane://docs/weak-models`
+- `terrane://docs/agent-playbook`
 - `terrane://capabilities/{namespace}`
 - `terrane://workflows/{name}`
 - `terrane://apps/{id}/actions`

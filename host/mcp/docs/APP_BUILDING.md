@@ -3,6 +3,27 @@
 The primary MCP use case is building and operating apps. The preferred route is
 MCP-only and does not require source-code access or shell access.
 
+## Resources Are Default-Deny (Read This First)
+
+Declaring a resource in `manifest.json` (`kv`, `crdt`, `relational_db`,
+`build`) **no longer auto-grants it**. Resources are **default-deny**: the
+manifest only *requests* a namespace. Inside the app backend,
+`ctx.resource.<ns>` is **absent** until an admin grants that namespace to the
+executing subject for that app. Registering an app is therefore not enough to
+run it — there is a **grant step** between install and a successful `invoke`.
+
+Only two tools surface this: `invoke` and `app_actions`. When you run either
+against an app with an ungranted requested namespace, the result comes back with
+`"isError": true` and a `permission_required` object (see
+[Handling `permission_required`](#handling-permission_required)). This is
+expected, not a failure of your app — do not remove or rewrite the app. Do the
+grant, then retry the same call.
+
+An MCP client **cannot grant itself**. Granting is a trusted-admin action
+performed via the CLI, the admin UI, or by a human. Your job as an MCP client is
+to (1) trigger the request by invoking, (2) surface the `grantCommands` /
+`adminUrl` so an admin can approve, and (3) poll `permission_check`, then retry.
+
 ## Preferred MCP-Only Flow
 
 1. Call `app_recipe` with `{ "kind": "js_kv_app" }`.
@@ -12,7 +33,11 @@ MCP-only and does not require source-code access or shell access.
 5. Call `app_register_inline` again with the same files and no `dryRun`.
 6. Call `list_apps`.
 7. Call `app_actions` for the new app id.
-8. Call `invoke` only with verbs documented by `app_actions`.
+8. Call `invoke` with a verb documented by `app_actions`.
+9. **If the result is `"isError": true` with a `permission_required` object,**
+   the app's requested namespace (e.g. `kv`) is not yet granted. Grant it (CLI,
+   admin UI, or human), then repeat step 8. See
+   [Handling `permission_required`](#handling-permission_required).
 
 `app_register_inline` writes the app bundle under `TERRANE_HOME/apps/<id>` only
 when committing. It still dispatches `app.add` through core, so catalog mutation
@@ -66,6 +91,22 @@ A JS app has a `manifest.json` and a backend file such as `main.js`.
 }
 ```
 
+`manifest.resources` is a **request list, not a grant**. Listing `"kv"` asks the
+host for the `kv` namespace; it does not turn it on. Until an admin grants `kv`
+for this app and subject, `ctx.resource.kv` is undefined inside the backend and
+the host returns a `permission_required` error instead of running the app. See
+[Resources Are Default-Deny](#resources-are-default-deny-read-this-first).
+
+Grantable namespaces and their verbs (namespaces requested but not in this table
+are silently skipped, not blocked):
+
+| Namespace | Verbs |
+|---|---|
+| `kv` | `read`, `write` |
+| `crdt` | `read`, `write` |
+| `relational_db` | `read`, `write` |
+| `build` | `read` (read-only) |
+
 The backend exposes `handle(input)`. `input[0]` is the verb and the rest are
 string arguments. Apps should implement `__actions__` so MCP clients can inspect
 verbs before invoking them.
@@ -111,7 +152,152 @@ explicitly, and still verify the backend verbs through `app_actions` and
 
 Capability-specific app resources, such as `ctx.resource.kv`, are documented by
 the owning capability. Read `terrane://capabilities/kv` for KV semantics,
-constraints, errors, and examples.
+constraints, errors, and examples. Remember: `ctx.resource.kv` only exists after
+`kv` is granted for this app.
+
+## Handling `permission_required`
+
+When you `invoke` (or call `app_actions`) against an app whose requested
+namespace is not yet granted, the tool result is an **error**: `"isError": true`,
+with the same object in `structuredContent` and as a JSON string in
+`content[0].text`.
+
+```json
+{
+  "content": [{ "type": "text", "text": "<the permission_required JSON as a string>" }],
+  "structuredContent": {
+    "type": "permission_required",
+    "status": "permission_required",
+    "requestId": "local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "app": "notes-demo",
+    "appName": "Notes Demo",
+    "org": "local",
+    "subject": "user:local-owner",
+    "source": "mcp_stdio",
+    "missingResources": ["kv"],
+    "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "grantCommands": ["terrane auth grant user:local-owner notes-demo kv"],
+    "requestStatus": "pending",
+    "resumeTool": "permission_check",
+    "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
+  },
+  "isError": true
+}
+```
+
+Detect it by checking `structuredContent.type == "permission_required"` (or
+`status == "permission_required"`). The fields you act on:
+
+- `missingResources` — the namespaces that need granting.
+- `grantCommands` — one ready-to-run CLI command per missing namespace.
+- `adminUrl` — the admin page / deep link for a human to approve.
+- `requestId` — pass this to `permission_check` to poll status.
+- `resumeTool` — always `permission_check`; the tool to poll with.
+
+Surfacing this error **records a pending request** as a side effect, so the
+request is immediately listable and approvable — you do not need a separate
+"create request" call.
+
+### Do NOT try to grant from MCP
+
+The MCP `capability_command` tool **refuses** any `auth.*` name with
+`"<name> is trusted-admin-only; use the permission request/admin approval flow"`.
+There is no MCP tool that grants a namespace. Granting is always a trusted-admin
+action. The MCP permission tools below only *inspect* or *cancel* requests — none
+of them grants access:
+
+| Tool | Input | Purpose |
+|---|---|---|
+| `permission_check` | `{ "requestId": "<id>" }` | Returns the request view; poll until `status` is `approved`. If `status` becomes `denied` or `cancelled`, **stop polling** — the grant will not arrive; surface it to the human rather than retrying `invoke`. |
+| `permission_cancel` | `{ "requestId": "<id>", "reason"?: "<text>" }` | Cancels a pending request. Does not grant. |
+| `permission_requests` | `{}` | Lists all local requests (`{ "requests": [...] }`). |
+
+`permission_check` returns a `PermissionRequestView` whose `status` is one of
+`pending`, `approved`, `denied`, or `cancelled`. Retry `invoke` only once
+`status` is `approved`.
+
+### Three ways to grant (all trusted-admin)
+
+**(a) CLI — run the strings in `grantCommands` verbatim.** The command shape is:
+
+```
+terrane auth grant user:local-owner <app> <namespace>
+```
+
+Arg order is `subject app namespace [verbs...]`. Omitting `verbs` grants the
+namespace's full verb set (e.g. `read write` for `kv`). The local subject is
+always `user:local-owner`. Example from the object above:
+
+```
+terrane auth grant user:local-owner notes-demo kv
+```
+
+The CLI is a trusted host, so `auth grant` is admitted. There is no dedicated
+`auth` subcommand — any `auth.*` command (`auth grant`, `auth revoke`,
+`auth agent.register`) flows through the generic `<ns> <verb> [args...]` path.
+
+**(b) Admin UI — open `adminUrl`.** The admin surface lives at
+`http://127.0.0.1:8780/__terrane/admin`, and the deep link is
+`http://127.0.0.1:8780/__terrane/admin/requests/<requestId>`. An admin approves
+there (which mints the missing grants and marks the request `approved`), or
+grants directly. Admin control routes require the trusted header
+`X-Terrane-Admin: local-admin` or they return `403 "admin header required"`, so
+this is genuinely an admin action, not something the requesting agent can
+self-serve.
+
+**(c) Human hand-off.** When neither CLI nor admin surface is available to you,
+report the `message`, the `grantCommands`, and the `adminUrl` to the user and ask
+them to approve, then poll `permission_check`.
+
+## Worked Example: A KV App End To End
+
+This is the full path for an app that needs `kv`, including the grant step.
+
+1. Orient (optional): `workflows_list`, then pick
+   `make_js_kv_app_no_filesystem`.
+2. Scaffold:
+
+   ```json
+   app_scaffold { "kind": "js_kv_app", "id": "notes-demo", "name": "Notes Demo" }
+   ```
+
+   The generated `manifest.json` includes `"resources": ["kv"]` — a request,
+   not a grant.
+3. Dry-run register with the scaffolded files:
+
+   ```json
+   app_register_inline { "files": <structuredContent.files>, "dryRun": true }
+   ```
+4. Commit register (same files, no `dryRun`):
+
+   ```json
+   app_register_inline { "files": <structuredContent.files> }
+   ```
+5. Inspect verbs: `app_actions { "app": "notes-demo" }`.
+6. Invoke a verb:
+
+   ```json
+   invoke { "app": "notes-demo", "verb": "write", "args": ["hello"] }
+   ```
+7. **First invoke returns `"isError": true`** with
+   `structuredContent.type == "permission_required"` and
+   `missingResources: ["kv"]`. This is expected on first run. Do **not** delete
+   or rebuild the app.
+8. Grant `kv` (pick one):
+   - CLI: run each string in `grantCommands`, e.g.
+     `terrane auth grant user:local-owner notes-demo kv`.
+   - Admin UI: open `structuredContent.adminUrl` and approve.
+   - Poll: call `permission_check { "requestId": <requestId> }` until
+     `status` is `approved`.
+9. **Retry the exact same invoke** — now it succeeds:
+
+   ```json
+   invoke { "app": "notes-demo", "verb": "write", "args": ["hello"] }
+   ```
+
+If you get stuck at step 7 with no way to grant, that is the moment to hand off
+to a human with the `grantCommands` and `adminUrl` — not to modify the app.
 
 ## Replacing A Generated App
 
@@ -151,9 +337,21 @@ MCP-only sequence:
 7. Call `capability_query` for `replica.peer` and `app.exists`.
 8. Call `app_actions`, then invoke `seed`, `summary`, `clearKv`, and `summary`.
 
+Because this app requests `kv`, `crdt`, **and** `relational_db`, the first
+`invoke` (or `app_actions`) reports `permission_required` with **all** ungranted
+namespaces in `missingResources`. Grant every one before the app runs — the
+`grantCommands` array already contains one command per missing namespace, e.g.:
+
+```
+terrane auth grant user:local-owner <app> kv
+terrane auth grant user:local-owner <app> crdt
+terrane auth grant user:local-owner <app> relational_db
+```
+
 The generated app keeps `replica` outside `ctx.resource`: replica identity is an
-operator/core capability checked through MCP direct tools. App code uses
-`ctx.resource.kv`, `ctx.resource.crdt`, and `ctx.resource.relational_db`.
+operator/core capability checked through the direct MCP tools above, so it is not
+part of the grant flow. Once granted, app code uses `ctx.resource.kv`,
+`ctx.resource.crdt`, and `ctx.resource.relational_db`.
 
 For evaluation-style tasks, always call `summary` separately after `seed` and
 again after `clearKv`. The `seed` and `clearKv` actions return summaries too,
@@ -171,3 +369,11 @@ reads.
 - Do not assume filesystem tools are available.
 - Do not count a UI app complete from backend invokes alone when the requested
   outcome is an interactive page.
+- Do not treat `manifest.resources` as a grant; it is only a request. Expect a
+  `permission_required` error on the first `invoke` of a fresh app.
+- Do not delete, rewrite, or re-register an app just because `invoke` returned
+  `permission_required`. Grant the namespace and retry the same call.
+- Do not try to grant via MCP (`capability_command` with an `auth.*` name is
+  refused). Use `grantCommands`, the `adminUrl`, or hand off to a human.
+- Do not give up when a resource is denied. Follow the handshake: surface
+  `grantCommands`/`adminUrl`, poll `permission_check` until `approved`, retry.

@@ -221,13 +221,19 @@ pub fn mcp_tools() -> Vec<ToolDef> {
         ToolDef {
             name: TOOL_APP_ACTIONS,
             description: "Describe an app's available actions (verbs and their args), as the app \
-                          declares them. Call this before `invoke` to discover what an app can do.",
+                          declares them. Call this before `invoke` to discover what an app can do. \
+                          If a requested resource is not yet granted this returns isError:true with a \
+                          permission_required object in structuredContent; run its grantCommands (or open \
+                          adminUrl for an admin to approve), then retry, and poll status with permission_check.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"}},"required":["app"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_INVOKE,
             description: "Run a verb on an app's backend and return its string output, \
-                          e.g. {\"app\":\"todo-cli-collaborate\",\"verb\":\"add\",\"args\":[\"buy milk\"]}.",
+                          e.g. {\"app\":\"todo-cli-collaborate\",\"verb\":\"add\",\"args\":[\"buy milk\"]}. \
+                          On an ungranted resource this returns isError:true with a permission_required object \
+                          in structuredContent; run its grantCommands (or open adminUrl for an admin to approve), \
+                          then retry the same call, and poll status with permission_check.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"},"verb":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app","verb"],"additionalProperties":false}"#,
         },
         ToolDef {
@@ -302,9 +308,9 @@ pub fn mcp_resources() -> Vec<ResourceDef> {
             mime_type: "text/markdown",
         },
         ResourceDef {
-            uri: "terrane://docs/weak-models",
-            name: "Terrane MCP Weak Models",
-            description: "A constrained-model playbook for no-source, no-shell app creation.",
+            uri: "terrane://docs/agent-playbook",
+            name: "Terrane MCP Agent Playbook",
+            description: "Agent playbook for no-source, no-shell app creation and the permission grant handshake.",
             mime_type: "text/markdown",
         },
     ]

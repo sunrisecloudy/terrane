@@ -81,8 +81,16 @@ function handle(input) {
 ### `ctx` for JS backends
 
 A global `ctx` object is injected. `ctx.resource.<namespace>` is present only
-for the namespaces your `manifest.json` lists in `resources` (the sandbox: an
-undeclared resource is simply absent).
+when **both** conditions hold:
+
+1. your `manifest.json` lists the namespace in `resources` (this only *requests*
+   access — it does not grant it), and
+2. an admin has **granted** that namespace to the executing subject for your app.
+
+Resources are **default-deny**. Declaring a namespace in the manifest does not
+auto-grant it: until the grant exists, `ctx.resource.<namespace>` is **absent**
+(`undefined`). Always **feature-detect** before use — see
+[Default-deny resources & the permission handshake](#default-deny-resources--the-permission-handshake).
 
 ### WASM backend ABI
 
@@ -104,10 +112,24 @@ argument is the same packed pointer/length pair. The runtime checks
 ### Resources
 
 `ctx.resource.<namespace>` exposes the platform capabilities your backend may
-use — present only for the namespaces your manifest declares in `resources` (the
-sandbox). App-scoped (you only ever see your own app's data) and synchronous.
-**Writes** are recorded as events and reproduce deterministically on replay;
-**reads** are not recorded.
+use. A namespace is present only when your manifest **requests** it (in
+`resources`) **and** an admin has **granted** it (default-deny — see
+[Default-deny resources & the permission handshake](#default-deny-resources--the-permission-handshake)).
+Resources are app-scoped (you only ever see your own app's data) and
+synchronous. **Writes** are recorded as events and reproduce deterministically
+on replay; **reads** are not recorded.
+
+> **Feature-detect before use.** Because a requested namespace can be absent
+> until granted, never assume `ctx.resource.<ns>` exists. Guard it:
+>
+> ```js
+> if (!ctx.resource || !ctx.resource.kv) {
+>   // Not granted yet. Return a plain string; the host turns an ungranted
+>   // namespace into a permission_required result for the caller to resolve.
+>   return "kv not granted yet";
+> }
+> ctx.resource.kv.set("greeting", "hi");
+> ```
 
 The tables below are **generated** from the capabilities' declared resource
 APIs. Don't hand-edit between the markers — a test regenerates them and fails if
@@ -210,6 +232,158 @@ function handle(input) {
 
 ---
 
+## Default-deny resources & the permission handshake
+
+**The model in one paragraph.** Declaring a namespace in `manifest.json`
+`resources` (`kv`, `crdt`, `relational_db`, `build`) **only requests** it.
+Resources are **default-deny**: the manifest cannot grant itself anything.
+Inside your backend, `ctx.resource.<ns>` stays **absent** until an admin grants
+that namespace to the executing subject for your app. Until then the runtime
+withholds the namespace's methods entirely — your code sees no
+`ctx.resource.<ns>`. Grants are **trusted-host-only**: they are minted by the
+CLI or the admin UI, never by the app or by an MCP client on its own behalf.
+
+### What the app author must do
+
+- **Declare** every namespace you need in `manifest.resources`. This is the
+  *request*; it is necessary but not sufficient.
+- **Feature-detect** `ctx.resource.<ns>` before every use (see the guard above).
+  Do not assume it exists just because the manifest lists it.
+- When it is absent, **degrade gracefully** — return a plain string. You do not
+  raise the permission request yourself; the *host* does that automatically for
+  the caller (see below). Your job is only to not crash.
+
+```js
+// Robust backend entry that never assumes kv is granted.
+function handle(input) {
+  var kv = ctx.resource && ctx.resource.kv;
+  if (!kv) return "kv not granted yet";      // absent → degrade, don't throw
+  if (input[0] === "set") { kv.set(input[1], input[2]); return "saved"; }
+  if (input[0] === "get") { var v = kv.get(input[1]); return v == null ? "(unset)" : v; }
+  return "?";
+}
+```
+
+### What the caller (MCP client / agent) sees when a resource is ungranted
+
+When `invoke` or `app_actions` runs against an app whose requested namespace is
+not yet granted, the host returns a tool result with **`isError: true`** whose
+body is a **`permission_required`** object — present **both** as
+`structuredContent` and as a JSON string in `content[0].text`:
+
+```json
+{
+  "content": [{ "type": "text", "text": "<the permission_required JSON as a string>" }],
+  "structuredContent": {
+    "type": "permission_required",
+    "status": "permission_required",
+    "requestId": "local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "app": "notes-demo",
+    "appName": "Notes Demo",
+    "org": "local",
+    "subject": "user:local-owner",
+    "source": "mcp_stdio",
+    "missingResources": ["kv"],
+    "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "grantCommands": ["terrane auth grant user:local-owner notes-demo kv"],
+    "requestStatus": "pending",
+    "resumeTool": "permission_check",
+    "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
+  },
+  "isError": true
+}
+```
+
+Key fields (exact JSON names):
+
+| Field | Use it to |
+| --- | --- |
+| `missingResources` | the namespaces that need granting (sorted list) |
+| `grantCommands` | ready-to-run CLI commands, one per missing namespace |
+| `adminUrl` | deep link for an admin to approve in the browser |
+| `requestId` | poll status with `permission_check` |
+| `resumeTool` | always `"permission_check"` — the tool to poll |
+| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `unrecorded` |
+
+Surfacing the error also **records** the request (an `auth.permission.requested`
+event), so `requestStatus` becomes `pending` and the request is immediately
+listable and approvable — you do not need a separate step to create it.
+
+> **Do not get stuck.** A `permission_required` result is **not** a dead end and
+> **not** a bug in your app. It means "this namespace needs a grant". Resolve it
+> via one of the three paths below, then **retry the same `invoke`** unchanged.
+
+### How to grant (three exact paths)
+
+**(a) CLI — verbatim from `grantCommands`.** Run each string as-is:
+
+```sh
+terrane auth grant user:local-owner notes-demo kv
+```
+
+The subject is always `user:local-owner` locally. Arg order is
+`subject app namespace [verbs…]`; omit `verbs` to grant the namespace's full
+verb set. There is no dedicated `auth` subcommand — any `auth.*` command
+(`auth grant …`, `auth revoke …`) flows through the generic CLI path, which is a
+trusted host.
+
+**(b) Admin UI — a trusted admin action.** Open the `adminUrl` (or the admin
+page at `http://127.0.0.1:8780/__terrane/admin`) and approve. Approval mints the
+missing grants and marks the request `approved`. Admin routes require the
+trusted header `X-Terrane-Admin: local-admin` (returning `403` otherwise), so
+this is explicitly a human/admin step — a requesting agent cannot self-serve it.
+
+**(c) MCP poll — you cannot grant yourself.** An MCP client **cannot** grant its
+own access: `capability_command` refuses any `auth.*` name with
+`"<name> is trusted-admin-only; use the permission request/admin approval flow"`.
+So from MCP the flow is: the `permission_required` already created a pending
+request → poll `permission_check` with `{ "requestId": "<requestId>" }` until
+`status` is `approved` → a human/admin meanwhile runs a `grantCommands` entry or
+approves at `adminUrl` → then **retry `invoke`**.
+
+### MCP permission tools (none of these grant access)
+
+| Tool | Input | Returns |
+| --- | --- | --- |
+| `permission_check` | `{ "requestId": "<id>" }` | the request's `PermissionRequestView` as `structuredContent`, or text error `"permission request not found"` |
+| `permission_cancel` | `{ "requestId": "<id>", "reason"?: "<text>" }` | cancels a pending request and returns the updated view (does **not** grant; approval remains a trusted admin action) |
+| `permission_requests` | `{}` | `{ "requests": [PermissionRequestView, …] }` — all local requests |
+
+A `PermissionRequestView` has: `requestId`, `org`, `subject`, `app`, `appName`,
+`operation`, `source`, `resumeTokenHash`,
+`resources[]` (each `{ namespace, selectorSchemaId, resourceId, verbs[] }`),
+`status`, `adminUrl`, `decidedBy`, `decisionReason`.
+
+### Grantable namespaces & verbs
+
+| Namespace | Verbs |
+| --- | --- |
+| `kv` | `read`, `write` |
+| `crdt` | `read`, `write` |
+| `relational_db` | `read`, `write` |
+| `build` | `read` (read-only) |
+
+`terrane auth grant` with no verbs argument grants the full set for that
+namespace. A namespace your manifest requests but that isn't one of these is
+skipped, not blocked.
+
+### End-to-end recipe (weak-model safe)
+
+1. `invoke` with `{ "app": "notes-demo", "verb": "set", "args": ["greeting", "hi"] }`.
+2. If the result has `"isError": true` and `structuredContent.type ==
+   "permission_required"`, the app's namespace (e.g. `kv`) is ungranted. Do one of:
+   - **CLI**: run each string in `structuredContent.grantCommands`
+     (e.g. `terrane auth grant user:local-owner notes-demo kv`).
+   - **Admin UI**: open `structuredContent.adminUrl` and approve.
+   - **Poll**: call `permission_check` with
+     `{ "requestId": structuredContent.requestId }` until `status` is `approved`.
+3. Once granted, **retry `invoke`** with the **same** args → success.
+4. Never call `capability_command` with an `auth.*` name to grant — it is
+   refused as trusted-admin-only.
+
+---
+
 ## Client (UI) — `index.html`
 
 The UI runs in the host's webview. Its only bridge to the platform is:
@@ -245,7 +419,7 @@ backend works unchanged.
 | `module`    | string            | WASM module file, e.g. `"main.wasm"`                                 |
 | `entry`     | string (optional) | WASM entry export; defaults to `"handle"`                            |
 | `ui`        | string (optional) | UI entry file, e.g. `"index.html"`; omit for CLI-only apps          |
-| `resources` | string[]          | the resource namespaces the backend may use — the sandbox allowlist |
+| `resources` | string[]          | the resource namespaces the backend **requests** — default-deny; each still needs an admin grant before `ctx.resource.<ns>` appears (see the [permission handshake](#default-deny-resources--the-permission-handshake)) |
 
 ```json
 {
@@ -278,7 +452,9 @@ backend works unchanged.
 - **Deterministic & replayable.** Every backend write is recorded as an event;
   replaying the log reproduces state without re-running your JS. Don't rely on a
   clock, randomness, or external state except through a resource.
-- **Sandboxed.** You only reach the resources your manifest declares, and a
-  resource only ever sees your app's own data.
+- **Sandboxed & default-deny.** You only reach the resources your manifest
+  declares, a resource only ever sees your app's own data, and a *declared*
+  namespace is still withheld until an admin grants it (see the
+  [permission handshake](#default-deny-resources--the-permission-handshake)).
 - **Bounded.** A backend run has a wall-clock budget; an unbounded loop is
   interrupted.

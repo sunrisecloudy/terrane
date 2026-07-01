@@ -34,7 +34,29 @@ auth; non-loopback binds require `Authorization: Bearer <token>`.
 | `GET`  | `/apps/{id}/` and `/apps/{id}/{asset}` | —                                | the app's UI + assets (path-traversal guarded)           |
 | `POST` | `/apps/{id}/invoke`                    | `InvokeRequest { verb, args[] }` | `InvokeResponse { output }`                              |
 
-Any failure returns `ApiError { error }` with a non-2xx status.
+Any failure returns `ApiError { error }` with a non-2xx status. An `invoke`
+against a resource the app has not been granted returns a `permission_required`
+payload — see [Default-deny permissions](#default-deny-permissions--the-permission-handshake).
+
+### Admin control endpoints (`/__terrane/admin`)
+
+The trusted admin surface. It renders the admin page, lists/deep-links
+permission requests, and mints grants. **Every route here requires the trusted
+admin header** `X-Terrane-Admin: local-admin`; without it the host returns
+`403 "admin header required"`. Mutations are also blocked while the local admin
+session is locked. These routes are how a human approves a request — the
+requesting agent cannot self-serve them.
+
+| Method | Path                                       | Body                                | Result                                            |
+| ------ | ------------------------------------------ | ----------------------------------- | ------------------------------------------------- |
+| `GET`  | `/__terrane/admin`                         | —                                   | the admin page                                    |
+| `GET`  | `/__terrane/admin/requests/{requestId}`    | —                                   | deep link to one request (also serves admin page) |
+| `POST` | `/__terrane/admin/requests/{requestId}/approve` | —                              | mints the missing grants, marks request `approved` (dispatches `auth.permission.approve`) |
+| `POST` | `/__terrane/admin/grants`                  | grant spec                          | grants a namespace directly (dispatches `auth.grant`) |
+
+Approving a request mints exactly the grants named in it. `POST /__terrane/admin/grants`
+lets the admin grant a namespace without a pending request. Both are trusted
+admin actions gated by the header above.
 
 `POST /mcp` is a transport endpoint for the same shared MCP host tools exposed
 over stdio. It accepts a single JSON-RPC request body and returns
@@ -82,11 +104,11 @@ Tools:
 | `app_register_inline` | `{ files, id?, name?, runtime?, dryRun? }`      | MCP-only validated app registration from inline files      |
 | `app_register`       | `{ source, id?, name?, runtime?, dryRun? }`      | validated `app.add` dispatch or dry-run                    |
 | `list_apps`          | `{}`                                             | the installed apps (id, name, has_ui)                      |
-| `app_actions`        | `{ app }`                                        | the app's actions (verbs + args), as the app declares them |
-| `invoke`             | `{ app, verb, args[] }`                          | the backend's output string                                |
-| `permission_check`   | `{ requestId }`                                  | a permission request's status and admin URL                |
-| `permission_cancel`  | `{ requestId, reason? }`                         | cancel a pending request without granting access           |
-| `permission_requests` | `{}`                                            | local permission requests and statuses                     |
+| `app_actions`        | `{ app }`                                        | the app's actions (verbs + args); may return `permission_required` (`isError: true`) |
+| `invoke`             | `{ app, verb, args[] }`                          | the backend's output string; may return `permission_required` (`isError: true`) |
+| `permission_check`   | `{ requestId }`                                  | the `PermissionRequestView` for that request (`structuredContent`), or text error `"permission request not found"` |
+| `permission_cancel`  | `{ requestId, reason? }`                         | cancels a pending request (dispatches `auth.permission.cancel`); returns the updated view. Does **not** grant access |
+| `permission_requests` | `{}`                                            | `{ requests: [PermissionRequestView, …] }` — all local requests |
 | `capabilities_list`  | `{ includeInternal? }`                           | capability namespaces, statuses, and short summaries       |
 | `capability_info`    | `{ namespace, format?, includeInternal? }`       | one capability's docs as `json`, `markdown`, or `skill`    |
 | `capability_query`   | `{ capability, query, args[] }`                  | a read-only capability query result as JSON text           |
@@ -121,7 +143,7 @@ Resources:
 | `terrane://docs/app-building`        | `host/mcp` | app-building workflows                             |
 | `terrane://docs/capability-operations` | `host/mcp` | direct capability query/command guidance         |
 | `terrane://docs/security`            | `host/mcp` | local MCP security and permission notes            |
-| `terrane://docs/weak-models`         | `host/mcp` | locked-down model playbook                         |
+| `terrane://docs/agent-playbook`         | `host/mcp` | agent playbook (no-source, permission handshake)                         |
 | `terrane://capabilities/{namespace}` | cap crate  | capability-owned docs rendered from `src/doc.rs`   |
 | `terrane://workflows/{name}`         | `host/mcp` | executable workflow JSON                           |
 | `terrane://apps/{id}/actions`        | app        | app-declared action JSON                           |
@@ -172,6 +194,179 @@ manual, while each `terrane-cap-*` crate owns its capability document.
 Every `tools/call` result carries `isError`. Tool-level failures (unknown app, a
 backend error) come back as a result with `isError: true` and the message as
 text — not as a JSON-RPC error — so the model sees them.
+
+---
+
+## Default-deny permissions & the permission handshake
+
+Terrane resources are **default-deny**. Declaring a resource in `manifest.json`
+(`kv`, `crdt`, `relational_db`, `build`) **does not auto-grant it** — the
+manifest only _requests_ a namespace. Inside the app backend, `ctx.resource.<ns>`
+is **absent** until an admin grants that namespace to the executing subject for
+that app. Grants are **trusted-host-only**: any `auth.*` command is rejected
+unless the request carries trusted-host authority, so an MCP client **cannot
+grant itself** access.
+
+The local subject throughout is **`user:local-owner`**.
+
+### What a client sees when a resource is ungranted
+
+Only `invoke` and `app_actions` produce this. When either runs against an app
+with an ungranted requested namespace, the host records a permission request
+(as a side effect) and returns a `permission_required` object as an **error**
+result — `isError: true`, with the object appearing **both** as
+`structuredContent` and as a JSON-string copy in `content[0].text`:
+
+```jsonc
+{
+  "content": [{ "type": "text", "text": "<the permission_required JSON as a string>" }],
+  "structuredContent": { /* the permission_required object below */ },
+  "isError": true
+}
+```
+
+The `permission_required` object (exact JSON keys):
+
+| Key | Value |
+| --- | --- |
+| `type` | `"permission_required"` |
+| `status` | `"permission_required"` |
+| `requestId` | deterministic id, e.g. `local-<app>-<subject>-<ns>-<hash>` |
+| `app` | app id |
+| `appName` | app display name |
+| `org` | `local` |
+| `subject` | `user:local-owner` |
+| `source` | caller source: `"cli"`, `"host"`, `"mcp_stdio"`, or `"mcp_http"` |
+| `missingResources` | sorted list of ungranted namespaces |
+| `adminUrl` | `http://127.0.0.1:8780/__terrane/admin/requests/<requestId>` |
+| `grantCommands` | one CLI command per missing namespace (see below) |
+| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `unrecorded` |
+| `resumeTool` | `"permission_check"` |
+| `resumeTokenHash` | 16-hex hash of the request id |
+| `message` | `permission required for app <app>: grant <ns1, ns2>; open <adminUrl>` |
+
+Because surfacing the request records it (`auth.permission.requested`),
+`requestStatus` is `pending` and the request is immediately listable via
+`permission_requests` and approvable at `adminUrl`.
+
+Example:
+
+```json
+{
+  "type": "permission_required",
+  "status": "permission_required",
+  "requestId": "local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+  "app": "notes-demo",
+  "appName": "Notes Demo",
+  "org": "local",
+  "subject": "user:local-owner",
+  "source": "mcp_stdio",
+  "missingResources": ["kv"],
+  "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+  "grantCommands": ["terrane auth grant user:local-owner notes-demo kv"],
+  "requestStatus": "pending",
+  "resumeTool": "permission_check",
+  "resumeTokenHash": "9f8e7d6c5b4a3210",
+  "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
+}
+```
+
+### How to grant (three ways)
+
+Only a trusted host can grant. Pick one:
+
+**(a) CLI — verbatim from `grantCommands`.** One command per missing namespace,
+arg order `subject app namespace [verbs…]`:
+
+```sh
+terrane auth grant user:local-owner <app> <namespace>
+# e.g.
+terrane auth grant user:local-owner notes-demo kv
+```
+
+Omitting `verbs` grants the namespace's full verb set; an explicit `verbs` arg
+is validated against the allowed set. There is no dedicated `auth` subcommand —
+any `auth.*` command name (`auth grant …`, `auth revoke …`,
+`auth agent.register …`) flows through the generic `<ns> <verb> [args…]` CLI
+path, and because the CLI is a trusted host it passes the admission gate.
+
+**(b) Admin UI — open `adminUrl` and approve.** A trusted admin action:
+
+```
+http://127.0.0.1:8780/__terrane/admin                          # the admin page
+http://127.0.0.1:8780/__terrane/admin/requests/<requestId>     # deep link to the request
+```
+
+Approving posts to `POST /__terrane/admin/requests/<requestId>/approve`, which
+mints the missing grants and marks the request `approved`. All
+`/__terrane/admin` routes require `X-Terrane-Admin: local-admin`. The
+requesting agent cannot self-serve this.
+
+**(c) MCP client — request, poll, retry.** An MCP client **cannot** grant
+itself: `capability_command` refuses any `auth.*` name with
+`"<name> is trusted-admin-only; use the permission request/admin approval flow"`.
+So the MCP flow is:
+
+1. The recorded `permission_required` already created a `pending` request.
+2. Poll `permission_check` with `{ "requestId": <id> }` until `status` is
+   `approved`.
+3. A human/admin approves at `adminUrl` (or runs the `grantCommands`).
+4. Retry `invoke` with the same args → success.
+
+### The permission MCP tools
+
+None of these grants access — approval is always a trusted admin action.
+
+| Tool | Input | Returns |
+| --- | --- | --- |
+| `permission_check` | `{ "requestId": "<id>" }` | the `PermissionRequestView` (`structuredContent`), or text error `"permission request not found"` |
+| `permission_cancel` | `{ "requestId": "<id>", "reason"?: "<text>" }` | cancels a pending request (`auth.permission.cancel`), returns the updated view. Does **not** grant |
+| `permission_requests` | `{}` | `{ "requests": [PermissionRequestView, …] }` — all local requests |
+
+`PermissionRequestView` fields: `requestId`, `org`, `subject`, `app`, `appName`,
+`operation`, `source`, `resumeTokenHash`, `resources[]` (each
+`{ namespace, selectorSchemaId, resourceId, verbs[] }`), `status`, `adminUrl`,
+`decidedBy`, `decisionReason`.
+
+Status values an agent must handle: `pending` | `approved` | `denied` |
+`cancelled` (the `unrecorded` value appears only on
+`permission_required.requestStatus`, when a request was not yet recorded).
+
+### Grantable namespaces & verbs
+
+Derived from every registered capability's grant spec:
+
+| Namespace | Verbs |
+| --- | --- |
+| `kv` | `read`, `write` |
+| `crdt` | `read`, `write` |
+| `relational_db` | `read`, `write` |
+| `build` | `read` (read-only) |
+
+A namespace a manifest requests but that is not grantable is skipped, not
+blocked.
+
+### Weak-model recipe (copy-paste)
+
+1. `workflows_list` → pick a workflow (e.g. `make_js_kv_app`).
+2. `app_scaffold` with `{ "id": "notes-demo", "name": "Notes Demo" }` (add
+   `"withUi": true` for a page).
+3. `app_register_inline` with `{ "files": <structuredContent.files>, "dryRun": true }`,
+   then again without `dryRun` to commit.
+4. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
+5. If the result is `"isError": true` with
+   `structuredContent.type == "permission_required"`, the app's namespace is
+   ungranted. Do one of:
+   - **Human/CLI**: run each string in `structuredContent.grantCommands`, e.g.
+     `terrane auth grant user:local-owner notes-demo kv`.
+   - **Admin UI**: open `structuredContent.adminUrl` and approve (trusted admin
+     action).
+   - **Poll**: call `permission_check` with
+     `{ "requestId": structuredContent.requestId }` until `status` is `approved`.
+6. Once `approved`, **retry `invoke`** with the same args → success.
+
+Do **not** try `capability_command` with an `auth.*` name — it is refused as
+trusted-admin-only.
 
 ---
 

@@ -33,6 +33,156 @@ The web host exposes the same MCP implementation at `POST /mcp`.
 Loopback binds do not require auth. Non-loopback binds require the web host's
 bearer-token auth and existing origin checks.
 
+## Resources Are Default-Deny — Handling `permission_required`
+
+**Read this before building or running any app.** This is the single most common
+place a client gets stuck.
+
+Declaring a resource in `manifest.json` (`kv`, `crdt`, `relational_db`, `build`)
+**does not grant it**. Resources are **default-deny**: the manifest only *requests*
+a namespace. Inside the app backend, `ctx.resource.<ns>` is **absent** until an
+admin grants that namespace to the executing subject for that app. With no grant,
+the app simply cannot see the resource methods.
+
+So the very first time you `invoke` (or `app_actions`) an app that touches an
+ungranted namespace, you will get an **error result**, not a crash. Do not treat
+it as failure — it is a handshake. Handle it, then retry.
+
+### What the error looks like
+
+Only `invoke` and `app_actions` return this. The result has `"isError": true` and
+carries a `permission_required` object **both** in `structuredContent` and as a
+JSON string in `content[0].text`:
+
+```json
+{
+  "content": [{ "type": "text", "text": "<the permission_required JSON as a string>" }],
+  "structuredContent": {
+    "type": "permission_required",
+    "status": "permission_required",
+    "requestId": "local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "app": "notes-demo",
+    "appName": "Notes Demo",
+    "org": "local",
+    "subject": "user:local-owner",
+    "source": "mcp_stdio",
+    "missingResources": ["kv"],
+    "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
+    "grantCommands": ["terrane auth grant user:local-owner notes-demo kv"],
+    "requestStatus": "pending",
+    "resumeTool": "permission_check",
+    "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
+  },
+  "isError": true
+}
+```
+
+Detect it with exactly:
+
+```
+result.isError === true && result.structuredContent.type === "permission_required"
+```
+
+Surfacing this error also **records** a pending permission request as a side
+effect, so `requestStatus` is `pending` and the request is immediately listable,
+pollable, and approvable. You do not need to create the request yourself.
+
+### The fields you must read
+
+| Field | Use it for |
+|---|---|
+| `missingResources` | the namespaces that need granting, e.g. `["kv"]` |
+| `grantCommands` | ready-to-run CLI commands, one per missing namespace |
+| `adminUrl` | deep link a human/admin opens to approve |
+| `requestId` | pass to `permission_check` / `permission_cancel` to poll or cancel |
+| `resumeTool` | always `"permission_check"` — the tool to poll with |
+| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `unrecorded` |
+| `message` | one-line human-readable summary |
+
+The local subject is always **`user:local-owner`**.
+
+### What to do next
+
+You (the MCP client) **cannot grant yourself access.** Approval is a trusted
+admin action. Your job is to surface the request and then poll and retry. Do
+**one** of these to get the grant, then retry the original call:
+
+1. **CLI (human or a shell you control).** Run each string in `grantCommands`
+   verbatim. The format is always:
+
+   ```sh
+   terrane auth grant user:local-owner <app> <namespace>
+   ```
+
+   Example, straight from the payload above:
+
+   ```sh
+   terrane auth grant user:local-owner notes-demo kv
+   ```
+
+   (Arg order is `subject app namespace [verbs…]`; omit verbs to grant the
+   namespace's full verb set.)
+
+2. **Admin UI (trusted admin).** Open `adminUrl` in a browser and approve. The
+   admin page is `http://127.0.0.1:8780/__terrane/admin`; the deep link
+   `.../admin/requests/<requestId>` opens the same page focused on this request.
+   Admin routes require the `X-Terrane-Admin: local-admin` header, so only the
+   admin surface can approve — the requesting agent cannot self-serve.
+
+3. **Poll, then retry.** Regardless of which approval path a human uses, call
+   `permission_check` with the `requestId` until `status` is `approved`, then
+   **retry `invoke`/`app_actions` with the same args** — it now succeeds.
+
+> Do **not** try `capability_command` with an `auth.*` name to grant yourself.
+> It is refused as trusted-admin-only: `"<name> is trusted-admin-only; use the
+> permission request/admin approval flow"`. Granting only works through a trusted
+> host (the CLI or the web admin UI with the admin header).
+
+### The permission tools (none of these grant access)
+
+| Tool | Input | Returns |
+|---|---|---|
+| `permission_check` | `{ "requestId": "<id>" }` | the request's current view; `status` tells you `pending`/`approved`/`denied`/`cancelled`. Error text `"permission request not found"` if the id is unknown. |
+| `permission_cancel` | `{ "requestId": "<id>", "reason"?: "<text>" }` | cancels a pending request and returns the updated view. Does not grant. |
+| `permission_requests` | `{}` | `{ "requests": [ … ] }` — every local permission request. |
+
+`permission_check` / `permission_requests` return a `PermissionRequestView` with:
+`requestId`, `org`, `subject`, `app`, `appName`, `operation`, `source`,
+`resumeTokenHash`, `resources[]` (each `{ namespace, selectorSchemaId,
+resourceId, verbs[] }`), `status`, `adminUrl`, `decidedBy`, `decisionReason`.
+
+### Grantable namespaces and verbs
+
+| Namespace | Verbs |
+|---|---|
+| `kv` | `read`, `write` |
+| `crdt` | `read`, `write` |
+| `relational_db` | `read`, `write` |
+| `build` | `read` (read-only) |
+
+A namespace a manifest requests but that is not in this registry is skipped (not
+blocked). `terrane auth grant … <namespace>` with no verbs grants the full set
+above; an explicit verbs argument is validated against the allowed set.
+
+### End-to-end recipe (copy-paste)
+
+1. `workflows_list` → pick a workflow (e.g. `make_js_kv_app_no_filesystem`).
+2. `app_scaffold` with `{ "id": "notes-demo", "name": "Notes Demo" }`
+   (add `"withUi": true` for a page).
+3. `app_register_inline` with `{ "files": <structuredContent.files>, "dryRun": true }`,
+   then again without `dryRun` to commit.
+4. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
+5. If the result is `isError:true` with
+   `structuredContent.type == "permission_required"`, the app's `kv` (etc.)
+   namespace is ungranted. Get it approved:
+   - **Human/CLI**: run each string in `structuredContent.grantCommands`,
+     e.g. `terrane auth grant user:local-owner notes-demo kv`.
+   - **Admin UI**: open `structuredContent.adminUrl` and approve.
+   - **Poll**: call `permission_check` with
+     `{ "requestId": structuredContent.requestId }` until `status` is `approved`.
+6. **Retry `invoke`** with the same args → success.
+
 ## Opencode Locked-Agent Pattern
 
 For no-source tests, configure Terrane as a native MCP server and deny file and
@@ -160,4 +310,17 @@ Get a prompt:
 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"prompts/get","params":{"name":"make_js_kv_app","arguments":{"id":"notes-demo","name":"Notes Demo"}}}
+```
+
+Invoke an app verb (may return a `permission_required` result with `isError:true` —
+see "Resources Are Default-Deny" above):
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"notes-demo","verb":"write","args":["hello"]}}}
+```
+
+Poll a pending permission request by its `requestId`:
+
+```json
+{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"permission_check","arguments":{"requestId":"local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"}}}
 ```

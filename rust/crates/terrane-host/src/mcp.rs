@@ -151,7 +151,7 @@ const MCP_DOC_APP_BUILDING: &str = include_str!("../../../../host/mcp/docs/APP_B
 const MCP_DOC_CAPABILITY_OPERATIONS: &str =
     include_str!("../../../../host/mcp/docs/CAPABILITY_OPERATIONS.md");
 const MCP_DOC_SECURITY: &str = include_str!("../../../../host/mcp/docs/SECURITY.md");
-const MCP_DOC_WEAK_MODELS: &str = include_str!("../../../../host/mcp/docs/WEAK_MODELS.md");
+const MCP_DOC_AGENT_PLAYBOOK: &str = include_str!("../../../../host/mcp/docs/AGENT_PLAYBOOK.md");
 
 fn resource_content(core: &mut HostCore, uri: &str) -> Result<(&'static str, String), String> {
     match uri {
@@ -162,7 +162,7 @@ fn resource_content(core: &mut HostCore, uri: &str) -> Result<(&'static str, Str
             Ok(("text/markdown", MCP_DOC_CAPABILITY_OPERATIONS.to_string()))
         }
         "terrane://docs/security" => Ok(("text/markdown", MCP_DOC_SECURITY.to_string())),
-        "terrane://docs/weak-models" => Ok(("text/markdown", MCP_DOC_WEAK_MODELS.to_string())),
+        "terrane://docs/agent-playbook" => Ok(("text/markdown", MCP_DOC_AGENT_PLAYBOOK.to_string())),
         _ => {
             if let Some(namespace) = uri.strip_prefix("terrane://capabilities/") {
                 if namespace.trim().is_empty() || namespace.contains('/') {
