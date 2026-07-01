@@ -82,6 +82,7 @@ fn add_a_todo_through_mcp_and_read_it_back() {
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_terrane-mcp"))
         .env("TERRANE_HOME", home)
+        .env("TERRANE_ADMIN_ADDR", "off")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -629,10 +630,22 @@ fn spawn_server(
     std::process::ChildStdin,
     BufReader<std::process::ChildStdout>,
 ) {
+    spawn_server_with_admin(home, "off")
+}
+
+fn spawn_server_with_admin(
+    home: &Path,
+    admin_addr: &str,
+) -> (
+    std::process::Child,
+    std::process::ChildStdin,
+    BufReader<std::process::ChildStdout>,
+) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_terrane-mcp"))
         .env("TERRANE_HOME", home)
         // Keep the server-side fallback quick so a broken flow can't hang the test.
         .env("TERRANE_ELICIT_TIMEOUT_MS", "5000")
+        .env("TERRANE_ADMIN_ADDR", admin_addr)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -772,6 +785,87 @@ fn without_elicitation_capability_invoke_returns_permission_required() {
     assert!(
         result.contains("permission_required"),
         "expected permission_required fallback: {result}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+// --- In-session approval via the loopback admin console --------------------
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Send a bodyless HTTP request to the admin console and return the raw response.
+fn admin_request(addr: &str, method: &str, path: &str) -> String {
+    use std::net::TcpStream;
+    let mut stream = TcpStream::connect(addr).expect("connect admin console");
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+#[test]
+fn admin_console_approves_live_core_without_restart() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    seed_ungranted_app(home);
+
+    let admin_addr = format!("127.0.0.1:{}", free_port());
+    let (mut child, mut stdin, mut out) = spawn_server_with_admin(home, &admin_addr);
+    // A plain client with no elicitation capability — approval comes via console.
+    initialize(&mut stdin, &mut out, false);
+
+    // Invoke hits the default-deny wall and returns permission_required.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":40,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["milk"]}}}"#,
+    );
+    let denied = read_line(&mut out);
+    assert!(
+        denied.contains("permission_required"),
+        "expected permission_required: {denied}"
+    );
+    let request_id = structured_content(&denied)["requestId"]
+        .as_str()
+        .expect("requestId")
+        .to_string();
+
+    // The admin console lists it as pending, then approves against the LIVE Core.
+    let listed = admin_request(&admin_addr, "GET", "/__terrane/admin/requests");
+    assert!(
+        listed.contains("200 OK") && listed.contains(&request_id),
+        "admin list: {listed}"
+    );
+    let approved = admin_request(
+        &admin_addr,
+        "POST",
+        &format!("/__terrane/admin/requests/{request_id}/approve"),
+    );
+    assert!(
+        approved.contains("200 OK") && approved.contains("approved"),
+        "admin approve: {approved}"
+    );
+
+    // Retry the same invoke — it now succeeds. No restart, no re-open.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["milk"]}}}"#,
+    );
+    let ok = read_line(&mut out);
+    assert!(
+        ok.contains("added: milk") && ok.contains(r#""id":41"#),
+        "invoke after console approval: {ok}"
     );
 
     drop(stdin);
