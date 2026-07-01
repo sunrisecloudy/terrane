@@ -603,3 +603,177 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     let _ = out.read_to_string(&mut rest);
     assert!(child.wait().unwrap().success());
 }
+
+// --- In-session approval via MCP elicitation -------------------------------
+
+/// Install `todo-cli-collaborate` but do NOT grant `crdt`, so an invoke hits the
+/// default-deny wall. Block-scoped so the home lock frees before the server runs.
+fn seed_ungranted_app(home: &Path) {
+    let mut core = Core::open(home.join("log.bin")).unwrap();
+    core.dispatch(Request::new(
+        "app.add",
+        vec![
+            "todo-cli-collaborate".into(),
+            "Todo".into(),
+            "--source".into(),
+            app_source(),
+        ],
+    ))
+    .unwrap();
+}
+
+fn spawn_server(
+    home: &Path,
+) -> (
+    std::process::Child,
+    std::process::ChildStdin,
+    BufReader<std::process::ChildStdout>,
+) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_terrane-mcp"))
+        .env("TERRANE_HOME", home)
+        // Keep the server-side fallback quick so a broken flow can't hang the test.
+        .env("TERRANE_ELICIT_TIMEOUT_MS", "5000")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn terrane-mcp");
+    let stdin = child.stdin.take().unwrap();
+    let out = BufReader::new(child.stdout.take().unwrap());
+    (child, stdin, out)
+}
+
+fn initialize(stdin: &mut impl Write, out: &mut impl BufRead, elicitation: bool) {
+    let caps = if elicitation {
+        r#"{"elicitation":{}}"#
+    } else {
+        "{}"
+    };
+    send(
+        stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"protocolVersion":"2025-06-18","capabilities":{caps},"clientInfo":{{"name":"test","version":"0"}}}}}}"#
+        ),
+    );
+    let _ = read_line(out); // init result
+    send(stdin, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+}
+
+#[test]
+fn elicitation_approve_grants_in_session_and_retries() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    seed_ungranted_app(home);
+
+    let (mut child, mut stdin, mut out) = spawn_server(home);
+    initialize(&mut stdin, &mut out, true);
+
+    // Invoke hits the default-deny wall — the server elicits a human decision
+    // instead of returning the error to the model.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["buy milk"]}}}"#,
+    );
+    let elicit: Value = serde_json::from_str(&read_line(&mut out)).unwrap();
+    assert_eq!(
+        elicit["method"], "elicitation/create",
+        "expected an elicitation request, got {elicit}"
+    );
+    let elicit_id = elicit["id"].as_str().unwrap().to_string();
+    assert!(elicit["params"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("todo-cli-collaborate"));
+
+    // The human approves.
+    send(
+        &mut stdin,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"{elicit_id}","result":{{"action":"accept","content":{{"decision":"approve"}}}}}}"#
+        ),
+    );
+
+    // The original invoke now succeeds, in-session, with no restart.
+    let added = read_line(&mut out);
+    assert!(
+        added.contains("added: buy milk") && added.contains(r#""id":10"#),
+        "retry result after approval: {added}"
+    );
+
+    // The grant is live: a second invoke needs no further approval.
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["call mom"]}}}"#,
+    );
+    let again = read_line(&mut out);
+    assert!(
+        again.contains("added: call mom"),
+        "second invoke without re-approval: {again}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn elicitation_decline_keeps_permission_required() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    seed_ungranted_app(home);
+
+    let (mut child, mut stdin, mut out) = spawn_server(home);
+    initialize(&mut stdin, &mut out, true);
+
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["nope"]}}}"#,
+    );
+    let elicit: Value = serde_json::from_str(&read_line(&mut out)).unwrap();
+    assert_eq!(elicit["method"], "elicitation/create");
+    let elicit_id = elicit["id"].as_str().unwrap().to_string();
+
+    // The human declines.
+    send(
+        &mut stdin,
+        &format!(r#"{{"jsonrpc":"2.0","id":"{elicit_id}","result":{{"action":"decline"}}}}"#),
+    );
+
+    // The model gets permission_required back — nothing was granted.
+    let denied = read_line(&mut out);
+    assert!(
+        denied.contains("permission_required") && denied.contains(r#""isError":true"#),
+        "declined result: {denied}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn without_elicitation_capability_invoke_returns_permission_required() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    seed_ungranted_app(home);
+
+    let (mut child, mut stdin, mut out) = spawn_server(home);
+    initialize(&mut stdin, &mut out, false);
+
+    send(
+        &mut stdin,
+        r#"{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"invoke","arguments":{"app":"todo-cli-collaborate","verb":"add","args":["x"]}}}"#,
+    );
+    let result = read_line(&mut out);
+    let value: Value = serde_json::from_str(&result).unwrap();
+    // A direct tool result, not a server-initiated elicitation request.
+    assert!(
+        value.get("method").is_none(),
+        "must not elicit without the capability: {result}"
+    );
+    assert!(
+        result.contains("permission_required"),
+        "expected permission_required fallback: {result}"
+    );
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

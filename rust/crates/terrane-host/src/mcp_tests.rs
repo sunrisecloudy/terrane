@@ -405,3 +405,77 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
         "app_actions should keep routing through permission request flow: {actions}"
     );
 }
+
+// --- In-session approval: elicitation helpers -----------------------------
+
+#[test]
+fn initialize_elicitation_capability_is_detected() {
+    let with = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"elicitation":{}}}}"#;
+    let without = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#;
+    let other = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+    assert!(super::initialize_declares_elicitation(with));
+    assert!(!super::initialize_declares_elicitation(without));
+    assert!(!super::initialize_declares_elicitation(other));
+}
+
+#[test]
+fn permission_required_response_yields_elicit_info() {
+    let response = r#"{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"x"}],"structuredContent":{"type":"permission_required","requestId":"local-demo-kv","app":"demo","appName":"Demo","missingResources":["kv","crdt"],"adminUrl":"http://127.0.0.1:8780/__terrane/admin/requests/local-demo-kv"},"isError":true}}"#;
+    let info = super::permission_required_from_tool_response(response).expect("elicit info");
+    assert_eq!(info.request_id, "local-demo-kv");
+    assert_eq!(info.app, "demo");
+    assert_eq!(info.app_name, "Demo");
+    assert_eq!(info.missing_resources, vec!["kv".to_string(), "crdt".to_string()]);
+    assert!(info.admin_url.ends_with("/local-demo-kv"));
+
+    // An ordinary (non-permission) result yields nothing to elicit.
+    let ok = r#"{"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"done"}],"isError":false}}"#;
+    assert!(super::permission_required_from_tool_response(ok).is_none());
+}
+
+#[test]
+fn elicitation_frame_is_a_wellformed_create_request() {
+    let info = super::ElicitInfo {
+        request_id: "local-demo-kv".into(),
+        app: "demo".into(),
+        app_name: "Demo".into(),
+        missing_resources: vec!["kv".into(), "crdt".into()],
+        admin_url: "http://127.0.0.1:8780/__terrane/admin/requests/local-demo-kv".into(),
+    };
+    let frame = super::elicitation_create_frame("terrane-elicit-1", &info);
+    assert!(frame.contains(r#""method":"elicitation/create""#), "{frame}");
+    assert!(frame.contains(r#""id":"terrane-elicit-1""#), "{frame}");
+    assert!(frame.contains("Demo") && frame.contains("kv, crdt"), "{frame}");
+    assert!(frame.contains(r#""enum":["approve","deny"]"#), "{frame}");
+    // Valid JSON.
+    let _: serde_json::Value = serde_json::from_str(&frame).expect("frame is JSON");
+}
+
+#[test]
+fn elicitation_decision_covers_accept_decline_and_mismatch() {
+    let id = "terrane-elicit-1";
+    let accept_approve = r#"{"jsonrpc":"2.0","id":"terrane-elicit-1","result":{"action":"accept","content":{"decision":"approve"}}}"#;
+    let accept_deny = r#"{"jsonrpc":"2.0","id":"terrane-elicit-1","result":{"action":"accept","content":{"decision":"deny"}}}"#;
+    let decline = r#"{"jsonrpc":"2.0","id":"terrane-elicit-1","result":{"action":"decline"}}"#;
+    let cancel = r#"{"jsonrpc":"2.0","id":"terrane-elicit-1","result":{"action":"cancel"}}"#;
+    let err = r#"{"jsonrpc":"2.0","id":"terrane-elicit-1","error":{"code":-1,"message":"no"}}"#;
+    let other_id = r#"{"jsonrpc":"2.0","id":"terrane-elicit-2","result":{"action":"accept","content":{"decision":"approve"}}}"#;
+
+    assert_eq!(super::elicitation_decision(accept_approve, id), Some(super::ElicitDecision::Approve));
+    assert_eq!(super::elicitation_decision(accept_deny, id), Some(super::ElicitDecision::Deny));
+    assert_eq!(super::elicitation_decision(decline, id), Some(super::ElicitDecision::Deny));
+    assert_eq!(super::elicitation_decision(cancel, id), Some(super::ElicitDecision::Deny));
+    assert_eq!(super::elicitation_decision(err, id), Some(super::ElicitDecision::Deny));
+    // A different id is not our response — keep waiting.
+    assert_eq!(super::elicitation_decision(other_id, id), None);
+}
+
+#[test]
+fn busy_error_replies_to_requests_but_ignores_notifications() {
+    let request = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#;
+    let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let reply = super::busy_error(request).expect("busy error for a request");
+    assert!(reply.contains(r#""id":9"#) && reply.contains("awaiting an elicitation"), "{reply}");
+    assert!(super::busy_error(notification).is_none());
+    assert_eq!(super::parsed_method(request).as_deref(), Some("tools/list"));
+}

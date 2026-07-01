@@ -75,6 +75,169 @@ pub fn handle_json_rpc_with_source(
     }
 }
 
+// ---------------------------------------------------------------------------
+// In-session permission approval over MCP elicitation (stdio transport).
+//
+// `handle_json_rpc` above is transport-agnostic and unchanged (the web/HTTP host
+// still uses it verbatim). These helpers let the stdio host turn a
+// `permission_required` tool result into a server->client `elicitation/create`
+// request, read the human's decision, and — on approval — grant in-process and
+// retry. The untrusted model never gains a grant tool; approval is a human
+// action carried on MCP's back-channel.
+// ---------------------------------------------------------------------------
+
+/// The JSON-RPC `method` of a message, if present and a string.
+pub fn parsed_method(raw: &str) -> Option<String> {
+    let fields = top_level_fields(raw);
+    fields
+        .iter()
+        .find(|(k, _)| *k == "method")
+        .and_then(|(_, v)| json_string_value(v))
+        .map(str::to_string)
+}
+
+/// Whether the client's `initialize` params declared the `elicitation`
+/// capability. Only meaningful for an `initialize` message.
+pub fn initialize_declares_elicitation(raw: &str) -> bool {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("params")?
+                .get("capabilities")?
+                .get("elicitation")
+                .cloned()
+        })
+        .is_some_and(|elicitation| !elicitation.is_null())
+}
+
+/// What an elicitation prompt needs, extracted from a `permission_required` tool
+/// result. The request is already recorded `pending` by the invoke path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElicitInfo {
+    pub request_id: String,
+    pub app: String,
+    pub app_name: String,
+    pub missing_resources: Vec<String>,
+    pub admin_url: String,
+}
+
+/// If a tool response carries a `permission_required` result, extract the fields
+/// an elicitation needs. Returns `None` for ordinary results.
+pub fn permission_required_from_tool_response(response: &str) -> Option<ElicitInfo> {
+    let value: Value = serde_json::from_str(response).ok()?;
+    let content = value.get("result")?.get("structuredContent")?;
+    if content.get("type")?.as_str()? != "permission_required" {
+        return None;
+    }
+    let string = |key: &str| {
+        content
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    Some(ElicitInfo {
+        request_id: content.get("requestId")?.as_str()?.to_string(),
+        app: string("app"),
+        app_name: string("appName"),
+        missing_resources: content
+            .get("missingResources")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        admin_url: string("adminUrl"),
+    })
+}
+
+/// Build the server->client `elicitation/create` request frame.
+pub fn elicitation_create_frame(elicit_id: &str, info: &ElicitInfo) -> String {
+    let resources = if info.missing_resources.is_empty() {
+        "the requested resources".to_string()
+    } else {
+        info.missing_resources.join(", ")
+    };
+    let message = format!(
+        "App \"{}\" ({}) needs access to {}. Approve granting it to the local owner? \
+         (Deny to refuse; admin console: {})",
+        info.app_name, info.app, resources, info.admin_url
+    );
+    let params = json!({
+        "message": message,
+        "requestedSchema": {
+            "type": "object",
+            "properties": {
+                "decision": {
+                    "type": "string",
+                    "enum": ["approve", "deny"],
+                    "description": "approve to grant the requested resources; deny to refuse"
+                }
+            },
+            "required": ["decision"]
+        }
+    });
+    format!(
+        r#"{{"jsonrpc":"2.0","id":{},"method":"elicitation/create","params":{}}}"#,
+        json_str(elicit_id),
+        params
+    )
+}
+
+/// The human's decision on an elicitation, if `line` is the matching response.
+/// Returns `None` when `line` is unrelated (a different id, or not a response).
+/// A matching id with any non-`accept` action — decline, cancel, or an error —
+/// is a [`ElicitDecision::Deny`], so the model can never fall through to success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElicitDecision {
+    Approve,
+    Deny,
+}
+
+pub fn elicitation_decision(line: &str, elicit_id: &str) -> Option<ElicitDecision> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("id").and_then(Value::as_str) != Some(elicit_id) {
+        return None;
+    }
+    let Some(result) = value.get("result") else {
+        return Some(ElicitDecision::Deny); // error response to our request
+    };
+    if result.get("action").and_then(Value::as_str) != Some("accept") {
+        return Some(ElicitDecision::Deny); // decline / cancel
+    }
+    let decision = result
+        .get("content")
+        .and_then(|content| content.get("decision"))
+        .and_then(Value::as_str)
+        .unwrap_or("deny");
+    Some(if decision == "approve" {
+        ElicitDecision::Approve
+    } else {
+        ElicitDecision::Deny
+    })
+}
+
+/// A JSON-RPC "busy" error for a *request* that arrives while an elicitation is
+/// outstanding (a well-behaved client waits, but we must not hang a stray one).
+/// `None` for a notification (no id), which is simply ignored.
+pub fn busy_error(raw: &str) -> Option<String> {
+    let fields = top_level_fields(raw);
+    let id = fields
+        .iter()
+        .find(|(k, _)| *k == "id")
+        .map(|(_, v)| *v)
+        .filter(|v| *v != "null")?;
+    Some(error(
+        id,
+        -32001,
+        "terrane-mcp is awaiting an elicitation response; retry after the permission prompt is answered",
+    ))
+}
+
 fn initialize_result() -> String {
     format!(
         r#"{{"protocolVersion":{},"capabilities":{{"tools":{{"listChanged":false}},"resources":{{"subscribe":false,"listChanged":false}},"prompts":{{"listChanged":false}}}},"serverInfo":{{"name":"terrane-mcp","version":"0.1.0"}}}}"#,
