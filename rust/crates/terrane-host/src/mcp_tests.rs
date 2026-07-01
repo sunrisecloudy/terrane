@@ -312,6 +312,17 @@ fn capability_command_refuses_effect_runtime_storage_and_destructive_commands() 
             "trusted tooling and cannot run",
         ),
         (
+            "app.import",
+            vec![
+                "/tmp/missing-bundle",
+                "--storage",
+                "sqlite",
+                "--path",
+                "/tmp/evil.db",
+            ],
+            "app.import installs bundles",
+        ),
+        (
             "app.remove",
             vec!["demo"],
             "destructive and trusted-admin-only",

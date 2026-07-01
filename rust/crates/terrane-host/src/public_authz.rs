@@ -75,7 +75,10 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "app.remove" => PublicCommandDisposition::Refuse {
             reason: "app.remove is destructive and trusted-admin-only",
         },
-        "app.add" | "app.import" | "replica.init" => PublicCommandDisposition::Allow,
+        "app.import" => PublicCommandDisposition::Refuse {
+            reason: "app.import installs bundles and can configure storage; use app_register/app_register_inline or a trusted path",
+        },
+        "app.add" | "replica.init" => PublicCommandDisposition::Allow,
         _ if name.starts_with("auth.") => PublicCommandDisposition::Refuse {
             reason: "auth commands are trusted-admin-only",
         },

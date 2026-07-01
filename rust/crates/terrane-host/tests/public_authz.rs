@@ -55,8 +55,8 @@ fn public_command_inventory_covers_every_registered_command() {
         14,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 19, "refused commands: {refused:?}");
-    assert_eq!(allowed, vec!["app.add", "app.import", "replica.init"]);
+    assert_eq!(refused.len(), 20, "refused commands: {refused:?}");
+    assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
 #[test]
@@ -162,6 +162,7 @@ fn dangerous_and_effect_commands_are_refused() {
         "model.ask",
         "harness.generate-app",
         "harness.run-js",
+        "app.import",
         "app.remove",
         "auth.grant",
     ] {
@@ -180,7 +181,7 @@ fn allowlisted_commands_and_queries_stay_available() {
     let dir = tempdir().unwrap();
     let core = terrane_host::open_at_log_path(dir.path().join("log.bin")).unwrap();
 
-    for command in ["app.add", "app.import", "replica.init"] {
+    for command in ["app.add", "replica.init"] {
         assert_eq!(
             authorize_public_command(&core, command, &[]).unwrap(),
             PublicCommandAuthz::Allow
@@ -198,6 +199,65 @@ fn allowlisted_commands_and_queries_stay_available() {
         authorize_public_query("kv", "get").unwrap(),
         PublicQueryAuthz::Refuse { reason } if reason.contains("kv.get")
     ));
+}
+
+#[test]
+fn no_allowlisted_public_command_can_emit_storage_configuration() {
+    let mut bad = Vec::new();
+    for command in terrane_core::command_names() {
+        if classify_public_command(command) != PublicCommandDisposition::Allow {
+            continue;
+        }
+        let namespace = command.split_once('.').map(|(ns, _)| ns).unwrap_or(command);
+        let doc = terrane_core::capability_doc(namespace, true).unwrap();
+        let command_doc = doc
+            .commands
+            .iter()
+            .find(|doc| doc.name == command)
+            .unwrap_or_else(|| panic!("missing command doc for {command}"));
+        if command_doc
+            .emits
+            .iter()
+            .any(|event| event == "kv.storage.configured")
+        {
+            bad.push(command);
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "allowlisted public commands must not emit kv.storage.configured: {bad:?}"
+    );
+}
+
+#[test]
+fn public_dispatch_refuses_app_import_storage_side_channel_before_effect() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = terrane_host::open_at_log_path(&log).unwrap();
+
+    let err = terrane_host::dispatch_public_on_core(
+        &mut core,
+        "app.import",
+        &[
+            "/tmp/missing-bundle".into(),
+            "--storage".into(),
+            "sqlite".into(),
+            "--path".into(),
+            "/tmp/evil.db".into(),
+        ],
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("app.import installs bundles"),
+        "app.import should be refused before effect validation: {err}"
+    );
+    let records = terrane_core::read_log(&log).unwrap();
+    assert!(
+        records
+            .iter()
+            .all(|record| record.kind != "kv.storage.configured"),
+        "refused app.import must not append kv.storage.configured: {records:?}"
+    );
 }
 
 #[test]
