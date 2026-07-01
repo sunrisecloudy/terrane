@@ -45,19 +45,29 @@ and a policy-inventory test fails if a new command is not classified. Notably it
 refuses `net.fetch` / `model.ask` / `harness.*` over the untrusted surface —
 closing an effect hole (SSRF / exfiltration / model spend) worse than the kv
 bypass that prompted it: today an untrusted `capability_command net.fetch <url>`
-runs. Only genuinely future refinements (app-overwrite ownership, read/write-verb
-granularity, agent principals) remain follow-ups.
+runs. Only genuinely future refinements (app replace/update ownership,
+read/write-verb granularity, agent principals) remain follow-ups.
 
-**Gate by grantable command namespace, not by an enumerated command list.** The
-classifier should derive the gated set from capability metadata:
+**Discover grantable namespaces from metadata, then require an explicit command
+classification.** The classifier should derive candidate resource namespaces
+from capability metadata:
 
 - command namespace is `namespace_of(name)`
 - grantable namespace is present in `CapManifest.grant_resources`
-- direct command convention is app id at `args[0]`
 
-Today that yields `kv`, `crdt`, and `relational_db`. Deriving this from metadata
-means a future grantable capability with direct commands is denied by default
-instead of silently becoming public.
+Today that yields `kv`, `crdt`, and `relational_db`. Metadata alone is not
+enough to authorize a command, because each grant-gated command also needs an
+explicit app-id extractor. The policy inventory must classify every grantable
+command as either:
+
+- `GrantGated { namespace, app_arg_index }` — today always `app_arg_index = 0`
+  for `kv`, `crdt`, and `relational_db` data commands.
+- `Refuse { reason }` — required for grantable commands whose target app cannot
+  be extracted safely, such as `kv.storage.*`.
+
+A future grantable capability with direct commands is therefore denied by
+default unless it lands both in `grant_resources` and in the policy inventory
+with an explicit extractor.
 
 ## The classifier
 
@@ -85,14 +95,15 @@ Rules (each rule answers a stress-test hole):
    backend directly and skip the `invoke` permission handshake. Force them
    through `invoke`, which already gates.
 
-3. **Grantable command namespace with direct-command surface** → resolve
-   `app = args[0]`. Today this includes `kv`, `crdt`, and `relational_db`
-   (uniform for all data commands in these namespaces; only `kv.storage.*`
-   differs and is already refused in rule 1). If `app` is empty/missing → Refuse
-   with a clear arg error. If the app does not exist → Refuse `"no such app:
-   <app>"` (not a permission prompt). Else if `namespace_granted(state,
-   local_owner, app, namespace)` → Allow; otherwise **NeedsGrant{app,
-   namespace}**.
+3. **Grantable command namespace with an explicit app-id extractor** → resolve
+   `app = args[app_arg_index]`. Today this includes `kv`, `crdt`, and
+   `relational_db` data commands, all with `app_arg_index = 0`; `kv.storage.*`
+   differs and is already refused in rule 1. If no extractor is registered for a
+   grantable command, **Refuse** with `"public command is not classified for
+   grant gating"`. If `app` is empty/missing → Refuse with a clear arg error. If
+   the app does not exist → Refuse `"no such app: <app>"` (not a permission
+   prompt). Else if `namespace_granted(state, local_owner, app, namespace)` →
+   Allow; otherwise **NeedsGrant{app, namespace}**.
 
 4. **`build` is excluded.** *Hole:* the build capability has zero commands
    (`commands: Vec::new()`); its only surface is the pure `compileTs` resource
@@ -113,8 +124,11 @@ Rules (each rule answers a stress-test hole):
    data-loss footgun seen in earlier weak-model runs. Operator/trusted path only.
 
 7. **Explicit Allow set** (everything else must be *listed*, not defaulted):
-   - `app.add`, `app.import` — app creation is an intended model operation
-     (overwrite-of-existing-app protection is a tracked follow-up).
+   - `app.add`, `app.import` — create-new app registration is an intended model
+     operation. They stay allowed only while core/edge semantics reject existing
+     app ids (`Error::AppExists`) and never replace an app through this public
+     path. If replace/update semantics are added later, the inventory test must
+     move the public command to Refuse or to a confirmation/ownership policy.
    - `replica.init` — idempotent local identity the multi-capability flow needs.
    - queries `app.exists`, `replica.peer` — read-only catalog / identity.
    - `help:true` on any command — usage text, no dispatch, no state change.
@@ -141,9 +155,9 @@ guess):
 
 | Command(s) | Namespace | Disposition | Why |
 |---|---|---|---|
-| `kv.set`, `kv.rm`, `kv.delete` | kv | **Grant-gated** | app data write; `app=args[0]` → grant or `permission_required` |
-| `crdt.mapSet`,`mapDel`,`listPush`,`listInsert`,`listDel`,`textInsert`,`textDel`,`merge` | crdt | **Grant-gated** | app data write; `app=args[0]` |
-| `relational_db.defineTable`,`put`,`delete` | relational_db | **Grant-gated** | app data write; `app=args[0]` |
+| `kv.set`, `kv.rm`, `kv.delete` | kv | **Grant-gated** | app data write; explicit extractor `app=args[0]` → grant or `permission_required` |
+| `crdt.mapSet`,`mapDel`,`listPush`,`listInsert`,`listDel`,`textInsert`,`textDel`,`merge` | crdt | **Grant-gated** | app data write; explicit extractor `app=args[0]` |
+| `relational_db.defineTable`,`put`,`delete` | relational_db | **Grant-gated** | app data write; explicit extractor `app=args[0]` |
 | `kv.storage.set`, `kv.storage.clear` | kv | **Refuse** | storage config; app at `args[1]`/global; operator-only |
 | `js-runtime.run`, `wasm-runtime.run` | js/wasm-runtime | **Refuse** | run apps via `invoke` (gates + prompts) |
 | `net.fetch` | net | **Refuse** | untrusted HTTP = SSRF / exfil |
@@ -151,7 +165,7 @@ guess):
 | `harness.generate-app`, `harness.run-js` | harness | **Refuse** | trigger model-CLI effects (spend) |
 | `auth.*` — `grant`,`revoke`,`permission.{request,approve,deny,cancel}`,`agent.{register,delegate,revoke}`,`member.ensure-local-owner` | auth | **Refuse** | trusted-admin-only (already via `admit_command`) |
 | `app.remove` | app | **Refuse** | destructive; wipes app data via cascade |
-| `app.add`, `app.import` | app | **Allow** | app creation (overwrite hardening: follow-up) |
+| `app.add`, `app.import` | app | **Allow** | create-new app registration; existing ids must still fail with `AppExists` |
 | `replica.init` | replica | **Allow** | idempotent local identity |
 | `app.exists` (query), `replica.peer` (query) | app / replica | **Allow** | read-only catalog / identity |
 | any `help:true` | — | **Allow** | usage text; no dispatch |
@@ -170,11 +184,17 @@ Two call sites, one policy:
   and `dryRun` branches — covers stdio *and* HTTP MCP). Call the classifier
   *before* dispatch:
   - `Refuse{reason}` → `tool_text(reason, isError)`.
-  - `NeedsGrant{app, ns}` → build **and record** a command-scoped
-    `permission_required` and return it via **`tool_json`** so
+  - `NeedsGrant{app, ns}` on the real command path → build **and record** a
+    command-scoped `permission_required` and return it via **`tool_json`** so
     `structuredContent.type == "permission_required"` — which is exactly what the
     in-session elicitation loop and the admin console key on (doc 15). *Hole:* a
     guard that only returned a `String` error could never trigger elicitation.
+  - `NeedsGrant{app, ns}` on the `dryRun` path → build the same structured
+    `permission_required` shape, but mark it `requestStatus = "preview"` and
+    **do not record** `auth.permission.request`. A dry run must not create an
+    approvable pending request; the real command does. The MCP elicitation
+    extractor must ignore preview-only permission responses so it never prompts
+    for a request id that is not actually pending.
   - `Allow` → dispatch as today.
 - **`dispatch_public_on_core` / `dry_run_public_on_core`** (`terrane-host/src/lib.rs`)
   — belt-and-suspenders: call the classifier and hard-`Err(String)` on
@@ -202,13 +222,19 @@ return a plain `"no such app: <app>"` error (not a permission prompt).
 
 On the **`dryRun`** path, report the requirement *without recording* a request —
 a dry run must stay side-effect-free. Only the real path records the pending
-`auth.permission.request`.
+`auth.permission.request`. The preview response still includes the same app,
+namespace, admin URL, and grant command hints, but sets
+`requestStatus = "preview"` and either omits admin approval affordances or makes
+clear that the caller must rerun the real command to create an approvable
+request.
 
 The payload must make the operation source obvious to admins and agents:
 
 - `operation = "capability_command:<name>"`, for example
   `capability_command:kv.set`
 - `source = "mcp_stdio"` / `"mcp_http"` / existing MCP source string
+- `requestStatus = "pending"` for recorded real-command requests; `"preview"`
+  for dry-run-only requirements
 - `message` says this is a direct capability command, not an app runtime invoke
 - `grantCommands` stays the same (`terrane auth grant user:local-owner <app>
   <namespace>`) because the grant being requested is still the app namespace
@@ -232,9 +258,10 @@ policy decision.
 
 ## Out of scope (genuinely future — the existing surface is fully classified above)
 
-- **App create/overwrite ownership.** `app.add` / `app.import` stay `Allow`, but
-  untrusted *overwrite* of an existing app id (clobbering another app's bundle)
-  needs an ownership/confirmation model — a later slice, not this one.
+- **App replace/update ownership.** `app.add` / `app.import` stay `Allow` only
+  for create-new registration because the current core/edge paths reject existing
+  ids. Any future replace/update command needs an ownership/confirmation model
+  before it can be public.
 - **Verb/selector granularity.** `namespace_granted` is namespace-level (no
   read/write split, no key/table selector). This guard inherits exactly the
   `invoke` path's granularity — consistent, not a regression. A future
@@ -258,6 +285,10 @@ Classifier unit tests (`terrane-host`):
 - non-existent app arg on resource command → Refuse `"no such app"` rather than
   permission prompt.
 - `app.add`, `app.import`, `replica.init` → Allow.
+- `app.add` / `app.import` against an existing id still fail with `AppExists`;
+  the public allowlist must not become an overwrite path.
+- a grantable command with no explicit app-id extractor → Refuse or fail the
+  policy-inventory test until classified.
 - unknown/new command class → Refuse or fail policy-inventory test until
   classified.
 
@@ -267,15 +298,19 @@ Behavior / e2e (`host/mcp/tests`):
   `capability_command:kv.set`; after grant → succeeds.
 - Same via **elicitation**: approve in session → retry succeeds (no restart).
 - Same via **admin console** POST approve → retry succeeds.
-- `dryRun kv.set` ungranted → `permission_required`, and does **not** leak
-  `KeyNotFound`.
+- `dryRun kv.set` ungranted → `permission_required`, records no pending request,
+  cannot be approved from that dry-run alone, and does **not** leak `KeyNotFound`.
+- `permission_required_from_tool_response` / elicitation extraction ignores
+  `requestStatus = "preview"` and still extracts recorded pending requests.
 - `capability_command kv.storage.set …` → refused, never dispatched.
 - `capability_command js-runtime.run …` → refused ("use invoke").
 - `capability_command net.fetch …` / `model.ask …` / `harness.generate-app …` →
   refused (effect; never dispatched, no network/model call made).
 - `capability_command app.remove …` → refused (destructive lifecycle).
 - `capability_command app.add …` / `app.import …` / `replica.init` → still
-  succeed (allowlisted).
+  succeed when they are create-new operations (allowlisted).
+- `capability_command app.add …` / `app.import …` for an existing id → `AppExists`
+  / refused-by-core behavior, no overwrite.
 - `capability_query app.exists` still succeeds; any grantable namespace query
   added in future fails the policy-inventory test until gated/refused.
 - policy inventory covers every registered command and every registered query.
@@ -298,22 +333,26 @@ Behavior / e2e (`host/mcp/tests`):
    require a grant (same handshake as `invoke`, incl. in-session approval); app
    execution and storage config are `invoke`/trusted-only.
 6. **Public-command follow-up tickets** — explicitly file remaining hardening
-   decisions for app lifecycle mutation (`app.remove`/overwrite) and future
-   effect commands. Do not hide them behind this resource-bypass closure.
+   decisions for app replace/update ownership, verb/selector granularity, and
+   agent-aware principals. `app.remove` and current effect commands are not
+   follow-ups for this slice; they are refused here and covered by tests.
 
 ## Acceptance
 
-1. No `capability_command` (or HTTP-MCP) call can write or read
+1. No real `capability_command` (or HTTP-MCP) call can write or read
    `kv`/`crdt`/`relational_db` for an ungranted app — it returns
    `permission_required` and records a request.
-2. That `permission_required` is approvable in-session (elicitation) and via the
-   admin console, after which the retried command succeeds — no restart.
+2. That real-command `permission_required` is approvable in-session
+   (elicitation) and via the admin console, after which the retried command
+   succeeds — no restart. `dryRun` returns a preview `permission_required`
+   without recording a request.
 3. The permission request clearly says `operation =
    capability_command:<command>` and records the MCP source, so direct capability
    prompts are distinguishable from app runtime invokes.
 4. `kv.storage.*`, `*-runtime.run`, `net.fetch`, `model.ask`, `harness.*`, and
-   `app.remove` are refused over untrusted `capability_command`; `app.add` /
-   `app.import` / `replica.init` and app creation still work for this slice.
+   `app.remove` are refused over untrusted `capability_command`; create-new
+   `app.add` / `app.import` / `replica.init` still work for this slice, and
+   existing-app imports/adds cannot overwrite.
 5. Every registered Public command is covered by a policy inventory test:
    refused, grant-gated, or explicitly allowlisted.
 6. Every registered Public query is covered by a policy inventory test; future
