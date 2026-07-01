@@ -24,6 +24,7 @@ pub mod ffi;
 pub mod mcp;
 pub mod permission;
 pub mod preview;
+pub mod public_authz;
 pub mod sync;
 
 pub use edge::EdgeRunner;

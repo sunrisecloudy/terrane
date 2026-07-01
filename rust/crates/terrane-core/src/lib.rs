@@ -471,6 +471,40 @@ pub fn grant_resource_namespaces() -> Vec<&'static str> {
     out
 }
 
+/// Every command declared by registered runtime capabilities, sorted.
+pub fn command_names() -> Vec<&'static str> {
+    let registry = default_registry();
+    let mut out = Vec::new();
+    for capability in registry.caps.values() {
+        out.extend(
+            capability
+                .manifest()
+                .commands
+                .into_iter()
+                .map(|spec| spec.name),
+        );
+    }
+    out.sort_unstable();
+    out
+}
+
+/// Every query declared by registered runtime capabilities, sorted.
+pub fn query_names() -> Vec<&'static str> {
+    let registry = default_registry();
+    let mut out = Vec::new();
+    for capability in registry.caps.values() {
+        out.extend(
+            capability
+                .manifest()
+                .queries
+                .into_iter()
+                .map(|spec| spec.name),
+        );
+    }
+    out.sort_unstable();
+    out
+}
+
 /// One method of a capability's backend `ctx.resource` surface, as structured
 /// data (for the public-contract export).
 pub struct ResourceMethodSurface {
