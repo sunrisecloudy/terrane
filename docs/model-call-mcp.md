@@ -166,14 +166,23 @@ Terrane resources are default-deny. The first `invoke` or `app_actions` call on
 an app that uses `kv`, `crdt`, `relational_db`, or `build` may return
 `isError: true` with `structuredContent.type == "permission_required"`.
 
-That is not app failure. A trusted human/operator must approve the grant:
+That is not app failure. A trusted human/operator must approve the grant. Any of
+these work; the last two apply to the **running** server (no restart):
 
-```sh
-terrane auth grant user:local-owner <app> <namespace>
-```
+- **In-session (elicitation):** if the model's client supports MCP elicitation,
+  the server prompts the operator to approve right in the session and the model's
+  `invoke` then succeeds on its own — often you see no `permission_required` at
+  all. Set `TERRANE_ELICIT_TIMEOUT_MS` to bound the wait (default 120000).
+- **Loopback admin console (live):** `curl -X POST
+  http://127.0.0.1:8780/__terrane/admin/requests/<requestId>/approve` (or open
+  `structuredContent.adminUrl`). Configurable via `TERRANE_ADMIN_ADDR`
+  (`off` to disable).
+- **CLI grant:** `terrane auth grant user:local-owner <app> <namespace>` (one per
+  `structuredContent.grantCommands` entry), then retry the same `invoke`.
 
-Run each command from `structuredContent.grantCommands`, or approve through
-`structuredContent.adminUrl`, then retry the same `invoke`.
+**Single-writer lock:** while `terrane-mcp` is running against a home, a second
+`terrane` process on that home is refused. Approve **in-session or via the
+console** instead of a CLI grant, or stop the server first.
 
 ## Judge Success
 

@@ -147,6 +147,32 @@ If you are an MCP client, the recorded request is already `pending`. Your loop i
    `approved`.
 3. Retry `invoke` with the same args.
 
+### (d) In-session approval — no restart (elicitation + loopback console)
+
+The stdio `terrane-mcp` server can get a permission approved **against its live
+Core**, so the grant is seen immediately with no restart:
+
+- **Elicitation:** if the client declared the `elicitation` capability, a
+  `permission_required` on `invoke`/`app_actions` becomes a server→client
+  `elicitation/create` prompt. A **human** approves in the client UI; the server
+  grants in-process (trusted) and retries the original call automatically. The
+  model returns the real output, never a grant. Decline/timeout falls back to the
+  `permission_required` flow above.
+- **Loopback admin console:** the server also serves `TERRANE_ADMIN_ADDR`
+  (default `127.0.0.1:8780`, `off` to disable): `GET /__terrane/admin/requests`,
+  `POST /__terrane/admin/requests/<id>/approve|deny`. A same-machine operator
+  (browser, curl, headless) approves against the same live Core.
+
+Both channels are **human** actions carried over the server's back-channels, not
+tools the model can call — the model still cannot self-grant.
+
+**Single-writer lock.** This live-Core guarantee is enforced by an exclusive
+advisory lock on `$TERRANE_HOME/log.bin`: only one process may hold a home for
+writing at a time. So a stray `terrane auth grant` (path (a)) in a second
+terminal is **refused** while a server holds the home — approve in-session (d) or
+via the console, or stop the server first. Two independent writers can no longer
+fork the state.
+
 ## The MCP permission tools
 
 None of these grants access — approval is always a trusted admin action.

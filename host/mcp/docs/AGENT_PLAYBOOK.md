@@ -93,6 +93,13 @@ The `structuredContent` object has the fields you act on (it also carries
 You **cannot grant it yourself over MCP.** Granting is a trusted-admin action.
 Choose whichever path fits who is present:
 
+- **In-session approval (elicitation) — often nothing to do:** if your client
+  supports MCP elicitation, the server prompts the operator to approve **inside
+  your session** and, on approval, your original `invoke` **just succeeds** (the
+  grant is applied to the live server, no restart). You may never see a
+  `permission_required` at all. If it still comes back (the operator declined or
+  the prompt timed out), use one of the paths below.
+
 - **Human or CLI is available (fastest):** run each string in
   `structuredContent.grantCommands` verbatim in a terminal. The command format is
   exactly:
@@ -110,10 +117,17 @@ Choose whichever path fits who is present:
   Run it once per entry in `missingResources`. No verbs argument is needed —
   omitting verbs grants the namespace's full verb set.
 
-- **Admin UI is available:** tell the human to open `structuredContent.adminUrl`
-  (e.g. `http://127.0.0.1:8780/__terrane/admin/requests/<requestId>`) and click
-  approve. This is a trusted admin action; the requesting agent cannot self-serve
-  it.
+  Note: while a terrane server is running against this home, a **second**
+  `terrane` process is refused (single-writer lock on the home). Prefer in-session
+  or admin-console approval — those apply to the **live** server with no restart —
+  or stop the server before running a CLI grant.
+
+- **Admin console is available:** tell the human to open
+  `structuredContent.adminUrl` (e.g.
+  `http://127.0.0.1:8780/__terrane/admin/requests/<requestId>`) and approve — or,
+  headless, `POST /__terrane/admin/requests/<requestId>/approve`. This approves
+  against the live server (no restart). It is a trusted admin action; the
+  requesting agent cannot self-serve it.
 
 - **You are waiting on someone else to approve:** the denied result already
   **recorded** a pending request. Poll it:
