@@ -29,8 +29,11 @@ fn multi_command_history_frames_and_replays_identically() {
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
 
-    core.dispatch(Request::new("app.add", vec!["notes".into(), "Notes".into()]))
-        .unwrap();
+    core.dispatch(Request::new(
+        "app.add",
+        vec!["notes".into(), "Notes".into()],
+    ))
+    .unwrap();
     core.dispatch(Request::new(
         "kv.set",
         vec!["notes".into(), "a".into(), "1".into()],

@@ -332,7 +332,9 @@ fn resource_content(core: &mut HostCore, uri: &str) -> Result<(&'static str, Str
             Ok(("text/markdown", MCP_DOC_CAPABILITY_OPERATIONS.to_string()))
         }
         "terrane://docs/security" => Ok(("text/markdown", MCP_DOC_SECURITY.to_string())),
-        "terrane://docs/agent-playbook" => Ok(("text/markdown", MCP_DOC_AGENT_PLAYBOOK.to_string())),
+        "terrane://docs/agent-playbook" => {
+            Ok(("text/markdown", MCP_DOC_AGENT_PLAYBOOK.to_string()))
+        }
         _ => {
             if let Some(namespace) = uri.strip_prefix("terrane://capabilities/") {
                 if namespace.trim().is_empty() || namespace.contains('/') {

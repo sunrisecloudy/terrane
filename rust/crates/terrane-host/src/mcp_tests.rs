@@ -572,7 +572,10 @@ fn permission_required_response_yields_elicit_info() {
     assert_eq!(info.request_id, "local-demo-kv");
     assert_eq!(info.app, "demo");
     assert_eq!(info.app_name, "Demo");
-    assert_eq!(info.missing_resources, vec!["kv".to_string(), "crdt".to_string()]);
+    assert_eq!(
+        info.missing_resources,
+        vec!["kv".to_string(), "crdt".to_string()]
+    );
     assert!(info.admin_url.ends_with("/local-demo-kv"));
 
     // An ordinary (non-permission) result yields nothing to elicit.
@@ -594,9 +597,15 @@ fn elicitation_frame_is_a_wellformed_create_request() {
         admin_url: "http://127.0.0.1:8780/__terrane/admin/requests/local-demo-kv".into(),
     };
     let frame = super::elicitation_create_frame("terrane-elicit-1", &info);
-    assert!(frame.contains(r#""method":"elicitation/create""#), "{frame}");
+    assert!(
+        frame.contains(r#""method":"elicitation/create""#),
+        "{frame}"
+    );
     assert!(frame.contains(r#""id":"terrane-elicit-1""#), "{frame}");
-    assert!(frame.contains("Demo") && frame.contains("kv, crdt"), "{frame}");
+    assert!(
+        frame.contains("Demo") && frame.contains("kv, crdt"),
+        "{frame}"
+    );
     assert!(frame.contains(r#""enum":["approve","deny"]"#), "{frame}");
     // Valid JSON.
     let _: serde_json::Value = serde_json::from_str(&frame).expect("frame is JSON");
@@ -612,11 +621,26 @@ fn elicitation_decision_covers_accept_decline_and_mismatch() {
     let err = r#"{"jsonrpc":"2.0","id":"terrane-elicit-1","error":{"code":-1,"message":"no"}}"#;
     let other_id = r#"{"jsonrpc":"2.0","id":"terrane-elicit-2","result":{"action":"accept","content":{"decision":"approve"}}}"#;
 
-    assert_eq!(super::elicitation_decision(accept_approve, id), Some(super::ElicitDecision::Approve));
-    assert_eq!(super::elicitation_decision(accept_deny, id), Some(super::ElicitDecision::Deny));
-    assert_eq!(super::elicitation_decision(decline, id), Some(super::ElicitDecision::Deny));
-    assert_eq!(super::elicitation_decision(cancel, id), Some(super::ElicitDecision::Deny));
-    assert_eq!(super::elicitation_decision(err, id), Some(super::ElicitDecision::Deny));
+    assert_eq!(
+        super::elicitation_decision(accept_approve, id),
+        Some(super::ElicitDecision::Approve)
+    );
+    assert_eq!(
+        super::elicitation_decision(accept_deny, id),
+        Some(super::ElicitDecision::Deny)
+    );
+    assert_eq!(
+        super::elicitation_decision(decline, id),
+        Some(super::ElicitDecision::Deny)
+    );
+    assert_eq!(
+        super::elicitation_decision(cancel, id),
+        Some(super::ElicitDecision::Deny)
+    );
+    assert_eq!(
+        super::elicitation_decision(err, id),
+        Some(super::ElicitDecision::Deny)
+    );
     // A different id is not our response — keep waiting.
     assert_eq!(super::elicitation_decision(other_id, id), None);
 }
@@ -626,7 +650,10 @@ fn busy_error_replies_to_requests_but_ignores_notifications() {
     let request = r#"{"jsonrpc":"2.0","id":9,"method":"tools/list"}"#;
     let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
     let reply = super::busy_error(request).expect("busy error for a request");
-    assert!(reply.contains(r#""id":9"#) && reply.contains("awaiting an elicitation"), "{reply}");
+    assert!(
+        reply.contains(r#""id":9"#) && reply.contains("awaiting an elicitation"),
+        "{reply}"
+    );
     assert!(super::busy_error(notification).is_none());
     assert_eq!(super::parsed_method(request).as_deref(), Some("tools/list"));
 }

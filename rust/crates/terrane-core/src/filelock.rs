@@ -36,7 +36,10 @@ impl Drop for LockHandle {
         let _ = self.file.unlock();
         if let Ok(mut map) = registry().lock() {
             // Remove only if the slot is still ours (no live handle replaced it).
-            if map.get(&self.key).is_some_and(|weak| weak.strong_count() == 0) {
+            if map
+                .get(&self.key)
+                .is_some_and(|weak| weak.strong_count() == 0)
+            {
                 map.remove(&self.key);
             }
         }

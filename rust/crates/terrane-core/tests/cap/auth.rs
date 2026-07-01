@@ -153,7 +153,10 @@ fn grant_validates_namespace_and_verbs_against_registered_specs() {
         ))
         .unwrap_err()
         .to_string();
-    assert!(unknown_verb.contains("unknown grant verb"), "{unknown_verb}");
+    assert!(
+        unknown_verb.contains("unknown grant verb"),
+        "{unknown_verb}"
+    );
 
     let build_write = core
         .dispatch(req(
@@ -162,10 +165,7 @@ fn grant_validates_namespace_and_verbs_against_registered_specs() {
         ))
         .unwrap_err()
         .to_string();
-    assert!(
-        build_write.contains("unknown grant verb"),
-        "{build_write}"
-    );
+    assert!(build_write.contains("unknown grant verb"), "{build_write}");
 
     core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "demo", "build"]))
         .unwrap();
