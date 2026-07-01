@@ -130,6 +130,13 @@ pub fn permission_required_from_tool_response(response: &str) -> Option<ElicitIn
     if content.get("type")?.as_str()? != "permission_required" {
         return None;
     }
+    if content
+        .get("requestStatus")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status == "preview")
+    {
+        return None;
+    }
     let string = |key: &str| {
         content
             .get(key)
@@ -862,8 +869,18 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                 Ok(argv) => argv,
                 Err(e) => return tool_text(id, &e, true),
             };
-            match crate::query_on_core(core, &capability, &query, &argv) {
-                Ok(value) => tool_json(id, &query_value_json(&capability, &query, value), false),
+            match crate::public_authz::authorize_public_query(&capability, &query) {
+                Ok(crate::public_authz::PublicQueryAuthz::Allow) => {
+                    match crate::query_on_core(core, &capability, &query, &argv) {
+                        Ok(value) => {
+                            tool_json(id, &query_value_json(&capability, &query, value), false)
+                        }
+                        Err(e) => tool_text(id, &e, true),
+                    }
+                }
+                Ok(crate::public_authz::PublicQueryAuthz::Refuse { reason }) => {
+                    tool_text(id, &reason, true)
+                }
                 Err(e) => tool_text(id, &e, true),
             }
         }
@@ -894,12 +911,60 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                     Err(e) => tool_text(id, &e, true),
                 };
             }
-            if name.starts_with("auth.") {
-                return tool_text(
-                    id,
-                    &format!("{name} is trusted-admin-only; use the permission request/admin approval flow"),
-                    true,
-                );
+            match crate::public_authz::authorize_public_command(core, &name, &argv) {
+                Ok(crate::public_authz::PublicCommandAuthz::Allow) => {}
+                Ok(crate::public_authz::PublicCommandAuthz::Refuse { reason }) => {
+                    return tool_text(id, &reason, true);
+                }
+                Ok(crate::public_authz::PublicCommandAuthz::NeedsGrant { app, namespace }) => {
+                    let operation = format!("capability_command:{name}");
+                    let required = if dry_run {
+                        crate::permission::preview_permission_required_for_namespace_with_admin_base(
+                            core,
+                            &app,
+                            &namespace,
+                            &operation,
+                            permission_source,
+                            crate::permission::DEFAULT_ADMIN_BASE_URL,
+                        )
+                    } else {
+                        crate::permission::request_permission_for_namespace_with_admin_base(
+                            core,
+                            &app,
+                            &namespace,
+                            &operation,
+                            permission_source,
+                            crate::permission::DEFAULT_ADMIN_BASE_URL,
+                        )
+                    };
+                    return match required {
+                        Ok(Some(required)) => tool_json(id, &required.serialize_json(), true),
+                        Ok(None) => {
+                            if dry_run {
+                                match crate::dry_run_public_on_core(core, &name, &argv) {
+                                    Ok(outcome) => {
+                                        tool_json(id, &command_dry_run_json(outcome.records), false)
+                                    }
+                                    Err(e) => tool_text(id, &e, true),
+                                }
+                            } else {
+                                match crate::dispatch_public_on_core(core, &name, &argv) {
+                                    Ok(outcome) => tool_json(
+                                        id,
+                                        &command_outcome_json(
+                                            outcome.records.len(),
+                                            outcome.output.as_deref(),
+                                        ),
+                                        false,
+                                    ),
+                                    Err(e) => tool_text(id, &e, true),
+                                }
+                            }
+                        }
+                        Err(e) => tool_text(id, &e, true),
+                    };
+                }
+                Err(e) => return tool_text(id, &e, true),
             }
             if dry_run {
                 match crate::dry_run_public_on_core(core, &name, &argv) {

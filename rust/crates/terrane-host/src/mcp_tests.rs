@@ -186,9 +186,156 @@ fn capability_command_and_query_tools_use_core_without_protocol_errors() {
     .unwrap();
     assert!(
         unsupported_dry_run.contains(r#""isError":true"#)
-            && unsupported_dry_run.contains("dryRun unsupported"),
+            && unsupported_dry_run.contains("not available through untrusted capability_command"),
         "unsupported dryRun: {unsupported_dry_run}"
     );
+}
+
+#[test]
+fn capability_command_resource_writes_require_permission_and_can_retry_after_approval() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    crate::dispatch_on_core(&mut core, "app.add", &["demo".into(), "Demo".into()]).unwrap();
+
+    let denied = handle_json_rpc(
+        &mut core,
+        concat!(
+            r#"{"jsonrpc":"2.0","id":"kv-denied","method":"tools/call","params":{"#,
+            r#""name":"capability_command","arguments":{"name":"kv.set","#,
+            r#""args":["demo","key","value"]}}}"#
+        ),
+    )
+    .unwrap();
+    assert!(
+        denied.contains("permission_required")
+            && denied.contains(r#""operation":"capability_command:kv.set""#)
+            && denied.contains(r#""source":"mcp_stdio""#)
+            && denied.contains(r#""requestStatus":"pending""#)
+            && denied.contains(r#""missingResources":["kv"]"#),
+        "kv.set denial should be structured permission_required: {denied}"
+    );
+    let request_id = response_json_field(&denied, "requestId");
+    assert!(
+        super::permission_required_from_tool_response(&denied).is_some(),
+        "pending command request should be eligible for elicitation"
+    );
+
+    crate::permission::approve_permission_request(
+        &mut core,
+        &request_id,
+        "ok",
+        crate::permission::DEFAULT_ADMIN_BASE_URL,
+    )
+    .unwrap()
+    .expect("approve request");
+
+    let retry = handle_json_rpc(
+        &mut core,
+        concat!(
+            r#"{"jsonrpc":"2.0","id":"kv-retry","method":"tools/call","params":{"#,
+            r#""name":"capability_command","arguments":{"name":"kv.set","#,
+            r#""args":["demo","key","value"]}}}"#
+        ),
+    )
+    .unwrap();
+    assert!(
+        retry.contains(r#""isError":false"#) && retry.contains(r#"\"records\":1"#),
+        "kv.set retry should succeed after approval: {retry}"
+    );
+}
+
+#[test]
+fn capability_command_dry_run_permission_preview_records_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    crate::dispatch_on_core(&mut core, "app.add", &["demo".into(), "Demo".into()]).unwrap();
+    let before = terrane_cap_auth::permission_requests(core.state())
+        .unwrap()
+        .len();
+
+    let preview = handle_json_rpc(
+        &mut core,
+        concat!(
+            r#"{"jsonrpc":"2.0","id":"kv-preview","method":"tools/call","params":{"#,
+            r#""name":"capability_command","arguments":{"name":"kv.rm","#,
+            r#""args":["demo","missing-key"],"dryRun":true}}}"#
+        ),
+    )
+    .unwrap();
+    assert!(
+        preview.contains("permission_required")
+            && preview.contains(r#""operation":"capability_command:kv.rm""#)
+            && preview.contains(r#""requestStatus":"preview""#)
+            && preview.contains("rerun without dryRun")
+            && !preview.contains("KeyNotFound"),
+        "dryRun should return preview permission without decide leak: {preview}"
+    );
+    assert!(
+        super::permission_required_from_tool_response(&preview).is_none(),
+        "preview-only permission responses must not trigger elicitation"
+    );
+    let after = terrane_cap_auth::permission_requests(core.state())
+        .unwrap()
+        .len();
+    assert_eq!(after, before, "dryRun preview must not record a request");
+}
+
+#[test]
+fn capability_command_refuses_effect_runtime_storage_and_destructive_commands() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    for (command, args, expected) in [
+        (
+            "kv.storage.set",
+            vec!["default", "sqlite"],
+            "storage configuration is trusted-admin-only",
+        ),
+        (
+            "js-runtime.run",
+            vec!["demo"],
+            "run apps through the invoke tool",
+        ),
+        (
+            "net.fetch",
+            vec!["https://example.test"],
+            "not available through untrusted capability_command",
+        ),
+        (
+            "model.ask",
+            vec!["hello"],
+            "not available through untrusted capability_command",
+        ),
+        (
+            "harness.generate-app",
+            vec!["calendar"],
+            "trusted tooling and cannot run",
+        ),
+        (
+            "app.remove",
+            vec!["demo"],
+            "destructive and trusted-admin-only",
+        ),
+    ] {
+        let args_json = args
+            .iter()
+            .map(|arg| super::json_str(arg))
+            .collect::<Vec<_>>()
+            .join(",");
+        let response = handle_json_rpc(
+            &mut core,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"refuse","method":"tools/call","params":{{"name":"capability_command","arguments":{{"name":{},"args":[{}]}}}}}}"#,
+                super::json_str(command),
+                args_json
+            ),
+        )
+        .unwrap();
+        assert!(
+            response.contains(r#""isError":true"#) && response.contains(expected),
+            "{command} should be refused: {response}"
+        );
+    }
 }
 
 #[test]
@@ -420,7 +567,7 @@ fn initialize_elicitation_capability_is_detected() {
 
 #[test]
 fn permission_required_response_yields_elicit_info() {
-    let response = r#"{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"x"}],"structuredContent":{"type":"permission_required","requestId":"local-demo-kv","app":"demo","appName":"Demo","missingResources":["kv","crdt"],"adminUrl":"http://127.0.0.1:8780/__terrane/admin/requests/local-demo-kv"},"isError":true}}"#;
+    let response = r#"{"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"x"}],"structuredContent":{"type":"permission_required","requestId":"local-demo-kv","app":"demo","appName":"Demo","missingResources":["kv","crdt"],"adminUrl":"http://127.0.0.1:8780/__terrane/admin/requests/local-demo-kv","requestStatus":"pending"},"isError":true}}"#;
     let info = super::permission_required_from_tool_response(response).expect("elicit info");
     assert_eq!(info.request_id, "local-demo-kv");
     assert_eq!(info.app, "demo");
@@ -431,6 +578,10 @@ fn permission_required_response_yields_elicit_info() {
     // An ordinary (non-permission) result yields nothing to elicit.
     let ok = r#"{"jsonrpc":"2.0","id":6,"result":{"content":[{"type":"text","text":"done"}],"isError":false}}"#;
     assert!(super::permission_required_from_tool_response(ok).is_none());
+
+    // A dry-run preview is permission-shaped, but not an approvable pending request.
+    let preview = r#"{"jsonrpc":"2.0","id":7,"result":{"content":[{"type":"text","text":"x"}],"structuredContent":{"type":"permission_required","requestId":"local-demo-kv","app":"demo","appName":"Demo","missingResources":["kv"],"adminUrl":"http://127.0.0.1:8780/__terrane/admin/requests/local-demo-kv","requestStatus":"preview"},"isError":true}}"#;
+    assert!(super::permission_required_from_tool_response(preview).is_none());
 }
 
 #[test]

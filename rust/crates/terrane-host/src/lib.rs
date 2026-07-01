@@ -177,6 +177,15 @@ pub fn dispatch_public_on_core(
     args: &[String],
 ) -> Result<CommandOutcome, String> {
     ensure_identity(core)?;
+    match public_authz::authorize_public_command(core, command, args)? {
+        public_authz::PublicCommandAuthz::Allow => {}
+        public_authz::PublicCommandAuthz::Refuse { reason } => return Err(reason),
+        public_authz::PublicCommandAuthz::NeedsGrant { app, namespace } => {
+            return Err(format!(
+                "permission required for capability_command:{command}: grant {namespace} to {app}"
+            ));
+        }
+    }
     dispatch_request_on_core(core, Request::new(command, args.to_vec()))
 }
 
@@ -204,6 +213,15 @@ pub fn dry_run_public_on_core(
     command: &str,
     args: &[String],
 ) -> Result<CommandDryRunOutcome, String> {
+    match public_authz::authorize_public_command(core, command, args)? {
+        public_authz::PublicCommandAuthz::Allow => {}
+        public_authz::PublicCommandAuthz::Refuse { reason } => return Err(reason),
+        public_authz::PublicCommandAuthz::NeedsGrant { app, namespace } => {
+            return Err(format!(
+                "permission required for capability_command:{command}: grant {namespace} to {app}"
+            ));
+        }
+    }
     dry_run_request_on_core(core, Request::new(command, args.to_vec()), command)
 }
 

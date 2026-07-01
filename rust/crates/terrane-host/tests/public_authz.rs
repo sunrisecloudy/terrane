@@ -199,3 +199,39 @@ fn allowlisted_commands_and_queries_stay_available() {
         PublicQueryAuthz::Refuse { reason } if reason.contains("kv.get")
     ));
 }
+
+#[test]
+fn public_dispatch_helpers_refuse_ungranted_resource_commands_before_decide() {
+    let dir = tempdir().unwrap();
+    let mut core = terrane_host::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    app(&mut core, "demo");
+
+    let dry_run = terrane_host::dry_run_public_on_core(
+        &core,
+        "kv.rm",
+        &["demo".into(), "missing-key".into()],
+    )
+    .unwrap_err();
+    assert!(dry_run.contains("permission required"), "{dry_run}");
+    assert!(
+        !dry_run.contains("KeyNotFound"),
+        "dry run must not leak decide-time key existence: {dry_run}"
+    );
+
+    let commit = terrane_host::dispatch_public_on_core(
+        &mut core,
+        "kv.set",
+        &["demo".into(), "key".into(), "value".into()],
+    )
+    .unwrap_err();
+    assert!(commit.contains("permission required"), "{commit}");
+
+    grant(&mut core, "demo", "kv");
+    let outcome = terrane_host::dispatch_public_on_core(
+        &mut core,
+        "kv.set",
+        &["demo".into(), "key".into(), "value".into()],
+    )
+    .unwrap();
+    assert_eq!(outcome.records.len(), 1);
+}
