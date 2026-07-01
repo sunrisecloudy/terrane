@@ -158,6 +158,17 @@ fn http_with_headers(
     body: Option<&str>,
     headers: &[(&str, &str)],
 ) -> (u16, String) {
+    let (status, _headers, body) = http_raw_with_headers(addr, method, path, body, headers);
+    (status, body)
+}
+
+fn http_raw_with_headers(
+    addr: &str,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    headers: &[(&str, &str)],
+) -> (u16, String, String) {
     let mut stream = TcpStream::connect(addr).expect("connect");
     let mut req = format!("{method} {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n");
     for (field, value) in headers {
@@ -177,14 +188,16 @@ fn http_with_headers(
     stream.write_all(req.as_bytes()).unwrap();
     let mut raw = String::new();
     stream.read_to_string(&mut raw).unwrap();
-    let status = raw
+    let mut parts = raw.splitn(2, "\r\n\r\n");
+    let headers = parts.next().unwrap_or("").to_string();
+    let body = parts.next().unwrap_or("").to_string();
+    let status = headers
         .lines()
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
-    let body = raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-    (status, body)
+    (status, headers, body)
 }
 
 fn preview_body(files: &[(&str, &str)]) -> String {
@@ -371,6 +384,7 @@ fn preview_with_resources_requires_admin_review_before_runtime_access() {
     {
         let mut core = Core::open(home.join("log.bin")).unwrap();
         install(&mut core, "todo");
+        install(&mut core, "bmi-calculator");
     }
     let (mut child, addr) = spawn_web(home);
 
@@ -448,14 +462,43 @@ function handle(input) {
         &addr,
         "POST",
         &format!("/__terrane/admin/requests/{request_id}/promote"),
+        Some(r#"{"reason":"wrong target","app":"bmi-calculator"}"#),
+    );
+    assert_eq!(
+        status, 400,
+        "mismatched preview promote should fail: {body}"
+    );
+    assert!(
+        body.contains("does not match preview app"),
+        "mismatched preview promote body: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/admin/requests/{request_id}/promote"),
         Some(r#"{"reason":"promote","app":"todo"}"#),
     );
     assert_eq!(status, 200, "preview promote: {body}");
+    let (status, body) = http(
+        &addr,
+        "POST",
+        &format!("/__terrane/admin/requests/{request_id}/promote"),
+        Some(r#"{"reason":"repeat"}"#),
+    );
+    assert_eq!(
+        status, 200,
+        "repeat preview promote should be idempotent: {body}"
+    );
     let (status, body) = http(&addr, "GET", "/__terrane/admin/grants", None);
     assert_eq!(status, 200, "grants after preview promote: {body}");
     assert!(
         body.contains(r#""app":"todo""#) && body.contains(r#""namespace":"kv""#),
         "preview promotion should write installed-app grant: {body}"
+    );
+    assert!(
+        !body.contains(r#""app":"bmi-calculator""#),
+        "mismatched preview promotion must not grant another app: {body}"
     );
 
     let (status, body) = http(
@@ -671,6 +714,10 @@ fn serves_catalog_ui_and_invoke_over_http() {
         ),
         "app frame should be sandboxed away from admin origin: {body}"
     );
+    assert!(
+        body.contains("terrane:bridge:request"),
+        "app shell should expose the iframe bridge: {body}"
+    );
     let (status, body) = http_with_headers(
         &addr,
         "OPTIONS",
@@ -681,7 +728,24 @@ fn serves_catalog_ui_and_invoke_over_http() {
             ("Access-Control-Request-Headers", "content-type"),
         ],
     );
-    assert_eq!(status, 204, "app invoke preflight: {body}");
+    assert_eq!(
+        status, 404,
+        "app invoke should not expose CORS preflight: {body}"
+    );
+    let (status, headers, body) = http_raw_with_headers(
+        &addr,
+        "POST",
+        "/apps/todo/invoke",
+        Some(r#"{"verb":"list","args":[]}"#),
+        &[("Origin", "https://evil.example")],
+    );
+    assert_eq!(status, 200, "same-origin HTTP invoke still works: {body}");
+    assert!(
+        !headers
+            .to_ascii_lowercase()
+            .contains("\r\naccess-control-allow-origin:"),
+        "app invoke must not be readable cross-origin: {headers}"
+    );
     let (status, _body) = http_without_admin(&addr, "OPTIONS", "/__terrane/admin/grants", None);
     assert_eq!(status, 404, "admin routes should not expose CORS preflight");
 

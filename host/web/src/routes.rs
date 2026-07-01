@@ -5,9 +5,7 @@ use terrane_api::{HealthResponse, InvokeRequest, InvokeResponse, CONTRACT_VERSIO
 use terrane_host::{PreviewFile, PreviewStore};
 use tiny_http::{Method, Request, Response};
 
-use crate::http::{
-    admin_authorized, authorized, cors, cors_preflight, header, json_error, json_ok, Resp,
-};
+use crate::http::{admin_authorized, authorized, header, json_error, json_ok, Resp};
 use crate::shim::{inject_app_shim, inject_preview_shim};
 use crate::static_files::{content_type, safe_within};
 
@@ -33,6 +31,31 @@ struct PreviewDecisionRequest {
     reason: String,
     #[nserde(default)]
     app: String,
+}
+
+type PreviewDecisionFn =
+    fn(
+        &mut PreviewStore,
+        &str,
+        &str,
+        &str,
+    ) -> Result<Option<terrane_host::permission::PermissionRequestView>, String>;
+
+type InstalledDecisionFn = fn(
+    &mut terrane_host::HostCore,
+    &crate::admin::AdminSessionState,
+    &str,
+    &mut Request,
+    &str,
+) -> Resp;
+
+struct DecisionContext<'a> {
+    core: &'a mut terrane_host::HostCore,
+    previews: &'a mut PreviewStore,
+    admin_session: &'a crate::admin::AdminSessionState,
+    request_id: &'a str,
+    request: &'a mut Request,
+    admin_base_url: &'a str,
 }
 
 pub struct RouteState<'a> {
@@ -76,7 +99,6 @@ pub fn route(
         return json_error(403, "admin header required");
     }
     match (&method, segs.as_slice()) {
-        (Method::Options, _) if is_app_bridge_route(segs.as_slice()) => cors_preflight(),
         (Method::Get, ["healthz"]) => json_ok(&HealthResponse {
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
@@ -148,16 +170,14 @@ pub fn route(
             crate::admin::revoke(core, admin_session, request)
         }
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => crate::admin::page(),
-        (Method::Post, ["__terrane", "builder", "generate"]) => {
-            cors(builder_generate(core, request))
-        }
-        (Method::Post, ["__terrane", "previews"]) => cors(create_preview(core, previews, request)),
+        (Method::Post, ["__terrane", "builder", "generate"]) => builder_generate(core, request),
+        (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),
         (Method::Get, ["__terrane", "previews", id, "frame"]) => serve_preview(previews, id, ""),
         (Method::Get, ["__terrane", "previews", id, "frame", rest @ ..]) => {
             serve_preview(previews, id, &rest.join("/"))
         }
         (Method::Post, ["__terrane", "previews", id, "invoke"]) => {
-            cors(invoke_preview(previews, id, request, admin_base_url))
+            invoke_preview(previews, id, request, admin_base_url)
         }
         (Method::Delete, ["__terrane", "previews", id]) => destroy_preview(previews, id),
         (Method::Get | Method::Post, ["__terrane", "previews", ..]) => json_error(404, "not found"),
@@ -172,7 +192,7 @@ pub fn route(
             serve_ui(core, id, &rest.join("/"), live_reload)
         }
         (Method::Get, ["apps", _id, "__terrane", ..]) => json_error(404, "not found"),
-        (Method::Post, ["apps", id, "invoke"]) => cors(invoke(core, id, request, admin_base_url)),
+        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request, admin_base_url),
         (Method::Get, ["apps", id]) => crate::shell::response(core, id),
         (Method::Get, ["apps", id, rest @ ..]) => {
             serve_bundle_asset(core, id, &rest.join("/"), live_reload)
@@ -209,12 +229,14 @@ fn approve_request(
     admin_base_url: &str,
 ) -> Resp {
     decide_request(
-        core,
-        previews,
-        admin_session,
-        request_id,
-        request,
-        admin_base_url,
+        DecisionContext {
+            core,
+            previews,
+            admin_session,
+            request_id,
+            request,
+            admin_base_url,
+        },
         PreviewStore::approve_permission_request,
         crate::admin::approve_request,
     )
@@ -229,12 +251,14 @@ fn deny_request(
     admin_base_url: &str,
 ) -> Resp {
     decide_request(
-        core,
-        previews,
-        admin_session,
-        request_id,
-        request,
-        admin_base_url,
+        DecisionContext {
+            core,
+            previews,
+            admin_session,
+            request_id,
+            request,
+            admin_base_url,
+        },
         PreviewStore::deny_permission_request,
         crate::admin::deny_request,
     )
@@ -249,12 +273,14 @@ fn cancel_request(
     admin_base_url: &str,
 ) -> Resp {
     decide_request(
-        core,
-        previews,
-        admin_session,
-        request_id,
-        request,
-        admin_base_url,
+        DecisionContext {
+            core,
+            previews,
+            admin_session,
+            request_id,
+            request,
+            admin_base_url,
+        },
         PreviewStore::cancel_permission_request,
         crate::admin::cancel_request,
     )
@@ -289,41 +315,36 @@ fn promote_request(
 }
 
 fn decide_request(
-    core: &mut terrane_host::HostCore,
-    previews: &mut PreviewStore,
-    admin_session: &crate::admin::AdminSessionState,
-    request_id: &str,
-    request: &mut Request,
-    admin_base_url: &str,
-    preview_decide: fn(
-        &mut PreviewStore,
-        &str,
-        &str,
-        &str,
-    )
-        -> Result<Option<terrane_host::permission::PermissionRequestView>, String>,
-    installed_decide: fn(
-        &mut terrane_host::HostCore,
-        &crate::admin::AdminSessionState,
-        &str,
-        &mut Request,
-        &str,
-    ) -> Resp,
+    ctx: DecisionContext<'_>,
+    preview_decide: PreviewDecisionFn,
+    installed_decide: InstalledDecisionFn,
 ) -> Resp {
-    if previews
-        .permission_request(request_id, admin_base_url)
+    if ctx
+        .previews
+        .permission_request(ctx.request_id, ctx.admin_base_url)
         .is_none()
     {
-        return installed_decide(core, admin_session, request_id, request, admin_base_url);
+        return installed_decide(
+            ctx.core,
+            ctx.admin_session,
+            ctx.request_id,
+            ctx.request,
+            ctx.admin_base_url,
+        );
     }
-    if admin_session.locked() {
+    if ctx.admin_session.locked() {
         return json_error(403, "local admin is locked");
     }
-    let decision = match preview_decision_request(request) {
+    let decision = match preview_decision_request(ctx.request) {
         Ok(decision) => decision,
         Err(resp) => return resp,
     };
-    match preview_decide(previews, request_id, &decision.reason, admin_base_url) {
+    match preview_decide(
+        ctx.previews,
+        ctx.request_id,
+        &decision.reason,
+        ctx.admin_base_url,
+    ) {
         Ok(Some(view)) => json_ok(&view),
         Ok(None) => json_error(404, "permission request not found"),
         Err(e) => json_error(400, &e),
@@ -349,35 +370,37 @@ fn is_admin_control_route(method: &Method, segs: &[&str]) -> bool {
     if segs.len() < 2 || segs[0] != "__terrane" || segs[1] != "admin" {
         return false;
     }
-    match (method, segs) {
-        (Method::Get, ["__terrane", "admin", "session"])
-        | (Method::Post, ["__terrane", "admin", "local", "lock"])
-        | (Method::Post, ["__terrane", "admin", "local", "unlock"])
-        | (Method::Get, ["__terrane", "admin", "apps"])
-        | (Method::Get, ["__terrane", "admin", "grants"])
-        | (Method::Get, ["__terrane", "admin", "agents"])
-        | (Method::Get, ["__terrane", "admin", "audit"])
-        | (Method::Post, ["__terrane", "admin", "agents"])
-        | (Method::Post, ["__terrane", "admin", "agents", _, "delegate"])
-        | (Method::Delete, ["__terrane", "admin", "agents", _])
-        | (Method::Get, ["__terrane", "admin", "requests"])
-        | (Method::Post, ["__terrane", "admin", "requests", _, "approve"])
-        | (Method::Post, ["__terrane", "admin", "requests", _, "deny"])
-        | (Method::Post, ["__terrane", "admin", "requests", _, "cancel"])
-        | (Method::Post, ["__terrane", "admin", "requests", _, "promote"])
-        | (Method::Post, ["__terrane", "admin", "grants"])
-        | (Method::Delete, ["__terrane", "admin", "grants"]) => true,
-        _ => false,
-    }
-}
-
-fn is_app_bridge_route(segs: &[&str]) -> bool {
     matches!(
-        segs,
-        ["apps", _, "invoke"]
-            | ["__terrane", "previews"]
-            | ["__terrane", "previews", _, "invoke"]
-            | ["__terrane", "builder", "generate"]
+        (method, segs),
+        (Method::Get, ["__terrane", "admin", "session"])
+            | (Method::Post, ["__terrane", "admin", "local", "lock"])
+            | (Method::Post, ["__terrane", "admin", "local", "unlock"])
+            | (Method::Get, ["__terrane", "admin", "apps"])
+            | (Method::Get, ["__terrane", "admin", "grants"])
+            | (Method::Get, ["__terrane", "admin", "agents"])
+            | (Method::Get, ["__terrane", "admin", "audit"])
+            | (Method::Post, ["__terrane", "admin", "agents"])
+            | (
+                Method::Post,
+                ["__terrane", "admin", "agents", _, "delegate"]
+            )
+            | (Method::Delete, ["__terrane", "admin", "agents", _])
+            | (Method::Get, ["__terrane", "admin", "requests"])
+            | (
+                Method::Post,
+                ["__terrane", "admin", "requests", _, "approve"]
+            )
+            | (Method::Post, ["__terrane", "admin", "requests", _, "deny"])
+            | (
+                Method::Post,
+                ["__terrane", "admin", "requests", _, "cancel"]
+            )
+            | (
+                Method::Post,
+                ["__terrane", "admin", "requests", _, "promote"]
+            )
+            | (Method::Post, ["__terrane", "admin", "grants"])
+            | (Method::Delete, ["__terrane", "admin", "grants"])
     )
 }
 

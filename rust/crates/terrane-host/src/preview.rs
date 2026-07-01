@@ -300,11 +300,14 @@ impl PreviewStore {
                 preview.permission_status
             ));
         }
-        let installed_app = if installed_app.trim().is_empty() {
-            preview.install_app_id.as_str()
-        } else {
-            installed_app.trim()
-        };
+        let requested_app = installed_app.trim();
+        if !requested_app.is_empty() && requested_app != preview.install_app_id {
+            return Err(format!(
+                "preview promotion target {requested_app:?} does not match preview app {:?}",
+                preview.install_app_id
+            ));
+        }
+        let installed_app = preview.install_app_id.as_str();
         for namespace in &preview.requested_resources {
             crate::dispatch_on_core(
                 core,

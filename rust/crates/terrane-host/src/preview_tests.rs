@@ -169,6 +169,60 @@ fn invoke_backend_keeps_preview_state_without_appending_real_log() {
 }
 
 #[test]
+fn deny_and_cancel_preview_requests_keep_resources_default_denied() {
+    let dir = tempdir().unwrap();
+    let core = crate::open_at_home(dir.path()).unwrap();
+    let mut store = PreviewStore::new();
+    let admin_base_url = "http://127.0.0.1:49152";
+
+    let denied = store.create_preview(files(), core.state()).unwrap();
+    let denied_request_id = store.permission_requests(admin_base_url)[0]
+        .request_id
+        .clone();
+    let denied_view = store
+        .deny_permission_request(&denied_request_id, "not now", admin_base_url)
+        .unwrap()
+        .unwrap();
+    assert_eq!(denied_view.status, "denied");
+    assert!(store
+        .invoke_backend(&denied.id, "set", &["answer".to_string(), "42".to_string()],)
+        .is_err());
+    let repeated_deny = store
+        .deny_permission_request(&denied_request_id, "again", admin_base_url)
+        .unwrap()
+        .unwrap();
+    assert_eq!(repeated_deny.status, "denied");
+    assert!(store
+        .approve_permission_request(&denied_request_id, "too late", admin_base_url)
+        .unwrap_err()
+        .contains("is denied"));
+
+    let cancelled = store.create_preview(files(), core.state()).unwrap();
+    let cancelled_request_id = store
+        .permission_requests(admin_base_url)
+        .into_iter()
+        .find(|view| view.app == cancelled.id)
+        .unwrap()
+        .request_id;
+    let cancelled_view = store
+        .cancel_permission_request(&cancelled_request_id, "dismissed", admin_base_url)
+        .unwrap()
+        .unwrap();
+    assert_eq!(cancelled_view.status, "cancelled");
+    assert!(store
+        .invoke_backend(
+            &cancelled.id,
+            "set",
+            &["answer".to_string(), "42".to_string()],
+        )
+        .is_err());
+    assert!(store
+        .approve_permission_request(&cancelled_request_id, "too late", admin_base_url)
+        .unwrap_err()
+        .contains("is cancelled"));
+}
+
+#[test]
 fn parses_object_or_array_files_payload() {
     let mut store = PreviewStore::new();
     let raw_object = format!(r#"{{"files":{}}}"#, files().serialize_json());

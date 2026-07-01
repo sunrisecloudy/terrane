@@ -32,8 +32,9 @@ impl Default for ExecutionPrincipal {
 }
 
 /// Whether a host/control-plane surface admitted a command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CommandAuthority {
+    #[default]
     Public,
     TrustedHost,
 }
@@ -41,12 +42,6 @@ pub enum CommandAuthority {
 impl CommandAuthority {
     pub fn is_trusted_host(self) -> bool {
         matches!(self, Self::TrustedHost)
-    }
-}
-
-impl Default for CommandAuthority {
-    fn default() -> Self {
-        Self::Public
     }
 }
 

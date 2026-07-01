@@ -6,7 +6,7 @@
 //! concrete "host" — the same spine a native shell will wrap, minus the UI.
 
 use std::env;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode};
 use std::time::Duration;
 
 use terrane_host::InvokeFailure;
@@ -49,7 +49,7 @@ enum PermissionUi {
 
 #[derive(Debug, Clone)]
 struct RunOptions {
-    permission_ui: PermissionUi,
+    permission_ui: Option<PermissionUi>,
     permission_wait: bool,
     permission_timeout: Duration,
 }
@@ -70,7 +70,8 @@ fn run_app(args: &[&str]) -> Result<(), String> {
         }
         Err(InvokeFailure::PermissionRequired(required)) => {
             let required = *required;
-            print_permission_required(&required, options.permission_ui);
+            let permission_ui = options.permission_ui.unwrap_or(permission_ui_from_env()?);
+            print_permission_required(&required, permission_ui);
             if !options.permission_wait {
                 return Err(format!(
                     "permission_required: request {} is {}",
@@ -117,7 +118,7 @@ fn run_app(args: &[&str]) -> Result<(), String> {
 
 fn parse_run_args<'a>(args: &'a [&'a str]) -> Result<(RunOptions, &'a str, Vec<String>), String> {
     let mut options = RunOptions {
-        permission_ui: permission_ui_from_env()?,
+        permission_ui: None,
         permission_wait: false,
         permission_timeout: Duration::from_secs(300),
     };
@@ -129,7 +130,7 @@ fn parse_run_args<'a>(args: &'a [&'a str]) -> Result<(RunOptions, &'a str, Vec<S
                 let Some(value) = args.get(index) else {
                     return Err("usage: --permission-ui web|mac|print|none".into());
                 };
-                options.permission_ui = parse_permission_ui(value)?;
+                options.permission_ui = Some(parse_permission_ui(value)?);
             }
             "--permission-wait" => options.permission_wait = true,
             "--permission-timeout" => {
@@ -142,7 +143,11 @@ fn parse_run_args<'a>(args: &'a [&'a str]) -> Result<(RunOptions, &'a str, Vec<S
                     .map_err(|_| format!("permission timeout must be seconds, got {value:?}"))?;
                 options.permission_timeout = Duration::from_secs(seconds);
             }
-            "--no-open" => options.permission_ui = PermissionUi::Print,
+            "--no-open" => {
+                if options.permission_ui != Some(PermissionUi::None) {
+                    options.permission_ui = Some(PermissionUi::Print);
+                }
+            }
             "--" => {
                 index += 1;
                 break;
@@ -193,20 +198,63 @@ fn print_permission_required(
     eprintln!("  source: {}", required.source);
     eprintln!("  resources: {}", required.missing_resources.join(", "));
     match ui {
-        PermissionUi::Web => eprintln!("  open: {}", required.admin_url),
-        PermissionUi::Mac => eprintln!(
-            "  mac permission UI is not available; open: {}",
-            required.admin_url
-        ),
+        PermissionUi::Web => print_open_result(&required.admin_url),
+        PermissionUi::Mac => {
+            eprintln!("  mac permission UI is not available; falling back to web");
+            print_open_result(&required.admin_url);
+        }
         PermissionUi::Print => eprintln!("  admin url: {}", required.admin_url),
         PermissionUi::None => eprintln!("  permission UI disabled"),
     }
 }
 
+fn print_open_result(url: &str) {
+    match open_permission_url(url) {
+        Ok(()) => eprintln!("  opened: {url}"),
+        Err(e) => {
+            eprintln!("  open failed: {e}");
+            eprintln!("  admin url: {url}");
+        }
+    }
+}
+
+fn open_permission_url(url: &str) -> Result<(), String> {
+    let mut command = open_command(url);
+    let status = command
+        .status()
+        .map_err(|e| format!("cannot open permission UI: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("permission UI opener exited with {status}"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_command(url: &str) -> Command {
+    let mut command = Command::new("open");
+    command.arg(url);
+    command
+}
+
+#[cfg(target_os = "windows")]
+fn open_command(url: &str) -> Command {
+    let mut command = Command::new("cmd");
+    command.args(["/C", "start", "", url]);
+    command
+}
+
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+fn open_command(url: &str) -> Command {
+    let mut command = Command::new("xdg-open");
+    command.arg(url);
+    command
+}
+
 fn print_host_help() {
     println!(
         "terrane-host — the terrane CLI plus the app runtime entry point\n\n\
-         \x20 terrane-host run [--permission-ui web|mac|print|none] [--permission-wait] [--permission-timeout seconds] <app> [input…]\n\
+         \x20 terrane-host run [--permission-ui web|mac|print|none] [--no-open] [--permission-wait] [--permission-timeout seconds] <app> [input…]\n\
          \x20                                     run an app backend\n\n\
          All standard terrane commands also work:\n"
     );

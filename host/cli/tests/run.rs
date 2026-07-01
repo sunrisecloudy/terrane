@@ -9,9 +9,14 @@ use std::process::Command;
 use tempfile::tempdir;
 
 fn host(home: &Path, args: &[&str]) -> (bool, String, String) {
+    host_with_env(home, args, &[])
+}
+
+fn host_with_env(home: &Path, args: &[&str], envs: &[(&str, &str)]) -> (bool, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_terrane-host"))
         .args(args)
         .env("TERRANE_HOME", home)
+        .envs(envs.iter().copied())
         .output()
         .expect("spawn terrane-host");
     (
@@ -56,6 +61,17 @@ fn terrane_host_runs_todo_cli_backend() {
 
     let (ok, out, _) = host(home, &["run", "todo-cli", "list"]);
     assert!(ok);
+    assert_eq!(out.trim(), "#1 buy milk", "out: {out}");
+
+    let (ok, out, err) = host_with_env(
+        home,
+        &["run", "todo-cli", "list"],
+        &[("TERRANE_PERMISSION_UI", "garbage")],
+    );
+    assert!(
+        ok,
+        "invalid permission UI env should not block granted apps: {err}"
+    );
     assert_eq!(out.trim(), "#1 buy milk", "out: {out}");
 
     assert!(host(home, &["replay"]).0, "replay failed");
@@ -106,5 +122,22 @@ fn terrane_host_run_reports_permission_request_and_wait_timeout() {
     assert!(
         err.contains("timed out waiting for request"),
         "timeout stderr: {err}"
+    );
+
+    let (ok, _out, err) = host(
+        home,
+        &[
+            "run",
+            "--permission-ui",
+            "none",
+            "--no-open",
+            "todo-cli",
+            "list",
+        ],
+    );
+    assert!(!ok, "run without grant should fail closed");
+    assert!(
+        err.contains("permission UI disabled") && !err.contains("/__terrane/admin/requests/"),
+        "--no-open should not make permission-ui none verbose: {err}"
     );
 }

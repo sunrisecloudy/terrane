@@ -13,6 +13,7 @@
   }
 
   bindDesktopInfo();
+  bindBridge();
   frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
 
   fetch("/apps", { cache: "no-store" })
@@ -116,6 +117,74 @@
   function setInfoPanelOpen(open) {
     infoPanel.hidden = !open;
     infoButton.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+
+  function bindBridge() {
+    window.addEventListener("message", function (event) {
+      if (!frame || event.source !== frame.contentWindow) return;
+      var message = event.data || {};
+      if (!message || message.type !== "terrane:bridge:request") return;
+
+      var route = bridgeRoute(message.kind);
+      if (!route) {
+        sendBridgeResponse(message.id, false, { error: "unsupported bridge request" });
+        return;
+      }
+
+      postJson(route, message.body || {})
+        .then(function (result) {
+          sendBridgeResponse(message.id, result.ok, result.body);
+        })
+        .catch(function (error) {
+          sendBridgeResponse(message.id, false, { error: errorMessage(error) });
+        });
+    });
+  }
+
+  function bridgeRoute(kind) {
+    if (kind === "invoke") return "/apps/" + encodeURIComponent(currentId) + "/invoke";
+    if (kind === "preview") return "/__terrane/previews";
+    if (kind === "builderGenerate") return "/__terrane/builder/generate";
+    return "";
+  }
+
+  function postJson(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body || {}),
+    })
+      .then(function (response) {
+        return response.text().then(function (text) {
+          var parsed = {};
+          if (text) {
+            try {
+              parsed = JSON.parse(text);
+            } catch (error) {
+              parsed = { error: text };
+            }
+          }
+          if (!response.ok && !parsed.error) parsed.error = "HTTP " + response.status;
+          return { ok: response.ok, body: parsed };
+        });
+      });
+  }
+
+  function sendBridgeResponse(id, ok, body) {
+    if (!id || !frame || !frame.contentWindow) return;
+    frame.contentWindow.postMessage(
+      {
+        type: "terrane:bridge:response",
+        id: id,
+        ok: !!ok,
+        body: body || {},
+      },
+      "*"
+    );
+  }
+
+  function errorMessage(error) {
+    return error && error.message ? error.message : String(error || "request failed");
   }
 
   function showError(message) {

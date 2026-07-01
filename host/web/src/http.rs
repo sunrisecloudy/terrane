@@ -41,16 +41,6 @@ pub fn json_error(code: u16, message: &str) -> Resp {
         .with_header(header("Content-Type", "application/json"))
 }
 
-pub fn cors(resp: Resp) -> Resp {
-    resp.with_header(header("Access-Control-Allow-Origin", "*"))
-        .with_header(header("Access-Control-Allow-Headers", "content-type"))
-        .with_header(header("Access-Control-Allow-Methods", "POST, OPTIONS"))
-}
-
-pub fn cors_preflight() -> Resp {
-    cors(Response::from_string("").with_status_code(204))
-}
-
 pub fn header(field: &str, value: &str) -> Header {
     // Inputs are all static/known-good ASCII, so this never fails in practice.
     Header::from_bytes(field.as_bytes(), value.as_bytes())
