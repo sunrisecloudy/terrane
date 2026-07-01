@@ -36,22 +36,26 @@ For app building:
 1. Read `terrane://docs/app-building`.
 2. Call `workflows_list`.
 3. Call `workflow_info` for `make_js_kv_app_no_filesystem`.
-4. Use `app_scaffold`; pass `withUi: true` for visible apps such as calendars,
-   dashboards, forms, and natural-language input pages.
-5. Use `app_register_inline` with `dryRun: true`.
-6. Commit with `app_register_inline`.
-7. Inspect with `app_actions`.
-8. Act with `invoke`.
+4. Use `app_build_start`; pass `withUi: true` for visible apps such as
+   calendars, dashboards, forms, and natural-language input pages.
+5. Replace generated files one at a time with `app_build_put_file`.
+6. Validate with `app_build_validate`.
+7. Commit with `app_build_commit`.
+8. Inspect with `app_actions`.
+9. Act with `invoke`.
 
-Step 8 can come back with `isError: true` and a `permission_required` object
+Step 9 can come back with `isError: true` and a `permission_required` object
 instead of a result: the app declared a resource (such as `kv`) in its manifest,
 but declaring a resource no longer auto-grants it — resources are default-deny.
 Do not treat this as a dead end. See the [Permissions](#permissions) section
 below for exactly what to do next.
 
-Pass `app_register_inline.files` as the actual `structuredContent.files` array,
-not as a JSON string. On registration retry, include the complete bundle file
-array again, including `manifest.json`, backend, UI, and assets.
+If you use the older `app_scaffold` + `app_register_inline` bridge, pass
+`app_register_inline.files` as the actual `structuredContent.files` array, not
+as a JSON string. The dry-run returns `draftId` and `validationToken`; the next
+call should be `app_build_commit`, without resending file contents. On dry-run
+retry, include the complete bundle file array again, including `manifest.json`,
+backend, UI, and assets.
 
 For UI apps, the browser bridge is
 `window.terrane.invoke("verb", "arg1", "arg2")`. Do not pass an array for
@@ -106,6 +110,15 @@ text in `content[0].text`:
     "requestStatus": "pending",
     "resumeTool": "permission_check",
     "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "operatorActionRequired": true,
+    "allowedMcpTools": ["permission_check", "permission_requests", "permission_cancel"],
+    "forbiddenMcpTools": [
+      "capability_command:auth.*",
+      "capability_command:*.grant",
+      "capability_command:app.grant",
+      "capability_command:auth.permission.approve"
+    ],
+    "nextModelAction": "Do not call capability_command for auth/grant commands. Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId until approved, then retry the original invoke/app_actions/capability_command call with the same arguments.",
     "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
   },
   "isError": true
@@ -113,10 +126,12 @@ text in `content[0].text`:
 ```
 
 When you see `structuredContent.type == "permission_required"`, read
-`missingResources`, `grantCommands`, and `adminUrl` — do not retry blindly and do
-not give up. Surfacing this response also *records* a pending permission request,
-so `requestStatus` becomes `pending` and it is immediately checkable and
-approvable.
+`missingResources`, `grantCommands`, `adminUrl`, `allowedMcpTools`,
+`forbiddenMcpTools`, and `nextModelAction` — do not retry blindly and do not
+give up. Surfacing this response also *records* a pending permission request, so
+`requestStatus` becomes `pending` and it is immediately checkable and
+approvable. If `operatorActionRequired` is true, the model's only MCP-side job is
+to poll/cancel/list and retry after a trusted operator approves.
 
 ### Getting a grant (three exact paths)
 

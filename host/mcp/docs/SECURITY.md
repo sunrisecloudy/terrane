@@ -65,6 +65,10 @@ Exact JSON keys (do not rename):
 | `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `preview` \| `unrecorded` |
 | `resumeTool` | `"permission_check"` for recorded requests; empty for dry-run previews |
 | `resumeTokenHash` | 16-hex hash of the request id |
+| `operatorActionRequired` | `true` when a trusted human/admin/CLI action is needed |
+| `allowedMcpTools` | MCP tools the model may call while waiting, usually permission polling tools |
+| `forbiddenMcpTools` | tool/command patterns the model must not use, especially MCP auth/grant attempts |
+| `nextModelAction` | precise model-side recovery step: surface approval, poll, retry original call |
 | `message` | human message: `permission required for app <app>: grant <ns…>; open <adminUrl>` |
 
 Surfacing a real denial also **records** the request (an
@@ -93,6 +97,15 @@ create an approvable request.
   "requestStatus": "pending",
   "resumeTool": "permission_check",
   "resumeTokenHash": "9f8e7d6c5b4a3210",
+  "operatorActionRequired": true,
+  "allowedMcpTools": ["permission_check", "permission_requests", "permission_cancel"],
+  "forbiddenMcpTools": [
+    "capability_command:auth.*",
+    "capability_command:*.grant",
+    "capability_command:app.grant",
+    "capability_command:auth.permission.approve"
+  ],
+  "nextModelAction": "Do not call capability_command for auth/grant commands. Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId until approved, then retry the original invoke/app_actions/capability_command call with the same arguments.",
   "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
 }
 ```
@@ -103,6 +116,9 @@ An MCP client **cannot grant itself access.** The `capability_command` tool
 refuses any `auth.*` name with `"<name> is trusted-admin-only; use the permission
 request/admin approval flow"`. Do not retry `auth.grant` or
 `auth.permission.approve` through `capability_command` — it will always fail.
+When a `permission_required` object includes `operatorActionRequired: true`,
+follow its `allowedMcpTools`, `forbiddenMcpTools`, and `nextModelAction` fields
+before reading any free-form explanation.
 
 Instead, pick one of the three trusted paths below, then **retry the original
 `invoke`, `app_actions`, or direct resource `capability_command` call with the
@@ -136,6 +152,9 @@ Open the URL from `adminUrl`:
 http://127.0.0.1:8780/__terrane/admin                          (admin page)
 http://127.0.0.1:8780/__terrane/admin/requests/<requestId>     (deep link)
 ```
+
+The port in examples is only the default. In parallel or custom runs,
+`adminUrl` reflects the live `TERRANE_ADMIN_ADDR`; use the returned URL.
 
 Approving posts to `POST /__terrane/admin/requests/<requestId>/approve`, which
 mints the missing grants and marks the request `approved`. The admin can also
@@ -233,12 +252,13 @@ namespace and is never handed to an app via `ctx.resource`.
 ## Weak-model recipe (copy-paste)
 
 1. `workflows_list` → pick a workflow (e.g. `make_js_kv_app_no_filesystem`).
-2. `app_scaffold` with `{ "id": "notes-demo", "name": "Notes Demo" }` (add
+2. `app_build_start` with `{ "id": "notes-demo", "name": "Notes Demo" }` (add
    `"withUi": true` for a page).
-3. `app_register_inline` with `{ "files": <structuredContent.files>, "dryRun": true }`,
-   then again without `dryRun` to commit.
-4. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
-5. If the result has `"isError": true` and
+3. Update any generated files with `app_build_put_file`, one file per call.
+4. `app_build_validate` with `{ "draftId": <draftId> }`.
+5. `app_build_commit` with `{ "draftId": <draftId>, "validationToken": <token> }`.
+6. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
+7. If the result has `"isError": true` and
    `structuredContent.type == "permission_required"`, the app's `kv` (etc.)
    namespace is ungranted. Do one of:
    - **Human/CLI**: run each string in `structuredContent.grantCommands`, e.g.
@@ -247,7 +267,7 @@ namespace and is never handed to an app via `ctx.resource`.
      action).
    - **Poll**: call `permission_check` with
      `{ "requestId": structuredContent.requestId }` until `status` is `approved`.
-6. Once granted/`approved`, **retry `invoke`** with the same args → success.
+8. Once granted/`approved`, **retry `invoke`** with the same args → success.
    (Do not try `capability_command` with an `auth.*` name — it is refused as
    trusted-admin-only.)
 
@@ -256,7 +276,10 @@ namespace and is never handed to an app via `ctx.resource`.
 Clients should grant the model only the tools required for the task. A strong
 locked-down app-building client can deny file reads, filesystem listing, shell,
 grep, glob, web fetch, web search, and language-server tools. The MCP-only app
-path still works through `app_scaffold` and `app_register_inline`.
+path still works through `app_build_start`, `app_build_put_file`,
+`app_build_validate`, and `app_build_commit`. The older
+`app_scaffold`/`app_register_inline` bridge remains available when a client can
+carry a complete JSON files array.
 
 ## Mutation Rules
 
@@ -265,7 +288,9 @@ dispatches through core. They must not mutate capability state directly.
 
 Examples:
 
-- `app_register_inline` writes owned bundle files, then dispatches `app.add`.
+- `app_build_commit` writes owned draft bundle files, then dispatches `app.add`.
+- `app_register_inline` writes owned bundle files directly only on the legacy
+  non-dry-run path; its dry-run returns a draft id for `app_build_commit`.
 - `app_register` validates a source bundle, then dispatches `app.add`.
 - `capability_command` applies the public command policy before dispatching
   through core: `kv` / `crdt` / `relational_db` resource commands require the

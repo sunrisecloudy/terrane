@@ -145,19 +145,23 @@ A successful blind app-building run usually discovers this path:
 
 1. `workflows_list`
 2. `workflow_info`
-3. `app_scaffold`
-4. `app_register_inline` with `dryRun: true`
-5. `app_register_inline` commit
-6. `app_actions`
-7. `invoke`
+3. `app_build_start`
+4. `app_build_put_file` for any changed generated files
+5. `app_build_validate`
+6. `app_build_commit`
+7. `app_actions`
+8. `invoke`
 
 The model may read MCP resources such as `terrane://docs/agent-playbook` or call
 `capability_info`. That is allowed. It should not use repository file reads,
 shell, broad filesystem listing, web fetch, or task tools.
 
-After `app_scaffold`, the next model action should be `app_register_inline`
-dry-run with the complete `structuredContent.files` array. If the model writes a
-long prose/code answer instead of calling the tool, the docs are not sharp
+The older `app_scaffold` + `app_register_inline` path remains a compatibility
+bridge. After `app_scaffold`, the next model action should be
+`app_register_inline` dry-run with the complete `structuredContent.files` array;
+that dry-run returns `draftId` and `validationToken`, so the next action should
+be `app_build_commit` without resending files. If the model writes a long
+prose/code answer instead of calling a concrete tool, the docs are not sharp
 enough for that model.
 
 ## Permission Handshake
@@ -176,13 +180,21 @@ these work; the last two apply to the **running** server (no restart):
 - **Loopback admin console (live):** `curl -X POST
   http://127.0.0.1:8780/__terrane/admin/requests/<requestId>/approve` (or open
   `structuredContent.adminUrl`). Configurable via `TERRANE_ADMIN_ADDR`
-  (`off` to disable).
+  (`off` to disable). In parallel evals, always prefer the `adminUrl` returned
+  in the permission object because the port may not be `8780`.
 - **CLI grant:** `terrane auth grant user:local-owner <app> <namespace>` (one per
   `structuredContent.grantCommands` entry), then retry the same `invoke`.
 
 **Single-writer lock:** while `terrane-mcp` is running against a home, a second
 `terrane` process on that home is refused. Approve **in-session or via the
 console** instead of a CLI grant, or stop the server first.
+
+Recent weak-model runs showed that productive models sometimes tried
+`capability_command auth.grant` after `permission_required`. Treat that as a
+model mistake, not as a Terrane recovery path. The payload's
+`operatorActionRequired`, `allowedMcpTools`, `forbiddenMcpTools`, and
+`nextModelAction` fields are the contract: surface `grantCommands`/`adminUrl`,
+poll `permission_check`, and retry the original call after trusted approval.
 
 ## Judge Success
 
@@ -247,13 +259,23 @@ tail -n 200 ~/.local/share/opencode/log/opencode.log
 
 Failure classes:
 
-- `finish = "length"` before `app_register_inline`: client/provider output
-  budget. Retry with the output-budget plugin or a smaller first bundle.
+- `finish = "length"` before `app_build_validate` or `app_register_inline`:
+  client/provider output budget. Retry with the output-budget plugin or a
+  smaller first bundle.
 - New assistant stream with `output = 0`, empty `finish`, no new tool parts, and
   unchanged `session.time_updated`: provider/client stall. Stop the run and
-  restart from the scaffold result.
-- `app_register_inline` returns `isError: true`: Terrane rejected the bundle.
-  Fix the complete files array and retry dry-run.
+  restart from the last structured result. If the last completed call was
+  `app_build_start`, call `app_build_get` or continue with `app_build_put_file`;
+  if it was `app_scaffold`, make `app_register_inline` dry-run the first
+  resumed tool call. If it was `app_recipe`, `workflow_info`, or
+  `capability_info`, resume
+  with the next concrete tool named in `firstCalls`, `steps`,
+  `nextAfterScaffold`, or `nextToolCall`. In a comparison batch, allow one total
+  retry for this stall class; a repeated silent stall is a provider/client
+  result, not evidence that Terrane docs are missing.
+- `app_build_validate` or `app_register_inline` returns `isError: true`:
+  Terrane rejected the bundle. Fix the draft or complete files array and retry
+  validation/dry-run.
 - No `$TERRANE_HOME/apps/<id>` directory: the model never committed registration
   or registration failed.
 - App exists but UI was not opened: incomplete UI eval, not an MCP failure.

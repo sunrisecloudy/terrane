@@ -222,6 +222,10 @@ impl PreviewStore {
             request_status: preview.permission_status.clone(),
             resume_tool: "permission_check".to_string(),
             resume_token_hash,
+            operator_action_required: true,
+            allowed_mcp_tools: crate::permission::recorded_permission_allowed_mcp_tools(),
+            forbidden_mcp_tools: crate::permission::permission_forbidden_mcp_tools(),
+            next_model_action: crate::permission::recorded_permission_next_model_action(),
             message: format!(
                 "permission required for preview {}: grant {}; open {}",
                 preview.id,

@@ -28,7 +28,8 @@ route or transcript.
 
 Locked opencode runs should not use the default 32k response budget for weak
 models. A model can spend that whole budget drafting a bundle after
-`app_scaffold` and finish with `length` before it reaches `app_register_inline`.
+`app_build_start` or `app_scaffold` and finish with `length` before it reaches
+`app_build_validate` or the compatibility `app_register_inline` dry-run.
 
 Add the eval plugin to the temporary opencode workspace:
 
@@ -64,20 +65,57 @@ client/provider output budget; it is not a Terrane MCP failure.
 
 Classify failed runs before updating prompts, tools, or docs:
 
-- `finish:length` before `app_register_inline`: output budget exhaustion. Retry
-  with the opencode output-budget plugin, a smaller bundle, or a resume that
-  registers the scaffolded files immediately.
+- `finish:length` before `app_build_validate` or `app_register_inline`: output
+  budget exhaustion. Retry with the opencode output-budget plugin, a smaller
+  bundle, or a resume that validates/commits the current draft immediately.
 - Provider stream error in `~/.local/share/opencode/log/opencode.log`: provider
   failure. Retry the same prompt/config before changing Terrane docs.
 - No-token stall: opencode starts a new assistant stream, but the DB records a
   final/current assistant message with empty `finish`, `output = 0`, no new tool
   parts, and an unchanged `session.time_updated`. Stop the run and classify it
   as a client/provider stall unless Terrane logged a tool error.
+- No-token stall after `app_recipe`, `workflow_info`, `capability_info`,
+  `app_build_start`, or `app_scaffold`: resume from the last structured tool
+  result with the next concrete tool call named there. Do not ask the model for
+  a prose summary. For app tasks this is usually `app_build_start`,
+  `app_build_get`/`app_build_put_file`, `app_build_validate`, or the
+  compatibility `app_register_inline` dry-run if `structuredContent.files`
+  already exists. Allow at most one retry for this class in a comparison batch;
+  if it stalls again, record provider/client stall and move on.
+- Self-grant attempt after `permission_required`: the model called
+  `capability_command` with `auth.*`, `*.grant`, or similar after a resource
+  denial. Count this as a docs/tool-guidance miss. The correct model behavior is
+  to surface `grantCommands`/`adminUrl`, poll `permission_check`, and retry the
+  original call after trusted approval.
 - No app registered: `$TERRANE_HOME/apps/<id>` is absent. Check whether the model
-  ever called `app_register_inline` and whether that call returned `isError`.
+  ever called `app_build_commit` or `app_register_inline`, and whether the
+  preceding validation/dry-run returned `isError`.
 - Registered but unverified UI: app files exist and backend invokes work, but no
   browser/page check ran. Count this as an incomplete UI eval, not an MCP
   registration failure.
+
+## Six-Model Lessons
+
+The July 2026 calendar-app batch across DeepSeek V4 Flash, MiMo V2.5,
+MiniMax M3, DeepSeek V4 Pro, GLM 5.2, and Kimi K2.7 Code produced two useful
+MCP findings:
+
+- Productive weak models can create usable app bundles and backend flows from
+  MCP docs alone, but they may hit `permission_required` and try to self-grant
+  with `capability_command auth.grant`. Improve the denial payload and docs, not
+  the eval prompt.
+- Several models stalled with zero output tokens immediately after
+  `app_build_start`, `app_scaffold`, `app_recipe`, or `capability_info`. Treat this as a
+  client/provider stall unless Terrane returned a tool error, and make the last
+  tool result carry an explicit `nextToolCall`/`nextModelAction`. One retry is
+  enough to distinguish a transient provider hiccup from a repeatable stall.
+- Requiring models to resend a whole `files` array after dry-run is fragile.
+  Prefer the staged draft tools and make the compatibility inline dry-run return
+  `draftId`/`validationToken` for `app_build_commit`.
+
+When updating MCP docs after such runs, prefer machine-readable fields in tool
+results (`nextToolCall`, `nextAfterScaffold`, `operatorActionRequired`,
+`allowedMcpTools`, `forbiddenMcpTools`, `nextModelAction`) over longer prose.
 
 ## Watchdog Checks
 
@@ -93,4 +131,5 @@ For long locked-agent runs, keep a small watchdog loop outside the model:
 A practical default is to stop a run after five minutes with no DB/message/tool
 progress following a new assistant stream. The result should be recorded as a
 no-token stall, with the last completed tool call and the missing next tool call
-named explicitly.
+named explicitly. In a six-model batch, keep a single global retry slot for the
+first silent stall so flaky providers do not dominate the run.

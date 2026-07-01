@@ -74,6 +74,15 @@ in `content[0].text`:
     "requestStatus": "pending",
     "resumeTool": "permission_check",
     "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "operatorActionRequired": true,
+    "allowedMcpTools": ["permission_check", "permission_requests", "permission_cancel"],
+    "forbiddenMcpTools": [
+      "capability_command:auth.*",
+      "capability_command:*.grant",
+      "capability_command:app.grant",
+      "capability_command:auth.permission.approve"
+    ],
+    "nextModelAction": "Do not call capability_command for auth/grant commands. Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId until approved, then retry the original invoke/app_actions/capability_command call with the same arguments.",
     "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
   },
   "isError": true
@@ -101,6 +110,10 @@ pollable, and approvable. You do not need to create the request yourself.
 | `operation` | app/runtime verb or direct operation, e.g. `capability_command:kv.set` |
 | `resumeTool` | `"permission_check"` for recorded requests; empty for dry-run previews |
 | `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `preview` \| `unrecorded` |
+| `operatorActionRequired` | `true` means a trusted operator/admin must grant |
+| `allowedMcpTools` | MCP tools the model may call while waiting |
+| `forbiddenMcpTools` | MCP tool/command patterns the model must not call |
+| `nextModelAction` | exact recovery instruction for the model |
 | `message` | one-line human-readable summary |
 
 The local subject is always **`user:local-owner`**.
@@ -110,6 +123,11 @@ The local subject is always **`user:local-owner`**.
 You (the MCP client) **cannot grant yourself access.** Approval is a trusted
 admin action. Your job is to surface the request and then poll and retry. Do
 **one** of these to get the grant, then retry the original call:
+
+If present, follow `nextModelAction` before any free-form text. Treat
+`allowedMcpTools` as the safe waiting set and `forbiddenMcpTools` as hard
+refusals; do not try to turn a CLI grant command into a
+`capability_command` call.
 
 1. **CLI (human or a shell you control).** Run each string in `grantCommands`
    verbatim. The format is always:
@@ -172,12 +190,13 @@ above; an explicit verbs argument is validated against the allowed set.
 ### End-to-end recipe (copy-paste)
 
 1. `workflows_list` → pick a workflow (e.g. `make_js_kv_app_no_filesystem`).
-2. `app_scaffold` with `{ "id": "notes-demo", "name": "Notes Demo" }`
+2. `app_build_start` with `{ "id": "notes-demo", "name": "Notes Demo" }`
    (add `"withUi": true` for a page).
-3. `app_register_inline` with `{ "files": <structuredContent.files>, "dryRun": true }`,
-   then again without `dryRun` to commit.
-4. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
-5. If the result is `isError:true` with
+3. `app_build_put_file` for each generated file you change, one file per call.
+4. `app_build_validate` with `{ "draftId": <draftId> }`.
+5. `app_build_commit` with `{ "draftId": <draftId>, "validationToken": <token> }`.
+6. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
+7. If the result is `isError:true` with
    `structuredContent.type == "permission_required"`, the app's `kv` (etc.)
    namespace is ungranted. Get it approved:
    - **Human/CLI**: run each string in `structuredContent.grantCommands`,
@@ -185,13 +204,16 @@ above; an explicit verbs argument is validated against the allowed set.
    - **Admin UI**: open `structuredContent.adminUrl` and approve.
    - **Poll**: call `permission_check` with
      `{ "requestId": structuredContent.requestId }` until `status` is `approved`.
-6. **Retry `invoke`** with the same args → success.
+8. **Retry `invoke`** with the same args → success.
 
 ## Opencode Locked-Agent Pattern
 
 For no-source tests, configure Terrane as a native MCP server and deny file and
 shell tools in the agent. The model should still be able to create an app using
-`app_scaffold` and `app_register_inline`.
+`app_build_start`, `app_build_put_file`, `app_build_validate`, and
+`app_build_commit`. If it uses the older `app_scaffold` +
+`app_register_inline` bridge, the dry-run returns `draftId` and
+`validationToken`; the next call should be `app_build_commit`.
 
 Useful denies:
 
@@ -225,7 +247,8 @@ model's advertised output limit:
 
 The plugin can be combined with the MCP config in the same `.opencode/opencode.json`.
 Without it, long code-generation turns can stop with `finish: "length"` before
-the model calls `app_register_inline`.
+the model calls `app_build_validate` or the compatibility
+`app_register_inline` dry-run.
 
 ### Opencode Eval Diagnostics
 
@@ -276,13 +299,19 @@ sqlite3 ~/.local/share/opencode/opencode.db \
 
 Read the results this way:
 
-- `finish = "length"` before `app_register_inline`: client/provider output
-  budget, not a Terrane MCP rejection.
+- `finish = "length"` before `app_build_validate` or `app_register_inline`:
+  client/provider output budget, not a Terrane MCP rejection.
+- A final assistant message with `output = 0`, empty `finish`, and no new tool
+  parts after `app_build_start`: provider/client stall. Restart from the
+  draft id and call `app_build_get`, then continue with `app_build_put_file` or
+  `app_build_validate`.
 - A final assistant message with `output = 0`, empty `finish`, and no new tool
   parts after `app_scaffold`: provider/client stall. Restart from the scaffold
-  result and make `app_register_inline` dry-run the first call.
-- `app_register_inline` returns `isError: true`: Terrane rejected the bundle;
-  keep the error and fix the complete files array.
+  result and make `app_register_inline` dry-run the first call, then commit with
+  `app_build_commit`.
+- `app_build_validate` or `app_register_inline` returns `isError: true`:
+  Terrane rejected the bundle; keep the error and fix the draft or complete
+  files array.
 - App files absent under `$TERRANE_HOME/apps/<id>` after a failed run: the model
   never committed registration or registration was rejected.
 

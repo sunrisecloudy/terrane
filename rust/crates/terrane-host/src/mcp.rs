@@ -5,16 +5,19 @@
 //! discover -> act contract.
 
 use std::collections::BTreeSet;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use nanoserde::{DeJson, SerJson};
 use serde_json::{json, Map, Value};
 use terrane_api::{
     mcp_prompts, mcp_resource_templates, mcp_resources, mcp_tools, MCP_PROTOCOL_VERSION,
-    TOOL_APP_ACTIONS, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER,
-    TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND,
-    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS,
-    TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
-    TOOL_WORKFLOW_INFO,
+    TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD, TOOL_APP_BUILD_GET,
+    TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START, TOOL_APP_BUILD_VALIDATE,
+    TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE,
+    TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO,
+    TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL,
+    TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
 };
 use terrane_core::QueryValue;
 
@@ -35,6 +38,20 @@ pub fn handle_json_rpc_with_source(
     raw: &str,
     permission_source: &str,
 ) -> Option<String> {
+    handle_json_rpc_with_source_and_admin_base(
+        core,
+        raw,
+        permission_source,
+        crate::permission::DEFAULT_ADMIN_BASE_URL,
+    )
+}
+
+pub fn handle_json_rpc_with_source_and_admin_base(
+    core: &mut HostCore,
+    raw: &str,
+    permission_source: &str,
+    admin_base_url: &str,
+) -> Option<String> {
     let fields = top_level_fields(raw);
     let field = |name: &str| fields.iter().find(|(k, _)| *k == name).map(|(_, v)| *v);
 
@@ -54,7 +71,15 @@ pub fn handle_json_rpc_with_source(
         Some("prompts/list") => id.map(|id| ok(id, &prompts_list_result())),
         Some("prompts/get") => id.map(|id| prompt_get(id, field("params").unwrap_or("{}"))),
         Some("tools/call") => {
-            id.map(|id| tool_call(core, id, field("params").unwrap_or("{}"), permission_source))
+            id.map(|id| {
+                tool_call(
+                    core,
+                    id,
+                    field("params").unwrap_or("{}"),
+                    permission_source,
+                    admin_base_url,
+                )
+            })
         }
         // Notifications (no id) are silently accepted; a request with an
         // unknown/!string method still gets a proper error reply.
@@ -402,11 +427,13 @@ fn prompt_content(
 
 Use MCP tools only:
 1. Call `app_recipe` with {{"kind":"js_kv_app"}}.
-2. Call `app_scaffold` with {{"id":{app_id_json},"name":{app_name_json}}}.
-3. Take the returned `structuredContent.files` array and call `app_register_inline` with {{"files": <that array>, "dryRun": true}}. Do not JSON-stringify the files array.
-4. If dry-run succeeds, call `app_register_inline` again with the same complete `files` array and no `dryRun`.
+2. Call `app_build_start` with {{"id":{app_id_json},"name":{app_name_json},"withUi":true}}.
+3. Use `app_build_put_file` for any changed files, one file at a time.
+4. Call `app_build_validate`, then `app_build_commit` with the returned `draftId` and `validationToken`; do not resend file contents.
 5. Call `list_apps`, then `app_actions` for {app_id_json}.
 6. Invoke `write` with {text_json}, invoke `read`, invoke `clear`, then invoke `read` again.
+
+Compatibility route: `app_scaffold` plus `app_register_inline` dry-run is still valid, but the dry-run returns `draftId`/`validationToken`; finish with `app_build_commit` instead of resending the same complete files array.
 
 Do not use shell, source-file reads, glob, grep, or broad filesystem listing. If you need capability semantics, read `terrane://capabilities/kv` or call `capability_info` for `kv`.
 "#,
@@ -549,7 +576,13 @@ fn prompt_get(id: &str, params_raw: &str) -> String {
 /// Handle `tools/call`. `params_raw` is the isolated top-level `params` object,
 /// so argument failures can be surfaced as MCP tool errors instead of JSON-RPC
 /// protocol errors.
-fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source: &str) -> String {
+fn tool_call(
+    core: &mut HostCore,
+    id: &str,
+    params_raw: &str,
+    permission_source: &str,
+    admin_base_url: &str,
+) -> String {
     let params = match parse_call_params(params_raw) {
         Ok(params) => params,
         Err(e) => return error(id, -32602, &e),
@@ -606,6 +639,129 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                 Err(e) => return tool_text(id, &e, true),
             };
             match app_scaffold_json(&app_id, &name, &kind, with_ui) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_BUILD_START => {
+            let args = match args_object(TOOL_APP_BUILD_START, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let app_id = match required_string(args, "id", TOOL_APP_BUILD_START) {
+                Ok(app_id) => app_id,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let name = match required_string(args, "name", TOOL_APP_BUILD_START) {
+                Ok(name) => name,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let kind = match optional_string(args, "kind", TOOL_APP_BUILD_START) {
+                Ok(kind) => kind,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let with_ui = match optional_bool(args, "withUi", TOOL_APP_BUILD_START) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match app_build_start_json(&app_id, &name, &kind, with_ui) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_BUILD_PUT_FILE => {
+            let args = match args_object(TOOL_APP_BUILD_PUT_FILE, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let draft_id = match required_string(args, "draftId", TOOL_APP_BUILD_PUT_FILE) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let path = match required_string(args, "path", TOOL_APP_BUILD_PUT_FILE) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let content =
+                match required_string_allow_empty(args, "content", TOOL_APP_BUILD_PUT_FILE) {
+                    Ok(value) => value,
+                    Err(e) => return tool_text(id, &e, true),
+                };
+            match app_build_put_file_json(&draft_id, &path, &content) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_BUILD_GET => {
+            let args = match args_object(TOOL_APP_BUILD_GET, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let draft_id = match required_string(args, "draftId", TOOL_APP_BUILD_GET) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let path = match optional_string(args, "path", TOOL_APP_BUILD_GET) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let include_content = match optional_bool(args, "includeContent", TOOL_APP_BUILD_GET) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match app_build_get_json(&draft_id, &path, include_content) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_BUILD_VALIDATE => {
+            let args = match args_object(TOOL_APP_BUILD_VALIDATE, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let draft_id = match required_string(args, "draftId", TOOL_APP_BUILD_VALIDATE) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match app_build_validate_json(core, &draft_id) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_BUILD_COMMIT => {
+            let args = match args_object(TOOL_APP_BUILD_COMMIT, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let draft_id = match required_string(args, "draftId", TOOL_APP_BUILD_COMMIT) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let validation_token =
+                match optional_string(args, "validationToken", TOOL_APP_BUILD_COMMIT) {
+                    Ok(value) => value,
+                    Err(e) => return tool_text(id, &e, true),
+                };
+            let replace_existing =
+                match optional_bool(args, "replaceExisting", TOOL_APP_BUILD_COMMIT) {
+                    Ok(value) => value,
+                    Err(e) => return tool_text(id, &e, true),
+                };
+            match app_build_commit_json(core, &draft_id, &validation_token, replace_existing) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_BUILD_DISCARD => {
+            let args = match args_object(TOOL_APP_BUILD_DISCARD, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let draft_id = match required_string(args, "draftId", TOOL_APP_BUILD_DISCARD) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match app_build_discard_json(&draft_id) {
                 Ok(output) => tool_json(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }
@@ -715,7 +871,7 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
             match crate::app_actions_checked_with_admin_base_and_source(
                 core,
                 &app,
-                crate::permission::DEFAULT_ADMIN_BASE_URL,
+                admin_base_url,
                 permission_source,
             ) {
                 Ok(output) => tool_json_if_possible(id, &output, false),
@@ -747,7 +903,7 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                 &app,
                 &verb,
                 &argv,
-                crate::permission::DEFAULT_ADMIN_BASE_URL,
+                admin_base_url,
                 permission_source,
             ) {
                 Ok(output) => tool_text(id, &output, false),
@@ -766,11 +922,7 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                 Ok(request_id) => request_id,
                 Err(e) => return tool_text(id, &e, true),
             };
-            match crate::permission::permission_request_view(
-                core,
-                &request_id,
-                crate::permission::DEFAULT_ADMIN_BASE_URL,
-            ) {
+            match crate::permission::permission_request_view(core, &request_id, admin_base_url) {
                 Ok(Some(view)) => tool_json(id, &view.serialize_json(), false),
                 Ok(None) => tool_text(id, "permission request not found", true),
                 Err(e) => tool_text(id, &e, true),
@@ -793,7 +945,7 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                 core,
                 &request_id,
                 &reason,
-                crate::permission::DEFAULT_ADMIN_BASE_URL,
+                admin_base_url,
             ) {
                 Ok(Some(view)) => tool_json(id, &view.serialize_json(), false),
                 Ok(None) => tool_text(id, "permission request not found", true),
@@ -802,10 +954,7 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
         }
         TOOL_PERMISSION_REQUESTS => {
             match args_object(TOOL_PERMISSION_REQUESTS, &params.arguments) {
-                Ok(_) => match crate::permission::permission_requests(
-                    core,
-                    crate::permission::DEFAULT_ADMIN_BASE_URL,
-                ) {
+                Ok(_) => match crate::permission::permission_requests(core, admin_base_url) {
                     Ok(response) => tool_json(id, &response.serialize_json(), false),
                     Err(e) => tool_text(id, &e, true),
                 },
@@ -927,7 +1076,7 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                             &namespace,
                             &operation,
                             permission_source,
-                            crate::permission::DEFAULT_ADMIN_BASE_URL,
+                            admin_base_url,
                         )
                     } else {
                         crate::permission::request_permission_for_namespace_with_admin_base(
@@ -936,7 +1085,7 @@ fn tool_call(core: &mut HostCore, id: &str, params_raw: &str, permission_source:
                             &namespace,
                             &operation,
                             permission_source,
-                            crate::permission::DEFAULT_ADMIN_BASE_URL,
+                            admin_base_url,
                         )
                     };
                     return match required {
@@ -1073,6 +1222,24 @@ fn required_string(args: &Map<String, Value>, field: &str, tool: &str) -> Result
     }
 }
 
+fn required_string_allow_empty(
+    args: &Map<String, Value>,
+    field: &str,
+    tool: &str,
+) -> Result<String, String> {
+    match args.get(field) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        None => Err(format!(
+            "{tool} requires string '{field}'. Try: {}",
+            tool_call_example(tool)
+        )),
+        Some(_) => Err(format!(
+            "{tool} requires string '{field}'. Try: {}",
+            tool_call_example(tool)
+        )),
+    }
+}
+
 fn optional_string(args: &Map<String, Value>, field: &str, tool: &str) -> Result<String, String> {
     match args.get(field) {
         Some(Value::String(value)) => Ok(value.clone()),
@@ -1104,22 +1271,36 @@ fn optional_string_vec(
         return Ok(Vec::new());
     };
     let Some(items) = value.as_array() else {
-        return Err(format!(
-            "{tool} requires '{field}' to be an array of strings. Try: {}",
-            tool_call_example(tool)
-        ));
+        return Err(string_vec_arg_error(args, field, tool));
     };
     items
         .iter()
         .map(|item| {
-            item.as_str().map(ToString::to_string).ok_or_else(|| {
-                format!(
-                    "{tool} requires '{field}' to be an array of strings. Try: {}",
-                    tool_call_example(tool)
-                )
-            })
+            item.as_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| string_vec_arg_error(args, field, tool))
         })
         .collect()
+}
+
+fn string_vec_arg_error(args: &Map<String, Value>, field: &str, tool: &str) -> String {
+    if tool == TOOL_INVOKE && field == "args" {
+        let app = args.get("app").and_then(Value::as_str).unwrap_or("APP_ID");
+        let verb = args.get("verb").and_then(Value::as_str).unwrap_or("VERB");
+        return format!(
+            "{tool} requires '{field}' to be a real JSON array of strings. \
+             Do not pass a JSON-stringified array. For this call use \
+             {{\"app\":{},\"verb\":{},\"args\":[\"<one string argument>\"]}}. \
+             If the backend expects one JSON payload, wrap the JSON string once: \
+             \"args\":[\"{{...}}\"], not \"args\":\"[...]\".",
+            json_str(app),
+            json_str(verb)
+        );
+    }
+    format!(
+        "{tool} requires '{field}' to be an array of strings. Try: {}",
+        tool_call_example(tool)
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -1139,6 +1320,14 @@ fn required_inline_files(
             tool_call_example(tool)
         ));
     };
+    inline_files_from_value(value, field, tool)
+}
+
+fn inline_files_from_value(
+    value: &Value,
+    field: &str,
+    tool: &str,
+) -> Result<Vec<InlineFile>, String> {
     let Some(items) = value.as_array() else {
         let hint = if value.is_string() {
             " Received a string; pass structuredContent.files as a JSON array and do not JSON-stringify it."
@@ -1261,15 +1450,26 @@ fn workflows_list_json() -> String {
         "notes": [
             "Always call MCP tools through JSON-RPC method tools/call.",
             "Choose a workflow by matching the user's desired outcome to chooseByOutcome before acting.",
-            "For locked-down clients, prefer app_register_inline after app_scaffold; it writes the owned bundle under TERRANE_HOME/apps/<id> on commit.",
+            "For locked-down or weak-model clients, prefer app_build_start, app_build_put_file, app_build_validate, then app_build_commit. This avoids resending a giant files array twice.",
+            "app_build_commit takes draftId and validationToken; it does not need file contents.",
+            "app_register_inline remains a compatibility bridge. Its dryRun returns draftId/validationToken so the next call can be app_build_commit.",
             "app_register_inline.files must be the structuredContent.files JSON array, not a JSON string.",
             "Every app_register_inline retry must include the complete files array: manifest.json, backend, manifest.ui, ui.js/style.css, and assets.",
-            "After app_scaffold, the next assistant action should be app_register_inline with dryRun:true. Do not print the whole app as prose/code before the dry run.",
+            "After app_scaffold, either call app_register_inline with dryRun:true to create a draft bridge, or start over with app_build_start. Do not print the whole app as prose/code before the dry run.",
+            "If a provider stalls with zero new output after workflow_info, capability_info, app_recipe, or app_scaffold, resume from the last structured result and make the nextToolCall/nextAfterScaffold call immediately.",
+            "If permission_required appears, do not call capability_command auth.* or grant commands. Follow nextModelAction, poll permission_check, and retry the original call after trusted approval.",
             "For UI apps, window.terrane.invoke takes positional string args: invoke(\"verb\", \"arg1\", \"arg2\"), not invoke(\"verb\", [\"arg1\", \"arg2\"]).",
             "For optional KV indexes such as event_ids, use a kvGetOrNull helper and default missing keys to [] before JSON.parse.",
             "When the user asked for an interactive page, verify the page itself when possible; backend invoke success alone does not prove the UI works.",
             "Prefer app_register for app bundle registration; it validates the bundle and still dispatches app.add through core.",
             "JSON results include structuredContent and a text JSON copy for compatibility."
+        ],
+        "stallRecovery": [
+            {"lastCompletedTool": "workflows_list", "nextToolCall": {"tool": "workflow_info", "arguments": {"name": "make_js_kv_app_no_filesystem"}}},
+            {"lastCompletedTool": "workflow_info", "nextToolCall": "use workflow.nextAfterScaffold only after app_scaffold; otherwise call the next concrete step listed in workflow.steps"},
+            {"lastCompletedTool": "capability_info", "nextToolCall": "return to the selected workflow.steps and call the first not-yet-completed concrete app tool"},
+            {"lastCompletedTool": "app_recipe", "nextToolCall": "use recipe.nextToolCall or recipe.firstCalls[0]"},
+            {"lastCompletedTool": "app_scaffold", "nextToolCall": {"tool": "app_register_inline", "arguments": {"files": "last app_scaffold structuredContent.files array", "dryRun": true}}, "then": {"tool": "app_build_commit", "arguments": {"draftId": "draftId from dryRun", "validationToken": "validationToken from dryRun"}}}
         ]
     })
     .to_string()
@@ -1280,16 +1480,23 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
         "make_js_kv_app" => json!({
             "name": "make_js_kv_app",
             "goal": "Build and run a small JS app backed by kv.",
+            "primaryFlow": "Use staged draft tools first: app_build_start, app_build_put_file for changed files, app_build_validate, app_build_commit. This avoids resending a full files array.",
             "nextAfterScaffold": {
                 "tool": "app_register_inline",
                 "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true},
-                "instruction": "After app_scaffold, call this immediately with the complete files array. Do not emit the whole app as prose/code before the dry run."
+                "filesArgument": {"from": "app_scaffold.structuredContent.files", "type": "array", "doNotJsonStringify": true},
+                "instruction": "After app_scaffold, call this immediately with the complete files array to create a draft bridge, then commit with app_build_commit using draftId/validationToken. Pass files as an array; do not JSON-stringify it. Do not emit the whole app as prose/code before the dry run."
+            },
+            "stallRecovery": {
+                "classification": "If a new assistant stream produces no tokens after this workflow_info result, classify it as provider/client stall unless a tool error appears.",
+                "resume": "Restart or resume by calling the first not-yet-completed concrete step below. If app_scaffold already completed, call nextAfterScaffold immediately."
             },
             "steps": [
                 {"tool": "app_recipe", "arguments": {"kind": "js_kv_app"}, "why": "Read the happy path before doing work."},
-                {"tool": "app_scaffold", "arguments": {"id": "notes-demo", "name": "Notes Demo"}, "why": "Get a valid manifest.json and main.js template as JSON files. Add withUi:true when the requested outcome is a visible app."},
-                {"tool": "app_register_inline", "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true}, "why": "Validate app.add through core without filesystem tools or committing."},
-                {"tool": "app_register_inline", "arguments": {"files": "same files from app_scaffold"}, "why": "Write the owned bundle under TERRANE_HOME/apps/<id> and commit app.add through core."},
+                {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}, "why": "Create a server-side draft and avoid sending the full bundle twice. Omit withUi only for backend-only tasks."},
+                {"tool": "app_build_put_file", "arguments": {"draftId": "draftId from app_build_start", "path": "main.js", "content": "complete backend file"}, "why": "Replace one file at a time. Repeat for index.html, ui.js, style.css, or assets as needed."},
+                {"tool": "app_build_validate", "arguments": {"draftId": "draftId from app_build_start"}, "why": "Validate bundle refs and dry-run app.add without appending records."},
+                {"tool": "app_build_commit", "arguments": {"draftId": "draftId from app_build_start", "validationToken": "validationToken from app_build_validate"}, "why": "Write the owned bundle and commit app.add without resending files."},
                 {"tool": "list_apps", "arguments": {}, "why": "Confirm the app id appears."},
                 {"tool": "app_actions", "arguments": {"app": "notes-demo"}, "why": "Discover verbs before invoking."},
                 {"tool": "invoke", "arguments": {"app": "notes-demo", "verb": "write", "args": ["hello"]}, "why": "Run one action."},
@@ -1302,22 +1509,30 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
                 "kvOptionalReads": "For optional KV indexes such as event_ids, use kvGetOrNull(kv, key) and default null to [] before JSON.parse.",
                 "verification": "If a browser is available, open /apps/<id>/, check console errors, click one UI control, and confirm the rendered result. Backend invokes alone do not prove a UI app works."
             },
-            "inlineFilesContract": "app_register_inline.files must be a JSON array of {path,content} objects. Pass structuredContent.files directly; do not JSON-stringify it. Every retry must include the complete files array, not only changed files.",
-            "replaceExisting": "If app_register_inline says the id already exists, operate the existing app with app_actions unless the human explicitly wants replacement. Replacement/removal is trusted-operator-only now; untrusted capability_command app.remove is refused. Ask the operator to remove/replace out of band, then rerun app_register_inline.",
+            "stagedBuildContract": "app_build_start creates a draft; app_build_put_file updates one file; app_build_validate returns validationToken; app_build_commit commits using draftId and validationToken without file contents.",
+            "inlineFilesContract": "Compatibility path: app_register_inline.files must be a JSON array of {path,content} objects. Its dryRun returns draftId/validationToken, so prefer app_build_commit after dryRun rather than resending files.",
+            "replaceExisting": "If the id already exists, operate the existing app with app_actions unless the human explicitly wants replacement. Replacement/removal is trusted-operator-only now; untrusted capability_command app.remove is refused. Ask the operator to remove/replace out of band, then validate/commit the draft again or use the compatibility inline dry-run bridge.",
             "pathBundleAlternative": "If the client can write files itself, write app_scaffold files to a bundle directory, call app_bundle_validate, then app_register dryRun and commit."
         }),
         "make_js_kv_app_no_filesystem" => json!({
             "name": "make_js_kv_app_no_filesystem",
             "goal": "Create a JS kv app when read/list/glob/grep/bash are denied.",
+            "primaryFlow": "Use app_build_start -> app_build_put_file -> app_build_validate -> app_build_commit. Do not use filesystem tools and do not resend full bundles.",
             "nextAfterScaffold": {
                 "tool": "app_register_inline",
                 "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true},
-                "instruction": "After app_scaffold, call this immediately with the complete files array. Do not emit the whole app as prose/code before the dry run."
+                "filesArgument": {"from": "app_scaffold.structuredContent.files", "type": "array", "doNotJsonStringify": true},
+                "instruction": "After app_scaffold, call this immediately with the complete files array to create a draft bridge, then call app_build_commit with the returned draftId/validationToken. Pass files as an array; do not JSON-stringify it. Do not emit the whole app as prose/code before the dry run."
+            },
+            "stallRecovery": {
+                "classification": "If a new assistant stream produces no tokens after this workflow_info result, classify it as provider/client stall unless a tool error appears.",
+                "resume": "Restart or resume by calling app_scaffold. If app_scaffold already completed, call nextAfterScaffold immediately."
             },
             "steps": [
-                {"tool": "app_scaffold", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}, "why": "Get manifest.json, main.js, index.html, and style.css as structuredContent.files for visible apps. Omit withUi only for backend-only tasks."},
-                {"tool": "app_register_inline", "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true}, "why": "Validate without writing files or committing."},
-                {"tool": "app_register_inline", "arguments": {"files": "same files from app_scaffold"}, "why": "Write under TERRANE_HOME/apps/<id> and commit through app.add."},
+                {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}, "why": "Create a server-side draft with manifest.json, main.js, index.html, ui.js, and style.css for visible apps. Omit withUi only for backend-only tasks."},
+                {"tool": "app_build_put_file", "arguments": {"draftId": "draftId from app_build_start", "path": "main.js", "content": "complete backend file"}, "why": "Replace one file at a time. Repeat for index.html, ui.js, style.css, or assets as needed."},
+                {"tool": "app_build_validate", "arguments": {"draftId": "draftId from app_build_start"}, "why": "Validate without writing files or committing."},
+                {"tool": "app_build_commit", "arguments": {"draftId": "draftId from app_build_start", "validationToken": "validationToken from app_build_validate"}, "why": "Write under TERRANE_HOME/apps/<id> and commit through app.add without resending files."},
                 {"tool": "app_actions", "arguments": {"app": "notes-demo"}},
                 {"tool": "invoke", "arguments": {"app": "notes-demo", "verb": "write", "args": ["hello"]}},
                 {"tool": "invoke", "arguments": {"app": "notes-demo", "verb": "read", "args": []}}
@@ -1328,20 +1543,27 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
                 "kvOptionalReads": "For optional KV indexes such as event_ids, use kvGetOrNull(kv, key) and default null to [] before JSON.parse.",
                 "verification": "For UI outcomes, verify the page loads and rendered results match the requested view. If no browser tool exists, say UI was not live-tested and keep the code conservative."
             },
-            "inlineFilesContract": "app_register_inline.files must be a JSON array of {path,content} objects. Pass structuredContent.files directly; do not JSON-stringify it. Every retry must include the complete files array, not only changed files.",
-            "replaceExisting": "If the id already exists, operate it with app_actions unless the human explicitly wants replacement. Replacement/removal is trusted-operator-only now; untrusted capability_command app.remove is refused. Ask the operator to remove/replace out of band, then call app_register_inline again.",
-            "doNotUse": ["source reads", "shell", "glob", "grep", "filesystem list", "capability_command app.add before app_register_inline", "backend-only proof for visible UI tasks"]
+            "stagedBuildContract": "app_build_start creates a server-side draft; app_build_put_file updates one file; app_build_validate returns validationToken; app_build_commit commits without file contents.",
+            "inlineFilesContract": "Compatibility path: app_register_inline.files must be a JSON array of {path,content} objects. Its dryRun returns draftId/validationToken, so prefer app_build_commit after dryRun rather than resending files.",
+            "replaceExisting": "If the id already exists, operate it with app_actions unless the human explicitly wants replacement. Replacement/removal is trusted-operator-only now; untrusted capability_command app.remove is refused. Ask the operator to remove/replace out of band, then validate/commit the draft again or use the compatibility inline dry-run bridge.",
+            "doNotUse": ["source reads", "shell", "glob", "grep", "filesystem list", "capability_command app.add before app_build_commit", "backend-only proof for visible UI tasks"]
         }),
         "make_js_multicap_app_no_filesystem" => json!({
             "name": "make_js_multicap_app_no_filesystem",
             "goal": "Create and verify a backend JS app that uses five capability surfaces without filesystem/source access.",
+            "primaryFlow": "Use app_build_start -> app_build_put_file -> app_build_validate -> app_build_commit for the app bundle, then use capability_query/command and app invoke for verification.",
             "nextAfterScaffold": {
                 "tool": "app_register_inline",
                 "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true},
-                "instruction": "After app_scaffold, call this immediately with the complete files array. Do not emit the whole app as prose/code before the dry run."
+                "filesArgument": {"from": "app_scaffold.structuredContent.files", "type": "array", "doNotJsonStringify": true},
+                "instruction": "After app_scaffold, call this immediately with the complete files array to create a draft bridge, then call app_build_commit with the returned draftId/validationToken. Pass files as an array; do not JSON-stringify it. Do not emit the whole app as prose/code before the dry run."
+            },
+            "stallRecovery": {
+                "classification": "If a new assistant stream produces no tokens after this workflow_info result, classify it as provider/client stall unless a tool error appears.",
+                "resume": "Restart or resume by calling the first not-yet-completed concrete step below. If app_scaffold already completed, call nextAfterScaffold immediately."
             },
             "capabilitiesUsed": [
-                {"namespace": "app", "how": "app_register_inline, app_actions, invoke, and capability_query app.exists"},
+                {"namespace": "app", "how": "app_build_commit, app_actions, invoke, and capability_query app.exists"},
                 {"namespace": "kv", "how": "ctx.resource.kv inside the generated app"},
                 {"namespace": "crdt", "how": "ctx.resource.crdt inside the generated app"},
                 {"namespace": "relational_db", "how": "ctx.resource.relational_db inside the generated app"},
@@ -1351,9 +1573,10 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
                 {"tool": "capability_info", "arguments": {"namespace": "kv", "format": "json"}, "why": "Review app-scoped KV methods and reserved key constraints."},
                 {"tool": "capability_info", "arguments": {"namespace": "crdt", "format": "json"}, "why": "Review map/list/text resource methods."},
                 {"tool": "capability_info", "arguments": {"namespace": "relational_db", "format": "json"}, "why": "Review table spec and query method shape."},
-                {"tool": "app_scaffold", "arguments": {"id": "multicap-demo", "name": "Multi-cap Demo", "kind": "js_multicap_audit"}, "why": "Get manifest.json and main.js using resources kv, crdt, and relational_db."},
-                {"tool": "app_register_inline", "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true}, "why": "Validate app.add through core without writing files."},
-                {"tool": "app_register_inline", "arguments": {"files": "same files from app_scaffold"}, "why": "Write under TERRANE_HOME/apps/<id> and commit through app.add."},
+                {"tool": "app_build_start", "arguments": {"id": "multicap-demo", "name": "Multi-cap Demo", "kind": "js_multicap_audit"}, "why": "Create a server-side draft using resources kv, crdt, and relational_db."},
+                {"tool": "app_build_put_file", "arguments": {"draftId": "draftId from app_build_start", "path": "main.js", "content": "complete backend file"}, "why": "Replace one file at a time if customizing the generated app."},
+                {"tool": "app_build_validate", "arguments": {"draftId": "draftId from app_build_start"}, "why": "Validate app.add through core without writing files."},
+                {"tool": "app_build_commit", "arguments": {"draftId": "draftId from app_build_start", "validationToken": "validationToken from app_build_validate"}, "why": "Write under TERRANE_HOME/apps/<id> and commit through app.add without resending files."},
                 {"tool": "capability_command", "arguments": {"name": "replica.init", "help": true}, "why": "Read effects and emitted events before minting identity."},
                 {"tool": "capability_command", "arguments": {"name": "replica.init"}, "why": "Ensure the home has a stable replica peer id."},
                 {"tool": "capability_query", "arguments": {"capability": "replica", "query": "peer", "args": []}, "why": "Read folded replica identity without appending records."},
@@ -1366,7 +1589,8 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
             ],
             "readPolicy": "For evaluation tasks, invoke summary after seed and again after clearKv. Seed and clearKv return JSON summaries, but mutation returns do not replace the explicit pre-clear and post-clear summary reads.",
             "finalReadPolicy": "For evaluation tasks, invoke summary after clearKv even though clearKv returns JSON. The separate post-clear summary proves the final state was readable after the mutation completed.",
-            "inlineFilesContract": "app_register_inline.files must be a JSON array of {path,content} objects. Pass structuredContent.files directly; do not JSON-stringify it. Every retry must include the complete files array, not only changed files.",
+            "stagedBuildContract": "app_build_start creates a server-side draft; app_build_put_file updates one file; app_build_validate returns validationToken; app_build_commit commits without file contents.",
+            "inlineFilesContract": "Compatibility path: app_register_inline.files must be a JSON array of {path,content} objects. Its dryRun returns draftId/validationToken, so prefer app_build_commit after dryRun rather than resending files.",
             "kvOptionalReads": "Generated apps should use kvGetOrNull(kv, key) for optional KV state and default null before JSON.parse or final summary reads.",
             "successSignals": [
                 "app.exists returns true",
@@ -1375,7 +1599,7 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
                 "the separate pre-clear summary after seed contains kv.lastNote, crdt.profile.owner, crdt.events, crdt.journal, relational.active, and relational.p1",
                 "the separate post-clear summary has kv.theme null and kv.lastNote null while relational.p1 and crdt.profile.owner still exist"
             ],
-            "doNotUse": ["source reads", "shell", "glob", "grep", "filesystem list", "net/model effects", "capability_command app.add before app_register_inline"]
+            "doNotUse": ["source reads", "shell", "glob", "grep", "filesystem list", "net/model effects", "capability_command app.add before app_build_commit"]
         }),
         "register_app_bundle" => json!({
             "name": "register_app_bundle",
@@ -1433,12 +1657,15 @@ fn app_recipe_json(kind: &str) -> String {
         return json!({
             "kind": kind,
             "summary": "Happy path for building a backend JS Terrane app that uses kv, crdt, and relational_db, with replica/app checks over MCP.",
+            "nextToolCall": {"tool": "workflow_info", "arguments": {"name": "make_js_multicap_app_no_filesystem"}},
+            "nextModelAction": "Call workflow_info for make_js_multicap_app_no_filesystem next. If workflow_info was already read, call app_build_start with kind js_multicap_audit next, then app_build_validate and app_build_commit.",
+            "stallRecovery": "If the provider emits no tokens after this app_recipe result, retry once from this result and make nextToolCall the first action.",
             "steps": [
                 "Call workflow_info with make_js_multicap_app_no_filesystem for the complete five-capability route.",
                 "If the model started from an outcome-only request, choose this recipe after workflows_list maps multi-cap, relational, CRDT, or replica tasks to make_js_multicap_app_no_filesystem.",
-                "Call app_scaffold with kind js_multicap_audit to get manifest.json and main.js files.",
-                "For MCP-only clients, pass returned files to app_register_inline with dryRun:true.",
-                "Call app_register_inline again without dryRun to write under TERRANE_HOME/apps/<id> and commit through core app.add.",
+                "Call app_build_start with kind js_multicap_audit to create a server-side draft.",
+                "Use app_build_put_file for any customized files, one file at a time.",
+                "Call app_build_validate, then app_build_commit with draftId and validationToken to write under TERRANE_HOME/apps/<id> and commit through core app.add.",
                 "Call capability_command help for replica.init, then replica.init, then capability_query replica.peer.",
                 "Call capability_query app.exists for the registered app id.",
                 "Call app_actions, invoke seed, invoke summary as a separate pre-clear read, invoke clearKv, then invoke summary again as a separate final read."
@@ -1453,7 +1680,8 @@ fn app_recipe_json(kind: &str) -> String {
             "nextAfterScaffold": {
                 "tool": "app_register_inline",
                 "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true},
-                "instruction": "After app_scaffold, call this immediately with the complete files array before explaining or printing code."
+                "filesArgument": {"from": "app_scaffold.structuredContent.files", "type": "array", "doNotJsonStringify": true},
+                "instruction": "Compatibility bridge: after app_scaffold, call this with the complete files array to get draftId/validationToken, then app_build_commit without resending files."
             },
             "uiContract": {
                 "when": "If the requested outcome includes a visible page, pass withUi:true to app_scaffold and keep index.html plus ui.js separate from main.js.",
@@ -1462,9 +1690,9 @@ fn app_recipe_json(kind: &str) -> String {
             },
             "firstCalls": [
                 {"tool": "workflow_info", "arguments": {"name": "make_js_multicap_app_no_filesystem"}},
-                {"tool": "app_scaffold", "arguments": {"id": "multicap-demo", "name": "Multi-cap Demo", "kind": "js_multicap_audit"}},
-                {"tool": "app_register_inline", "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true}},
-                {"tool": "app_register_inline", "arguments": {"files": "same files from app_scaffold"}}
+                {"tool": "app_build_start", "arguments": {"id": "multicap-demo", "name": "Multi-cap Demo", "kind": "js_multicap_audit"}},
+                {"tool": "app_build_validate", "arguments": {"draftId": "draftId from app_build_start"}},
+                {"tool": "app_build_commit", "arguments": {"draftId": "draftId from app_build_start", "validationToken": "validationToken from app_build_validate"}}
             ]
         })
         .to_string();
@@ -1472,10 +1700,13 @@ fn app_recipe_json(kind: &str) -> String {
     json!({
         "kind": kind,
         "summary": "Happy path for building a small JS Terrane app.",
+        "nextToolCall": {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}},
+        "nextModelAction": "Call app_build_start next, using withUi:true for visible calendars, dashboards, forms, or natural-language input pages. Then update files with app_build_put_file, call app_build_validate, and commit with app_build_commit.",
+        "stallRecovery": "If the provider emits no tokens after this app_recipe result, retry once from this result and make nextToolCall the first action.",
         "steps": [
-            "Call app_scaffold with id/name to get manifest.json and main.js files. Add withUi:true for calendars, dashboards, forms, natural-language input pages, or any visible app.",
-            "For MCP-only clients, pass returned files to app_register_inline with dryRun:true.",
-            "Call app_register_inline again without dryRun to write under TERRANE_HOME/apps/<id> and commit through core app.add.",
+            "Call app_build_start with id/name to create a server-side draft. Add withUi:true for calendars, dashboards, forms, natural-language input pages, or any visible app.",
+            "Use app_build_put_file for each file you change; send one file at a time.",
+            "Call app_build_validate, then app_build_commit with draftId and validationToken to write under TERRANE_HOME/apps/<id> and commit through core app.add.",
             "For clients with a bundle directory, app_bundle_validate then app_register is still supported.",
             "Call app_actions, then invoke only documented verbs."
         ],
@@ -1486,11 +1717,13 @@ fn app_recipe_json(kind: &str) -> String {
             "resources": ["kv"]
         },
         "resourcePattern": "Use ctx.resource.kv.get/set/rm/all/scan/range/keys inside handle(input). For optional/index keys, copy kvGetOrNull from app_scaffold and default null to [] before JSON.parse.",
-        "inlineFilesContract": "app_register_inline.files must be a JSON array of {path,content} objects. Pass structuredContent.files directly; do not JSON-stringify it. Every retry must include the complete files array.",
+        "stagedBuildContract": "app_build_start creates a server-side draft; app_build_put_file updates one file; app_build_validate returns validationToken; app_build_commit commits without file contents.",
+        "inlineFilesContract": "Compatibility path: app_register_inline.files must be a JSON array of {path,content} objects. Its dryRun returns draftId/validationToken, so prefer app_build_commit after dryRun rather than resending files.",
         "nextAfterScaffold": {
             "tool": "app_register_inline",
             "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true},
-            "instruction": "After app_scaffold, call this immediately with the complete files array before explaining or printing code."
+            "filesArgument": {"from": "app_scaffold.structuredContent.files", "type": "array", "doNotJsonStringify": true},
+            "instruction": "Compatibility bridge: after app_scaffold, call this with the complete files array to get draftId/validationToken, then app_build_commit without resending files."
         },
         "uiContract": {
             "browserInvoke": "window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") sends positional backend string args. Do not use window.terrane.invoke(\"verb\", [arg1,arg2]) for two backend args.",
@@ -1498,9 +1731,9 @@ fn app_recipe_json(kind: &str) -> String {
             "verification": "When the requested outcome is a UI app, verify the page loads and one user-visible flow works; backend invoke checks alone are not enough."
         },
         "firstCalls": [
-            {"tool": "app_scaffold", "arguments": {"id": "notes-demo", "name": "Notes Demo"}},
-            {"tool": "app_register_inline", "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true}},
-            {"tool": "app_register_inline", "arguments": {"files": "same files from app_scaffold"}}
+            {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}},
+            {"tool": "app_build_validate", "arguments": {"draftId": "draftId from app_build_start"}},
+            {"tool": "app_build_commit", "arguments": {"draftId": "draftId from app_build_start", "validationToken": "validationToken from app_build_validate"}}
         ]
     })
     .to_string()
@@ -1627,11 +1860,22 @@ function handle(input) {{
             "tool": "app_register_inline",
             "arguments": {"files": "this structuredContent.files array", "dryRun": true}
         },
-        "nextInstruction": "Call app_register_inline with dryRun:true next. Modify this complete files array first if needed, but do not print the app as prose/code before the dry run.",
+        "nextToolCallSource": {
+            "tool": "app_register_inline",
+            "filesArgument": {"from": "this_result.structuredContent.files", "type": "array", "doNotJsonStringify": true},
+            "dryRun": true
+        },
+        "stallRecovery": {
+            "classification": "If the client/provider starts a new assistant step after this app_scaffold result but emits zero output tokens and no tool call, this is a provider/client stall, not a Terrane rejection.",
+            "retryBudget": "Retry this stalled run at most once before changing provider/model.",
+            "resumeFirstToolCall": {"tool": "app_register_inline", "arguments": {"files": "this_result.structuredContent.files", "dryRun": true}}
+        },
+        "nextInstruction": "Call app_register_inline with dryRun:true next to create a draftId/validationToken bridge, then call app_build_commit without resending file contents. Modify this complete files array first if needed, but do not print the app as prose/code before the dry run.",
         "next": [
-            "For MCP-only clients, pass files to app_register_inline with dryRun:true, then commit with the same files.",
+            "For MCP-only clients that already have this files array, pass it to app_register_inline with dryRun:true, then commit with app_build_commit using draftId/validationToken.",
             "Pass files as the structuredContent.files JSON array, not a JSON string.",
-            "On every app_register_inline retry, include the complete files array; do not send only changed files.",
+            "On every app_register_inline dry-run retry, include the complete files array; do not send only changed files.",
+            "After a successful app_register_inline dry run, call app_build_commit; do not resend file contents unless you intentionally use the legacy fallback.",
             "For filesystem clients, write files into a bundle directory, call app_bundle_validate, then app_register.",
             "For UI apps, call window.terrane.invoke('verb', 'arg1', 'arg2') with positional args; do not pass an array for multiple backend args.",
             "For non-trivial UI, keep browser behavior in ui.js and backend behavior in main.js.",
@@ -1861,11 +2105,22 @@ function handle(input) {
             "tool": "app_register_inline",
             "arguments": {"files": "this structuredContent.files array", "dryRun": true}
         },
-        "nextInstruction": "Call app_register_inline with dryRun:true next. Modify this complete files array first if needed, but do not print the app as prose/code before the dry run.",
+        "nextToolCallSource": {
+            "tool": "app_register_inline",
+            "filesArgument": {"from": "this_result.structuredContent.files", "type": "array", "doNotJsonStringify": true},
+            "dryRun": true
+        },
+        "stallRecovery": {
+            "classification": "If the client/provider starts a new assistant step after this app_scaffold result but emits zero output tokens and no tool call, this is a provider/client stall, not a Terrane rejection.",
+            "retryBudget": "Retry this stalled run at most once before changing provider/model.",
+            "resumeFirstToolCall": {"tool": "app_register_inline", "arguments": {"files": "this_result.structuredContent.files", "dryRun": true}}
+        },
+        "nextInstruction": "Call app_register_inline with dryRun:true next to create a draftId/validationToken bridge, then call app_build_commit without resending file contents. Modify this complete files array first if needed, but do not print the app as prose/code before the dry run.",
         "next": [
-            "For MCP-only clients, pass files to app_register_inline with dryRun:true, then commit with the same files.",
+            "For MCP-only clients that already have this files array, pass it to app_register_inline with dryRun:true, then commit with app_build_commit using draftId/validationToken.",
             "Pass files as the structuredContent.files JSON array, not a JSON string.",
-            "On every app_register_inline retry, include the complete files array; do not send only changed files.",
+            "On every app_register_inline dry-run retry, include the complete files array; do not send only changed files.",
+            "After a successful app_register_inline dry run, call app_build_commit; do not resend file contents unless you intentionally use the legacy fallback.",
             "Call capability_command help for replica.init, then replica.init, then capability_query replica.peer.",
             "Call capability_query app.exists for the new id.",
             "Call app_actions, then invoke seed, summary as a separate pre-clear read, clearKv, and summary as a separate final read.",
@@ -2013,6 +2268,303 @@ fn app_register_json(
     }
 }
 
+const MAX_DRAFT_FILE_BYTES: usize = 512 * 1024;
+const MAX_DRAFT_TOTAL_BYTES: usize = 2 * 1024 * 1024;
+
+fn app_build_start_json(
+    app_id: &str,
+    name: &str,
+    kind: &str,
+    with_ui: bool,
+) -> Result<String, String> {
+    let scaffold = app_scaffold_json(app_id, name, kind, with_ui)?;
+    let scaffold: Value =
+        serde_json::from_str(&scaffold).map_err(|e| format!("parse scaffold result: {e}"))?;
+    let files_value = scaffold
+        .get("files")
+        .ok_or_else(|| "app_scaffold result did not include files".to_string())?;
+    let files = inline_files_from_value(files_value, "files", TOOL_APP_BUILD_START)?;
+    validate_draft_size(&files)?;
+    let info = inspect_inline_bundle("", "", "", &files)?;
+    if !info.errors.is_empty() {
+        return Err(format!(
+            "app_build_start produced invalid scaffold: {}",
+            info.errors.join("; ")
+        ));
+    }
+    let kind = scaffold
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or("js_kv_notes");
+    let draft_id = create_build_draft(kind, &files)?;
+    Ok(json!({
+        "draftId": draft_id,
+        "kind": kind,
+        "app": {"id": info.id, "name": info.name, "runtime": info.runtime},
+        "files": file_summaries(&files),
+        "bundleHash": validation_token(&files),
+        "nextToolCall": {
+            "tool": "app_build_put_file",
+            "arguments": {"draftId": draft_id, "path": "main.js", "content": "complete file content"}
+        },
+        "next": [
+            "Use app_build_put_file once per file you need to change; send one file at a time.",
+            "Call app_build_validate after editing.",
+            "If validation succeeds, call app_build_commit with draftId and validationToken; do not resend the files.",
+            "For visible UI apps, keep backend behavior in main.js and browser behavior in ui.js."
+        ],
+        "stallRecovery": {
+            "resume": "Call app_build_get with draftId to recover file summaries, then continue with app_build_put_file or app_build_validate.",
+            "commitAfterDryRun": "After app_build_validate succeeds, app_build_commit is a small call and does not require sending file contents again."
+        }
+    })
+    .to_string())
+}
+
+fn app_build_put_file_json(draft_id: &str, path: &str, content: &str) -> Result<String, String> {
+    let bundle = draft_bundle_dir(draft_id)?;
+    ensure_draft_exists(draft_id, &bundle)?;
+    if !is_safe_relative_path(path) {
+        return Err(format!(
+            "app_build_put_file path must be a safe relative bundle path, got {path:?}"
+        ));
+    }
+    if content.len() > MAX_DRAFT_FILE_BYTES {
+        return Err(format!(
+            "app_build_put_file content for {path:?} is {} bytes; limit is {MAX_DRAFT_FILE_BYTES}",
+            content.len()
+        ));
+    }
+    let mut files = read_inline_bundle_files(&bundle)?;
+    let current_total: usize = files.iter().map(|file| file.content.len()).sum();
+    let current_file_bytes = files
+        .iter()
+        .find(|file| file.path == path)
+        .map(|file| file.content.len())
+        .unwrap_or(0);
+    let new_total = current_total - current_file_bytes + content.len();
+    if new_total > MAX_DRAFT_TOTAL_BYTES {
+        return Err(format!(
+            "app_build_put_file would make draft {new_total} bytes; total limit is {MAX_DRAFT_TOTAL_BYTES}"
+        ));
+    }
+    write_draft_file(&bundle, path, content)?;
+    files.retain(|file| file.path != path);
+    files.push(InlineFile {
+        path: path.to_string(),
+        content: content.to_string(),
+    });
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    write_draft_metadata(draft_id, "updated", &files)?;
+    Ok(json!({
+        "draftId": draft_id,
+        "file": file_summary(&InlineFile { path: path.to_string(), content: content.to_string() }),
+        "bundleHash": validation_token(&files),
+        "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": draft_id}},
+        "next": [
+            "Continue app_build_put_file for any other changed files.",
+            "When the draft is complete, call app_build_validate.",
+            "Do not call app_build_commit until validation returns valid:true."
+        ]
+    })
+    .to_string())
+}
+
+fn app_build_get_json(draft_id: &str, path: &str, include_content: bool) -> Result<String, String> {
+    let bundle = draft_bundle_dir(draft_id)?;
+    ensure_draft_exists(draft_id, &bundle)?;
+    let files = read_inline_bundle_files(&bundle)?;
+    if !path.trim().is_empty() {
+        if !is_safe_relative_path(path) {
+            return Err(format!(
+                "app_build_get path must be a safe relative bundle path, got {path:?}"
+            ));
+        }
+        let Some(file) = files.iter().find(|file| file.path == path) else {
+            return Err(format!("draft {draft_id} has no file {path:?}"));
+        };
+        let mut value = json!({
+            "draftId": draft_id,
+            "file": file_summary(file),
+            "bundleHash": validation_token(&files),
+            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": path, "content": "complete file content"}}
+        });
+        if include_content {
+            value["content"] = json!(file.content);
+        }
+        return Ok(value.to_string());
+    }
+    Ok(json!({
+        "draftId": draft_id,
+        "files": file_summaries(&files),
+        "bundleHash": validation_token(&files),
+        "metadata": read_draft_metadata(draft_id).unwrap_or_else(|_| json!({})),
+        "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": draft_id}},
+        "next": [
+            "Use app_build_get with includeContent:true and a path if you need one file's current content.",
+            "Use app_build_put_file to replace one file.",
+            "Call app_build_validate when ready."
+        ]
+    })
+    .to_string())
+}
+
+fn app_build_validate_json(core: &HostCore, draft_id: &str) -> Result<String, String> {
+    let bundle = draft_bundle_dir(draft_id)?;
+    ensure_draft_exists(draft_id, &bundle)?;
+    let files = read_inline_bundle_files(&bundle)?;
+    validate_draft_size(&files)?;
+    let mut info = inspect_inline_bundle("", "", "", &files)?;
+    let dest = crate::home_dir().join("apps").join(&info.id);
+    if core.state().app.apps.contains_key(&info.id) {
+        info.errors.push(format!(
+            "app id {:?} already exists; app_build_commit is create-only. Operate it with app_actions or ask a trusted operator for replacement.",
+            info.id
+        ));
+    }
+    if dest.exists() && !core.state().app.apps.contains_key(&info.id) {
+        info.errors.push(format!(
+            "owned bundle path {} already exists without a catalog entry; choose a new app id or clean it up out of band",
+            dest.display()
+        ));
+    }
+    if !info.errors.is_empty() {
+        return Ok(json!({
+            "draftId": draft_id,
+            "valid": false,
+            "app": bundle_app_value(&info),
+            "errors": info.errors,
+            "warnings": info.warnings,
+            "files": file_summaries(&files),
+            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": "manifest.json", "content": "fixed complete file content"}}
+        })
+        .to_string());
+    }
+    let source = dest.to_string_lossy().to_string();
+    let argv = app_add_args(&info, &source);
+    let outcome = crate::dry_run_on_core(core, "app.add", &argv)?;
+    let token = validation_token(&files);
+    write_draft_metadata(draft_id, "validated", &files)?;
+    Ok(json!({
+        "draftId": draft_id,
+        "valid": true,
+        "validationToken": token,
+        "command": "app.add",
+        "args": argv,
+        "records": outcome.records,
+        "app": bundle_app_value(&info),
+        "warnings": info.warnings,
+        "files": file_summaries(&files),
+        "nextToolCall": {"tool": "app_build_commit", "arguments": {"draftId": draft_id, "validationToken": token}},
+        "next": "Call app_build_commit with draftId and validationToken. Do not resend file contents."
+    })
+    .to_string())
+}
+
+fn app_build_commit_json(
+    core: &mut HostCore,
+    draft_id: &str,
+    validation_token_arg: &str,
+    replace_existing: bool,
+) -> Result<String, String> {
+    if replace_existing {
+        return Err(
+            "app_build_commit replaceExisting is reserved for a future trusted replace flow; current staged builds are create-only"
+                .to_string(),
+        );
+    }
+    let draft = draft_dir(draft_id)?;
+    let bundle = draft.join("bundle");
+    ensure_draft_exists(draft_id, &bundle)?;
+    let files = read_inline_bundle_files(&bundle)?;
+    validate_draft_size(&files)?;
+    let info = inspect_inline_bundle("", "", "", &files)?;
+    if !info.errors.is_empty() {
+        return Err(format!(
+            "app_build_commit refused invalid draft: {}. Call app_build_validate for structured details.",
+            info.errors.join("; ")
+        ));
+    }
+    let token = validation_token(&files);
+    if !validation_token_arg.trim().is_empty() && validation_token_arg.trim() != token {
+        return Err(format!(
+            "app_build_commit validationToken does not match current draft; call app_build_validate again. expected current token {token}"
+        ));
+    }
+    if core.state().app.apps.contains_key(&info.id) {
+        return Err(format!(
+            "app_build_commit refused existing app id {:?}; operate it with app_actions or use a future trusted replace flow",
+            info.id
+        ));
+    }
+    let apps_dir = crate::home_dir().join("apps");
+    let dest = apps_dir.join(&info.id);
+    if dest.exists() {
+        return Err(format!(
+            "app_build_commit refused because owned bundle path already exists: {}",
+            dest.display()
+        ));
+    }
+    let source = dest.to_string_lossy().to_string();
+    let argv = app_add_args(&info, &source);
+    crate::dry_run_on_core(core, "app.add", &argv)?;
+    std::fs::create_dir_all(&apps_dir)
+        .map_err(|e| format!("create app directory {}: {e}", apps_dir.display()))?;
+    let tmp = apps_dir.join(format!(".{}.{}", info.id, draft_id));
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp)
+            .map_err(|e| format!("remove stale temp app bundle {}: {e}", tmp.display()))?;
+    }
+    write_inline_bundle(&tmp, &files)?;
+    std::fs::rename(&tmp, &dest).map_err(|e| {
+        format!(
+            "move validated draft into owned bundle {} -> {}: {e}",
+            tmp.display(),
+            dest.display()
+        )
+    })?;
+    let source = dest
+        .canonicalize()
+        .map_err(|e| format!("resolve committed bundle {}: {e}", dest.display()))?
+        .to_str()
+        .ok_or("committed bundle path is not valid UTF-8")?
+        .to_string();
+    let argv = app_add_args(&info, &source);
+    let outcome = crate::dispatch_on_core(core, "app.add", &argv)?;
+    std::fs::remove_dir_all(&draft)
+        .map_err(|e| format!("remove committed draft {}: {e}", draft.display()))?;
+    Ok(json!({
+        "command": "app.add",
+        "args": argv,
+        "records": outcome.records.len(),
+        "output": outcome.output,
+        "app": {"id": info.id, "name": info.name, "runtime": info.runtime, "source": source},
+        "warnings": info.warnings,
+        "draftId": draft_id,
+        "draftDiscarded": true,
+        "next": [
+            {"tool": "list_apps", "arguments": {}},
+            {"tool": "app_actions", "arguments": {"app": info.id}}
+        ]
+    })
+    .to_string())
+}
+
+fn app_build_discard_json(draft_id: &str) -> Result<String, String> {
+    let draft = draft_dir(draft_id)?;
+    if !draft.exists() {
+        return Err(format!("draft not found: {draft_id}"));
+    }
+    std::fs::remove_dir_all(&draft)
+        .map_err(|e| format!("discard draft {}: {e}", draft.display()))?;
+    Ok(json!({
+        "draftId": draft_id,
+        "discarded": true,
+        "next": "Start a new draft with app_build_start if needed."
+    })
+    .to_string())
+}
+
 fn app_register_inline_json(
     core: &mut HostCore,
     id_override: &str,
@@ -2046,6 +2598,8 @@ fn app_register_inline_json(
     let argv = app_add_args(&info, &source);
     if dry_run {
         let outcome = crate::dry_run_on_core(core, "app.add", &argv)?;
+        let draft_id = create_build_draft("inline", &files)?;
+        let token = validation_token(&files);
         Ok(json!({
             "dryRun": true,
             "command": "app.add",
@@ -2053,7 +2607,14 @@ fn app_register_inline_json(
             "records": outcome.records,
             "app": {"id": info.id, "name": info.name, "runtime": info.runtime, "source": source},
             "warnings": info.warnings,
-            "next": "Call app_register_inline again with the same complete files array and no dryRun to write the owned bundle and commit. Pass files as a JSON array, not a JSON string."
+            "draftId": draft_id,
+            "validationToken": token,
+            "nextToolCall": {"tool": "app_build_commit", "arguments": {"draftId": draft_id, "validationToken": token}},
+            "next": [
+                "Recommended: call app_build_commit with draftId and validationToken; do not resend the files.",
+                "Compatibility fallback: call app_register_inline again with the same complete files array and no dryRun.",
+                "Pass files as a JSON array, not a JSON string."
+            ]
         })
         .to_string())
     } else {
@@ -2192,6 +2753,258 @@ fn write_inline_bundle(dest: &std::path::Path, files: &[InlineFile]) -> Result<(
     Ok(())
 }
 
+fn create_build_draft(kind: &str, files: &[InlineFile]) -> Result<String, String> {
+    let draft_id = new_draft_id()?;
+    let draft = draft_dir(&draft_id)?;
+    let bundle = draft.join("bundle");
+    write_inline_bundle(&bundle, files)?;
+    write_draft_metadata(&draft_id, kind, files)?;
+    Ok(draft_id)
+}
+
+fn new_draft_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| format!("failed to read OS entropy for app build draft id: {e}"))?;
+    Ok(format!("draft-{}", hex_bytes(&bytes)))
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn draft_dir(draft_id: &str) -> Result<PathBuf, String> {
+    validate_safe_id(draft_id)?;
+    if !draft_id.starts_with("draft-") {
+        return Err(format!(
+            "draft id {draft_id:?} is invalid; expected an id returned by app_build_start"
+        ));
+    }
+    Ok(crate::home_dir().join(".mcp-drafts").join(draft_id))
+}
+
+fn draft_bundle_dir(draft_id: &str) -> Result<PathBuf, String> {
+    Ok(draft_dir(draft_id)?.join("bundle"))
+}
+
+fn ensure_draft_exists(draft_id: &str, bundle: &Path) -> Result<(), String> {
+    if !bundle.is_dir() {
+        return Err(format!(
+            "draft not found: {draft_id}. Start one with app_build_start or recover a draftId from app_register_inline dryRun."
+        ));
+    }
+    Ok(())
+}
+
+fn validate_draft_size(files: &[InlineFile]) -> Result<(), String> {
+    let mut total = 0usize;
+    for file in files {
+        let bytes = file.content.len();
+        if bytes > MAX_DRAFT_FILE_BYTES {
+            return Err(format!(
+                "draft file {:?} is {bytes} bytes; per-file limit is {MAX_DRAFT_FILE_BYTES}",
+                file.path
+            ));
+        }
+        total += bytes;
+    }
+    if total > MAX_DRAFT_TOTAL_BYTES {
+        return Err(format!(
+            "draft bundle is {total} bytes; total limit is {MAX_DRAFT_TOTAL_BYTES}"
+        ));
+    }
+    Ok(())
+}
+
+fn write_draft_file(bundle: &Path, path: &str, content: &str) -> Result<(), String> {
+    let target = bundle.join(path);
+    let parent = target
+        .parent()
+        .ok_or_else(|| format!("draft file {path:?} has no parent directory"))?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    let tmp_name = format!(
+        ".{}.tmp-{}",
+        target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("draft-file"),
+        std::process::id()
+    );
+    let tmp = parent.join(tmp_name);
+    {
+        let mut file = std::fs::File::create(&tmp)
+            .map_err(|e| format!("create temp draft file {}: {e}", tmp.display()))?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| format!("write temp draft file {}: {e}", tmp.display()))?;
+        file.flush()
+            .map_err(|e| format!("flush temp draft file {}: {e}", tmp.display()))?;
+    }
+    std::fs::rename(&tmp, &target).map_err(|e| {
+        format!(
+            "replace draft file {} -> {}: {e}",
+            tmp.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn read_inline_bundle_files(bundle: &Path) -> Result<Vec<InlineFile>, String> {
+    if !bundle.is_dir() {
+        return Err(format!("bundle directory not found: {}", bundle.display()));
+    }
+    let mut files = Vec::new();
+    collect_inline_bundle_files(bundle, bundle, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    if files.is_empty() {
+        return Err(format!("bundle has no files: {}", bundle.display()));
+    }
+    Ok(files)
+}
+
+fn collect_inline_bundle_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<InlineFile>,
+) -> Result<(), String> {
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("read bundle dir {}: {e}", dir.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("read bundle entry {}: {e}", dir.display()))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| format!("read file type {}: {e}", path.display()))?;
+        if file_type.is_dir() {
+            collect_inline_bundle_files(root, &path, files)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .map_err(|e| format!("strip bundle prefix {}: {e}", path.display()))?;
+        let rel = rel
+            .to_str()
+            .ok_or_else(|| format!("bundle path is not valid UTF-8: {}", path.display()))?
+            .to_string();
+        if !is_safe_relative_path(&rel) {
+            return Err(format!("unsafe bundle path found in draft: {rel:?}"));
+        }
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read draft file {} as UTF-8 text: {e}", path.display()))?;
+        files.push(InlineFile { path: rel, content });
+    }
+    Ok(())
+}
+
+fn write_draft_metadata(draft_id: &str, kind: &str, files: &[InlineFile]) -> Result<(), String> {
+    let draft = draft_dir(draft_id)?;
+    std::fs::create_dir_all(&draft)
+        .map_err(|e| format!("create draft {}: {e}", draft.display()))?;
+    let inspected = inspect_inline_bundle("", "", "", files);
+    let (app, errors, warnings) = match inspected {
+        Ok(info) => (bundle_app_value(&info), info.errors, info.warnings),
+        Err(e) => (json!({"inspectError": e}), Vec::new(), Vec::new()),
+    };
+    let metadata = json!({
+        "draftId": draft_id,
+        "kind": kind,
+        "updatedAtUnix": current_unix_secs(),
+        "bundleHash": validation_token(files),
+        "app": app,
+        "errors": errors,
+        "warnings": warnings,
+        "files": file_summaries(files)
+    });
+    let metadata_path = draft.join("draft.json");
+    std::fs::write(&metadata_path, metadata.to_string())
+        .map_err(|e| format!("write draft metadata {}: {e}", metadata_path.display()))?;
+    Ok(())
+}
+
+fn read_draft_metadata(draft_id: &str) -> Result<Value, String> {
+    let path = draft_dir(draft_id)?.join("draft.json");
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| format!("read draft metadata {}: {e}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|e| format!("parse draft metadata {}: {e}", path.display()))
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn file_summaries(files: &[InlineFile]) -> Vec<Value> {
+    let mut files = files.to_vec();
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.iter().map(file_summary).collect()
+}
+
+fn file_summary(file: &InlineFile) -> Value {
+    json!({
+        "path": file.path,
+        "bytes": file.content.len(),
+        "hash": stable_hash_text(&file.content)
+    })
+}
+
+fn bundle_app_value(info: &BundleInfo) -> Value {
+    json!({
+        "id": info.id,
+        "name": info.name,
+        "runtime": info.runtime,
+        "backend": info.backend,
+        "ui": info.ui,
+        "resources": info.resources
+    })
+}
+
+fn validation_token(files: &[InlineFile]) -> String {
+    format!("v1-{:016x}", stable_hash_files(files))
+}
+
+fn stable_hash_text(text: &str) -> String {
+    format!("{:016x}", stable_hash_bytes(text.as_bytes()))
+}
+
+fn stable_hash_files(files: &[InlineFile]) -> u64 {
+    let mut refs: Vec<&InlineFile> = files.iter().collect();
+    refs.sort_by(|a, b| a.path.cmp(&b.path));
+    let mut hash = FNV_OFFSET;
+    for file in refs {
+        hash = stable_hash_update(hash, file.path.as_bytes());
+        hash = stable_hash_update(hash, &[0xff]);
+        hash = stable_hash_update(hash, file.content.as_bytes());
+        hash = stable_hash_update(hash, &[0xfe]);
+    }
+    hash
+}
+
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+fn stable_hash_bytes(bytes: &[u8]) -> u64 {
+    stable_hash_update(FNV_OFFSET, bytes)
+}
+
+fn stable_hash_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
 fn bundle_info_json(path: &str, info: &BundleInfo) -> Value {
     json!({
         "path": path,
@@ -2323,6 +3136,18 @@ fn tool_call_example(tool: &str) -> String {
         TOOL_WORKFLOW_INFO => json!({"name": "make_js_kv_app"}),
         TOOL_APP_RECIPE => json!({"kind": "js_kv_app"}),
         TOOL_APP_SCAFFOLD => json!({"id": "notes-demo", "name": "Notes Demo"}),
+        TOOL_APP_BUILD_START => json!({"id": "notes-demo", "name": "Notes Demo", "withUi": true}),
+        TOOL_APP_BUILD_PUT_FILE => {
+            json!({"draftId": "draft-...", "path": "main.js", "content": "function handle(input){return 'ok';}"})
+        }
+        TOOL_APP_BUILD_GET => {
+            json!({"draftId": "draft-...", "path": "main.js", "includeContent": true})
+        }
+        TOOL_APP_BUILD_VALIDATE => json!({"draftId": "draft-..."}),
+        TOOL_APP_BUILD_COMMIT => {
+            json!({"draftId": "draft-...", "validationToken": "v1-..."})
+        }
+        TOOL_APP_BUILD_DISCARD => json!({"draftId": "draft-..."}),
         TOOL_APP_BUNDLE_VALIDATE => json!({"path": "/path/to/bundle"}),
         TOOL_APP_REGISTER_INLINE => json!({
             "files": [

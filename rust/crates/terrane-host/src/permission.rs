@@ -36,6 +36,14 @@ pub struct PermissionRequired {
     pub resume_tool: String,
     #[nserde(rename = "resumeTokenHash")]
     pub resume_token_hash: String,
+    #[nserde(rename = "operatorActionRequired")]
+    pub operator_action_required: bool,
+    #[nserde(rename = "allowedMcpTools")]
+    pub allowed_mcp_tools: Vec<String>,
+    #[nserde(rename = "forbiddenMcpTools")]
+    pub forbidden_mcp_tools: Vec<String>,
+    #[nserde(rename = "nextModelAction")]
+    pub next_model_action: String,
     pub message: String,
 }
 
@@ -43,6 +51,38 @@ impl PermissionRequired {
     pub fn message(&self) -> String {
         self.message.clone()
     }
+}
+
+pub fn recorded_permission_allowed_mcp_tools() -> Vec<String> {
+    vec![
+        "permission_check".to_string(),
+        "permission_requests".to_string(),
+        "permission_cancel".to_string(),
+    ]
+}
+
+pub fn preview_permission_allowed_mcp_tools() -> Vec<String> {
+    vec![
+        "capability_command".to_string(),
+        "permission_requests".to_string(),
+    ]
+}
+
+pub fn permission_forbidden_mcp_tools() -> Vec<String> {
+    vec![
+        "capability_command:auth.*".to_string(),
+        "capability_command:*.grant".to_string(),
+        "capability_command:app.grant".to_string(),
+        "capability_command:auth.permission.approve".to_string(),
+    ]
+}
+
+pub fn recorded_permission_next_model_action() -> String {
+    "Do not call capability_command for auth/grant commands. Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId until approved, then retry the original invoke/app_actions/capability_command call with the same arguments.".to_string()
+}
+
+pub fn preview_permission_next_model_action() -> String {
+    "This dry run did not record an approvable request. Do not call auth/grant commands through capability_command. Either rerun the same capability_command without dryRun to create a pending request, or ask a trusted operator to approve adminUrl/run grantCommands, then retry.".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, SerJson)]
@@ -153,6 +193,10 @@ pub fn permission_required_for_app_with_admin_base(
         request_status,
         resume_tool: "permission_check".to_string(),
         resume_token_hash,
+        operator_action_required: true,
+        allowed_mcp_tools: recorded_permission_allowed_mcp_tools(),
+        forbidden_mcp_tools: permission_forbidden_mcp_tools(),
+        next_model_action: recorded_permission_next_model_action(),
         message: format!("permission required for app {app}: grant {resources}; open {admin_url}"),
     }))
 }
@@ -343,6 +387,18 @@ fn permission_required_for_namespace_status(
         request_status,
         resume_tool,
         resume_token_hash,
+        operator_action_required: true,
+        allowed_mcp_tools: if preview {
+            preview_permission_allowed_mcp_tools()
+        } else {
+            recorded_permission_allowed_mcp_tools()
+        },
+        forbidden_mcp_tools: permission_forbidden_mcp_tools(),
+        next_model_action: if preview {
+            preview_permission_next_model_action()
+        } else {
+            recorded_permission_next_model_action()
+        },
         message,
     }))
 }

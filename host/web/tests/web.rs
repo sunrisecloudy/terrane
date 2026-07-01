@@ -925,6 +925,10 @@ fn serves_catalog_ui_and_invoke_over_http() {
             && body.contains("workflows_list")
             && body.contains("workflow_info")
             && body.contains("app_scaffold")
+            && body.contains("app_build_start")
+            && body.contains("app_build_put_file")
+            && body.contains("app_build_validate")
+            && body.contains("app_build_commit")
             && body.contains("app_bundle_validate")
             && body.contains("app_register_inline")
             && body.contains("app_register")
@@ -957,7 +961,9 @@ fn serves_catalog_ui_and_invoke_over_http() {
     );
     assert_eq!(status, 200, "mcp prompts/get: {body}");
     assert!(
-        body.contains("app_register_inline") && body.contains("web-notes"),
+        body.contains("app_build_start")
+            && body.contains("app_register_inline")
+            && body.contains("web-notes"),
         "mcp prompts/get: {body}"
     );
 
@@ -987,10 +993,67 @@ fn serves_catalog_ui_and_invoke_over_http() {
     );
     assert_eq!(status, 200, "mcp workflow_info: {body}");
     assert!(
-        body.contains("app_register_inline")
+        body.contains("app_build_start")
+            && body.contains("app_build_commit")
+            && body.contains("app_register_inline")
             && body.contains("app_register")
             && body.contains(r#""structuredContent""#),
         "mcp workflow_info: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"build-start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"web-staged","name":"Web Staged","withUi":true}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp app_build_start: {body}");
+    assert!(
+        body.contains(r#""isError":false"#)
+            && body.contains("draftId")
+            && body.contains("app_build_validate"),
+        "mcp app_build_start: {body}"
+    );
+    let draft_id = json_string_field(&body, "draftId");
+
+    let validate_body = format!(
+        r#"{{"jsonrpc":"2.0","id":"build-validate","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":"{draft_id}"}}}}}}"#
+    );
+    let (status, body) = http(&addr, "POST", "/mcp", Some(&validate_body));
+    assert_eq!(status, 200, "mcp app_build_validate: {body}");
+    assert!(
+        body.contains(r#""isError":false"#)
+            && body.contains(r#""valid":true"#)
+            && body.contains("validationToken")
+            && body.contains("app_build_commit"),
+        "mcp app_build_validate: {body}"
+    );
+    let validation_token = json_string_field(&body, "validationToken");
+
+    let commit_body = format!(
+        r#"{{"jsonrpc":"2.0","id":"build-commit","method":"tools/call","params":{{"name":"app_build_commit","arguments":{{"draftId":"{draft_id}","validationToken":"{validation_token}"}}}}}}"#
+    );
+    let (status, body) = http(&addr, "POST", "/mcp", Some(&commit_body));
+    assert_eq!(status, 200, "mcp app_build_commit: {body}");
+    assert!(
+        body.contains(r#""isError":false"#) && body.contains("web-staged"),
+        "mcp app_build_commit: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"build-exists","method":"tools/call","params":{"name":"capability_query","arguments":{"capability":"app","query":"exists","args":["web-staged"]}}}"#,
+        ),
+    );
+    assert_eq!(status, 200, "mcp staged app.exists: {body}");
+    assert!(
+        body.contains(r#"\"value\":true"#) && body.contains(r#""isError":false"#),
+        "mcp staged app.exists: {body}"
     );
 
     let (status, body) = http(
@@ -1404,7 +1467,7 @@ fn mcp_http_permission_request_reports_http_source() {
         "POST",
         "/mcp",
         Some(
-            r#"{"jsonrpc":"2.0","id":"mcp-command-missing","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"kv.set","args":["todo","note","via http"]}}}"#
+            r#"{"jsonrpc":"2.0","id":"mcp-command-missing","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"kv.set","args":["todo","note","via http"]}}}"#,
         ),
     );
     assert_eq!(status, 200, "mcp capability_command missing grant: {body}");

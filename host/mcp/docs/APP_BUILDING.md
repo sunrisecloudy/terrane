@@ -27,10 +27,10 @@ to (1) trigger the request by invoking, (2) surface the `grantCommands` /
 ## Preferred MCP-Only Flow
 
 1. Call `app_recipe` with `{ "kind": "js_kv_app" }`.
-2. Call `app_scaffold` with an app id and display name.
-3. Take `structuredContent.files` from `app_scaffold`.
-4. Call `app_register_inline` with those files and `dryRun: true`.
-5. Call `app_register_inline` again with the same files and no `dryRun`.
+2. Call `app_build_start` with an app id and display name.
+3. Use `app_build_put_file` for each file you change, one file at a time.
+4. Call `app_build_validate`.
+5. Call `app_build_commit` with the returned `draftId` and `validationToken`.
 6. Call `list_apps`.
 7. Call `app_actions` for the new app id.
 8. Call `invoke` with a verb documented by `app_actions`.
@@ -39,17 +39,20 @@ to (1) trigger the request by invoking, (2) surface the `grantCommands` /
    admin UI, or human), then repeat step 8. See
    [Handling `permission_required`](#handling-permission_required).
 
-`app_register_inline` writes the app bundle under `TERRANE_HOME/apps/<id>` only
-when committing. It still dispatches `app.add` through core, so catalog mutation
-uses the normal capability path.
+`app_build_commit` writes the app bundle under `TERRANE_HOME/apps/<id>` only
+after validation. It still dispatches `app.add` through core, so catalog
+mutation uses the normal capability path.
 
-The `files` argument must be a JSON array of file objects, not a JSON string.
-Pass `structuredContent.files` directly. Do not JSON-stringify it.
+The older `app_scaffold` + `app_register_inline` route is still supported.
+`app_register_inline` dry-run now returns `draftId` and `validationToken`, so
+the recommended next call is `app_build_commit` rather than resending the same
+large files array.
 
-For visible apps, pass `withUi: true` to `app_scaffold` or include a
-`manifest.ui` file yourself. Keep browser code in a small `index.html` plus a
-separate asset such as `ui.js` when the UI is more than a trivial button. Inline
-HTML scripts are easy for small models to break.
+For visible apps, pass `withUi: true` to `app_build_start` (or to
+`app_scaffold` on the compatibility route), or include a `manifest.ui` file
+yourself. Keep browser code in a small `index.html` plus a separate asset such
+as `ui.js` when the UI is more than a trivial button. Inline HTML scripts are
+easy for small models to break.
 
 ## Choosing A Flow
 
@@ -58,7 +61,7 @@ tool. Pick the workflow whose summary matches the requested result:
 
 - key/value notes app: `make_js_kv_app_no_filesystem`
 - visible calendar, dashboard, form, or natural-language UI backed by app state:
-  `make_js_kv_app_no_filesystem` with `app_scaffold.withUi: true`
+  `make_js_kv_app_no_filesystem` with `app_build_start.withUi: true`
 - existing bundle path: `register_app_bundle`
 - existing app operation: `inspect_app_actions`
 - multi-capability proof with KV, CRDT, relational data, and replica identity:
@@ -181,6 +184,15 @@ with the same object in `structuredContent` and as a JSON string in
     "requestStatus": "pending",
     "resumeTool": "permission_check",
     "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "operatorActionRequired": true,
+    "allowedMcpTools": ["permission_check", "permission_requests", "permission_cancel"],
+    "forbiddenMcpTools": [
+      "capability_command:auth.*",
+      "capability_command:*.grant",
+      "capability_command:app.grant",
+      "capability_command:auth.permission.approve"
+    ],
+    "nextModelAction": "Do not call capability_command for auth/grant commands. Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId until approved, then retry the original invoke/app_actions/capability_command call with the same arguments.",
     "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
   },
   "isError": true
@@ -198,6 +210,14 @@ Detect it by checking `structuredContent.type == "permission_required"` (or
   `capability_command:kv.set`.
 - `resumeTool` — `permission_check` for recorded requests; empty for dry-run
   previews.
+- `operatorActionRequired` — `true` means the model needs trusted operator/admin
+  approval, not another grant tool call.
+- `allowedMcpTools` — MCP tools safe to use while waiting, usually
+  `permission_check`, `permission_requests`, and `permission_cancel`.
+- `forbiddenMcpTools` — MCP tool/command patterns not to call, especially
+  `capability_command:auth.*` and grant/approve attempts.
+- `nextModelAction` — explicit recovery instruction for the model: surface
+  approval paths, poll, then retry the original call.
 
 Surfacing this error **records a pending request** as a side effect, so the
 request is immediately listable and approvable — you do not need a separate
@@ -263,38 +283,43 @@ This is the full path for an app that needs `kv`, including the grant step.
 2. Scaffold:
 
    ```json
-   app_scaffold { "kind": "js_kv_app", "id": "notes-demo", "name": "Notes Demo" }
+   app_build_start { "kind": "js_kv_app", "id": "notes-demo", "name": "Notes Demo" }
    ```
 
    The generated `manifest.json` includes `"resources": ["kv"]` — a request,
    not a grant.
-3. Dry-run register with the scaffolded files:
+3. Replace any generated files you customized:
 
    ```json
-   app_register_inline { "files": <structuredContent.files>, "dryRun": true }
+   app_build_put_file { "draftId": <draftId>, "path": "main.js", "content": "<complete main.js>" }
    ```
-4. Commit register (same files, no `dryRun`):
+4. Validate the server-side draft:
 
    ```json
-   app_register_inline { "files": <structuredContent.files> }
+   app_build_validate { "draftId": <draftId> }
    ```
-5. Inspect verbs: `app_actions { "app": "notes-demo" }`.
-6. Invoke a verb:
+5. Commit the validated draft:
+
+   ```json
+   app_build_commit { "draftId": <draftId>, "validationToken": <token> }
+   ```
+6. Inspect verbs: `app_actions { "app": "notes-demo" }`.
+7. Invoke a verb:
 
    ```json
    invoke { "app": "notes-demo", "verb": "write", "args": ["hello"] }
    ```
-7. **First invoke returns `"isError": true`** with
+8. **First invoke returns `"isError": true`** with
    `structuredContent.type == "permission_required"` and
    `missingResources: ["kv"]`. This is expected on first run. Do **not** delete
    or rebuild the app.
-8. Grant `kv` (pick one):
+9. Grant `kv` (pick one):
    - CLI: run each string in `grantCommands`, e.g.
      `terrane auth grant user:local-owner notes-demo kv`.
    - Admin UI: open `structuredContent.adminUrl` and approve.
    - Poll: call `permission_check { "requestId": <requestId> }` until
      `status` is `approved`.
-9. **Retry the exact same invoke** — now it succeeds:
+10. **Retry the exact same invoke** — now it succeeds:
 
    ```json
    invoke { "app": "notes-demo", "verb": "write", "args": ["hello"] }
@@ -311,14 +336,18 @@ the task is to operate the existing app or replace a failed generated app.
 - To operate it, call `list_apps`, `app_actions`, then `invoke`.
 - To replace it, stop and ask a trusted operator to remove or replace the app out
   of band. Untrusted `capability_command app.remove` is refused. After the
-  operator clears the app, rerun `app_register_inline`.
+  operator clears the app, rerun `app_build_validate`/`app_build_commit` if you
+  still have a draft, or rerun `app_register_inline` dry-run if you only have a
+  scaffolded files array.
 
 Do not remove an existing app just because registration failed; only replace
 when the current task is explicitly creating a new version of that app.
 
 When retrying `app_register_inline`, send the complete files array every time:
 `manifest.json`, the backend file, every `manifest.ui` file, and referenced
-assets such as `ui.js` and `style.css`. Do not send only the changed file.
+assets such as `ui.js` and `style.css`. Prefer `app_build_put_file` for a
+server-side draft when only one file changed. Do not send only the changed file
+through `app_register_inline`.
 
 ## Multi-Cap App Flow
 
@@ -333,13 +362,14 @@ Use this when a task must prove more than a simple KV app. The scaffold kind
 MCP-only sequence:
 
 1. Call `workflow_info` with `{ "name": "make_js_multicap_app_no_filesystem" }`.
-2. Call `app_scaffold` with `{ "kind": "js_multicap_audit", "id": "...", "name": "..." }`.
-3. Register through `app_register_inline` with `dryRun: true`.
-4. Commit through `app_register_inline` with the same files.
-5. Call `capability_command` with `{ "name": "replica.init", "help": true }`.
-6. Call `capability_command` with `{ "name": "replica.init" }`.
-7. Call `capability_query` for `replica.peer` and `app.exists`.
-8. Call `app_actions`, then invoke `seed`, `summary`, `clearKv`, and `summary`.
+2. Call `app_build_start` with `{ "kind": "js_multicap_audit", "id": "...", "name": "..." }`.
+3. Customize generated files with `app_build_put_file` as needed.
+4. Validate with `app_build_validate`.
+5. Commit with `app_build_commit`.
+6. Call `capability_command` with `{ "name": "replica.init", "help": true }`.
+7. Call `capability_command` with `{ "name": "replica.init" }`.
+8. Call `capability_query` for `replica.peer` and `app.exists`.
+9. Call `app_actions`, then invoke `seed`, `summary`, `clearKv`, and `summary`.
 
 Because this app requests `kv`, `crdt`, **and** `relational_db`, the first
 `invoke` (or `app_actions`) reports `permission_required` with **all** ungranted

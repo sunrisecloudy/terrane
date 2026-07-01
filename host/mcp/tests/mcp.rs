@@ -110,6 +110,10 @@ fn add_a_todo_through_mcp_and_read_it_back() {
             && tools.contains("workflows_list")
             && tools.contains("workflow_info")
             && tools.contains("app_scaffold")
+            && tools.contains("app_build_start")
+            && tools.contains("app_build_put_file")
+            && tools.contains("app_build_validate")
+            && tools.contains("app_build_commit")
             && tools.contains("app_bundle_validate")
             && tools.contains("app_register_inline")
             && tools.contains("app_register")
@@ -150,13 +154,15 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let doc = read_line(&mut out);
     assert!(
-        doc.contains("app_register_inline")
+        doc.contains("app_build_start")
+            && doc.contains("app_build_commit")
+            && doc.contains("app_register_inline")
             && doc.contains("MCP App Building")
             && doc.contains("window.terrane.invoke")
             && doc.contains("trusted operator")
             && doc.contains("app.remove")
             && doc.contains("kvGetOrNull")
-            && doc.contains("Do not JSON-stringify")
+            && doc.contains("JSON string")
             && doc.contains("complete files array"),
         "resources/read docs: {doc}"
     );
@@ -191,7 +197,9 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let prompt = read_line(&mut out);
     assert!(
-        prompt.contains("app_register_inline") && prompt.contains("prompt-notes"),
+        prompt.contains("app_build_start")
+            && prompt.contains("app_register_inline")
+            && prompt.contains("prompt-notes"),
         "prompts/get: {prompt}"
     );
 
@@ -228,7 +236,9 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let workflow = read_line(&mut out);
     assert!(
-        workflow.contains("app_bundle_validate")
+        workflow.contains("app_build_start")
+            && workflow.contains("app_build_commit")
+            && workflow.contains("app_bundle_validate")
             && workflow.contains("app_register_inline")
             && workflow.contains("app_register")
             && workflow.contains("window.terrane.invoke")
@@ -317,15 +327,19 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         multi_dry.contains(r#"\"dryRun\":true"#) && multi_dry.contains(r#""isError":false"#),
         "multicap app_register_inline dryRun: {multi_dry}"
     );
+    let multi_dry_content = structured_content(&multi_dry);
+    let multi_draft = multi_dry_content["draftId"].as_str().unwrap();
+    let multi_token = multi_dry_content["validationToken"].as_str().unwrap();
 
     let multi_commit_msg = json!({
         "jsonrpc": "2.0",
         "id": "multi-commit",
         "method": "tools/call",
         "params": {
-            "name": "app_register_inline",
+            "name": "app_build_commit",
             "arguments": {
-                "files": multi_files
+                "draftId": multi_draft,
+                "validationToken": multi_token
             }
         }
     })
@@ -334,7 +348,7 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     let multi_commit = read_line(&mut out);
     assert!(
         multi_commit.contains(r#""isError":false"#) && multi_commit.contains("mcp-multicap"),
-        "multicap app_register_inline commit: {multi_commit}"
+        "multicap app_build_commit: {multi_commit}"
     );
     send(
         &mut stdin,
@@ -420,14 +434,31 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         inline_dry.contains(r#"\"dryRun\":true"#) && inline_dry.contains(r#""isError":false"#),
         "app_register_inline dryRun: {inline_dry}"
     );
-    send(
-        &mut stdin,
-        r#"{"jsonrpc":"2.0","id":"inline-commit","method":"tools/call","params":{"name":"app_register_inline","arguments":{"files":[{"path":"manifest.json","content":"{\"id\":\"mcp-inline\",\"name\":\"MCP Inline\",\"runtime\":\"js\",\"backend\":\"main.js\",\"resources\":[\"kv\"]}"},{"path":"main.js","content":"function handle(input){var verb=input[0]||'';var kv=ctx.resource.kv;if(verb==='__actions__'){return JSON.stringify({app:'mcp-inline',actions:[{verb:'write',args:[{name:'text',required:true}],returns:'stored'},{verb:'read',args:[],returns:'text'}]});}if(verb==='write'){kv.set('note',input.slice(1).join(' '));return 'stored';}if(verb==='read'){return kv.get('note')||'(empty)';}return 'unknown';}"}]}}}"#,
+    assert!(
+        inline_dry.contains("draftId")
+            && inline_dry.contains("validationToken")
+            && inline_dry.contains("app_build_commit"),
+        "app_register_inline dryRun should return staged commit path: {inline_dry}"
     );
+    let inline_dry_content = structured_content(&inline_dry);
+    let inline_commit_msg = json!({
+        "jsonrpc": "2.0",
+        "id": "inline-commit",
+        "method": "tools/call",
+        "params": {
+            "name": "app_build_commit",
+            "arguments": {
+                "draftId": inline_dry_content["draftId"].as_str().unwrap(),
+                "validationToken": inline_dry_content["validationToken"].as_str().unwrap()
+            }
+        }
+    })
+    .to_string();
+    send(&mut stdin, &inline_commit_msg);
     let inline_commit = read_line(&mut out);
     assert!(
         inline_commit.contains(r#""isError":false"#) && inline_commit.contains("mcp-inline"),
-        "app_register_inline commit: {inline_commit}"
+        "app_build_commit: {inline_commit}"
     );
     send(
         &mut stdin,
@@ -655,7 +686,10 @@ fn initialize(stdin: &mut impl Write, out: &mut impl BufRead, elicitation: bool)
         ),
     );
     let _ = read_line(out); // init result
-    send(stdin, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+    send(
+        stdin,
+        r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+    );
 }
 
 #[test]

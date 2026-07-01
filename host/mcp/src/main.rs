@@ -37,7 +37,7 @@ use std::time::Duration;
 use nanoserde::SerJson;
 use terrane_host::mcp;
 use terrane_host::permission::{
-    approve_permission_request, deny_permission_request, permission_requests, DEFAULT_ADMIN_BASE_URL,
+    approve_permission_request, deny_permission_request, permission_requests,
 };
 use terrane_host::HostCore;
 
@@ -76,9 +76,12 @@ fn main() {
     );
 
     let (tx, rx) = mpsc::channel::<Incoming>();
-    if let Some(addr) = spawn_admin_listener(tx.clone()) {
+    let admin_base_url = if let Some(addr) = spawn_admin_listener(tx.clone()) {
         eprintln!("terrane-mcp: admin console on http://{addr}{}", admin::BASE);
-    }
+        format!("http://{addr}")
+    } else {
+        terrane_host::permission::DEFAULT_ADMIN_BASE_URL.to_string()
+    };
     spawn_stdin_reader(tx.clone());
     drop(tx); // only the front-end threads keep the loop alive.
 
@@ -100,7 +103,12 @@ fn main() {
                     client_elicits = mcp::initialize_declares_elicitation(line);
                 }
 
-                let Some(response) = mcp::handle_json_rpc(&mut core, line) else {
+                let Some(response) = mcp::handle_json_rpc_with_source_and_admin_base(
+                    &mut core,
+                    line,
+                    "mcp_stdio",
+                    &admin_base_url,
+                ) else {
                     continue; // notification — no reply.
                 };
 
@@ -109,8 +117,18 @@ fn main() {
                     if let Some(info) = mcp::permission_required_from_tool_response(&response) {
                         elicit_seq += 1;
                         let elicit_id = format!("terrane-elicit-{elicit_seq}");
-                        write_line(&mut stdout, &mcp::elicitation_create_frame(&elicit_id, &info));
-                        match await_decision(&mut core, &rx, &mut stdout, &elicit_id, timeout) {
+                        write_line(
+                            &mut stdout,
+                            &mcp::elicitation_create_frame(&elicit_id, &info),
+                        );
+                        match await_decision(
+                            &mut core,
+                            &rx,
+                            &mut stdout,
+                            &elicit_id,
+                            timeout,
+                            &admin_base_url,
+                        ) {
                             Some(mcp::ElicitDecision::Approve) => {
                                 // Grant in-process (trusted) against the live Core,
                                 // then retry — the model continues unbroken.
@@ -118,9 +136,14 @@ fn main() {
                                     &mut core,
                                     &info.request_id,
                                     "approved in session via elicitation",
-                                    DEFAULT_ADMIN_BASE_URL,
+                                    &admin_base_url,
                                 );
-                                if let Some(retry) = mcp::handle_json_rpc(&mut core, line) {
+                                if let Some(retry) = mcp::handle_json_rpc_with_source_and_admin_base(
+                                    &mut core,
+                                    line,
+                                    "mcp_stdio",
+                                    &admin_base_url,
+                                ) {
                                     write_line(&mut stdout, &retry);
                                 }
                             }
@@ -129,7 +152,7 @@ fn main() {
                                     &mut core,
                                     &info.request_id,
                                     "denied in session via elicitation",
-                                    DEFAULT_ADMIN_BASE_URL,
+                                    &admin_base_url,
                                 );
                                 write_line(&mut stdout, &response);
                             }
@@ -145,7 +168,7 @@ fn main() {
 
                 write_line(&mut stdout, &response);
             }
-            Ok(Incoming::Admin(msg)) => handle_admin(&mut core, msg),
+            Ok(Incoming::Admin(msg)) => handle_admin(&mut core, msg, &admin_base_url),
             Ok(Incoming::Closed) | Err(_) => break,
         }
     }
@@ -194,10 +217,7 @@ fn spawn_admin_listener(tx: Sender<Incoming>) -> Option<String> {
             return None;
         }
     };
-    let bound = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or(addr);
+    let bound = listener.local_addr().map(|a| a.to_string()).unwrap_or(addr);
     thread::spawn(move || {
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { continue };
@@ -209,7 +229,13 @@ fn spawn_admin_listener(tx: Sender<Incoming>) -> Option<String> {
                 }
             };
             let (reply_tx, reply_rx) = mpsc::channel();
-            if tx.send(Incoming::Admin(AdminMsg { op, reply: reply_tx })).is_err() {
+            if tx
+                .send(Incoming::Admin(AdminMsg {
+                    op,
+                    reply: reply_tx,
+                }))
+                .is_err()
+            {
                 break; // event loop gone.
             }
             let (status, body) = match reply_rx.recv() {
@@ -223,23 +249,27 @@ fn spawn_admin_listener(tx: Sender<Incoming>) -> Option<String> {
 }
 
 /// Run one admin operation against the live Core (trusted, in-process) and reply.
-fn handle_admin(core: &mut HostCore, msg: AdminMsg) {
+fn handle_admin(core: &mut HostCore, msg: AdminMsg, admin_base_url: &str) {
     use admin::AdminOp;
-    let base = DEFAULT_ADMIN_BASE_URL;
     let (status, body) = match msg.op {
-        AdminOp::ListRequests => match permission_requests(core, base) {
+        AdminOp::ListRequests => match permission_requests(core, admin_base_url) {
             Ok(list) => (200, list.serialize_json()),
             Err(e) => (500, error_json(&e)),
         },
         AdminOp::Approve { id } => {
-            match approve_permission_request(core, &id, "approved via admin console", base) {
+            match approve_permission_request(
+                core,
+                &id,
+                "approved via admin console",
+                admin_base_url,
+            ) {
                 Ok(Some(view)) => (200, view.serialize_json()),
                 Ok(None) => (404, error_json("permission request not found")),
                 Err(e) => (400, error_json(&e)),
             }
         }
         AdminOp::Deny { id } => {
-            match deny_permission_request(core, &id, "denied via admin console", base) {
+            match deny_permission_request(core, &id, "denied via admin console", admin_base_url) {
                 Ok(Some(view)) => (200, view.serialize_json()),
                 Ok(None) => (404, error_json("permission request not found")),
                 Err(e) => (400, error_json(&e)),
@@ -263,6 +293,7 @@ fn await_decision(
     stdout: &mut io::Stdout,
     elicit_id: &str,
     timeout: Duration,
+    admin_base_url: &str,
 ) -> Option<mcp::ElicitDecision> {
     loop {
         match rx.recv_timeout(timeout) {
@@ -278,7 +309,7 @@ fn await_decision(
                     write_line(stdout, &busy);
                 }
             }
-            Ok(Incoming::Admin(msg)) => handle_admin(core, msg),
+            Ok(Incoming::Admin(msg)) => handle_admin(core, msg, admin_base_url),
             Ok(Incoming::Closed) => return None,
             Err(RecvTimeoutError::Timeout) | Err(RecvTimeoutError::Disconnected) => return None,
         }

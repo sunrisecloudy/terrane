@@ -1,8 +1,8 @@
 # Terrane MCP Capability Operations
 
 Direct capability operation is an advanced path. App-building should normally
-use `app_scaffold`, `app_register_inline`, `app_register`, `app_actions`, and
-`invoke`.
+use `app_build_start`, `app_build_put_file`, `app_build_validate`,
+`app_build_commit`, `app_register`, `app_actions`, and `invoke`.
 
 > **Resources are default-deny.** Declaring a resource in `manifest.json` only
 > *requests* it — it does not grant it. `ctx.resource.<ns>` is **absent** inside
@@ -140,6 +140,15 @@ result is an **error** (`"isError": true`) whose `structuredContent` is a
     "requestStatus": "pending",
     "resumeTool": "permission_check",
     "resumeTokenHash": "9f8e7d6c5b4a3210",
+    "operatorActionRequired": true,
+    "allowedMcpTools": ["permission_check", "permission_requests", "permission_cancel"],
+    "forbiddenMcpTools": [
+      "capability_command:auth.*",
+      "capability_command:*.grant",
+      "capability_command:app.grant",
+      "capability_command:auth.permission.approve"
+    ],
+    "nextModelAction": "Do not call capability_command for auth/grant commands. Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId until approved, then retry the original invoke/app_actions/capability_command call with the same arguments.",
     "message": "permission required for app notes-demo: grant kv; open http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b"
   },
   "isError": true
@@ -159,6 +168,14 @@ Key fields to read:
 - `requestStatus` — `pending` once a real denial is surfaced (the request is
   recorded as a side effect of returning this error), or `preview` for a
   `capability_command` dry run that did not record a request.
+- `operatorActionRequired` — `true` means approval is outside model-callable MCP
+  tools.
+- `allowedMcpTools` — the only MCP tools the model should use while waiting,
+  usually `permission_check`, `permission_requests`, and `permission_cancel`.
+- `forbiddenMcpTools` — tool/command patterns the model must not call, such as
+  `capability_command:auth.*`.
+- `nextModelAction` — the exact model-side recovery instruction: surface
+  approval paths, poll, then retry the original call.
 
 The local subject is always `user:local-owner`.
 
@@ -236,7 +253,8 @@ refused.
 
 ## Safer Alternatives
 
-- Use `app_register_inline` instead of raw `app.add` for generated app files.
+- Use `app_build_*` or `app_register_inline` instead of raw `app.add` for
+  generated app files.
 - Use `app_register` instead of raw `app.add --source` for existing bundles.
 - Use `app_actions` and `invoke` instead of runtime capability commands.
 - Use `app_register*` instead of raw `app.import`; raw import is refused on the

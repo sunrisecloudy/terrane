@@ -1,4 +1,37 @@
-use super::{handle_json_rpc, json_string_value, top_level_fields};
+use super::{
+    handle_json_rpc, handle_json_rpc_with_source_and_admin_base, json_string_value,
+    top_level_fields,
+};
+use std::ffi::OsString;
+use std::sync::{Mutex, OnceLock};
+
+fn env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn structured_content(raw: &str) -> serde_json::Value {
+    serde_json::from_str::<serde_json::Value>(raw).unwrap()["result"]["structuredContent"].clone()
+}
+
+struct EnvRestore {
+    old_home: Option<OsString>,
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        match &self.old_home {
+            Some(value) => std::env::set_var("TERRANE_HOME", value),
+            None => std::env::remove_var("TERRANE_HOME"),
+        }
+    }
+}
+
+fn isolate_home(home: &std::path::Path) -> EnvRestore {
+    let old_home = std::env::var_os("TERRANE_HOME");
+    std::env::set_var("TERRANE_HOME", home);
+    EnvRestore { old_home }
+}
 
 fn response_json_field(raw: &str, field: &str) -> String {
     let key = format!(r#""{field}":""#);
@@ -211,6 +244,10 @@ fn capability_command_resource_writes_require_permission_and_can_retry_after_app
             && denied.contains(r#""operation":"capability_command:kv.set""#)
             && denied.contains(r#""source":"mcp_stdio""#)
             && denied.contains(r#""requestStatus":"pending""#)
+            && denied.contains(r#""operatorActionRequired":true"#)
+            && denied.contains(r#""allowedMcpTools":["permission_check","permission_requests","permission_cancel"]"#)
+            && denied.contains(r#""forbiddenMcpTools":["capability_command:auth.*""#)
+            && denied.contains(r#""nextModelAction":"Do not call capability_command"#)
             && denied.contains(r#""missingResources":["kv"]"#),
         "kv.set denial should be structured permission_required: {denied}"
     );
@@ -417,6 +454,12 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
             && scaffold.contains(r#""structuredContent""#),
         "app_scaffold: {scaffold}"
     );
+    assert!(
+        scaffold.contains(r#""nextToolCallSource""#)
+            && scaffold.contains(r#""from":"this_result.structuredContent.files""#)
+            && scaffold.contains(r#""doNotJsonStringify":true"#),
+        "app_scaffold should tell weak models how to pass files array: {scaffold}"
+    );
 
     let app_dir = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -482,41 +525,69 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
         "app_register commit: {commit}"
     );
 
-    let denied_actions = handle_json_rpc(
+    let invalid_invoke_args = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"weak-invoke-bad-args","method":"tools/call","params":{"name":"invoke","arguments":{"app":"weak-demo","verb":"write","args":"[\"hello\"]"}}}"#,
+    )
+    .unwrap();
+    assert!(
+        invalid_invoke_args.contains(r#""isError":true"#)
+            && invalid_invoke_args.contains("real JSON array of strings")
+            && invalid_invoke_args.contains(r#"\"app\":\"weak-demo\""#)
+            && invalid_invoke_args.contains(r#"\"verb\":\"write\""#)
+            && invalid_invoke_args.contains(r#""args\":[\"{...}\"]"#),
+        "invoke args error should repair stringified arrays: {invalid_invoke_args}"
+    );
+
+    let custom_admin_base = "http://127.0.0.1:49199";
+    let denied_actions = handle_json_rpc_with_source_and_admin_base(
         &mut core,
         r#"{"jsonrpc":"2.0","id":"weak-actions-denied","method":"tools/call","params":{"name":"app_actions","arguments":{"app":"weak-demo"}}}"#,
+        "mcp_stdio",
+        custom_admin_base,
     )
     .unwrap();
     assert!(
         denied_actions.contains("permission_required")
             && denied_actions.contains("adminUrl")
+            && denied_actions.contains(custom_admin_base)
             && denied_actions.contains(r#"\"source\":\"mcp_stdio\""#)
             && denied_actions.contains(r#""requestStatus":"pending"#)
+            && denied_actions.contains(r#""operatorActionRequired":true"#)
+            && denied_actions.contains(r#""forbiddenMcpTools":["capability_command:auth.*""#)
             && denied_actions.contains("permission_check"),
         "app_actions should return structured permission request: {denied_actions}"
     );
     let request_id = response_json_field(&denied_actions, "requestId");
 
-    let request_check = handle_json_rpc(
+    let request_check = handle_json_rpc_with_source_and_admin_base(
         &mut core,
         &format!(
             r#"{{"jsonrpc":"2.0","id":"weak-permission-check","method":"tools/call","params":{{"name":"permission_check","arguments":{{"requestId":{}}}}}}}"#,
             super::json_str(&request_id)
         ),
+        "mcp_stdio",
+        custom_admin_base,
     )
     .unwrap();
     assert!(
-        request_check.contains(r#""status":"pending"#) && request_check.contains("weak-demo"),
+        request_check.contains(r#""status":"pending"#)
+            && request_check.contains("weak-demo")
+            && request_check.contains(custom_admin_base),
         "permission_check: {request_check}"
     );
 
-    let requests = handle_json_rpc(
+    let requests = handle_json_rpc_with_source_and_admin_base(
         &mut core,
         r#"{"jsonrpc":"2.0","id":"weak-permission-list","method":"tools/call","params":{"name":"permission_requests","arguments":{}}}"#,
+        "mcp_stdio",
+        custom_admin_base,
     )
     .unwrap();
     assert!(
-        requests.contains(&request_id) && requests.contains(r#""status":"pending"#),
+        requests.contains(&request_id)
+            && requests.contains(r#""status":"pending"#)
+            && requests.contains(custom_admin_base),
         "permission_requests: {requests}"
     );
 
@@ -561,6 +632,188 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
     assert!(
         actions.contains("permission_required") && actions.contains("permission_check"),
         "app_actions should keep routing through permission request flow: {actions}"
+    );
+}
+
+#[test]
+fn app_build_staged_tools_validate_and_commit_without_resending_files() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let log = dir.path().join("log.bin");
+    let mut core = crate::open_at_log_path(&log).unwrap();
+
+    let tools = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"tools","method":"tools/list"}"#,
+    )
+    .unwrap();
+    assert!(
+        tools.contains("app_build_start")
+            && tools.contains("app_build_put_file")
+            && tools.contains("app_build_validate")
+            && tools.contains("app_build_commit"),
+        "tools/list should include staged build tools: {tools}"
+    );
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"build-start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"staged-demo","name":"Staged Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let start_content = structured_content(&start);
+    let draft_id = start_content["draftId"].as_str().unwrap().to_string();
+    assert!(
+        start_content["files"].as_array().unwrap().len() >= 4,
+        "start content: {start_content}"
+    );
+
+    let unsafe_path = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"unsafe","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"../main.js","content":"bad"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        unsafe_path.contains(r#""isError":true"#) && unsafe_path.contains("safe relative"),
+        "unsafe path should be a tool error: {unsafe_path}"
+    );
+
+    let main_js = r#"function handle(input) {
+  var verb = input[0] || "";
+  var kv = ctx.resource.kv;
+  if (verb === "__actions__") {
+    return JSON.stringify({app:"staged-demo",actions:[
+      {verb:"write",args:[{name:"text",required:true}],returns:"stored"},
+      {verb:"read",args:[],returns:"text"}
+    ]});
+  }
+  if (verb === "write") { kv.set("note", input.slice(1).join(" ")); return "stored"; }
+  if (verb === "read") { try { return kv.get("note"); } catch (err) { return "(empty)"; } }
+  return "unknown";
+}"#;
+    let put = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put-main","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(main_js)
+        ),
+    )
+    .unwrap();
+    assert!(
+        put.contains(r#""isError":false"#) && put.contains("app_build_validate"),
+        "put main.js: {put}"
+    );
+
+    let records_before_validate = terrane_core::read_log(&log).unwrap().len();
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"validate","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let records_after_validate = terrane_core::read_log(&log).unwrap().len();
+    assert_eq!(
+        records_after_validate, records_before_validate,
+        "app_build_validate must not append records"
+    );
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], true, "validate: {validate}");
+    let token = validation["validationToken"].as_str().unwrap().to_string();
+
+    let commit = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"commit","method":"tools/call","params":{{"name":"app_build_commit","arguments":{{"draftId":{},"validationToken":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(&token)
+        ),
+    )
+    .unwrap();
+    let committed = structured_content(&commit);
+    assert_eq!(committed["records"], 1, "commit: {commit}");
+    assert_eq!(committed["draftDiscarded"], true, "commit: {commit}");
+    assert!(
+        dir.path()
+            .join("apps")
+            .join("staged-demo")
+            .join("main.js")
+            .is_file(),
+        "owned app bundle should be written"
+    );
+    assert!(
+        !dir.path().join(".mcp-drafts").join(&draft_id).exists(),
+        "committed draft should be removed"
+    );
+
+    let apps = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"apps","method":"tools/call","params":{"name":"list_apps","arguments":{}}}"#,
+    )
+    .unwrap();
+    assert!(apps.contains("staged-demo"), "list_apps: {apps}");
+}
+
+#[test]
+fn app_register_inline_dry_run_can_commit_by_draft_id() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    let files = serde_json::json!([
+        {
+            "path": "manifest.json",
+            "content": "{\"id\":\"inline-draft\",\"name\":\"Inline Draft\",\"runtime\":\"js\",\"backend\":\"main.js\",\"resources\":[\"kv\"]}"
+        },
+        {
+            "path": "main.js",
+            "content": "function handle(input){if((input[0]||'')==='__actions__'){return JSON.stringify({app:'inline-draft',actions:[{verb:'read',args:[],returns:'ok'}]});}return 'ok';}"
+        }
+    ]);
+    let dry_run = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"inline-dry","method":"tools/call","params":{{"name":"app_register_inline","arguments":{{"dryRun":true,"files":{}}}}}}}"#,
+            files
+        ),
+    )
+    .unwrap();
+    let dry = structured_content(&dry_run);
+    assert_eq!(dry["dryRun"], true, "inline dryRun: {dry_run}");
+    let draft_id = dry["draftId"].as_str().unwrap();
+    let token = dry["validationToken"].as_str().unwrap();
+    assert!(
+        dry_run.contains("app_build_commit") && dry_run.contains("do not resend the files"),
+        "inline dryRun should point to staged commit: {dry_run}"
+    );
+
+    let commit = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"inline-commit","method":"tools/call","params":{{"name":"app_build_commit","arguments":{{"draftId":{},"validationToken":{}}}}}}}"#,
+            super::json_str(draft_id),
+            super::json_str(token)
+        ),
+    )
+    .unwrap();
+    assert!(
+        commit.contains(r#""isError":false"#)
+            && commit.contains(r#""command":"app.add"#)
+            && commit.contains("inline-draft"),
+        "commit from inline draft: {commit}"
+    );
+    assert!(
+        dir.path()
+            .join("apps")
+            .join("inline-draft")
+            .join("main.js")
+            .is_file(),
+        "inline draft should install app files"
     );
 }
 

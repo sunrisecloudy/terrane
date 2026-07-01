@@ -6,11 +6,13 @@ use terrane_api::{
     host_contract, mcp_tools, Action, ApiError, AppActions, AppSummary, AppsResponse,
     CapabilityCommandHelpInfo, CapabilityCommandInfo, CapabilityDocInfo, CapabilityEventInfo,
     CapabilityExampleInfo, CapabilityManifestInfo, CapabilityParamInfo, CapabilityQueryInfo,
-    HealthResponse, InvokeRequest, InvokeResponse, TOOL_APP_ACTIONS, TOOL_APP_BUNDLE_VALIDATE,
-    TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD,
-    TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY,
-    TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK,
-    TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
+    HealthResponse, InvokeRequest, InvokeResponse, TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT,
+    TOOL_APP_BUILD_DISCARD, TOOL_APP_BUILD_GET, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
+    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER,
+    TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND,
+    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS,
+    TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
+    TOOL_WORKFLOW_INFO,
 };
 
 #[test]
@@ -88,6 +90,12 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
             TOOL_WORKFLOW_INFO,
             TOOL_APP_RECIPE,
             TOOL_APP_SCAFFOLD,
+            TOOL_APP_BUILD_START,
+            TOOL_APP_BUILD_PUT_FILE,
+            TOOL_APP_BUILD_GET,
+            TOOL_APP_BUILD_VALIDATE,
+            TOOL_APP_BUILD_COMMIT,
+            TOOL_APP_BUILD_DISCARD,
             TOOL_APP_BUNDLE_VALIDATE,
             TOOL_APP_REGISTER_INLINE,
             TOOL_APP_REGISTER,
@@ -149,15 +157,41 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
         workflows_list_tool.description
     );
 
+    let build_start_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_BUILD_START)
+        .expect("app_build_start tool exists");
+    assert!(
+        build_start_tool.description.contains("server-side draft")
+            && build_start_tool.description.contains("one file at a time")
+            && build_start_tool.input_schema.contains(r#""withUi""#),
+        "app_build_start should advertise staged weak-model drafting: {} / {}",
+        build_start_tool.description,
+        build_start_tool.input_schema
+    );
+
+    let build_commit_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_BUILD_COMMIT)
+        .expect("app_build_commit tool exists");
+    assert!(
+        build_commit_tool.description.contains("validationToken")
+            && build_commit_tool.description.contains("app.add")
+            && build_commit_tool.input_schema.contains(r#""draftId""#),
+        "app_build_commit should advertise tokened commit through app.add: {} / {}",
+        build_commit_tool.description,
+        build_commit_tool.input_schema
+    );
+
     let inline_tool = tools
         .iter()
         .find(|tool| tool.name == TOOL_APP_REGISTER_INLINE)
         .expect("app_register_inline tool exists");
     assert!(
-        inline_tool.description.contains("no filesystem")
+        inline_tool.description.contains("Legacy")
             && inline_tool.description.contains("app.remove")
             && inline_tool.description.contains("JSON array")
-            && inline_tool.description.contains("complete bundle")
+            && inline_tool.description.contains("draftId")
             && inline_tool.input_schema.contains(r#""files""#),
         "app_register_inline should advertise MCP-only registration: {} / {}",
         inline_tool.description,
@@ -233,6 +267,12 @@ fn host_contract_lists_the_v1_subset() {
             TOOL_WORKFLOW_INFO,
             TOOL_APP_RECIPE,
             TOOL_APP_SCAFFOLD,
+            TOOL_APP_BUILD_START,
+            TOOL_APP_BUILD_PUT_FILE,
+            TOOL_APP_BUILD_GET,
+            TOOL_APP_BUILD_VALIDATE,
+            TOOL_APP_BUILD_COMMIT,
+            TOOL_APP_BUILD_DISCARD,
             TOOL_APP_BUNDLE_VALIDATE,
             TOOL_APP_REGISTER_INLINE,
             TOOL_APP_REGISTER,

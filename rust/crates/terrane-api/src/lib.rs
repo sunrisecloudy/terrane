@@ -121,6 +121,18 @@ pub const TOOL_WORKFLOW_INFO: &str = "workflow_info";
 pub const TOOL_APP_RECIPE: &str = "app_recipe";
 /// MCP tool: return a minimal generated app bundle as JSON files.
 pub const TOOL_APP_SCAFFOLD: &str = "app_scaffold";
+/// MCP tool: start a server-side draft app bundle for weak/locked-down clients.
+pub const TOOL_APP_BUILD_START: &str = "app_build_start";
+/// MCP tool: put or replace one file in a server-side draft app bundle.
+pub const TOOL_APP_BUILD_PUT_FILE: &str = "app_build_put_file";
+/// MCP tool: inspect a server-side draft app bundle.
+pub const TOOL_APP_BUILD_GET: &str = "app_build_get";
+/// MCP tool: validate a server-side draft app bundle without committing.
+pub const TOOL_APP_BUILD_VALIDATE: &str = "app_build_validate";
+/// MCP tool: commit a validated server-side draft app bundle through app.add.
+pub const TOOL_APP_BUILD_COMMIT: &str = "app_build_commit";
+/// MCP tool: discard a server-side draft app bundle.
+pub const TOOL_APP_BUILD_DISCARD: &str = "app_build_discard";
 /// MCP tool: validate an app bundle path before registration.
 pub const TOOL_APP_BUNDLE_VALIDATE: &str = "app_bundle_validate";
 /// MCP tool: register an app from inline bundle files through the core app.add command.
@@ -185,18 +197,48 @@ pub fn mcp_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TOOL_WORKFLOW_INFO,
-            description: "Return an executable recipe of tools/call steps for one workflow. Example tools/call arguments: {\"name\":\"workflow_info\",\"arguments\":{\"name\":\"make_js_kv_app\"}}.",
+            description: "Return an executable recipe of tools/call steps for one workflow. Use this before building blank-context, UI, calendar, dashboard, or locked-down app tasks. For weak models the primary route is app_build_start, app_build_put_file, app_build_validate, then app_build_commit. app_scaffold/app_register_inline remain compatibility tools; app_register_inline dryRun returns draftId for app_build_commit. Example tools/call arguments: {\"name\":\"workflow_info\",\"arguments\":{\"name\":\"make_js_kv_app\"}}.",
             input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Workflow id from workflows_list, e.g. make_js_kv_app, make_js_multicap_app_no_filesystem, or register_app_bundle."}},"required":["name"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_RECIPE,
-            description: "Return a concise app-building recipe. For most JS apps, call app_scaffold, register inline or from a bundle, app_actions, then invoke. For visible UI apps, use app_scaffold withUi:true and call window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") from browser code. For optional KV index keys, use a kvGetOrNull-style helper before JSON.parse.",
+            description: "Return a concise app-building recipe. This is an orientation tool, not a place to draft the whole app in prose. For most JS apps, call app_build_start, update files one at a time with app_build_put_file, validate, commit, app_actions, then invoke. For visible UI apps, pass withUi:true and call window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") from browser code. For optional KV index keys, use a kvGetOrNull-style helper before JSON.parse.",
             input_schema: r#"{"type":"object","properties":{"kind":{"type":"string","description":"Recipe kind. Defaults to js_kv_app. Use js_multicap_audit for a kv+crdt+relational_db app."}},"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_SCAFFOLD,
-            description: "Generate a JS app bundle as JSON files without writing to disk. Use kind js_kv_notes for KV or js_multicap_audit for a kv+crdt+relational_db app. Set withUi:true for calendars, dashboards, forms, and natural-language input pages. The scaffold demonstrates ui.js separation and defensive KV reads.",
+            description: "Generate a complete JS app bundle as JSON files without writing to disk. Use kind js_kv_notes for KV or js_multicap_audit for a kv+crdt+relational_db app. Set withUi:true for calendars, dashboards, forms, and natural-language input pages. The scaffold demonstrates ui.js separation and defensive KV reads. Prefer the staged app_build_start/app_build_put_file/app_build_validate/app_build_commit flow for weak models; app_register_inline remains available for clients that can safely pass large JSON file arrays.",
             input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. notes-demo."},"name":{"type":"string","description":"Display name, e.g. Notes Demo."},"kind":{"type":"string","description":"Scaffold kind. Defaults to js_kv_notes. Supported: js_kv_notes, js_kv_app, js_multicap_audit."},"withUi":{"type":"boolean","description":"Include index.html and style.css. Defaults to false."}},"required":["id","name"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_BUILD_START,
+            description: "Primary weak-model app build entrypoint. Creates a server-side draft from the scaffold template so the model can edit one file at a time instead of sending a giant files array twice. Use withUi:true for visible apps such as calendars, dashboards, forms, and natural-language input pages. Returns draftId, file summaries, and nextToolCall.",
+            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. calendar-demo."},"name":{"type":"string","description":"Display name, e.g. Calendar Demo."},"kind":{"type":"string","description":"Scaffold kind. Defaults to js_kv_notes. Supported: js_kv_notes, js_kv_app, js_multicap_audit."},"withUi":{"type":"boolean","description":"Include index.html, ui.js, and style.css. Use true for visible apps."}},"required":["id","name"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_BUILD_PUT_FILE,
+            description: "Replace one file in a server-side draft app bundle. Use this after app_build_start to update manifest.json, main.js, index.html, ui.js, style.css, or assets one at a time. Rejects unsafe paths and returns file hash/size plus the next validation step.",
+            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"path":{"type":"string","description":"Safe relative bundle path such as main.js, index.html, ui.js, or style.css."},"content":{"type":"string","description":"Complete new file content."}},"required":["draftId","path","content"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_BUILD_GET,
+            description: "Inspect a server-side draft app bundle after a stall or before validation. Defaults to summaries only; set includeContent:true with path to recover one file. Does not commit or run effects.",
+            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"path":{"type":"string","description":"Optional safe relative file path. When omitted, returns all file summaries."},"includeContent":{"type":"boolean","description":"When true and path is set, include that file's content. Defaults to false."}},"required":["draftId"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_BUILD_VALIDATE,
+            description: "Validate a server-side draft app bundle and dry-run app.add without writing the owned app or appending events. Returns structured errors/warnings plus validationToken. After success, call app_build_commit with draftId and validationToken; do not resend the files.",
+            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."}},"required":["draftId"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_BUILD_COMMIT,
+            description: "Commit a validated server-side draft app bundle. Revalidates, writes the owned bundle under TERRANE_HOME/apps/<id>, then dispatches app.add through core. Use validationToken from app_build_validate when available. Existing app ids are refused unless a future trusted replace flow is added.",
+            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"validationToken":{"type":"string","description":"Optional token returned by app_build_validate. If provided and the draft changed, commit is refused."},"replaceExisting":{"type":"boolean","description":"Reserved for a future trusted replace flow. Currently false/default; true is refused."}},"required":["draftId"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_BUILD_DISCARD,
+            description: "Discard a server-side draft app bundle. Removes draft files only; never touches installed apps or app events.",
+            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."}},"required":["draftId"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_BUNDLE_VALIDATE,
@@ -205,7 +247,7 @@ pub fn mcp_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TOOL_APP_REGISTER_INLINE,
-            description: "Register an app from inline bundle files returned by app_scaffold. Use this when the client has no filesystem/shell access. files must be a JSON array of {path,content} objects, not a JSON string; pass structuredContent.files directly. Every retry must include the complete bundle, including manifest.json, backend, manifest.ui, ui.js/style.css, and assets. Validates files, writes them under TERRANE_HOME/apps/<id> on commit, then dispatches app.add through core. Use dryRun true before committing. If the id already exists, operate it with app_actions or ask a trusted operator to remove/replace it; untrusted capability_command app.remove is refused.",
+            description: "Legacy/advanced inline registration for clients that can pass large JSON arrays reliably. files must be a JSON array of {path,content} objects, not a JSON string. Prefer app_build_start/app_build_put_file/app_build_validate/app_build_commit for weak models. dryRun:true now also stores a server-side draft and returns draftId/validationToken so the client can commit with app_build_commit without resending files. If the id already exists, operate it with app_actions or ask a trusted operator to remove/replace it; untrusted capability_command app.remove is refused.",
             input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Optional id override; defaults to manifest.id."},"name":{"type":"string","description":"Optional display-name override; defaults to manifest.name or id."},"runtime":{"type":"string","description":"Optional runtime override; defaults to manifest.runtime or js."},"files":{"type":"array","description":"Bundle files as a real JSON array, usually structuredContent.files from app_scaffold. Do not JSON-stringify this array. Each item has path and content; retries must include the complete bundle, not only changed files.","items":{"type":"object","properties":{"path":{"type":"string","description":"Safe relative path such as manifest.json or main.js."},"content":{"type":"string","description":"Complete file content."}},"required":["path","content"],"additionalProperties":false}},"dryRun":{"type":"boolean","description":"Validate and dry-run app.add without writing files or committing. Defaults to false."}},"required":["files"],"additionalProperties":false}"#,
         },
         ToolDef {
@@ -223,8 +265,10 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             description: "Describe an app's available actions (verbs and their args), as the app \
                           declares them. Call this before `invoke` to discover what an app can do. \
                           If a requested resource is not yet granted this returns isError:true with a \
-                          permission_required object in structuredContent; run its grantCommands (or open \
-                          adminUrl for an admin to approve), then retry, and poll status with permission_check.",
+                          permission_required object in structuredContent. The model cannot grant this \
+                          through MCP: do not call capability_command with auth.* or grant names. Ask a \
+                          trusted operator to run grantCommands or approve adminUrl, poll status with \
+                          permission_check, then retry the same app_actions call.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"}},"required":["app"],"additionalProperties":false}"#,
         },
         ToolDef {
@@ -232,13 +276,15 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             description: "Run a verb on an app's backend and return its string output, \
                           e.g. {\"app\":\"todo-cli-collaborate\",\"verb\":\"add\",\"args\":[\"buy milk\"]}. \
                           On an ungranted resource this returns isError:true with a permission_required object \
-                          in structuredContent; run its grantCommands (or open adminUrl for an admin to approve), \
-                          then retry the same call, and poll status with permission_check.",
+                          in structuredContent. The model cannot grant this through MCP: do not call \
+                          capability_command with auth.* or grant names. Ask a trusted operator to run \
+                          grantCommands or approve adminUrl, poll status with permission_check, then retry \
+                          the same invoke call.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"},"verb":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app","verb"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_PERMISSION_CHECK,
-            description: "Check a permission request returned by app_actions or invoke. Use the requestId from a permission_required response.",
+            description: "Check a permission request returned by app_actions, invoke, or grant-gated capability_command. This polls status only; it does not grant. Use the requestId from a permission_required response. If status is approved, immediately retry the exact original app_actions/invoke/capability_command call with the same arguments.",
             input_schema: r#"{"type":"object","properties":{"requestId":{"type":"string","description":"Permission request id returned by permission_required."}},"required":["requestId"],"additionalProperties":false}"#,
         },
         ToolDef {
@@ -248,7 +294,7 @@ pub fn mcp_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TOOL_PERMISSION_REQUESTS,
-            description: "List local permission requests and their pending/approved/denied/cancelled status.",
+            description: "List local permission requests and their pending/approved/denied/cancelled status. This does not grant. If a request is approved, immediately retry the exact original app_actions/invoke/capability_command call.",
             input_schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
         },
         ToolDef {
@@ -268,7 +314,7 @@ pub fn mcp_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TOOL_CAPABILITY_COMMAND,
-            description: "Run a Terrane capability command through the core dispatcher. First call tools/call with {\"name\":\"capability_command\",\"arguments\":{\"name\":\"app.add\",\"help\":true}} for ordered params and examples. Set dryRun true to validate simple commit commands without mutation.",
+            description: "Run an allowed Terrane capability command through the core dispatcher. First call tools/call with {\"name\":\"capability_command\",\"arguments\":{\"name\":\"app.add\",\"help\":true}} for ordered params and examples. Set dryRun true to validate simple commit commands without mutation. This tool cannot approve permission_required and refuses auth.*, grant/approve, app.remove, raw storage, runtime, network, model, and harness effect commands on the public MCP path. If a resource command returns permission_required, use permission_check/admin approval, not auth.grant through this tool.",
             input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Dotted command name, e.g. app.add or kv.set."},"args":{"type":"array","items":{"type":"string"},"description":"Command argument vector in the order returned by help:true / capability docs. Defaults to []."},"dryRun":{"type":"boolean","description":"Validate without committing when the command can be decided locally. Defaults to false."},"help":{"type":"boolean","description":"Return ordered parameter docs, effects, errors, and examples for name without executing. Defaults to false."}},"required":["name"],"additionalProperties":false}"#,
         },
     ]
