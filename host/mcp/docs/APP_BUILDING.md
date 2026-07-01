@@ -305,9 +305,9 @@ If registration fails because the app id already exists, first decide whether
 the task is to operate the existing app or replace a failed generated app.
 
 - To operate it, call `list_apps`, `app_actions`, then `invoke`.
-- To replace it, call `capability_command` with
-  `{ "name": "app.remove", "help": true }`, then use `dryRun: true`, then commit
-  `app.remove` for that id, and finally rerun `app_register_inline`.
+- To replace it, stop and ask a trusted operator to remove or replace the app out
+  of band. Untrusted `capability_command app.remove` is refused. After the
+  operator clears the app, rerun `app_register_inline`.
 
 Do not remove an existing app just because registration failed; only replace
 when the current task is explicitly creating a new version of that app.

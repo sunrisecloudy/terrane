@@ -1399,6 +1399,23 @@ fn mcp_http_permission_request_reports_http_source() {
         "mcp http permission source: {body}"
     );
 
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/mcp",
+        Some(
+            r#"{"jsonrpc":"2.0","id":"mcp-command-missing","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"kv.set","args":["todo","note","via http"]}}}"#
+        ),
+    );
+    assert_eq!(status, 200, "mcp capability_command missing grant: {body}");
+    assert!(
+        body.contains("permission_required")
+            && body.contains(r#"\"source\":\"mcp_http\""#)
+            && body.contains(r#"\"operation\":\"capability_command:kv.set\""#)
+            && body.contains(r#"\"requestStatus\":\"pending\""#),
+        "mcp http capability command permission source: {body}"
+    );
+
     let _ = child.kill();
     let _ = child.wait();
 }

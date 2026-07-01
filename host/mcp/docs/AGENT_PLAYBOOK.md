@@ -330,9 +330,10 @@ string. Send the `structuredContent.files` array itself.
 If app registration fails because the app id already exists:
 
 - If the task is to use the existing app, call `app_actions`.
-- If the task is to replace a broken generated app, call
-  `capability_command` with `{ "name": "app.remove", "help": true }`, then
-  remove with `dryRun: true`, then remove for real, then register again.
+- If the task is to replace a broken generated app, stop and ask a trusted
+  operator to remove or replace it out of band. Untrusted
+  `capability_command app.remove` is refused; after the operator clears the app,
+  rerun `app_register_inline`.
 
 If the client ends before any `app_register_inline` call and the transcript shows
 `finish: "length"`, the app was not rejected by Terrane. The model exhausted its

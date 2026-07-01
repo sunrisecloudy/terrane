@@ -7,7 +7,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Value};
 use tempfile::tempdir;
 use terrane_core::Core;
@@ -33,18 +32,6 @@ fn read_line(out: &mut impl BufRead) -> String {
     let mut line = String::new();
     out.read_line(&mut line).unwrap();
     line
-}
-
-fn sqlite_value(path: &Path, app: &str, key: &str) -> Option<String> {
-    Connection::open(path)
-        .unwrap()
-        .query_row(
-            "SELECT value FROM kv_entries WHERE app = ?1 AND key = ?2",
-            [app, key],
-            |row| row.get(0),
-        )
-        .optional()
-        .unwrap()
 }
 
 fn structured_content(line: &str) -> Value {
@@ -166,6 +153,7 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         doc.contains("app_register_inline")
             && doc.contains("MCP App Building")
             && doc.contains("window.terrane.invoke")
+            && doc.contains("trusted operator")
             && doc.contains("app.remove")
             && doc.contains("kvGetOrNull")
             && doc.contains("Do not JSON-stringify")
@@ -244,6 +232,7 @@ fn add_a_todo_through_mcp_and_read_it_back() {
             && workflow.contains("app_register_inline")
             && workflow.contains("app_register")
             && workflow.contains("window.terrane.invoke")
+            && workflow.contains("trusted-operator-only")
             && workflow.contains("app.remove")
             && workflow.contains("kvGetOrNull")
             && workflow.contains("do not JSON-stringify")
@@ -483,8 +472,8 @@ fn add_a_todo_through_mcp_and_read_it_back() {
         "capability_command dryRun: {dry}"
     );
 
-    // capability_command → real writes use the default SQLite KV projection at
-    // <TERRANE_HOME>/terrane.db.
+    // capability_command resource writes are grant-gated rather than silently
+    // mutating another app's data.
     send(
         &mut stdin,
         r#"{"jsonrpc":"2.0","id":"kv-app","method":"tools/call","params":{"name":"capability_command","arguments":{"name":"app.add","args":["mcp-kv-default","MCP KV Default"]}}}"#,
@@ -500,14 +489,11 @@ fn add_a_todo_through_mcp_and_read_it_back() {
     );
     let kv_set = read_line(&mut out);
     assert!(
-        kv_set.contains(r#""isError":false"#),
-        "capability_command kv.set: {kv_set}"
-    );
-    let sqlite = home.join("terrane.db");
-    assert!(sqlite.is_file(), "default KV sqlite file should exist");
-    assert_eq!(
-        sqlite_value(&sqlite, "mcp-kv-default", "note"),
-        Some("stored in terrane.db".into())
+        kv_set.contains("permission_required")
+            && kv_set.contains(r#""operation":"capability_command:kv.set""#)
+            && kv_set.contains(r#""requestStatus":"pending""#)
+            && kv_set.contains(r#""missingResources":["kv"]"#),
+        "capability_command kv.set should request permission: {kv_set}"
     );
 
     // app_actions → the app describes its verbs programmatically (from __actions__).

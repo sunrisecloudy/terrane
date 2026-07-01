@@ -1301,7 +1301,7 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
                 "verification": "If a browser is available, open /apps/<id>/, check console errors, click one UI control, and confirm the rendered result. Backend invokes alone do not prove a UI app works."
             },
             "inlineFilesContract": "app_register_inline.files must be a JSON array of {path,content} objects. Pass structuredContent.files directly; do not JSON-stringify it. Every retry must include the complete files array, not only changed files.",
-            "replaceExisting": "If app_register_inline says the id already exists and you are replacing a broken generated app, call capability_command {name:\"app.remove\",help:true}, then dryRun, then remove, then register again. If the task is to operate the existing app, use app_actions instead.",
+            "replaceExisting": "If app_register_inline says the id already exists, operate the existing app with app_actions unless the human explicitly wants replacement. Replacement/removal is trusted-operator-only now; untrusted capability_command app.remove is refused. Ask the operator to remove/replace out of band, then rerun app_register_inline.",
             "pathBundleAlternative": "If the client can write files itself, write app_scaffold files to a bundle directory, call app_bundle_validate, then app_register dryRun and commit."
         }),
         "make_js_kv_app_no_filesystem" => json!({
@@ -1327,7 +1327,7 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
                 "verification": "For UI outcomes, verify the page loads and rendered results match the requested view. If no browser tool exists, say UI was not live-tested and keep the code conservative."
             },
             "inlineFilesContract": "app_register_inline.files must be a JSON array of {path,content} objects. Pass structuredContent.files directly; do not JSON-stringify it. Every retry must include the complete files array, not only changed files.",
-            "replaceExisting": "If the id already exists and the current task is to replace your broken generated app, use capability_command app.remove help, dryRun, commit remove, then app_register_inline again. Do not remove an app just to inspect or operate it.",
+            "replaceExisting": "If the id already exists, operate it with app_actions unless the human explicitly wants replacement. Replacement/removal is trusted-operator-only now; untrusted capability_command app.remove is refused. Ask the operator to remove/replace out of band, then call app_register_inline again.",
             "doNotUse": ["source reads", "shell", "glob", "grep", "filesystem list", "capability_command app.add before app_register_inline", "backend-only proof for visible UI tasks"]
         }),
         "make_js_multicap_app_no_filesystem" => json!({
