@@ -34,8 +34,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub mod domain;
+pub mod filelock;
 mod planned_docs;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
@@ -779,6 +781,10 @@ pub struct Core<R: EffectRunner = NoEffects> {
     /// String printed by the most recent runtime backend, if any. Not part of
     /// State, never logged or replayed — purely a transport for the host to print.
     last_output: Option<String>,
+    /// Exclusive cross-process guard on this home, held for the `Core`'s lifetime
+    /// so a second process cannot corrupt the shared log. In-process opens share
+    /// it (see [`filelock`]).
+    _home_lock: Arc<filelock::LockHandle>,
 }
 
 impl Core<NoEffects> {
@@ -793,6 +799,9 @@ impl<R: EffectRunner> Core<R> {
     /// State by folding the existing log through the default registry.
     pub fn open_with(log_path: impl Into<PathBuf>, runner: R) -> Result<Self> {
         let log_path = log_path.into();
+        // Take the cross-process write guard before reading, so we replay and
+        // then own the log without a second writer racing us.
+        let home_lock = filelock::acquire(&log_path)?;
         let registry = default_registry();
         let mut state = State::default();
         for record in read_log(&log_path)? {
@@ -813,6 +822,7 @@ impl<R: EffectRunner> Core<R> {
             runner,
             registry,
             last_output: None,
+            _home_lock: home_lock,
         })
     }
 
@@ -995,15 +1005,19 @@ impl<R: EffectRunner> Core<R> {
             .append(true)
             .open(&self.log_path)
             .map_err(|e| Error::Storage(e.to_string()))?;
+        // Frame the whole batch in one buffer and write it once: with O_APPEND
+        // plus the home lock, a single `write_all` cannot interleave a length from
+        // one writer with bytes from another (no torn records).
+        let mut frame = Vec::new();
         for record in records {
             let bytes = borsh::to_vec(record).map_err(|e| Error::Storage(e.to_string()))?;
             let len = u32::try_from(bytes.len())
                 .map_err(|_| Error::Storage("event record too large".into()))?;
-            file.write_all(&len.to_le_bytes())
-                .map_err(|e| Error::Storage(e.to_string()))?;
-            file.write_all(&bytes)
-                .map_err(|e| Error::Storage(e.to_string()))?;
+            frame.extend_from_slice(&len.to_le_bytes());
+            frame.extend_from_slice(&bytes);
         }
+        file.write_all(&frame)
+            .map_err(|e| Error::Storage(e.to_string()))?;
         Ok(())
     }
 }
