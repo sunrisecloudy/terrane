@@ -23,6 +23,10 @@ or no prior knowledge of Terrane, but the same steps work for any model.
   simple enough to parse.
 - Do not use `capability_command app.add` while app-specific tools are
   available.
+- Use direct `capability_command` only after `help: true`. Direct `kv`, `crdt`,
+  and `relational_db` resource commands require grants and can return
+  `permission_required`; storage config, raw `app.import`, `app.remove`, runtime,
+  network, model, and harness effect commands are refused on the public MCP path.
 - After `app_scaffold`, the next assistant action should be a tool call:
   `app_register_inline` with `dryRun: true` and the complete
   `structuredContent.files` array. Do not pause to explain, summarize, or emit
@@ -58,7 +62,8 @@ denied. This is normal. Handle it, do not treat it as a dead end.
 
 ### Step 1 — Detect it
 
-Only `invoke` and `app_actions` return this. It arrives as a tool result with:
+`invoke`, `app_actions`, and grant-gated direct resource `capability_command`
+calls return this. It arrives as a tool result with:
 
 ```json
 {
@@ -74,7 +79,7 @@ You have a denied resource when **both** are true:
 - `structuredContent.type == "permission_required"`.
 
 The `structuredContent` object has the fields you act on (it also carries
-`type`/`status`/`org`/`subject`/`source`/`resumeTokenHash`):
+`type`/`status`/`org`/`subject`/`operation`/`source`/`resumeTokenHash`):
 
 | Field | What it is |
 |---|---|
@@ -84,8 +89,8 @@ The `structuredContent` object has the fields you act on (it also carries
 | `grantCommands` | one ready-to-run CLI string per missing namespace |
 | `adminUrl` | URL a human/admin opens to approve |
 | `requestId` | id to poll with `permission_check` |
-| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `unrecorded` |
-| `resumeTool` | always `"permission_check"` |
+| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `preview` \| `unrecorded` |
+| `resumeTool` | `"permission_check"` for recorded requests; empty for dry-run previews |
 | `message` | human-readable one-liner |
 
 ### Step 2 — Get it granted (pick one)
@@ -142,8 +147,9 @@ Choose whichever path fits who is present:
 ### Step 3 — Retry
 
 Once granted (CLI ran, or admin approved, or `permission_check` shows
-`approved`), **retry the exact same `invoke`** with the same `app`, `verb`, and
-`args`. It now succeeds.
+`approved`), **retry the exact same original call** with the same arguments:
+`invoke`, `app_actions`, or the direct resource `capability_command`. It now
+succeeds.
 
 ### Do NOT do this
 
@@ -347,14 +353,20 @@ provider/client stall rather than a Terrane error. Restart or resume with the
 same scaffold result and make `app_register_inline` dry-run the first tool call.
 
 If a capability command is tempting, call `capability_command` with `help: true`
-first and check whether a higher-level app tool exists.
+first and check whether a higher-level app tool exists. Direct resource commands
+for `kv`, `crdt`, and `relational_db` follow the same permission handshake as
+`invoke`; raw storage config, raw `app.import`, `app.remove`, runtime execution,
+network, model, and harness effect commands are unavailable on the public MCP
+surface.
 
-If `invoke` or `app_actions` returns `isError: true` and
+If `invoke`, `app_actions`, or a direct resource `capability_command` returns
+`isError: true` and
 `structuredContent.type == "permission_required"`, the resource is denied, not
 broken. Go to **When A Resource Is Denied (permission_required)**: run the
 `grantCommands`, or have an admin approve at `adminUrl`, or poll `permission_check`
-until `status` is `approved`, then retry the same `invoke`. Never try to grant it
-yourself with `capability_command` and an `auth.*` name — that is refused.
+until `status` is `approved`, then retry the same original call. Never try to
+grant it yourself with `capability_command` and an `auth.*` name — that is
+refused.
 
 The three permission tools (none of them grants access):
 

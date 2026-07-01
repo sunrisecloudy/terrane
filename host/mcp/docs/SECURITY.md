@@ -27,9 +27,10 @@ rejected on any untrusted path.
 
 ## What you see when a resource is denied
 
-Only the `invoke` and `app_actions` tools can hit an ungranted namespace. When
-they do, the host returns an **error** tool result carrying a
-`permission_required` object. The tool result looks like this:
+The `invoke` / `app_actions` app-runtime tools and grant-gated direct
+`capability_command` resource commands can hit an ungranted namespace. When they
+do, the host returns an **error** tool result carrying a `permission_required`
+object. The tool result looks like this:
 
 ```json
 {
@@ -56,18 +57,22 @@ Exact JSON keys (do not rename):
 | `appName` | app display name |
 | `org` | `local` |
 | `subject` | `user:local-owner` |
+| `operation` | app/runtime verb or direct operation, e.g. `capability_command:kv.set` |
 | `source` | caller source (`cli`, `host`, `mcp_stdio`, `mcp_http`) |
 | `missingResources` | sorted list of ungranted namespaces |
 | `adminUrl` | admin deep link to approve this request |
 | `grantCommands` | one copy-paste CLI command per missing namespace |
-| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `unrecorded` |
-| `resumeTool` | always `"permission_check"` — the tool to poll |
+| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `preview` \| `unrecorded` |
+| `resumeTool` | `"permission_check"` for recorded requests; empty for dry-run previews |
 | `resumeTokenHash` | 16-hex hash of the request id |
 | `message` | human message: `permission required for app <app>: grant <ns…>; open <adminUrl>` |
 
-Surfacing the error also **records** the request (an `auth.permission.requested`
-event), so `requestStatus` becomes `pending` and the request is immediately
-listable, checkable, and approvable. You do not need a separate step to file it.
+Surfacing a real denial also **records** the request (an
+`auth.permission.requested` event), so `requestStatus` becomes `pending` and the
+request is immediately listable, checkable, and approvable. You do not need a
+separate step to file it. A `capability_command` dry run returns
+`requestStatus: "preview"` and records no event; rerun without `dryRun` to
+create an approvable request.
 
 ### Example
 
@@ -80,6 +85,7 @@ listable, checkable, and approvable. You do not need a separate step to file it.
   "appName": "Notes Demo",
   "org": "local",
   "subject": "user:local-owner",
+  "operation": "invoke:write",
   "source": "mcp_stdio",
   "missingResources": ["kv"],
   "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
@@ -98,8 +104,9 @@ refuses any `auth.*` name with `"<name> is trusted-admin-only; use the permissio
 request/admin approval flow"`. Do not retry `auth.grant` or
 `auth.permission.approve` through `capability_command` — it will always fail.
 
-Instead, pick one of the three trusted paths below, then **retry `invoke` with
-the same args** once the grant lands.
+Instead, pick one of the three trusted paths below, then **retry the original
+`invoke`, `app_actions`, or direct resource `capability_command` call with the
+same args** once the grant lands.
 
 ### (a) CLI grant — copy-paste from `grantCommands`
 
@@ -189,8 +196,8 @@ keys: `requestId`, `org`, `subject`, `app`, `appName`, `operation`, `source`,
 resourceId, verbs[] }`), `status`, `adminUrl`, `decidedBy`, `decisionReason`.
 
 Statuses to handle: `pending` | `approved` | `denied` | `cancelled` (the extra
-`unrecorded` appears only on `PermissionRequired.requestStatus`, when a request
-was not yet recorded).
+`preview` and `unrecorded` values appear only on `PermissionRequired.requestStatus`;
+`preview` means a dry run did not record a request).
 
 ## Grantable namespaces + verbs
 
@@ -260,8 +267,11 @@ Examples:
 
 - `app_register_inline` writes owned bundle files, then dispatches `app.add`.
 - `app_register` validates a source bundle, then dispatches `app.add`.
-- `capability_command` dispatches commands through core (and refuses `auth.*` as
-  trusted-admin-only).
+- `capability_command` applies the public command policy before dispatching
+  through core: `kv` / `crdt` / `relational_db` resource commands require the
+  same grants as `invoke`, while `auth.*`, `kv.storage.*`, `app.import`,
+  `app.remove`, `net.fetch`, `model.ask`, `harness.*`, and
+  `js-runtime.run` / `wasm-runtime.run` are refused on the untrusted MCP path.
 
 ## Destructive Actions
 

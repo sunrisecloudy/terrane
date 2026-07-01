@@ -82,9 +82,10 @@ handshake below.
 
 ### Detecting a denied resource
 
-`invoke` and `app_actions` return the denial as a tool result with
-`isError: true`. The payload is a `permission_required` object, present both as
-`structuredContent` and as JSON text in `content[0].text`:
+`invoke`, `app_actions`, and grant-gated direct resource `capability_command`
+calls return the denial as a tool result with `isError: true`. The payload is a
+`permission_required` object, present both as `structuredContent` and as JSON
+text in `content[0].text`:
 
 ```json
 {
@@ -97,6 +98,7 @@ handshake below.
     "appName": "Notes Demo",
     "org": "local",
     "subject": "user:local-owner",
+    "operation": "invoke:write",
     "source": "mcp_stdio",
     "missingResources": ["kv"],
     "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
@@ -143,8 +145,8 @@ verbs: `kv` (`read`, `write`), `crdt` (`read`, `write`), `relational_db`
    `approved`. A human or admin still performs the approval via path 1 or 2; MCP
    only observes it.
 
-Then **retry `invoke`** with the same `app`, `verb`, and `args` — it now
-succeeds.
+Then **retry the original `invoke`, `app_actions`, or direct resource
+`capability_command` call** with the same args — it now succeeds.
 
 ### MCP permission tools
 
@@ -158,8 +160,8 @@ None of these grant access; they observe and manage requests.
   `{ "requests": [...] }` for all local requests.
 
 Status values to handle: `pending`, `approved`, `denied`, `cancelled` (plus
-`unrecorded` only on `permission_required.requestStatus` before a request is
-recorded).
+`preview` and `unrecorded` only on `permission_required.requestStatus`; `preview`
+means a dry run did not record a request).
 
 ### Do not
 

@@ -6,9 +6,10 @@ use `app_scaffold`, `app_register_inline`, `app_register`, `app_actions`, and
 
 > **Resources are default-deny.** Declaring a resource in `manifest.json` only
 > *requests* it — it does not grant it. `ctx.resource.<ns>` is **absent** inside
-> an app backend until an admin grants that namespace. If `invoke` or
-> `app_actions` returns `"isError": true` with a `permission_required` object,
-> the app's resource was withheld — do not treat it as a code bug. See
+> an app backend until an admin grants that namespace. If `invoke`,
+> `app_actions`, or a direct resource `capability_command` returns
+> `"isError": true` with a `permission_required` object, the app's resource was
+> withheld — do not treat it as a code bug. See
 > [Default-Deny Permissions](#default-deny-permissions).
 
 ## Capability Docs
@@ -84,6 +85,12 @@ any `auth.*` name (e.g. `auth.grant`, `auth.permission.approve`) with
 flow"`. You cannot grant yourself a resource over MCP. Granting is a trusted
 admin/CLI action — see [How to grant](#how-to-grant).
 
+Direct `kv`, `crdt`, and `relational_db` resource commands are grant-gated by
+app id and can return `permission_required`. Raw storage configuration
+(`kv.storage.*`), raw bundle import (`app.import`), app removal, runtime
+execution, network, model, and harness effect commands are refused on the public
+MCP path.
+
 ## Default-Deny Permissions
 
 A manifest that lists `kv`, `crdt`, `relational_db`, or `build` under its
@@ -106,10 +113,11 @@ a manifest requests that is not one of these is skipped, not blocked.
 
 ### The `permission_required` result
 
-Only `invoke` and `app_actions` can return it. When they hit an ungranted
-requested namespace, the tool result is an **error** (`"isError": true`) whose
-`structuredContent` is a `permission_required` object. The same JSON is also
-copied as a string into `content[0].text`.
+`invoke`, `app_actions`, and grant-gated direct resource `capability_command`
+calls can return it. When they hit an ungranted requested namespace, the tool
+result is an **error** (`"isError": true`) whose `structuredContent` is a
+`permission_required` object. The same JSON is also copied as a string into
+`content[0].text`.
 
 ```json
 {
@@ -124,6 +132,7 @@ copied as a string into `content[0].text`.
     "appName": "Notes Demo",
     "org": "local",
     "subject": "user:local-owner",
+    "operation": "invoke:write",
     "source": "mcp_stdio",
     "missingResources": ["kv"],
     "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
@@ -143,9 +152,13 @@ Key fields to read:
 - `grantCommands` — one ready-to-run CLI command per missing namespace.
 - `adminUrl` — deep link for an admin to approve.
 - `requestId` — pass this to `permission_check` to poll status.
-- `resumeTool` — always `"permission_check"`; the tool to poll with.
-- `requestStatus` — `pending` once surfaced (the request is recorded as a side
-  effect of returning this error, so it is immediately listable/approvable).
+- `operation` — app/runtime verb or direct operation, e.g.
+  `capability_command:kv.set`.
+- `resumeTool` — `"permission_check"` for recorded requests; empty for dry-run
+  previews.
+- `requestStatus` — `pending` once a real denial is surfaced (the request is
+  recorded as a side effect of returning this error), or `preview` for a
+  `capability_command` dry run that did not record a request.
 
 The local subject is always `user:local-owner`.
 
@@ -178,8 +191,9 @@ admin/trusted action, not something the requesting agent can do.
 **(c) MCP path — request, poll, retry.** The recorded `permission_required`
 already created a `pending` request. Poll it with `permission_check`, wait for a
 human/admin to approve at `adminUrl` (or run the `grantCommands`), then retry
-`invoke`. Do **not** call `capability_command` with an `auth.*` name — it is
-refused as trusted-admin-only.
+the original `invoke`, `app_actions`, or direct resource `capability_command`
+call. Do **not** call `capability_command` with an `auth.*` name — it is refused
+as trusted-admin-only.
 
 ### MCP permission tools
 
@@ -197,8 +211,9 @@ None of these grant access.
 `decidedBy`, `decisionReason`.
 
 Status values to handle: `pending`, `approved`, `denied`, `cancelled` (plus
-`unrecorded`, which only appears on `permission_required.requestStatus` when a
-request was not yet recorded).
+`preview` and `unrecorded`, which appear only on
+`permission_required.requestStatus`; `preview` means a dry run did not record a
+request).
 
 ### Worked example: unblocking a denied `invoke`
 
@@ -224,6 +239,8 @@ refused.
 - Use `app_register_inline` instead of raw `app.add` for generated app files.
 - Use `app_register` instead of raw `app.add --source` for existing bundles.
 - Use `app_actions` and `invoke` instead of runtime capability commands.
+- Use `app_register*` instead of raw `app.import`; raw import is refused on the
+  public MCP path because it can configure storage.
 - Use `capability_query` instead of commands for state inspection.
 - To unblock a `permission_required` result, use `permission_check` and the
   `grantCommands` / `adminUrl` from the response — never

@@ -173,6 +173,7 @@ with the same object in `structuredContent` and as a JSON string in
     "appName": "Notes Demo",
     "org": "local",
     "subject": "user:local-owner",
+    "operation": "invoke:write",
     "source": "mcp_stdio",
     "missingResources": ["kv"],
     "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
@@ -193,7 +194,10 @@ Detect it by checking `structuredContent.type == "permission_required"` (or
 - `grantCommands` — one ready-to-run CLI command per missing namespace.
 - `adminUrl` — the admin page / deep link for a human to approve.
 - `requestId` — pass this to `permission_check` to poll status.
-- `resumeTool` — always `permission_check`; the tool to poll with.
+- `operation` — app/runtime verb or direct operation, e.g.
+  `capability_command:kv.set`.
+- `resumeTool` — `permission_check` for recorded requests; empty for dry-run
+  previews.
 
 Surfacing this error **records a pending request** as a side effect, so the
 request is immediately listable and approvable — you do not need a separate

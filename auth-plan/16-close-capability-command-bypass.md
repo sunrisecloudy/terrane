@@ -123,9 +123,15 @@ Rules (each rule answers a stress-test hole):
    untrusted model must not trigger it — this is exactly the remove-then-re-add
    data-loss footgun seen in earlier weak-model runs. Operator/trusted path only.
 
-7. **Explicit Allow set** (everything else must be *listed*, not defaulted):
-   - `app.add`, `app.import` — create-new app registration is an intended model
-     operation. They stay allowed only while core/edge semantics reject existing
+7. **Raw bundle import → Refuse** — `app.import` installs a bundle from a host
+   path and can pass `--storage` / `--path`, which may emit
+   `kv.storage.configured`. Public app creation must use the dedicated
+   `app_register` / `app_register_inline` tools that validate and stage bundles
+   before dispatching the narrow app-add path. Raw import is trusted tooling.
+
+8. **Explicit Allow set** (everything else must be *listed*, not defaulted):
+   - `app.add` — create-new app registration is an intended low-level model
+     operation. It stays allowed only while core/edge semantics reject existing
      app ids (`Error::AppExists`) and never replace an app through this public
      path. If replace/update semantics are added later, the inventory test must
      move the public command to Refuse or to a confirmation/ownership policy.
@@ -165,14 +171,15 @@ guess):
 | `harness.generate-app`, `harness.run-js` | harness | **Refuse** | trigger model-CLI effects (spend) |
 | `auth.*` — `grant`,`revoke`,`permission.{request,approve,deny,cancel}`,`agent.{register,delegate,revoke}`,`member.ensure-local-owner` | auth | **Refuse** | trusted-admin-only (already via `admit_command`) |
 | `app.remove` | app | **Refuse** | destructive; wipes app data via cascade |
-| `app.add`, `app.import` | app | **Allow** | create-new app registration; existing ids must still fail with `AppExists` |
+| `app.import` | app | **Refuse** | raw bundle install can configure storage through `--storage` / `--path`; use `app_register*` |
+| `app.add` | app | **Allow** | create-new app registration; existing ids must still fail with `AppExists` |
 | `replica.init` | replica | **Allow** | idempotent local identity |
 | `app.exists` (query), `replica.peer` (query) | app / replica | **Allow** | read-only catalog / identity |
 | any `help:true` | — | **Allow** | usage text; no dispatch |
 | any newly-registered command / query | — | **Refuse until classified** | inventory test fails until a row exists |
 
-Net effect across the 36 Public commands: **14 grant-gated, 19 refused** (10 of
-them the pre-existing `auth.*`), **3 allowed**; both queries allowed. Adding a
+Net effect across the 36 Public commands: **14 grant-gated, 20 refused** (10 of
+them the pre-existing `auth.*`), **2 allowed**; both queries allowed. Adding a
 capability command means choosing one row here and adjusting a test — production
 behavior stays auditable, and no command is left to a "default allow" posture.
 
@@ -258,10 +265,11 @@ policy decision.
 
 ## Out of scope (genuinely future — the existing surface is fully classified above)
 
-- **App replace/update ownership.** `app.add` / `app.import` stay `Allow` only
-  for create-new registration because the current core/edge paths reject existing
-  ids. Any future replace/update command needs an ownership/confirmation model
-  before it can be public.
+- **App replace/update ownership.** `app.add` stays `Allow` only for create-new
+  registration because the current core/edge path rejects existing ids. Raw
+  `app.import` is refused on the untrusted public command surface; any future
+  public import/replace/update command needs an ownership/confirmation model and
+  a storage-side-effect policy before it can be exposed.
 - **Verb/selector granularity.** `namespace_granted` is namespace-level (no
   read/write split, no key/table selector). This guard inherits exactly the
   `invoke` path's granularity — consistent, not a regression. A future
@@ -279,14 +287,17 @@ Classifier unit tests (`terrane-host`):
 - `js-runtime.run`/`wasm-runtime.run` → Refuse.
 - `net.fetch`/`model.ask`/`harness.generate-app`/`harness.run-js` → Refuse.
 - `app.remove` → Refuse.
+- `app.import` with storage options → Refuse before dispatch; no
+  `kv.storage.configured` record is appended.
 - `kv.set`/`crdt.mapSet`/`relational_db.put` ungranted → NeedsGrant{args[0], ns};
   granted → Allow.
 - `kv.set` with empty args → Refuse (arg error).
 - non-existent app arg on resource command → Refuse `"no such app"` rather than
   permission prompt.
-- `app.add`, `app.import`, `replica.init` → Allow.
-- `app.add` / `app.import` against an existing id still fail with `AppExists`;
-  the public allowlist must not become an overwrite path.
+- `app.add`, `replica.init` → Allow.
+- `app.add` against an existing id still fails with `AppExists`; the public
+  allowlist must not become an overwrite path.
+- no allowlisted command may emit `kv.storage.configured`.
 - a grantable command with no explicit app-id extractor → Refuse or fail the
   policy-inventory test until classified.
 - unknown/new command class → Refuse or fail policy-inventory test until
@@ -307,10 +318,11 @@ Behavior / e2e (`host/mcp/tests`):
 - `capability_command net.fetch …` / `model.ask …` / `harness.generate-app …` →
   refused (effect; never dispatched, no network/model call made).
 - `capability_command app.remove …` → refused (destructive lifecycle).
-- `capability_command app.add …` / `app.import …` / `replica.init` → still
-  succeed when they are create-new operations (allowlisted).
-- `capability_command app.add …` / `app.import …` for an existing id → `AppExists`
-  / refused-by-core behavior, no overwrite.
+- `capability_command app.import … --storage … --path …` → refused before
+  dispatch; no `kv.storage.configured` record is appended.
+- `capability_command app.add …` / `replica.init` → still succeed when they are
+  allowlisted operations.
+- `capability_command app.add …` for an existing id → `AppExists`, no overwrite.
 - `capability_query app.exists` still succeeds; any grantable namespace query
   added in future fails the policy-inventory test until gated/refused.
 - policy inventory covers every registered command and every registered query.
@@ -349,10 +361,10 @@ Behavior / e2e (`host/mcp/tests`):
 3. The permission request clearly says `operation =
    capability_command:<command>` and records the MCP source, so direct capability
    prompts are distinguishable from app runtime invokes.
-4. `kv.storage.*`, `*-runtime.run`, `net.fetch`, `model.ask`, `harness.*`, and
-   `app.remove` are refused over untrusted `capability_command`; create-new
-   `app.add` / `app.import` / `replica.init` still work for this slice, and
-   existing-app imports/adds cannot overwrite.
+4. `kv.storage.*`, `*-runtime.run`, `net.fetch`, `model.ask`, `harness.*`,
+   `app.import`, and `app.remove` are refused over untrusted
+   `capability_command`; `app.add` / `replica.init` still work for this slice,
+   and existing-app adds cannot overwrite.
 5. Every registered Public command is covered by a policy inventory test:
    refused, grant-gated, or explicitly allowlisted.
 6. Every registered Public query is covered by a policy inventory test; future

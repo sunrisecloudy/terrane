@@ -50,9 +50,10 @@ it as failure — it is a handshake. Handle it, then retry.
 
 ### What the error looks like
 
-Only `invoke` and `app_actions` return this. The result has `"isError": true` and
-carries a `permission_required` object **both** in `structuredContent` and as a
-JSON string in `content[0].text`:
+`invoke`, `app_actions`, and grant-gated direct resource `capability_command`
+calls return this. The result has `"isError": true` and carries a
+`permission_required` object **both** in `structuredContent` and as a JSON string
+in `content[0].text`:
 
 ```json
 {
@@ -65,6 +66,7 @@ JSON string in `content[0].text`:
     "appName": "Notes Demo",
     "org": "local",
     "subject": "user:local-owner",
+    "operation": "invoke:write",
     "source": "mcp_stdio",
     "missingResources": ["kv"],
     "adminUrl": "http://127.0.0.1:8780/__terrane/admin/requests/local-notes-demo-user-local-owner-kv-1a2b3c4d5e6f7a8b",
@@ -96,8 +98,9 @@ pollable, and approvable. You do not need to create the request yourself.
 | `grantCommands` | ready-to-run CLI commands, one per missing namespace |
 | `adminUrl` | deep link a human/admin opens to approve |
 | `requestId` | pass to `permission_check` / `permission_cancel` to poll or cancel |
-| `resumeTool` | always `"permission_check"` — the tool to poll with |
-| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `unrecorded` |
+| `operation` | app/runtime verb or direct operation, e.g. `capability_command:kv.set` |
+| `resumeTool` | `"permission_check"` for recorded requests; empty for dry-run previews |
+| `requestStatus` | `pending` \| `approved` \| `denied` \| `cancelled` \| `preview` \| `unrecorded` |
 | `message` | one-line human-readable summary |
 
 The local subject is always **`user:local-owner`**.
@@ -132,7 +135,8 @@ admin action. Your job is to surface the request and then poll and retry. Do
 
 3. **Poll, then retry.** Regardless of which approval path a human uses, call
    `permission_check` with the `requestId` until `status` is `approved`, then
-   **retry `invoke`/`app_actions` with the same args** — it now succeeds.
+   **retry the original `invoke`, `app_actions`, or direct resource
+   `capability_command` call with the same args** — it now succeeds.
 
 > Do **not** try `capability_command` with an `auth.*` name to grant yourself.
 > It is refused as trusted-admin-only: `"<name> is trusted-admin-only; use the
