@@ -22,6 +22,7 @@ pub mod cli;
 pub mod edge;
 pub mod ffi;
 pub mod mcp;
+pub mod native;
 pub mod permission;
 pub mod preview;
 pub mod public_authz;

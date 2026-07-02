@@ -12,4 +12,5 @@ mod app;
 mod host;
 mod kv;
 mod model;
+mod native;
 mod net;

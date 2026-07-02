@@ -1,3 +1,7 @@
+pub mod common;
+pub mod desktop;
+pub mod mobile;
+
 pub const PLATFORM_OBSERVE: &str = "native.platform.observe";
 pub const COMPLETE: &str = "native.complete";
 pub const FAIL: &str = "native.fail";
@@ -23,6 +27,25 @@ pub const RESULT_SIZE_INLINE_SMALL: &str = "inline-small";
 pub const RETENTION_KEEP_LAST: &str = "keep-last";
 
 pub const DEFAULT_TERMINAL_RETAIN: usize = 100;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperationCatalogEntry {
+    pub id: &'static str,
+    pub group: &'static str,
+    pub status: &'static str,
+    pub safety: &'static str,
+    pub policy: &'static str,
+    pub result_size: &'static str,
+    pub summary: &'static str,
+}
+
+pub fn operation_catalog() -> Vec<OperationCatalogEntry> {
+    let mut out = Vec::new();
+    out.extend_from_slice(common::CATALOG);
+    out.extend_from_slice(desktop::CATALOG);
+    out.extend_from_slice(mobile::CATALOG);
+    out
+}
 
 pub fn app_callable_commands() -> &'static [&'static str] {
     &[
@@ -60,13 +83,9 @@ pub fn result_size_for_operation(operation_id: &str) -> &'static str {
 }
 
 pub fn default_supported_operations() -> Vec<String> {
-    [
-        OP_CLIPBOARD_WRITE_TEXT,
-        OP_EXTERNAL_OPEN_URL,
-        OP_NOTIFICATION_SHOW,
-        OP_DIALOG_OPEN_FILE,
-    ]
-    .iter()
-    .map(|op| (*op).to_string())
-    .collect()
+    common::CATALOG
+        .iter()
+        .filter(|entry| entry.status == "v1")
+        .map(|entry| entry.id.to_string())
+        .collect()
 }

@@ -15,7 +15,8 @@ mod types;
 
 pub use events::{cancelled_event, completed_event, failed_event, platform_observed_event};
 pub use operations::{
-    OP_CLIPBOARD_WRITE_TEXT, OP_DIALOG_OPEN_FILE, OP_EXTERNAL_OPEN_URL, OP_NOTIFICATION_SHOW,
+    operation_catalog, OperationCatalogEntry, OP_CLIPBOARD_WRITE_TEXT, OP_DIALOG_OPEN_FILE,
+    OP_EXTERNAL_OPEN_URL, OP_NOTIFICATION_SHOW,
 };
 pub use types::{NativePlatformObservation, NativeRequestRecord, NativeRequestStatus, NativeState};
 

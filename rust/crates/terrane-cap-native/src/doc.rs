@@ -57,6 +57,8 @@ pub fn native_doc(include_internal: bool) -> CapabilityDoc {
         constraints: vec![
             "Native operations requested by apps are asynchronous; results are read on a later invoke."
                 .to_string(),
+            "The operation catalog is grouped into common, desktop, and mobile rows; only v1 common rows are registered as app-callable commands."
+                .to_string(),
             "Resource methods record native.requested only; OS work runs in a trusted host drain service."
                 .to_string(),
             "native.supports reads folded platform observation state and never probes a live connector."

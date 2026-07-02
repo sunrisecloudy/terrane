@@ -3018,6 +3018,7 @@ dependencies = [
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-model",
+ "terrane-cap-native",
  "terrane-cap-net",
  "terrane-cap-replica",
  "terrane-cap-wasm-runtime",

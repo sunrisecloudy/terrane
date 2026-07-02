@@ -35,6 +35,7 @@ terrane-cap-harness.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-model.workspace = true
+terrane-cap-native.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
 terrane-cap-wasm-runtime.workspace = true

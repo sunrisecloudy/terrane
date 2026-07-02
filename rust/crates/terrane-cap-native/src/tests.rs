@@ -1,4 +1,6 @@
-use crate::operations::OP_EXTERNAL_OPEN_URL;
+use std::collections::BTreeSet;
+
+use crate::operations::{operation_catalog, OP_EXTERNAL_OPEN_URL};
 use crate::{NativeCapability, NativeRequestStatus};
 use terrane_cap_interface::Capability;
 
@@ -20,4 +22,13 @@ fn manifest_declares_native_resources_and_grants() {
 fn operation_constants_are_stable() {
     assert_eq!(OP_EXTERNAL_OPEN_URL, "external.openUrl");
     assert_eq!(NativeRequestStatus::Pending.as_str(), "pending");
+}
+
+#[test]
+fn operation_catalog_covers_common_desktop_and_mobile_groups() {
+    let groups = operation_catalog()
+        .into_iter()
+        .map(|entry| entry.group)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(groups, BTreeSet::from(["common", "desktop", "mobile"]));
 }
