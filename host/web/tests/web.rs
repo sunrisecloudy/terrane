@@ -547,8 +547,9 @@ fn serves_home_landing_page_at_root() {
     let home = dir.path();
     let (mut child, addr) = spawn_web(home);
 
-    // Landing page: brand hero, the client-side app catalog loader, and the
-    // admin console link. App cards link into the `/apps/{id}/` shell.
+    // Landing page: the shared terrane-host home page, configured for the web
+    // host — catalog fetched from `/apps`, cards linking into the `/apps/{id}/`
+    // shell, admin console in the footer.
     let (status, body) = http(&addr, "GET", "/", None);
     assert_eq!(status, 200, "home body: {body}");
     assert!(body.contains("<h1>Terrane</h1>"), "brand missing: {body}");
@@ -557,16 +558,20 @@ fn serves_home_landing_page_at_root() {
         "dynamic app list mount missing: {body}"
     );
     assert!(
-        body.contains("fetch(\"/apps\""),
-        "catalog loader missing: {body}"
+        body.contains(r#""catalogUrl":"/apps""#),
+        "catalog url config missing: {body}"
     );
     assert!(
-        body.contains("\"/apps/\" + encodeURIComponent(id) + \"/\""),
-        "app links should open the app shell: {body}"
+        body.contains(r#""appHref":"/apps/{id}/""#),
+        "app link template missing: {body}"
     );
     assert!(
-        body.contains("href=\"/__terrane/admin\""),
+        body.contains(r#""adminHref":"/__terrane/admin""#) && body.contains("home-admin-link"),
         "admin console link missing: {body}"
+    );
+    assert!(
+        body.contains("fetch(String(config.catalogUrl)"),
+        "catalog loader missing: {body}"
     );
 
     // The root route stays exact: unknown top-level paths still 404.

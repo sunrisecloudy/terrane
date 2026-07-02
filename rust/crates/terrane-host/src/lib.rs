@@ -21,6 +21,7 @@ pub mod cap_doc;
 pub mod cli;
 pub mod edge;
 pub mod ffi;
+pub mod home;
 mod local_llm;
 pub mod mcp;
 pub mod native;
@@ -30,6 +31,7 @@ pub mod public_authz;
 pub mod sync;
 
 pub use edge::EdgeRunner;
+pub use home::{home_page, HomePageOptions};
 pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 
 /// Release in-process local-model engines. Hosts (and the CLI) call this once

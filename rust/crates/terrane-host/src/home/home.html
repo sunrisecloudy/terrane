@@ -110,6 +110,9 @@
       .footer a:hover {
         text-decoration: underline;
       }
+      .footer a[hidden] {
+        display: none;
+      }
     </style>
   </head>
   <body>
@@ -128,10 +131,11 @@
         </div>
       </main>
       <footer class="footer">
-        <span>Terrane web host</span>
-        <a href="/__terrane/admin">Admin console</a>
+        <span>Terrane</span>
+        <a id="home-admin-link" href="#" hidden>Admin console</a>
       </footer>
     </div>
+    <script type="application/json" id="home-config">__HOME_CONFIG__</script>
     <script>
       __HOME_JS__;
     </script>

@@ -76,6 +76,14 @@ int terrane_builder_generate(TerraneHandle *h, const char *app_id,
  * generated dist path and file count. */
 int terrane_build_app(const char *app_dir, char **out_output, char **out_error);
 
+/* Render the shared landing-page HTML for a host-supplied app catalog.
+ * catalog_json: {"apps":[{"id":"...","name":"...","has_ui":true}, ...]}
+ * (opaque text — the page's script parses it). app_href_template: per-app link
+ * with an {id} placeholder, e.g. "terrane-app://{id}/frame/". Handle-free:
+ * rendering reads nothing from the workspace. */
+int terrane_home_page(const char *catalog_json, const char *app_href_template,
+                      char **out_output, char **out_error);
+
 /* Provision the MLX local-model runtime for the workspace at `home`
  * (null/empty = default home). Blocking: the first run may download the
  * runtime (~hundreds of MB). On success writes a human summary. Handle-free:

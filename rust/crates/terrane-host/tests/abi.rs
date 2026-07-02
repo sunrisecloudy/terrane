@@ -484,6 +484,37 @@ createRoot(document.getElementById("root")!).render(<App label="BMI Lite" />);
 }
 
 #[test]
+fn home_page_abi_renders_catalog_with_script_safe_escaping() {
+    let catalog = r#"{"apps":[{"id":"todo","name":"Todo </script><i>","has_ui":true}]}"#;
+    let catalog_c = CString::new(catalog).unwrap();
+    let template_c = CString::new("terrane-app://{id}/frame/").unwrap();
+
+    unsafe {
+        let mut out: *mut c_char = ptr::null_mut();
+        let mut err: *mut c_char = ptr::null_mut();
+        let code = terrane_home_page(catalog_c.as_ptr(), template_c.as_ptr(), &mut out, &mut err);
+        assert_eq!(code, TERRANE_OK, "err: {:?}", take_c_string(err));
+        let html = take_c_string(out).unwrap();
+        assert!(html.contains("<h1>Terrane</h1>"), "brand missing: {html}");
+        assert!(
+            html.contains(r#""appHref":"terrane-app://{id}/frame/""#),
+            "app href template missing: {html}"
+        );
+        assert!(
+            html.contains(r"Todo \u003c/script>") && !html.contains("Todo </script>"),
+            "catalog must not close the config script element: {html}"
+        );
+
+        // Null args → typed error, no crash.
+        let mut out: *mut c_char = ptr::null_mut();
+        let mut err: *mut c_char = ptr::null_mut();
+        let code = terrane_home_page(ptr::null(), template_c.as_ptr(), &mut out, &mut err);
+        assert_eq!(code, TERRANE_ERR_NULL_ARG);
+        assert!(out.is_null());
+    }
+}
+
+#[test]
 fn null_safety_and_single_use_contracts() {
     unsafe {
         // Null handle → typed error, no crash.
@@ -554,6 +585,7 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "int terrane_preview_invoke(",
         "int terrane_builder_generate(",
         "int terrane_build_app(",
+        "int terrane_home_page(",
         "int terrane_local_model_setup_mlx(",
         "int terrane_local_model_server_status(",
         "int terrane_local_model_server_stop(",
