@@ -10,10 +10,16 @@ use std::time::Duration;
 mod download;
 mod llama;
 mod mlx;
+mod server;
+mod setup;
 
-pub use download::download_model;
+pub use download::{download_model, download_url};
 pub use llama::{LlamaCppBackend, ModelFile};
 pub use mlx::MlxBackend;
+pub use server::{server_status, stop_server, MlxServerStatus};
+pub use setup::{
+    resolve_runtime, setup_mlx, MlxRuntime, RuntimeSource, SetupReport, MLX_LM_VERSION,
+};
 
 /// Errors from loading, generating, or downloading. Typed, no panics.
 #[derive(Debug, Clone, PartialEq, Eq)]
