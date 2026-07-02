@@ -164,7 +164,14 @@ fn default_registry_manifest_is_valid() {
 fn default_registry_exposes_registered_grant_resource_namespaces() {
     assert_eq!(
         grant_resource_namespaces(),
-        vec!["build", "crdt", "kv", "local-model", "relational_db"]
+        vec![
+            "build",
+            "crdt",
+            "kv",
+            "local-model",
+            "native",
+            "relational_db"
+        ]
     );
 }
 

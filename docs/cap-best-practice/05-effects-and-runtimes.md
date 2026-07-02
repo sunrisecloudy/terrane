@@ -65,12 +65,45 @@ new sandbox) is a new capability implementing `run_runtime`; it typically has
 no state, no events, and an empty fold — `terrane-cap-js-runtime` is ~80 lines
 of `lib.rs`.
 
+## Async request queues
+
+Some native/user-mediated work is non-pure but should not be a synchronous
+`Decision::Effect`: a file picker can block for minutes, and JS/WASM resource
+writes may only commit records. Use an explicit request queue only when that
+programming model is the contract.
+
+Lifecycle (`native.external.open-url` style):
+
+1. App code or an app-scoped command validates purely and records
+   `<ns>.requested` with a caller-provided request id, operation id, executor
+   host id, optional origin replica, bounded JSON input, result-size class, and
+   retention class.
+2. A trusted host connector observes support in recorded platform facts and
+   drains pending requests only when an explicit host service is called.
+3. The connector performs the OS work once and dispatches trusted terminal
+   commands such as `<ns>.complete`, `<ns>.fail`, or `<ns>.cancel`.
+4. Apps read terminal results on a later invoke through `ctx.resource.<ns>`.
+
+Rules:
+
+- State clearly that results are not available in the same backend run that
+  requested them.
+- Never run connector work in `fold`, `query`, or `read_resource`; those only
+  read recorded facts.
+- Include executor affinity before sync exists, so future replicated logs do
+  not double-execute the same pending request.
+- Terminal commands must refuse non-pending requests, while fold keeps the
+  first terminal state if duplicate events appear in an old/corrupt log.
+- Keep the first grant-gated surface small. Sensitive operations wait for
+  operation-level selectors or a split namespace.
+- Define retention and result-size classes before shipping event payloads.
+
 ## Choosing between them
 
-| Question | Effect | Runtime |
-|---|---|---|
-| Who is unpredictable? | The world (network, agent, entropy) | The app's own code |
-| What gets recorded? | The result, as *your* event kind | The guest's writes, as the *owning caps'* event kinds |
-| Where does the impl live? | Host `EdgeRunner` arm | Your `run_runtime` |
+| Question | Effect | Runtime | Async queue |
+|---|---|---|---|
+| Who is unpredictable? | The world (network, agent, entropy) | The app's own code | The host/user-mediated OS action |
+| What gets recorded? | The result, as *your* event kind | The guest's writes, as the *owning caps'* event kinds | Request fact, then terminal result/cancel/failure fact |
+| Where does the impl live? | Host `EdgeRunner` arm | Your `run_runtime` | Trusted host connector + explicit drain service |
 
 Next: [06-permissions-and-policy.md](06-permissions-and-policy.md) — who may call all of this.

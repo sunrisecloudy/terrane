@@ -189,6 +189,17 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.local-model.resetChat()` | call |
 | `ctx.resource.local-model.models()` | read |
 
+#### `ctx.resource.native`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.native.clipboardWriteText(requestId, text)` | write |
+| `ctx.resource.native.externalOpenUrl(requestId, url)` | write |
+| `ctx.resource.native.notificationShow(requestId, title, body)` | write |
+| `ctx.resource.native.dialogOpenFile(requestId, optionsJson)` | write |
+| `ctx.resource.native.result(requestId)` | read |
+| `ctx.resource.native.pending()` | read |
+
 #### `ctx.resource.relational_db`
 
 | Method | Kind |

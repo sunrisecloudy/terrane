@@ -210,12 +210,7 @@ final class BmiCalculatorE2ETests: XCTestCase {
   }
 
   func testAppBuilderWaitsForExplicitBuildClick() throws {
-    let repoRoot = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .standardizedFileURL
+    let repoRoot = repoRoot()
     let appSource = try String(
       contentsOf: repoRoot.appendingPathComponent("apps/app-builder/app.js"),
       encoding: .utf8
@@ -234,6 +229,67 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(html.contains(#"value="claude-code""#), html)
     XCTAssertTrue(html.contains(#"value="opencode""#), html)
     XCTAssertTrue(html.contains(#"<span id="status">Ready</span>"#), html)
+  }
+
+  func testPhotoboothBundleUsesCameraOnlyAndIsServedByNativeHost() throws {
+    let fixture = try AppFixture(appId: "photobooth")
+    defer { fixture.cleanUp() }
+
+    let apps = AppCatalog.discover(home: fixture.home)
+    let app = try XCTUnwrap(apps.first { $0.id == "photobooth" })
+    XCTAssertEqual(app.name, "Photobooth")
+    XCTAssertEqual(app.uiURL.lastPathComponent, "index.html")
+
+    let html = try String(contentsOf: app.uiURL, encoding: .utf8)
+    XCTAssertTrue(html.contains("navigator.mediaDevices.getUserMedia"), html)
+    XCTAssertTrue(html.contains("audio: false"), html)
+    XCTAssertTrue(html.contains(#"toDataURL("image/png")"#), html)
+    XCTAssertTrue(html.contains(#"download="photobooth.png""#), html)
+    XCTAssertTrue(html.contains("function clearPhoto()"), html)
+    XCTAssertTrue(html.contains("function hasLiveStream()"), html)
+    XCTAssertTrue(html.contains("URL.createObjectURL"), html)
+    XCTAssertTrue(html.contains("new Blob"), html)
+    XCTAssertTrue(html.contains("URL.revokeObjectURL"), html)
+    XCTAssertTrue(html.contains("video.srcObject = null"), html)
+    XCTAssertTrue(html.contains("setTimeout(function ()"), html)
+    XCTAssertTrue(html.contains("Camera request timed out. Try Start again."), html)
+    XCTAssertTrue(html.contains(#"downloadLink.setAttribute("aria-disabled", "true")"#), html)
+
+    let frameAsset = AppAssetStore.asset(apps: [app], appId: "photobooth", relPath: "")
+    guard case .success(let frame) = frameAsset else {
+      XCTFail("Photobooth frame should be served by terrane-app scheme")
+      return
+    }
+    XCTAssertEqual(frame.contentType, "text/html; charset=utf-8")
+    XCTAssertTrue(
+      String(data: frame.data, encoding: .utf8)?.contains("Camera preview") == true)
+  }
+
+  func testMacHostDeclaresCameraUsageAndPromptsForWebKitCameraCapture() throws {
+    let root = repoRoot()
+    let project = try String(
+      contentsOf: root.appendingPathComponent("host/macos/project.yml"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(project.contains("NSCameraUsageDescription"), project)
+
+    let appDelegate = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/AppDelegate.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(appDelegate.contains("WKUIDelegate"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("WKNavigationDelegate"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("WKDownloadDelegate"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("webView.navigationDelegate = self"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("requestMediaCapturePermissionFor"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("case .camera:"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("decisionHandler(.prompt)"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("case .microphone, .cameraAndMicrophone:"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("decisionHandler(.deny)"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("navigationAction.shouldPerformDownload"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("decisionHandler(.download)"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("download.delegate = self"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("NSSavePanel"), appDelegate)
   }
 
   func testSourceSyntaxHighlighterColorsCodeTokens() throws {
@@ -256,25 +312,34 @@ final class BmiCalculatorE2ETests: XCTestCase {
 }
 
 private struct BmiFixture {
-  let home: URL
+  private let fixture: AppFixture
+
+  var home: URL {
+    fixture.home
+  }
 
   init() throws {
+    fixture = try AppFixture(appId: "bmi-calculator")
+  }
+
+  func cleanUp() {
+    fixture.cleanUp()
+  }
+}
+
+private struct AppFixture {
+  let home: URL
+
+  init(appId: String) throws {
     let fm = FileManager.default
     home = fm.temporaryDirectory.appendingPathComponent(
-      "terrane-bmi-e2e-\(UUID().uuidString)",
+      "terrane-\(appId)-e2e-\(UUID().uuidString)",
       isDirectory: true
     )
-    try fm.createDirectory(
-      at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
+    try fm.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
 
-    let repoRoot = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .standardizedFileURL
-    let source = repoRoot.appendingPathComponent("apps/bmi-calculator", isDirectory: true)
-    let destination = home.appendingPathComponent("apps/bmi-calculator", isDirectory: true)
+    let source = repoRoot().appendingPathComponent("apps/\(appId)", isDirectory: true)
+    let destination = home.appendingPathComponent("apps/\(appId)", isDirectory: true)
     try Self.copyDirectory(from: source, to: destination)
   }
 
@@ -303,6 +368,15 @@ private struct BmiFixture {
       }
     }
   }
+}
+
+private func repoRoot() -> URL {
+  URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .standardizedFileURL
 }
 
 private func runOnMainThread<T>(_ body: () throws -> T) throws -> T {

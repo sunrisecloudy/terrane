@@ -13,4 +13,5 @@ mod host;
 mod kv;
 mod local_model;
 mod model;
+mod native;
 mod net;

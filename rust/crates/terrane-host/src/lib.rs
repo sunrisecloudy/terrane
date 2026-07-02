@@ -23,6 +23,7 @@ pub mod edge;
 pub mod ffi;
 mod local_llm;
 pub mod mcp;
+pub mod native;
 pub mod permission;
 pub mod preview;
 pub mod public_authz;

@@ -26,8 +26,9 @@ Request ──▶ decide ──▶ [Event] ──▶ commit (log) ──▶ broa
        `get`/`get_mut` arms, `default_registry()`) → [03-skeleton-and-wiring.md](03-skeleton-and-wiring.md)
 4. [ ] **Interact without coupling** — bus queries, event subscriptions
        (`app.removed` cleanup!), reserved-KV projections → [04-cross-capability.md](04-cross-capability.md)
-5. [ ] **Effects/runtimes if non-pure** — `Effect` variant + `EdgeRunner` arm;
-       cap-owned event constructors; run-once-record-result → [05-effects-and-runtimes.md](05-effects-and-runtimes.md)
+5. [ ] **Effects/runtimes/queues if non-pure** — `Effect` variant + `EdgeRunner`
+       arm, runtime host writes, or an explicit async request queue; cap-owned
+       event constructors; run-once-record-result → [05-effects-and-runtimes.md](05-effects-and-runtimes.md)
 6. [ ] **Permissions** — resource methods + `namespace_v1` grant spec; classify
        new commands in `public_authz.rs`; audit for bypass side-channels → [06-permissions-and-policy.md](06-permissions-and-policy.md)
 7. [ ] **Tests, four layers** — `src/tests.rs`, `tests/capability.rs`, engine
