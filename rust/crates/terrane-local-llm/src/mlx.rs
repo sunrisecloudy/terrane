@@ -107,11 +107,16 @@ impl MlxBackend {
         let mut writer = stream
             .try_clone()
             .map_err(|e| LlmError::Generate(format!("mlx worker socket setup failed: {e}")))?;
+        let schema = match &request.constraint {
+            Some(Constraint::JsonSchema(schema)) => Some(schema.as_str()),
+            _ => None,
+        };
         let body = serde_json::json!({
             "model": self.model_ref,
             "prompt": prompt,
             "system": request.system,
             "history": request.history,
+            "schema": schema,
             "maxTokens": request.config.max_tokens,
             "temperature": request.config.temperature,
             "seed": request.config.seed,
@@ -125,6 +130,7 @@ impl MlxBackend {
         let mut delta_count: u32 = 0;
         let mut done_tokens: Option<u32> = None;
         let mut finish: Option<String> = None;
+        let mut constrained_mode: Option<String> = None;
         let mut timed_out = false;
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
@@ -155,9 +161,11 @@ impl MlxBackend {
                 WorkerEvent::Done {
                     tokens,
                     finish_reason,
+                    constrained,
                 } => {
                     done_tokens = tokens;
                     finish = finish_reason;
+                    constrained_mode = constrained;
                     break;
                 }
                 WorkerEvent::Error(message) => {
@@ -172,6 +180,7 @@ impl MlxBackend {
             token_count: done_tokens.unwrap_or(delta_count),
             hit_token_budget: finish.as_deref() == Some("length"),
             timed_out,
+            constrained_mode,
         })
     }
 
@@ -233,6 +242,8 @@ struct MlxRun {
     token_count: u32,
     hit_token_budget: bool,
     timed_out: bool,
+    /// `"mask"` when the worker token-mask enforced the schema.
+    constrained_mode: Option<String>,
 }
 
 impl LocalLlm for MlxBackend {
@@ -310,12 +321,15 @@ impl LocalLlm for MlxBackend {
             token_count: run.token_count,
             duration: started.elapsed(),
             stop,
-            // Schemas on mlx are prompt-guided + validated (mask enforcement
-            // lands with the llguidance logits processor).
-            constraint: request
-                .constraint
-                .as_ref()
-                .map(|_| "schema-guided".to_string()),
+            // The resident worker token-mask enforces schemas when llguidance
+            // is installed; otherwise output was prompt-guided + validated.
+            constraint: request.constraint.as_ref().map(|_| {
+                if run.constrained_mode.as_deref() == Some("mask") {
+                    "schema-mask".to_string()
+                } else {
+                    "schema-guided".to_string()
+                }
+            }),
         })
     }
 }
@@ -325,6 +339,7 @@ enum WorkerEvent {
     Done {
         tokens: Option<u32>,
         finish_reason: Option<String>,
+        constrained: Option<String>,
     },
     Error(String),
     Skip,
@@ -347,6 +362,7 @@ fn parse_worker_line(line: &str) -> WorkerEvent {
         return WorkerEvent::Done {
             tokens: value["tokens"].as_u64().and_then(|n| u32::try_from(n).ok()),
             finish_reason: value["finish"].as_str().map(str::to_string),
+            constrained: value["constrained"].as_str().map(str::to_string),
         };
     }
     match value["t"].as_str() {
@@ -457,6 +473,7 @@ fn parse_mlx_output(stdout: &str) -> Result<MlxRun, LlmError> {
         token_count,
         hit_token_budget: false,
         timed_out: false,
+        constrained_mode: None,
     })
 }
 
@@ -494,6 +511,7 @@ pub(crate) enum WorkerEventForTests {
     Done {
         tokens: Option<u32>,
         finish_reason: Option<String>,
+        constrained: Option<String>,
     },
     Error(String),
     Skip,
@@ -506,9 +524,11 @@ pub(crate) fn parse_worker_line_for_tests(line: &str) -> WorkerEventForTests {
         WorkerEvent::Done {
             tokens,
             finish_reason,
+            constrained,
         } => WorkerEventForTests::Done {
             tokens,
             finish_reason,
+            constrained,
         },
         WorkerEvent::Error(message) => WorkerEventForTests::Error(message),
         WorkerEvent::Skip => WorkerEventForTests::Skip,

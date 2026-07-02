@@ -19,6 +19,8 @@ use crate::LlmError;
 pub const MLX_LM_VERSION: &str = "0.31.3";
 /// The uv version bootstrapped when the machine has none.
 pub const UV_VERSION: &str = "0.11.21";
+/// Installed alongside mlx-lm so the worker can token-mask JSON schemas.
+pub const LLGUIDANCE_VERSION: &str = "1.7.6";
 
 /// A usable MLX runtime: where its CLIs live and where that knowledge came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -163,6 +165,8 @@ pub fn setup_mlx(home: &Path, on_line: &mut dyn FnMut(&str)) -> Result<SetupRepo
     install
         .args(["tool", "install", "--force"])
         .arg(format!("mlx-lm=={MLX_LM_VERSION}"))
+        .arg("--with")
+        .arg(format!("llguidance=={LLGUIDANCE_VERSION}"))
         .env("UV_TOOL_DIR", engines.join("uv-tools"))
         .env("UV_TOOL_BIN_DIR", &bin_dir)
         .env("UV_PYTHON_INSTALL_DIR", engines.join("python"))

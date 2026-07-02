@@ -37,16 +37,18 @@ fn worker_lines_parse_deltas_done_and_errors() {
         other => panic!("expected delta, got {other:?}"),
     }
 
-    // Terminal record with engine stats.
+    // Terminal record with engine stats and the constraint mode.
     match parse_worker_line_for_tests(
-        r#"{"done": true, "tokens": 256, "genTps": 380.1, "promptTps": 542.0, "finish": "length"}"#,
+        r#"{"done": true, "tokens": 256, "genTps": 380.1, "promptTps": 542.0, "finish": "length", "constrained": "mask"}"#,
     ) {
         WorkerEventForTests::Done {
             tokens,
             finish_reason,
+            constrained,
         } => {
             assert_eq!(tokens, Some(256));
             assert_eq!(finish_reason.as_deref(), Some("length"));
+            assert_eq!(constrained.as_deref(), Some("mask"));
         }
         other => panic!("expected done, got {other:?}"),
     }

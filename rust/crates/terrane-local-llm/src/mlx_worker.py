@@ -26,12 +26,60 @@ from mlx_lm.sample_utils import make_sampler
 SOCKET_PATH = sys.argv[1]
 
 _models = {}
+_ll_tokenizers = {}
 
 
 def get_model(ref):
     if ref not in _models:
         _models[ref] = load(ref)
     return _models[ref]
+
+
+class LlgProcessor:
+    """Token-mask enforcement for a JSON schema via llguidance: every step,
+    tokens that cannot extend a schema-valid document get -inf bias."""
+
+    def __init__(self, ll_tokenizer, schema):
+        import llguidance
+
+        grammar = llguidance.LLMatcher.grammar_from_json_schema(schema)
+        self.matcher = llguidance.LLMatcher(ll_tokenizer, grammar)
+        self.consumed = None
+
+    def __call__(self, tokens, logits):
+        count = int(tokens.shape[-1])
+        if self.consumed is None:
+            # First call: `tokens` is the prompt; the grammar starts fresh.
+            self.consumed = count
+        elif count > self.consumed:
+            self.matcher.consume_tokens(
+                [int(t) for t in tokens[self.consumed : count].tolist()]
+            )
+            self.consumed = count
+        bias = self.matcher.compute_logit_bias()
+        vocab = int(logits.shape[-1])
+        mask = mx.array(bias[:vocab]).astype(logits.dtype)
+        if vocab > len(bias):
+            pad = mx.full((vocab - len(bias),), float("-inf"), dtype=logits.dtype)
+            mask = mx.concatenate([mask, pad])
+        return logits + mask[None]
+
+
+def schema_processor(model_ref, tokenizer, schema):
+    """Build a masking processor, or None (guided fallback) when llguidance
+    is not installed in this runtime."""
+    if model_ref not in _ll_tokenizers:
+        try:
+            import llguidance.hf
+
+            hf_tokenizer = getattr(tokenizer, "_tokenizer", tokenizer)
+            _ll_tokenizers[model_ref] = llguidance.hf.from_tokenizer(hf_tokenizer)
+        except Exception:
+            _ll_tokenizers[model_ref] = None
+    ll_tokenizer = _ll_tokenizers[model_ref]
+    if ll_tokenizer is None:
+        return None
+    return LlgProcessor(ll_tokenizer, schema)
 
 
 def handle(conn):
@@ -68,6 +116,15 @@ def handle(conn):
             enable_thinking=False,
         )
         sampler = make_sampler(temp=req.get("temperature", 0.0))
+        constrained = None
+        processors = None
+        if req.get("schema"):
+            processor = schema_processor(req["model"], tokenizer, req["schema"])
+            if processor is not None:
+                processors = [processor]
+                constrained = "mask"
+            else:
+                constrained = "guided"
         last = None
         pending = 0
         for resp in stream_generate(
@@ -76,6 +133,7 @@ def handle(conn):
             prompt,
             max_tokens=req.get("maxTokens", 256),
             sampler=sampler,
+            logits_processors=processors,
         ):
             last = resp
             if resp.text:
@@ -95,6 +153,7 @@ def handle(conn):
                 "genTps": last.generation_tps if last else 0.0,
                 "promptTps": last.prompt_tps if last else 0.0,
                 "finish": (last.finish_reason if last else None) or "stop",
+                "constrained": constrained,
             }
         )
     except (BrokenPipeError, ConnectionResetError):
