@@ -249,7 +249,7 @@ fn spawn_web(home: &std::path::Path) -> (Child, String) {
 }
 
 fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (Child, String) {
-    spawn_web_full(home, bind, token, &[])
+    spawn_web_full(home, bind, token, &[], &[])
 }
 
 /// Spawn with `--apps <dir>` dev scanning enabled.
@@ -259,6 +259,7 @@ fn spawn_web_dev(home: &std::path::Path, apps_dir: &std::path::Path) -> (Child, 
         "127.0.0.1:0",
         None,
         &["--apps", apps_dir.to_str().unwrap()],
+        &[],
     )
 }
 
@@ -267,6 +268,7 @@ fn spawn_web_full(
     bind: &str,
     token: Option<&str>,
     extra_args: &[&str],
+    envs: &[(&str, String)],
 ) -> (Child, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_terrane-web"));
     cmd.args(["--addr", bind])
@@ -274,6 +276,9 @@ fn spawn_web_full(
         .env("TERRANE_HOME", home)
         .stderr(Stdio::piped())
         .stdout(Stdio::null());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
     if let Some(token) = token {
         cmd.env("TERRANE_WEB_TOKEN", token);
     }
@@ -537,6 +542,125 @@ function handle(input) {
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// A fake `codex` CLI: writes a valid app bundle to the `--output-last-message`
+/// file after a short delay, so the e2e proves the background job + status
+/// polling flow without a real agent.
+fn write_fake_codex(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let manifest = r#"{\"id\":\"bg-demo\",\"name\":\"BG Demo\",\"version\":\"0.1.0\",\"runtime\":\"js\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[]}"#;
+    let script = format!(
+        r#"#!/bin/sh
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
+  prev="$a"
+done
+sleep 1
+cat > "$out" <<'JSON'
+{{"files":[{{"path":"manifest.json","content":"{manifest}"}},{{"path":"main.js","content":"function handle(input) {{ return \"ok\"; }}"}},{{"path":"index.html","content":"<!doctype html><html><body>bg demo</body></html>"}}]}}
+JSON
+exit 0
+"#
+    );
+    let path = bin_dir.join("codex");
+    std::fs::write(&path, script).unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    bin_dir
+}
+
+#[test]
+fn builder_generate_runs_in_background_and_status_reports_the_draft() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let bin_dir = write_fake_codex(dir.path());
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (mut child, addr) = spawn_web_full(
+        &home,
+        "127.0.0.1:0",
+        None,
+        &[],
+        &[("PATH", path_env)],
+    );
+
+    // Start returns immediately with a running job, not the draft.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/builder/generate",
+        Some(r#"{"id":"bg-demo","name":"BG Demo","prompt":"make a demo","harness":"codex"}"#),
+    );
+    assert_eq!(status, 200, "generate start: {body}");
+    assert!(
+        body.contains(r#""status":"running""#) && body.contains("bg-demo"),
+        "start should report a running job: {body}"
+    );
+
+    // The loop stays free while the harness runs: other routes answer.
+    let (status, _) = http(&addr, "GET", "/healthz", None);
+    assert_eq!(status, 200, "server should serve while generating");
+
+    // Poll until the job commits; the fake harness sleeps ~1s.
+    let mut draft = String::new();
+    for _ in 0..40 {
+        let (status, body) = http(
+            &addr,
+            "POST",
+            "/__terrane/builder/status",
+            Some(r#"{"id":"bg-demo"}"#),
+        );
+        assert_eq!(status, 200, "status poll: {body}");
+        if !body.contains(r#""status":"running""#) {
+            draft = body;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(
+        draft.contains("manifest.json") && draft.contains("bg-demo"),
+        "final status should be the committed draft: {draft}"
+    );
+
+    // Polling again after completion still serves the draft from state.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/builder/status",
+        Some(r#"{"id":"bg-demo"}"#),
+    );
+    assert_eq!(status, 200, "post-completion status: {body}");
+    assert!(body.contains("manifest.json"), "draft from state: {body}");
+
+    // Unknown ids are a 404, not a hang.
+    let (status, _) = http(
+        &addr,
+        "POST",
+        "/__terrane/builder/status",
+        Some(r#"{"id":"ghost"}"#),
+    );
+    assert_eq!(status, 404, "unknown draft should 404");
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // The committed records replay: reopen the log and check the draft.
+    let core = Core::open(home.join("log.bin")).unwrap();
+    assert!(
+        core.state().builder.drafts.contains_key("bg-demo"),
+        "draft persisted to the log"
+    );
+    assert!(core.replay_matches().unwrap(), "replay identity holds");
 }
 
 #[test]

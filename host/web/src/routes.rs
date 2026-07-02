@@ -26,6 +26,17 @@ struct BuilderGenerateRequest {
 }
 
 #[derive(DeJson)]
+struct BuilderStatusRequest {
+    id: String,
+}
+
+#[derive(SerJson)]
+struct BuilderJobStatus {
+    id: String,
+    status: String,
+}
+
+#[derive(DeJson)]
 struct PreviewDecisionRequest {
     #[nserde(default)]
     reason: String,
@@ -61,6 +72,7 @@ struct DecisionContext<'a> {
 pub struct RouteState<'a> {
     pub previews: &'a mut PreviewStore,
     pub admin_session: &'a mut crate::admin::AdminSessionState,
+    pub builder_jobs: &'a mut crate::builder_jobs::BuilderJobs,
 }
 
 #[derive(Clone, Copy)]
@@ -81,6 +93,7 @@ pub fn route(
     let RouteState {
         previews,
         admin_session,
+        builder_jobs,
     } = state;
     let RouteConfig {
         require_auth,
@@ -173,7 +186,12 @@ pub fn route(
             crate::admin::revoke(core, admin_session, request)
         }
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => crate::admin::page(),
-        (Method::Post, ["__terrane", "builder", "generate"]) => builder_generate(core, request),
+        (Method::Post, ["__terrane", "builder", "generate"]) => {
+            builder_generate(core, builder_jobs, request)
+        }
+        (Method::Post, ["__terrane", "builder", "status"]) => {
+            builder_status(core, builder_jobs, request)
+        }
         (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),
         (Method::Get, ["__terrane", "previews", id, "frame"]) => serve_preview(previews, id, ""),
         (Method::Get, ["__terrane", "previews", id, "frame", rest @ ..]) => {
@@ -444,8 +462,15 @@ fn is_admin_control_route(method: &Method, segs: &[&str]) -> bool {
     )
 }
 
-/// `POST /__terrane/builder/generate` - generate a draft app through core.
-fn builder_generate(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
+/// `POST /__terrane/builder/generate` - start generating a draft app in the
+/// background and return `{id, status: "running"}` immediately. The harness
+/// runs minutes; holding the single-threaded request loop for it would stall
+/// every other request. Poll `/__terrane/builder/status` for the draft.
+fn builder_generate(
+    core: &mut terrane_host::HostCore,
+    builder_jobs: &mut crate::builder_jobs::BuilderJobs,
+    request: &mut Request,
+) -> Resp {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return json_error(400, "cannot read request body");
@@ -454,16 +479,64 @@ fn builder_generate(core: &mut terrane_host::HostCore, request: &mut Request) ->
         Ok(req) => req,
         Err(e) => return json_error(400, &format!("bad builder body: {e}")),
     };
-    match terrane_host::generate_app_json(
-        core,
-        &parsed.id,
-        &parsed.name,
-        &parsed.prompt,
-        Some(selected_harness(&parsed.harness, &parsed.agent)),
-    ) {
-        Ok(json) => Response::from_data(json.into_bytes())
+    let draft_id = parsed.id.trim().to_string();
+    let harness = selected_harness(&parsed.harness, &parsed.agent).trim();
+    let harness = if harness.is_empty() { "codex" } else { harness };
+
+    // Fail fast on invalid requests: decide-level validation without running
+    // the effect. A valid effectful command reports "dryRun unsupported";
+    // anything else is a real validation error.
+    let args = [
+        "--harness".to_string(),
+        harness.to_string(),
+        draft_id.clone(),
+        parsed.id.clone(),
+        parsed.name.clone(),
+        parsed.prompt.clone(),
+    ];
+    match terrane_host::dry_run_on_core(core, "harness.generate-app", &args) {
+        Err(e) if e.contains("dryRun unsupported") => {}
+        Err(e) => return json_error(500, &e),
+        Ok(_) => {}
+    }
+
+    if !builder_jobs.running(&draft_id) {
+        builder_jobs.start(&draft_id, &parsed.id, &parsed.name, harness, &parsed.prompt);
+    }
+    json_ok(&BuilderJobStatus {
+        id: draft_id,
+        status: "running".into(),
+    })
+}
+
+/// `POST /__terrane/builder/status` `{id}` — poll a background generation. The
+/// poll that finds the worker finished commits its records through an ordinary
+/// `harness.generate-app` dispatch, then returns the draft JSON.
+fn builder_status(
+    core: &mut terrane_host::HostCore,
+    builder_jobs: &mut crate::builder_jobs::BuilderJobs,
+    request: &mut Request,
+) -> Resp {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed: BuilderStatusRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad builder status body: {e}")),
+    };
+
+    match builder_jobs.poll(core, parsed.id.trim()) {
+        crate::builder_jobs::JobPoll::Running => json_ok(&BuilderJobStatus {
+            id: parsed.id.trim().to_string(),
+            status: "running".into(),
+        }),
+        crate::builder_jobs::JobPoll::Done(json) => Response::from_data(json.into_bytes())
             .with_header(header("Content-Type", "application/json")),
-        Err(e) => json_error(500, &e),
+        crate::builder_jobs::JobPoll::Failed(e) => json_error(500, &e),
+        crate::builder_jobs::JobPoll::Unknown => {
+            json_error(404, &format!("no such builder job or draft: {}", parsed.id))
+        }
     }
 }
 

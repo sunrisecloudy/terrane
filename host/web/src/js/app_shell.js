@@ -223,6 +223,7 @@
     if (kind === "invoke") return "/apps/" + encodeURIComponent(currentId) + "/invoke";
     if (kind === "preview") return "/__terrane/previews";
     if (kind === "builderGenerate") return "/__terrane/builder/generate";
+    if (kind === "builderStatus") return "/__terrane/builder/status";
     return "";
   }
 

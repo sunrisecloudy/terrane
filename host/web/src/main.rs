@@ -14,6 +14,7 @@
 
 mod admin;
 mod args;
+mod builder_jobs;
 mod dev_apps;
 mod home;
 mod http;
@@ -37,7 +38,8 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut core = match terrane_host::open() {
+    let staging = terrane_host::HarnessStaging::default();
+    let mut core = match terrane_host::open_with_staging(staging.clone()) {
         Ok(core) => core,
         Err(e) => {
             eprintln!("terrane-web: {e}");
@@ -73,12 +75,14 @@ fn main() {
 
     let mut previews = terrane_host::PreviewStore::new();
     let mut admin_session = admin::AdminSessionState::default();
+    let mut builder_jobs = builder_jobs::BuilderJobs::new(staging);
     for mut request in server.incoming_requests() {
         let response = routes::route(
             &mut core,
             routes::RouteState {
                 previews: &mut previews,
                 admin_session: &mut admin_session,
+                builder_jobs: &mut builder_jobs,
             },
             &mut request,
             routes::RouteConfig {

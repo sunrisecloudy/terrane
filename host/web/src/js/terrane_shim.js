@@ -2,13 +2,15 @@
   var invokeUrl = __INVOKE_URL_JSON__;
   var previewUrl = __PREVIEW_URL_JSON__;
   var builderUrl = __BUILDER_URL_JSON__;
+  var builderStatusUrl = __BUILDER_STATUS_URL_JSON__;
   var bridgeSeq = 0;
   var bridgePending = {};
   var bridgeTargetOrigin = window.location.protocol + "//" + window.location.host;
-  // Generation runs a real agent CLI and takes minutes; keep its bridge wait
-  // above the server-side harness timeout (default 180s) so the server's own
-  // error reaches the app instead of a premature bridge timeout.
-  var bridgeTimeoutsMs = { invoke: 30000, preview: 30000, builderGenerate: 300000 };
+  var bridgeTimeoutsMs = { invoke: 30000, preview: 30000 };
+  // Generation runs in the background on the host; the start request returns
+  // immediately and the shim polls status until the draft is committed.
+  var BUILDER_POLL_MS = 2000;
+  var BUILDER_DEADLINE_MS = 900000;
 
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
@@ -62,9 +64,31 @@
       )
         .then(function (j) {
           if (j.error) throw new Error(j.error);
+          if (j.status === "running" && j.id && builderStatusUrl) {
+            return waitForBuilderDraft(j.id, Date.now() + BUILDER_DEADLINE_MS);
+          }
           return j;
         });
     };
+  }
+
+  function waitForBuilderDraft(id, deadline) {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, BUILDER_POLL_MS);
+    })
+      .then(function () {
+        return postJson("builderStatus", builderStatusUrl, { id: id });
+      })
+      .then(function (j) {
+        if (j.error) throw new Error(j.error);
+        if (j.status === "running") {
+          if (Date.now() > deadline) {
+            throw new Error("Terrane app generation timed out");
+          }
+          return waitForBuilderDraft(id, deadline);
+        }
+        return j;
+      });
   }
 
   function postJson(kind, url, body) {
