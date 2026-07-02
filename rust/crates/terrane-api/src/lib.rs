@@ -175,7 +175,8 @@ ui is a string file path (omit it for backend-only apps), never an object.\n\
 UI contract: browser code calls window.terrane.invoke(\"verb\",\"arg1\",\"arg2\") with positional string args and awaits the backend's string reply. Do not pass an args array or an object.\n\
 Permissions: a result with structuredContent.type==\"permission_required\" is expected, not failure. NEVER call capability_command with auth.* or grant/approve commands. \
 Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId, then retry the original call unchanged.\n\
-Recovery: every tool result names your next step in nextToolCall. If you lose a draftId, call app_build_list.";
+Recovery: every tool result names your next step in nextToolCall. If you lose a draftId, call app_build_list, then validate and commit; only read files validation complains about.\n\
+Speed: a new withUi draft is a WORKING shell. Do not read scaffold files back — write your complete main.js immediately, keep style.css, and edit only the REPLACE-marked ui.js functions. Keep the __actions__ verb in main.js so verb discovery works after install.";
 
 /// An MCP tool descriptor: its name, a one-line description, and its input
 /// JSON Schema (as a JSON string — the MCP host drops it verbatim into the

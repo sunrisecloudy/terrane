@@ -1324,6 +1324,98 @@ fn app_build_errors_carry_structured_recovery() {
 }
 
 #[test]
+fn app_build_get_flags_unmodified_scaffold_files() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"pristine-demo","name":"Pristine Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let get_all = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"all","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let all = structured_content(&get_all);
+    assert!(
+        all["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["unmodifiedScaffold"] == true),
+        "fresh draft files are all pristine: {get_all}"
+    );
+    assert!(
+        get_all.contains("Do not read files marked unmodifiedScaffold"),
+        "summary should steer away from scaffold reads: {get_all}"
+    );
+
+    let get_one = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"one","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{},"path":"style.css"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        get_one.contains("unmodified scaffold shell"),
+        "pristine single-file get should carry the note: {get_one}"
+    );
+
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":"function handle(input){{if((input[0]||'')==='__actions__'){{return JSON.stringify({{actions:[]}});}}return 'ok';}}"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let after = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"after","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{},"path":"main.js"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        structured_content(&after)["unmodifiedScaffold"],
+        false,
+        "edited file is no longer pristine: {after}"
+    );
+}
+
+#[test]
+fn backend_without_actions_verb_warns() {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    super::check_js_backend_contract(
+        "main.js",
+        "function handle(input) { var verb = input[0] || \"\"; return verb; }",
+        &mut errors,
+        &mut warnings,
+    );
+    assert!(errors.is_empty(), "custom handle is valid: {errors:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("__actions__")),
+        "missing __actions__ should warn: {warnings:?}"
+    );
+}
+
+#[test]
 fn stale_drafts_are_evicted_beyond_cap() {
     let _guard = env_lock().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();

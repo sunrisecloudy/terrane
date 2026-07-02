@@ -2551,6 +2551,7 @@ fn app_build_get_json(draft_id: &str, path: &str, include_content: bool) -> Resu
     let bundle = draft_bundle_dir(draft_id)?;
     ensure_draft_exists(draft_id, &bundle)?;
     let files = read_inline_bundle_files(&bundle)?;
+    let initial = read_initial_hashes(draft_id);
     if !path.trim().is_empty() {
         if !is_safe_relative_path(path) {
             return Err(format!(
@@ -2560,27 +2561,40 @@ fn app_build_get_json(draft_id: &str, path: &str, include_content: bool) -> Resu
         let Some(file) = files.iter().find(|file| file.path == path) else {
             return Err(format!("draft {draft_id} has no file {path:?}"));
         };
+        let pristine = is_unmodified_scaffold(&initial, file);
         let mut value = json!({
             "draftId": draft_id,
             "file": file_summary(file),
+            "unmodifiedScaffold": pristine,
             "bundleHash": validation_token(&files),
             "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": path, "content": "complete file content"}}
         });
+        if pristine {
+            value["note"] = json!("This file is still the unmodified scaffold shell. You do not need its content — the contract from app_build_start summarizes it. Write your main.js with app_build_put_file first.");
+        }
         if include_content {
             value["content"] = json!(file.content);
         }
         return Ok(value.to_string());
     }
+    let summaries: Vec<Value> = files
+        .iter()
+        .map(|file| {
+            let mut summary = file_summary(file);
+            summary["unmodifiedScaffold"] = json!(is_unmodified_scaffold(&initial, file));
+            summary
+        })
+        .collect();
     Ok(json!({
         "draftId": draft_id,
-        "files": file_summaries(&files),
+        "files": summaries,
         "bundleHash": validation_token(&files),
         "metadata": read_draft_metadata(draft_id).unwrap_or_else(|_| json!({})),
         "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": draft_id}},
         "next": [
-            "Use app_build_get with includeContent:true and a path if you need one file's current content.",
-            "Use app_build_put_file to replace one file.",
-            "Call app_build_validate when ready."
+            "Do not read files marked unmodifiedScaffold:true — they are the working shell and the contract from app_build_start summarizes them. Write your main.js first.",
+            "Use app_build_get with includeContent:true and a path only for files you already changed.",
+            "Use app_build_put_file to replace files, then call app_build_validate."
         ]
     })
     .to_string())
@@ -2780,10 +2794,11 @@ fn app_build_list_json() -> Result<String, String> {
     let newest = drafts[0].get("draftId").cloned().unwrap_or(Value::Null);
     Ok(json!({
         "drafts": drafts,
-        "nextToolCall": {"tool": "app_build_get", "arguments": {"draftId": newest}},
+        "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": newest}},
         "next": [
-            "Drafts are newest-first. Pick your draftId, then continue with app_build_get, app_build_put_file, or app_build_validate.",
-            "Discard drafts you no longer need with app_build_discard."
+            "Drafts are newest-first. Resume by calling app_build_validate with your draftId; if it returns valid:true, commit immediately.",
+            "Only read files that validation complains about (app_build_get); do not re-read unmodified scaffold files.",
+            "Continue editing with app_build_put_file; discard drafts you no longer need with app_build_discard."
         ]
     })
     .to_string())
@@ -3177,6 +3192,13 @@ fn check_js_backend_contract(
             break;
         }
     }
+    // Models that replace main.js often drop the __actions__ branch, which
+    // breaks app_actions/verb discovery for every client after install.
+    if defines_handle && !defines_actions && !content.contains("__actions__") {
+        warnings.push(format!(
+            "{path} does not handle the \"__actions__\" verb, so app_actions/verb discovery will return \"unknown verb\" after install. Add a branch: if (verb === \"__actions__\") return JSON.stringify({{app: \"<id>\", title: \"<name>\", actions: [{{verb, summary, args: [{{name, required}}], returns}}, ...]}});"
+        ));
+    }
 }
 
 fn write_inline_bundle(dest: &std::path::Path, files: &[InlineFile]) -> Result<(), String> {
@@ -3208,8 +3230,38 @@ fn create_build_draft(kind: &str, files: &[InlineFile]) -> Result<String, String
     let bundle = draft.join("bundle");
     write_inline_bundle(&bundle, files)?;
     write_draft_metadata(&draft_id, kind, files)?;
+    write_initial_hashes(&draft_id, files)?;
     evict_stale_drafts();
     Ok(draft_id)
+}
+
+/// The per-file hashes at draft creation, written once and never updated —
+/// lets app_build_get tell a model "this file is still the unmodified
+/// scaffold; you don't need its content". Run-3 evals showed stall-prone
+/// models burning their whole window reading every pristine shell file.
+fn write_initial_hashes(draft_id: &str, files: &[InlineFile]) -> Result<(), String> {
+    let mut map = serde_json::Map::new();
+    for file in files {
+        map.insert(file.path.clone(), json!(stable_hash_text(&file.content)));
+    }
+    let path = draft_dir(draft_id)?.join("initial.json");
+    std::fs::write(&path, Value::Object(map).to_string())
+        .map_err(|e| format!("write draft initial hashes {}: {e}", path.display()))
+}
+
+fn read_initial_hashes(draft_id: &str) -> Value {
+    draft_dir(draft_id)
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("initial.json")).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+fn is_unmodified_scaffold(initial: &Value, file: &InlineFile) -> bool {
+    initial
+        .get(&file.path)
+        .and_then(Value::as_str)
+        .is_some_and(|hash| hash == stable_hash_text(&file.content))
 }
 
 /// Best-effort eviction of the oldest drafts beyond MAX_DRAFTS — hygiene must

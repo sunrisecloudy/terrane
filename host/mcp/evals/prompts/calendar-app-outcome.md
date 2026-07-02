@@ -27,8 +27,9 @@ Core experience:
   - "Show meetings with work tags in the next 14 days"
 - Custom views should render inside the app, with a readable title, the
   interpreted filter, grouped results, and an empty state when nothing matches.
-- Include enough realistic sample events across recent and upcoming months that
-  the custom-view box is useful immediately.
+- Include enough realistic sample events that the custom-view box is useful
+  immediately: spread them across at least the past six months and the
+  upcoming weeks, covering weekdays and weekends alike.
 - Changes should persist when I leave and reopen the app.
 - Keep the UI polished: dense enough to manage a calendar, clear controls,
   good empty/loading/error states, and no marketing-style landing page.
