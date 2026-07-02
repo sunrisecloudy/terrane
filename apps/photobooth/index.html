@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Photobooth</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --ink: CanvasText;
+        --muted: color-mix(in srgb, CanvasText 62%, transparent);
+        --line: color-mix(in srgb, CanvasText 14%, transparent);
+        --accent: #0f7b6c;
+        --accent-strong: #1057c8;
+        --warm: #b15f2d;
+        --surface: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background:
+          linear-gradient(135deg, color-mix(in srgb, Canvas 94%, var(--accent) 6%), Canvas 42%),
+          Canvas;
+        color: var(--ink);
+      }
+
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(360px, 1fr) 280px;
+        gap: 18px;
+        width: min(1120px, calc(100vw - 32px));
+        min-height: 100vh;
+        margin: 0 auto;
+        padding: 22px 0;
+      }
+
+      main {
+        min-width: 0;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        gap: 14px;
+      }
+
+      header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        line-height: 1.15;
+        font-weight: 700;
+      }
+
+      .status {
+        min-height: 20px;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: right;
+      }
+
+      .stage {
+        position: relative;
+        overflow: hidden;
+        min-height: 420px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background:
+          linear-gradient(45deg, #c8c8c8 25%, transparent 25%),
+          linear-gradient(-45deg, #c8c8c8 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, #c8c8c8 75%),
+          linear-gradient(-45deg, transparent 75%, #c8c8c8 75%),
+          #f7f7f7;
+        background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+        background-size: 20px 20px;
+      }
+
+      video,
+      canvas,
+      .photo {
+        display: block;
+        width: 100%;
+        height: 100%;
+        min-height: 420px;
+        object-fit: cover;
+        background: #111;
+      }
+
+      video {
+        transform: scaleX(-1);
+      }
+
+      canvas {
+        display: none;
+      }
+
+      .photo {
+        display: none;
+      }
+
+      .empty {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        color: color-mix(in srgb, #111 58%, transparent);
+        text-align: center;
+        font-size: 15px;
+        background:
+          radial-gradient(circle at 50% 42%, #ffffff 0 16%, transparent 17%),
+          linear-gradient(120deg, #e8edf2, #f6efe8);
+      }
+
+      aside {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        min-width: 0;
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: color-mix(in srgb, Canvas 88%, CanvasText 4%);
+      }
+
+      .label {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 650;
+        text-transform: uppercase;
+      }
+
+      .controls,
+      .download-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      button,
+      .download {
+        min-height: 36px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 0 12px;
+        background: ButtonFace;
+        color: ButtonText;
+        font: inherit;
+        text-decoration: none;
+        cursor: pointer;
+      }
+
+      .primary {
+        border-color: transparent;
+        background: var(--accent-strong);
+        color: #fff;
+      }
+
+      .capture {
+        background: var(--accent);
+      }
+
+      .warm {
+        background: color-mix(in srgb, var(--warm) 14%, ButtonFace);
+      }
+
+      button:disabled,
+      .download[aria-disabled="true"] {
+        opacity: 0.45;
+        cursor: default;
+        pointer-events: none;
+      }
+
+      .metric {
+        display: flex;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 8px 0;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+      }
+
+      .metric:first-of-type {
+        border-top: 0;
+      }
+
+      .metric strong {
+        color: var(--ink);
+        font-weight: 600;
+      }
+
+      @media (max-width: 780px) {
+        .shell {
+          grid-template-columns: 1fr;
+          width: min(100vw - 24px, 720px);
+          padding: 12px 0;
+        }
+
+        aside {
+          order: -1;
+        }
+
+        header {
+          align-items: start;
+          flex-direction: column;
+        }
+
+        .status {
+          text-align: left;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <main>
+        <header>
+          <h1>Photobooth</h1>
+          <div id="status" class="status">Ready</div>
+        </header>
+
+        <section class="stage" aria-label="camera preview">
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="canvas"></canvas>
+          <img id="photo" class="photo" alt="Captured photo">
+          <div id="empty" class="empty">Camera preview</div>
+        </section>
+      </main>
+
+      <aside>
+        <section class="panel">
+          <span class="label">Camera</span>
+          <div class="controls">
+            <button id="start" class="primary" type="button">Start</button>
+            <button id="capture" class="primary capture" type="button" disabled>Take Photo</button>
+            <button id="retake" class="warm" type="button" disabled>Retake</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <span class="label">Photo</span>
+          <div class="download-row">
+            <a id="download" class="download" href="#" download="photobooth.png" aria-disabled="true">Download PNG</a>
+          </div>
+        </section>
+
+        <section class="panel">
+          <span class="label">Session</span>
+          <div class="metric">
+            <span>Camera</span>
+            <strong id="camera-state">Off</strong>
+          </div>
+          <div class="metric">
+            <span>Photo</span>
+            <strong id="photo-state">None</strong>
+          </div>
+          <div class="metric">
+            <span>Size</span>
+            <strong id="size-state">-</strong>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <script>
+      var stream = null;
+      var video = document.getElementById("video");
+      var canvas = document.getElementById("canvas");
+      var photo = document.getElementById("photo");
+      var empty = document.getElementById("empty");
+      var startButton = document.getElementById("start");
+      var captureButton = document.getElementById("capture");
+      var retakeButton = document.getElementById("retake");
+      var downloadLink = document.getElementById("download");
+      var statusEl = document.getElementById("status");
+      var cameraState = document.getElementById("camera-state");
+      var photoState = document.getElementById("photo-state");
+      var sizeState = document.getElementById("size-state");
+
+      function setStatus(text) {
+        statusEl.textContent = text;
+      }
+
+      function setPhoto(dataUrl, width, height) {
+        photo.src = dataUrl;
+        photo.style.display = "block";
+        video.style.display = "none";
+        empty.style.display = "none";
+        downloadLink.href = dataUrl;
+        downloadLink.setAttribute("aria-disabled", "false");
+        retakeButton.disabled = false;
+        photoState.textContent = "Captured";
+        sizeState.textContent = width + " x " + height;
+      }
+
+      function showPreview() {
+        photo.style.display = "none";
+        video.style.display = stream ? "block" : "none";
+        empty.style.display = stream ? "none" : "grid";
+        retakeButton.disabled = true;
+      }
+
+      function setCameraReady(ready) {
+        captureButton.disabled = !ready;
+        cameraState.textContent = ready ? "On" : "Off";
+        startButton.textContent = ready ? "Restart" : "Start";
+      }
+
+      function stopStream() {
+        if (!stream) return;
+        stream.getTracks().forEach(function (track) {
+          track.stop();
+        });
+        stream = null;
+        setCameraReady(false);
+      }
+
+      function startCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setStatus("Camera API unavailable in this host");
+          return;
+        }
+        setStatus("Opening camera...");
+        stopStream();
+        navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 960 },
+            facingMode: "user"
+          },
+          audio: false
+        }).then(function (mediaStream) {
+          stream = mediaStream;
+          video.srcObject = stream;
+          setCameraReady(true);
+          showPreview();
+          setStatus("Camera ready");
+        }).catch(function (error) {
+          setCameraReady(false);
+          showPreview();
+          setStatus(error && error.message ? error.message : String(error));
+        });
+      }
+
+      function capturePhoto() {
+        if (!stream || !video.videoWidth || !video.videoHeight) return;
+        var width = video.videoWidth;
+        var height = video.videoHeight;
+        canvas.width = width;
+        canvas.height = height;
+        var ctx = canvas.getContext("2d");
+        ctx.save();
+        ctx.translate(width, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(video, 0, 0, width, height);
+        ctx.restore();
+        var dataUrl = canvas.toDataURL("image/png");
+        setPhoto(dataUrl, width, height);
+        setStatus("Photo captured");
+      }
+
+      startButton.addEventListener("click", startCamera);
+      captureButton.addEventListener("click", capturePhoto);
+      retakeButton.addEventListener("click", function () {
+        showPreview();
+        setStatus(stream ? "Camera ready" : "Ready");
+      });
+      window.addEventListener("pagehide", stopStream);
+    </script>
+  </body>
+</html>

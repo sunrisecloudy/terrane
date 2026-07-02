@@ -3,7 +3,7 @@ import WebKit
 
 /// The macOS host window: a native app switcher over plain HTML app UIs, with a
 /// WKWebView stage and a Terrane bridge scoped to the selected app.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
   private var window: NSWindow!
   private var webView: WKWebView!
   private var sourceEditor: SourceEditorPanel!
@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     self.previewSchemeHandler = previewSchemeHandler
     config.setURLSchemeHandler(previewSchemeHandler, forURLScheme: PreviewSchemeHandler.scheme)
     webView = WKWebView(frame: .zero, configuration: config)
+    webView.uiDelegate = self
 
     window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
@@ -63,6 +64,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationWillTerminate(_ notification: Notification) {
     bridge?.close()
+  }
+
+  @available(macOS 12.0, *)
+  func webView(
+    _ webView: WKWebView,
+    requestMediaCapturePermissionFor origin: WKSecurityOrigin,
+    initiatedByFrame frame: WKFrameInfo,
+    type: WKMediaCaptureType,
+    decisionHandler: @escaping (WKPermissionDecision) -> Void
+  ) {
+    switch type {
+    case .camera:
+      decisionHandler(.prompt)
+    case .microphone, .cameraAndMicrophone:
+      decisionHandler(.deny)
+    @unknown default:
+      decisionHandler(.deny)
+    }
   }
 
   private func buildContentView() -> NSView {
