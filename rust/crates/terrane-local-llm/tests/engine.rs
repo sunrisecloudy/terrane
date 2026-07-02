@@ -66,6 +66,8 @@ fn resident_mlx_server_serves_warm_asks_and_stops() {
     let mut backend = MlxBackend::load(home, "mlx-community/Qwen3.5-0.8B-MLX-4bit").unwrap();
     let request = GenerateRequest {
         prompt: "Reply with one word: hello".into(),
+        system: None,
+        history: Vec::new(),
         constraint: None,
         config: GenerationConfig {
             max_tokens: 16,
@@ -113,6 +115,8 @@ fn generates_streamed_text_from_real_weights() {
         .generate(
             &GenerateRequest {
                 prompt: "Reply with one short sentence: what is 2+2?".into(),
+                system: None,
+                history: Vec::new(),
                 constraint: None,
                 config: GenerationConfig {
                     max_tokens: 64,
@@ -151,6 +155,8 @@ fn schema_constrained_generation_returns_matching_json() {
         .generate(
             &GenerateRequest {
                 prompt: "What is the capital of France? Answer as JSON.".into(),
+                system: None,
+                history: Vec::new(),
                 constraint: Some(Constraint::JsonSchema(schema.into())),
                 config: GenerationConfig {
                     max_tokens: 128,

@@ -63,6 +63,9 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
             "Model specs are global machine configuration; transcripts are app-scoped and are \
              dropped when the app is removed."
                 .to_string(),
+            "--continue rebuilds the conversation from the app's recorded ok turns with the \
+             same model (most recent 8), oldest first; --system prepends a system message."
+                .to_string(),
             "register/rm validate purely; the weights file is checked at inference time, at the \
              edge."
                 .to_string(),
@@ -233,6 +236,16 @@ fn local_model_commands() -> Vec<CommandDoc> {
                     "model_id",
                 ),
                 param(
+                    "--system",
+                    "Optional system prompt rendered ahead of the conversation.",
+                    "string",
+                ),
+                param(
+                    "--continue",
+                    "Feed back this app+model's recorded turns (most recent 8) as context.",
+                    "flag",
+                ),
+                param(
                     "--schema",
                     "Optional JSON schema (object) the output must satisfy.",
                     "json",
@@ -318,11 +331,17 @@ fn local_model_events() -> Vec<EventDoc> {
                     "Recorded model output (possibly partial on failure).",
                     "string",
                 ),
+                param("system", "System prompt used, when given.", "string?"),
+                param(
+                    "continued",
+                    "Whether prior recorded turns were fed back as context.",
+                    "bool",
+                ),
                 param("ok", "Whether generation completed cleanly.", "bool"),
                 param(
-                    "constrained",
-                    "Whether a schema/grammar constrained decoding.",
-                    "bool",
+                    "constraint",
+                    "schema-mask, schema-guided, or grammar when decoding was constrained.",
+                    "string?",
                 ),
                 param("token_count", "Tokens generated.", "u32"),
                 param("duration_ms", "Wall-clock generation time.", "u64"),

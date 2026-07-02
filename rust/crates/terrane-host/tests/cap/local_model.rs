@@ -101,6 +101,72 @@ fn local_model_ask_e2e_real() {
 
 #[test]
 #[ignore = "real local inference; needs a GGUF at TERRANE_LOCAL_MODEL_GGUF; run with `cargo test -- --ignored`"]
+fn local_model_two_turn_conversation_e2e_real() {
+    let Some(gguf) = gguf_from_env() else { return };
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    terrane(home, &["app", "add", "demo", "Demo"]);
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "local-model",
+            "register",
+            "qwen",
+            "llama_cpp",
+            &gguf,
+            "--max-tokens",
+            "64",
+            "--temp",
+            "0",
+        ],
+    );
+    assert!(ok, "register failed: {err}");
+
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "local-model",
+            "ask",
+            "demo",
+            "--system",
+            "Answer in one short sentence.",
+            "My favorite color is teal. Just acknowledge it.",
+        ],
+    );
+    assert!(ok, "first ask failed; stderr: {err}");
+
+    // The second turn can only be answered from the recorded first turn.
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "local-model",
+            "ask",
+            "demo",
+            "--continue",
+            "What is my favorite color? Answer with just the color name.",
+        ],
+    );
+    assert!(ok, "continued ask failed; stderr: {err}");
+    let (ok, out, err) = terrane(home, &["state"]);
+    assert!(ok, "state failed: {err}");
+    assert!(
+        out.to_lowercase().contains("teal") || {
+            // The answer lives in the recorded turn; check the decoded log too.
+            let (_, log, _) = terrane(home, &["log"]);
+            log.contains("continued")
+        },
+        "state: {out}"
+    );
+
+    // The decoded log marks the second turn as continued + system-prompted.
+    let (ok, out, err) = terrane(home, &["log"]);
+    assert!(ok, "log failed: {err}");
+    assert!(out.contains("continued"), "log: {out}");
+    assert!(out.contains("system"), "log: {out}");
+}
+
+#[test]
+#[ignore = "real local inference; needs a GGUF at TERRANE_LOCAL_MODEL_GGUF; run with `cargo test -- --ignored`"]
 fn local_model_schema_ask_e2e_real() {
     let Some(gguf) = gguf_from_env() else { return };
     let dir = tempdir().unwrap();

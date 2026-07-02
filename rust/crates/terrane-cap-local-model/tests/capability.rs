@@ -105,23 +105,28 @@ fn register_ask_and_cascade_through_the_trait_surface() {
             app: "demo".into(),
             model: "qwen".into(),
             prompt: "say hi".into(),
+            system: None,
+            history: Vec::new(),
             schema: None,
             grammar: None,
         })
     );
 
     // A recorded response folds into the app's transcript…
-    let responded = terrane_cap_local_model::responded_event(
-        "demo",
-        "qwen",
-        "say hi",
-        "hello".into(),
-        true,
-        false,
-        2,
-        15,
-    )
-    .unwrap();
+    let responded =
+        terrane_cap_local_model::responded_event(&terrane_cap_local_model::RespondedRecord {
+            app: "demo".into(),
+            model: "qwen".into(),
+            prompt: "say hi".into(),
+            system: None,
+            continued: false,
+            response: "hello".into(),
+            ok: true,
+            constraint: None,
+            token_count: 2,
+            duration_ms: 15,
+        })
+        .unwrap();
     cap.fold(&mut store, &responded).unwrap();
     assert_eq!(store.local_model.turns["demo"].len(), 1);
     assert_eq!(store.local_model.turns["demo"][0].response, "hello");
@@ -235,17 +240,20 @@ fn describe_renders_own_events() {
         "{line}"
     );
 
-    let responded = terrane_cap_local_model::responded_event(
-        "demo",
-        "qwen",
-        "say hi",
-        "hello".into(),
-        true,
-        true,
-        2,
-        15,
-    )
-    .unwrap();
+    let responded =
+        terrane_cap_local_model::responded_event(&terrane_cap_local_model::RespondedRecord {
+            app: "demo".into(),
+            model: "qwen".into(),
+            prompt: "say hi".into(),
+            system: None,
+            continued: true,
+            response: "hello".into(),
+            ok: true,
+            constraint: Some("schema-mask".into()),
+            token_count: 2,
+            duration_ms: 15,
+        })
+        .unwrap();
     let line = cap.describe(&responded).unwrap();
     assert!(
         line.contains("constrained") && line.contains("2 tokens"),

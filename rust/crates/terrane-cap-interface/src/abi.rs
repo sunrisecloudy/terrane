@@ -172,6 +172,9 @@ pub enum Effect {
         app: String,
         model: String,
         prompt: String,
+        system: Option<String>,
+        /// Prior (user, assistant) exchanges to continue from, oldest first.
+        history: Vec<(String, String)>,
         schema: Option<String>,
         grammar: Option<String>,
     },

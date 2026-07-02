@@ -285,6 +285,8 @@ fn ask_resolves_models_parses_constraints_and_rejects_conflicts() {
         app,
         model,
         prompt,
+        system,
+        history,
         schema: parsed_schema,
         grammar,
     }) = decision
@@ -297,6 +299,8 @@ fn ask_resolves_models_parses_constraints_and_rejects_conflicts() {
     );
     assert_eq!(parsed_schema.as_deref(), Some(schema));
     assert_eq!(grammar, None);
+    assert_eq!(system, None);
+    assert!(history.is_empty());
 
     // No --model: the default model answers.
     let decision = decide_ask(ctx(), &strings(&["demo", "hello", "there"])).unwrap();
@@ -334,6 +338,54 @@ fn ask_resolves_models_parses_constraints_and_rejects_conflicts() {
             "expected rejection for {bad:?}"
         );
     }
+}
+
+#[test]
+fn continue_builds_history_from_matching_ok_turns() {
+    use crate::commands::{conversation_history, CONTINUE_TURN_LIMIT};
+    use crate::LocalModelTurn;
+
+    let mut store = store_with(Some("qwen"));
+    let turn = |model: &str, prompt: &str, ok: bool| LocalModelTurn {
+        model: model.into(),
+        prompt: prompt.into(),
+        system: None,
+        continued: false,
+        response: format!("re: {prompt}"),
+        ok,
+        constraint: None,
+        token_count: 1,
+        duration_ms: 1,
+    };
+    store.local_model.turns.insert(
+        "demo".into(),
+        vec![
+            turn("qwen", "q1", true),
+            turn("other-model", "skipped", true),
+            turn("qwen", "failed", false),
+            turn("qwen", "q2", true),
+        ],
+    );
+
+    let history = conversation_history(&store.local_model, "demo", "qwen");
+    assert_eq!(
+        history,
+        vec![
+            ("q1".to_string(), "re: q1".to_string()),
+            ("q2".to_string(), "re: q2".to_string()),
+        ]
+    );
+    assert!(conversation_history(&store.local_model, "unknown-app", "qwen").is_empty());
+
+    // Long transcripts are capped at the most recent exchanges.
+    let many: Vec<_> = (0..20)
+        .map(|i| turn("qwen", &format!("q{i}"), true))
+        .collect();
+    store.local_model.turns.insert("busy".into(), many);
+    let history = conversation_history(&store.local_model, "busy", "qwen");
+    assert_eq!(history.len(), CONTINUE_TURN_LIMIT);
+    assert_eq!(history.last().unwrap().0, "q19");
+    assert_eq!(history.first().unwrap().0, "q12");
 }
 
 #[test]

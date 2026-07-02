@@ -87,16 +87,47 @@ impl LlamaCppBackend {
     }
 
     /// Render one user message through the model's chat template (leaving the
-    /// assistant tag open), or pass the prompt through raw when the model has
-    /// no template.
-    fn render_prompt(&self, user_prompt: &str) -> Result<String, LlmError> {
+    /// assistant tag open), or pass the conversation through as plain text
+    /// when the model has no template.
+    fn render_prompt(&self, request: &GenerateRequest) -> Result<String, LlmError> {
         let Some(template) = &self.chat_template else {
-            return Ok(user_prompt.to_string());
+            // No template: flatten the conversation deterministically.
+            let mut plain = String::new();
+            if let Some(system) = &request.system {
+                plain.push_str(system);
+                plain.push_str("\n\n");
+            }
+            for (user, assistant) in &request.history {
+                plain.push_str("User: ");
+                plain.push_str(user);
+                plain.push_str("\nAssistant: ");
+                plain.push_str(assistant);
+                plain.push('\n');
+            }
+            if !plain.is_empty() {
+                plain.push_str("User: ");
+                plain.push_str(&request.prompt);
+                plain.push_str("\nAssistant:");
+                return Ok(plain);
+            }
+            return Ok(request.prompt.clone());
         };
-        let message = LlamaChatMessage::new("user".to_string(), user_prompt.to_string())
-            .map_err(|e| LlmError::Generate(format!("bad chat message: {e}")))?;
+
+        let mut messages = Vec::new();
+        let message = |role: &str, content: &str| {
+            LlamaChatMessage::new(role.to_string(), content.to_string())
+                .map_err(|e| LlmError::Generate(format!("bad chat message: {e}")))
+        };
+        if let Some(system) = &request.system {
+            messages.push(message("system", system)?);
+        }
+        for (user, assistant) in &request.history {
+            messages.push(message("user", user)?);
+            messages.push(message("assistant", assistant)?);
+        }
+        messages.push(message("user", &request.prompt)?);
         self.model
-            .apply_chat_template(template, &[message], true)
+            .apply_chat_template(template, &messages, true)
             .map_err(|e| LlmError::Generate(format!("chat template failed: {e}")))
     }
 
@@ -136,7 +167,7 @@ impl LocalLlm for LlamaCppBackend {
         let started = Instant::now();
         let deadline = request.config.timeout.map(|budget| started + budget);
 
-        let prompt = self.render_prompt(&request.prompt)?;
+        let prompt = self.render_prompt(request)?;
         let tokens = self
             .model
             .str_to_token(&prompt, AddBos::Always)
@@ -213,6 +244,14 @@ impl LocalLlm for LlamaCppBackend {
             token_count,
             duration: started.elapsed(),
             stop,
+            // Both llama.cpp constraint paths are token-mask enforced.
+            constraint: request.constraint.as_ref().map(|constraint| {
+                match constraint {
+                    Constraint::JsonSchema(_) => "schema-mask",
+                    Constraint::Gbnf(_) => "grammar",
+                }
+                .to_string()
+            }),
         })
     }
 }

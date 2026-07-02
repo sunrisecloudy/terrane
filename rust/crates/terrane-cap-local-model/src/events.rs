@@ -34,11 +34,30 @@ struct Responded {
     app: String,
     model: String,
     prompt: String,
+    system: Option<String>,
+    continued: bool,
     response: String,
     ok: bool,
-    constrained: bool,
+    constraint: Option<String>,
     token_count: u32,
     duration_ms: u64,
+}
+
+/// Everything one completed generation records; the effect runner fills it so
+/// the `"local-model.responded"` payload shape stays owned by this crate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RespondedRecord {
+    pub app: String,
+    pub model: String,
+    pub prompt: String,
+    pub system: Option<String>,
+    pub continued: bool,
+    pub response: String,
+    pub ok: bool,
+    /// `"schema-mask"`, `"schema-guided"`, or `"grammar"` when constrained.
+    pub constraint: Option<String>,
+    pub token_count: u32,
+    pub duration_ms: u64,
 }
 
 /// Build the recorded event for a registered (or re-registered) model spec.
@@ -75,31 +94,21 @@ pub fn default_set_event(id: &str) -> Result<EventRecord> {
     )
 }
 
-/// Build the recorded event for one completed local inference. Called by an
-/// `EffectRunner` once generation finished (or failed), so the
-/// `"local-model.responded"` kind and payload shape stay owned here.
-#[allow(clippy::too_many_arguments)]
-pub fn responded_event(
-    app: &str,
-    model: &str,
-    prompt: &str,
-    response: String,
-    ok: bool,
-    constrained: bool,
-    token_count: u32,
-    duration_ms: u64,
-) -> Result<EventRecord> {
+/// Build the recorded event for one completed local inference.
+pub fn responded_event(record: &RespondedRecord) -> Result<EventRecord> {
     encode_event(
         "local-model.responded",
         &Responded {
-            app: app.to_string(),
-            model: model.to_string(),
-            prompt: prompt.to_string(),
-            response,
-            ok,
-            constrained,
-            token_count,
-            duration_ms,
+            app: record.app.clone(),
+            model: record.model.clone(),
+            prompt: record.prompt.clone(),
+            system: record.system.clone(),
+            continued: record.continued,
+            response: record.response.clone(),
+            ok: record.ok,
+            constraint: record.constraint.clone(),
+            token_count: record.token_count,
+            duration_ms: record.duration_ms,
         },
     )
 }
@@ -150,9 +159,11 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
                 .push(LocalModelTurn {
                     model: e.model,
                     prompt: e.prompt,
+                    system: e.system,
+                    continued: e.continued,
                     response: e.response,
                     ok: e.ok,
-                    constrained: e.constrained,
+                    constraint: e.constraint,
                     token_count: e.token_count,
                     duration_ms: e.duration_ms,
                 });
@@ -190,12 +201,18 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
         "local-model.responded" => {
             let e: Responded = decode_event(record).ok()?;
             let prompt = terrane_cap_interface::truncate(&e.prompt, 40);
+            let constrained = match &e.constraint {
+                Some(mode) => format!(", constrained({mode})"),
+                None => String::new(),
+            };
             Some(format!(
-                "local-model.responded {} via {} ({}{}, {} tokens, {}ms): {:?} → {} chars",
+                "local-model.responded {} via {} ({}{}{}{}, {} tokens, {}ms): {:?} → {} chars",
                 e.app,
                 e.model,
                 if e.ok { "ok" } else { "failed" },
-                if e.constrained { ", constrained" } else { "" },
+                constrained,
+                if e.continued { ", continued" } else { "" },
+                if e.system.is_some() { ", system" } else { "" },
                 e.token_count,
                 e.duration_ms,
                 prompt,

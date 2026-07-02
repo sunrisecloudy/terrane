@@ -15,17 +15,20 @@ const PROGRESS_STEP: u64 = 16 * 1024 * 1024;
 
 /// Run one recorded local generation.
 #[cfg(feature = "local-llm")]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn call(
     app: &str,
     model: &str,
     prompt: &str,
+    system: Option<&str>,
+    history: &[(String, String)],
     schema: Option<&str>,
     grammar: Option<&str>,
     state: &State,
 ) -> Result<Vec<EventRecord>> {
     use std::io::Write as _;
 
-    use terrane_cap_local_model::responded_event;
+    use terrane_cap_local_model::{responded_event, RespondedRecord};
     use terrane_local_llm::{
         Constraint, GenerateRequest, GenerationConfig, LlamaCppBackend, LocalLlm, MlxBackend,
         ModelFile,
@@ -62,9 +65,10 @@ pub(crate) fn call(
         (None, Some(grammar)) => Some(Constraint::Gbnf(grammar.to_string())),
         (None, None) => None,
     };
-    let constrained = constraint.is_some();
     let request = GenerateRequest {
         prompt: prompt.to_string(),
+        system: system.map(str::to_string),
+        history: history.to_vec(),
         constraint,
         config: GenerationConfig {
             max_tokens: spec.max_tokens.unwrap_or(512),
@@ -92,16 +96,18 @@ pub(crate) fn call(
 
     let ok = response.ok();
     let duration_ms = u64::try_from(response.duration.as_millis()).unwrap_or(u64::MAX);
-    Ok(vec![responded_event(
-        app,
-        model,
-        prompt,
-        response.text,
+    Ok(vec![responded_event(&RespondedRecord {
+        app: app.to_string(),
+        model: model.to_string(),
+        prompt: prompt.to_string(),
+        system: system.map(str::to_string),
+        continued: !history.is_empty(),
+        response: response.text,
         ok,
-        constrained,
-        response.token_count,
+        constraint: response.constraint,
+        token_count: response.token_count,
         duration_ms,
-    )?])
+    })?])
 }
 
 /// Download weights from Hugging Face into `$TERRANE_HOME/models/` and record

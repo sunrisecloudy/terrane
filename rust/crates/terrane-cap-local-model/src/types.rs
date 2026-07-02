@@ -43,9 +43,13 @@ pub struct LocalModelSpec {
 pub struct LocalModelTurn {
     pub model: String,
     pub prompt: String,
+    pub system: Option<String>,
+    /// Whether prior recorded turns were fed back as conversation context.
+    pub continued: bool,
     pub response: String,
     pub ok: bool,
-    pub constrained: bool,
+    /// `"schema-mask"`, `"schema-guided"`, or `"grammar"` when constrained.
+    pub constraint: Option<String>,
     pub token_count: u32,
     pub duration_ms: u64,
 }

@@ -85,6 +85,10 @@ impl Default for GenerationConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenerateRequest {
     pub prompt: String,
+    /// Optional system prompt rendered ahead of the conversation.
+    pub system: Option<String>,
+    /// Prior (user, assistant) exchanges to continue from, oldest first.
+    pub history: Vec<(String, String)>,
     pub constraint: Option<Constraint>,
     pub config: GenerationConfig,
 }
@@ -107,6 +111,9 @@ pub struct GenerateResponse {
     pub token_count: u32,
     pub duration: Duration,
     pub stop: StopReason,
+    /// How decoding was constrained, when it was: `"schema-mask"` (token-mask
+    /// enforced), `"schema-guided"` (prompt-guided + validated), `"grammar"`.
+    pub constraint: Option<String>,
 }
 
 impl GenerateResponse {

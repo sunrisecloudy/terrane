@@ -16,7 +16,9 @@ mod doc;
 mod events;
 mod types;
 
-pub use events::{default_set_event, registered_event, removed_event, responded_event};
+pub use events::{
+    default_set_event, registered_event, removed_event, responded_event, RespondedRecord,
+};
 pub use types::{
     LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS, RECOMMENDED_GGUF_FILE,
     RECOMMENDED_GGUF_REPO, RECOMMENDED_MLX_MODEL_ID, RECOMMENDED_MLX_REPO, RECOMMENDED_MODEL_ID,

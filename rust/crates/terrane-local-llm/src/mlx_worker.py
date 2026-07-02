@@ -53,10 +53,17 @@ def handle(conn):
         model, tokenizer = get_model(req["model"])
         if "seed" in req:
             mx.random.seed(req["seed"])
+        messages = []
+        if req.get("system"):
+            messages.append({"role": "system", "content": req["system"]})
+        for user, assistant in req.get("history") or []:
+            messages.append({"role": "user", "content": user})
+            messages.append({"role": "assistant", "content": assistant})
+        messages.append({"role": "user", "content": req["prompt"]})
         # Same template handling as the CLI's --chat-template-config; the
         # thinking flag is ignored by templates that lack it.
         prompt = tokenizer.apply_chat_template(
-            [{"role": "user", "content": req["prompt"]}],
+            messages,
             add_generation_prompt=True,
             enable_thinking=False,
         )

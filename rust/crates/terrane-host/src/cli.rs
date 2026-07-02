@@ -477,7 +477,7 @@ pub fn print_help() {
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane local-model pull [<id> <hf-repo> [<file>]] [--backend gguf|mlx] [options…]  fetch + register (bare = recommended model)\n\
          \x20 terrane local-model register <id> <llama_cpp|mlx> <path-or-repo> [--context N] [--template T] [--max-tokens N] [--temp F]\n\
-         \x20 terrane local-model ask <app> [--model <id>] [--schema <json>|--grammar <gbnf>] <prompt…>  local inference (default model when unset)\n\
+         \x20 terrane local-model ask <app> [--model <id>] [--system <text>] [--continue] [--schema <json>|--grammar <gbnf>] <prompt…>  local inference\n\
          \x20 terrane local-model default <id>   choose the model asks use when --model is omitted\n\
          \x20 terrane local-model rm <id>        unregister a local model spec\n\
          \x20 terrane local-model setup mlx      install the Apple-Silicon MLX runtime (pinned, self-contained)\n\

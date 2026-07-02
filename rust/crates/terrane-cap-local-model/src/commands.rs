@@ -175,14 +175,21 @@ pub(crate) fn decide_rm(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision
     Ok(Decision::Commit(vec![removed_event(&id)?]))
 }
 
-/// `local-model.ask <app> [--model <id>] [--schema <json>] [--grammar <gbnf>]
-/// <prompt…>` — validate purely; inference runs at the edge. Without
-/// `--model` the ask resolves to the home's default model.
+/// The most recent prior exchanges fed back on `--continue`.
+pub(crate) const CONTINUE_TURN_LIMIT: usize = 8;
+
+/// `local-model.ask <app> [--model <id>] [--system <text>] [--continue]
+/// [--schema <json>] [--grammar <gbnf>] <prompt…>` — validate purely;
+/// inference runs at the edge. Without `--model` the ask resolves to the
+/// home's default model; `--continue` feeds back this app+model's recorded
+/// turns as conversation context.
 pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
     ensure_app_exists(ctx.bus, &app)?;
 
     let mut explicit_model = None;
+    let mut system = None;
+    let mut continued = false;
     let mut schema = None;
     let mut grammar = None;
     let mut i = 1;
@@ -191,6 +198,18 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
             "--model" => {
                 explicit_model = Some(model_id(args, i + 1)?);
                 i += 2;
+            }
+            "--system" => {
+                let value = arg(args, i + 1, "--system value")?;
+                if value.trim().is_empty() {
+                    return Err(Error::InvalidInput("--system must not be empty".into()));
+                }
+                system = Some(value);
+                i += 2;
+            }
+            "--continue" => {
+                continued = true;
+                i += 1;
             }
             "--schema" => {
                 schema = Some(json_object_schema(arg(args, i + 1, "--schema value")?)?);
@@ -227,14 +246,42 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
         )));
     }
     let prompt = required_tail(args, i, "prompt")?;
+    let history = if continued {
+        conversation_history(local, &app, &model)
+    } else {
+        Vec::new()
+    };
 
     Ok(Decision::Effect(Effect::LocalModelCall {
         app,
         model,
         prompt,
+        system,
+        history,
         schema,
         grammar,
     }))
+}
+
+/// The app's recorded, successful exchanges with this model — oldest first,
+/// capped at the most recent [`CONTINUE_TURN_LIMIT`].
+pub(crate) fn conversation_history(
+    local: &LocalModelState,
+    app: &str,
+    model: &str,
+) -> Vec<(String, String)> {
+    let Some(turns) = local.turns.get(app) else {
+        return Vec::new();
+    };
+    let mut history: Vec<(String, String)> = turns
+        .iter()
+        .rev()
+        .filter(|turn| turn.model == model && turn.ok)
+        .take(CONTINUE_TURN_LIMIT)
+        .map(|turn| (turn.prompt.clone(), turn.response.clone()))
+        .collect();
+    history.reverse();
+    history
 }
 
 /// `--model` → the home's default → a helpful error. Public within the crate:

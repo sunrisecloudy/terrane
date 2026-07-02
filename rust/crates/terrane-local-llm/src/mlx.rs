@@ -110,6 +110,8 @@ impl MlxBackend {
         let body = serde_json::json!({
             "model": self.model_ref,
             "prompt": prompt,
+            "system": request.system,
+            "history": request.history,
             "maxTokens": request.config.max_tokens,
             "temperature": request.config.temperature,
             "seed": request.config.seed,
@@ -181,7 +183,17 @@ impl MlxBackend {
         deadline: Option<Instant>,
         stream_to: Option<&mut dyn FnMut(&str)>,
     ) -> Result<MlxRun, LlmError> {
+        if !request.history.is_empty() {
+            return Err(LlmError::Generate(
+                "conversation continuation needs the resident mlx worker \
+                 (TERRANE_MLX_RESIDENT=0 disables it)"
+                    .into(),
+            ));
+        }
         let mut command = Command::new(&self.runtime.generate_bin);
+        if let Some(system) = &request.system {
+            command.arg("--system-prompt").arg(system);
+        }
         command
             .arg("--model")
             .arg(&self.model_ref)
@@ -298,6 +310,12 @@ impl LocalLlm for MlxBackend {
             token_count: run.token_count,
             duration: started.elapsed(),
             stop,
+            // Schemas on mlx are prompt-guided + validated (mask enforcement
+            // lands with the llguidance logits processor).
+            constraint: request
+                .constraint
+                .as_ref()
+                .map(|_| "schema-guided".to_string()),
         })
     }
 }

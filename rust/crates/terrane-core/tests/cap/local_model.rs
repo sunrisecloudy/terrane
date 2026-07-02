@@ -2,14 +2,15 @@
 //! recorded-inference effect, driven end to end with a stub runner.
 
 use tempfile::tempdir;
-use terrane_cap_local_model::responded_event;
+use terrane_cap_local_model::{responded_event, RespondedRecord};
 use terrane_core::{fold_records_in_memory, Core, EffectRunner, Error, State};
 use terrane_core::{Effect, EventRecord, Result};
 
 use crate::helpers::req;
 
 /// A deterministic stand-in for the llama.cpp edge engine: records a canned
-/// response the way the real runner would.
+/// response (embedding the history length so conversation plumbing is
+/// observable) the way the real runner would.
 struct StubLlm;
 
 impl EffectRunner for StubLlm {
@@ -19,18 +20,25 @@ impl EffectRunner for StubLlm {
                 app,
                 model,
                 prompt,
+                system,
+                history,
                 schema,
                 grammar,
-            } => Ok(vec![responded_event(
-                app,
-                model,
-                prompt,
-                "stub response".to_string(),
-                true,
-                schema.is_some() || grammar.is_some(),
-                3,
-                12,
-            )?]),
+            } => Ok(vec![responded_event(&RespondedRecord {
+                app: app.clone(),
+                model: model.clone(),
+                prompt: prompt.clone(),
+                system: system.clone(),
+                continued: !history.is_empty(),
+                response: format!("stub response (history={})", history.len()),
+                ok: true,
+                constraint: schema
+                    .as_ref()
+                    .map(|_| "schema-mask".to_string())
+                    .or_else(|| grammar.as_ref().map(|_| "grammar".to_string())),
+                token_count: 3,
+                duration_ms: 12,
+            })?]),
             other => Err(Error::InvalidInput(format!(
                 "stub runner cannot perform {other:?}"
             ))),
@@ -213,6 +221,61 @@ fn default_model_selection_flows_through_ask() {
 }
 
 #[test]
+fn continue_feeds_recorded_history_and_system_prompts_flow_through() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open_with(&log, StubLlm).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    core.dispatch(req(
+        "local-model.register",
+        &["qwen", "llama_cpp", "/models/qwen.gguf"],
+    ))
+    .unwrap();
+
+    // Two plain asks build up the transcript.
+    core.dispatch(req("local-model.ask", &["demo", "first question"]))
+        .unwrap();
+    core.dispatch(req("local-model.ask", &["demo", "second question"]))
+        .unwrap();
+    let turns = &core.state().local_model.turns["demo"];
+    assert!(!turns[0].continued && !turns[1].continued);
+
+    // --continue hands both prior ok exchanges to the engine.
+    core.dispatch(req(
+        "local-model.ask",
+        &["demo", "--continue", "third question"],
+    ))
+    .unwrap();
+    let turn = &core.state().local_model.turns["demo"][2];
+    assert!(turn.continued);
+    assert_eq!(turn.response, "stub response (history=2)");
+
+    // --system is carried into the effect and recorded on the turn.
+    core.dispatch(req(
+        "local-model.ask",
+        &["demo", "--system", "be brief", "--continue", "fourth"],
+    ))
+    .unwrap();
+    let turn = &core.state().local_model.turns["demo"][3];
+    assert_eq!(turn.system.as_deref(), Some("be brief"));
+    assert_eq!(turn.response, "stub response (history=3)");
+
+    // A different app shares no history.
+    core.dispatch(req("app.add", &["other", "Other"])).unwrap();
+    core.dispatch(req(
+        "local-model.ask",
+        &["other", "--continue", "fresh start"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.state().local_model.turns["other"][0].response,
+        "stub response (history=0)"
+    );
+
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
 fn ask_records_turns_via_runner_and_cascades_on_app_removal() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
@@ -234,15 +297,20 @@ fn ask_records_turns_via_runner_and_cascades_on_app_removal() {
     let turns = &core.state().local_model.turns["demo"];
     assert_eq!(turns.len(), 1);
     assert_eq!(turns[0].prompt, "say hi");
-    assert_eq!(turns[0].response, "stub response");
-    assert!(!turns[0].constrained);
+    assert_eq!(turns[0].response, "stub response (history=0)");
+    assert!(turns[0].constraint.is_none());
 
     core.dispatch(req(
         "local-model.ask",
         &["demo", "--schema", r#"{"type":"object"}"#, "say", "hi"],
     ))
     .unwrap();
-    assert!(core.state().local_model.turns["demo"][1].constrained);
+    assert_eq!(
+        core.state().local_model.turns["demo"][1]
+            .constraint
+            .as_deref(),
+        Some("schema-mask")
+    );
     assert!(core.replay_matches().unwrap());
 
     // Removing the app drops its transcript via broadcast fold but keeps the
@@ -262,16 +330,18 @@ fn ask_records_turns_via_runner_and_cascades_on_app_removal() {
 #[test]
 fn responded_event_folds_recorded_generation_without_inference() {
     let mut state = State::default();
-    let records = vec![responded_event(
-        "demo",
-        "qwen",
-        "say hi",
-        "hello".to_string(),
-        true,
-        false,
-        2,
-        15,
-    )
+    let records = vec![responded_event(&RespondedRecord {
+        app: "demo".into(),
+        model: "qwen".into(),
+        prompt: "say hi".into(),
+        system: Some("be brief".into()),
+        continued: false,
+        response: "hello".to_string(),
+        ok: true,
+        constraint: None,
+        token_count: 2,
+        duration_ms: 15,
+    })
     .unwrap()];
 
     fold_records_in_memory(&mut state, &records).unwrap();
@@ -282,4 +352,6 @@ fn responded_event_folds_recorded_generation_without_inference() {
     assert_eq!(turns[0].response, "hello");
     assert!(turns[0].ok);
     assert_eq!(turns[0].token_count, 2);
+    assert_eq!(turns[0].system.as_deref(), Some("be brief"));
+    assert!(!turns[0].continued);
 }
