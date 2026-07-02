@@ -1,6 +1,6 @@
 use terrane_cap_interface::{
-    command_doc, event_doc, limit, param, CapabilityDoc, CapabilityManifestDoc, CommandDoc,
-    EventDoc, ExampleDoc, InternalNote, ResourceDoc, SchemaDoc,
+    command_doc, event_doc, limit, param, resource_method, CapabilityDoc, CapabilityManifestDoc,
+    CommandDoc, EventDoc, ExampleDoc, InternalNote, ResourceDoc, ResourceMethodDoc, SchemaDoc,
 };
 
 use crate::types::BACKENDS;
@@ -36,12 +36,22 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
                 "local-model.responded".to_string(),
             ],
             subscriptions: vec!["app.removed".to_string()],
-            resource_methods: Vec::new(),
+            resource_methods: resource_method_docs(),
         },
         commands: local_model_commands(),
         queries: Vec::new(),
         events: local_model_events(),
-        resources: Vec::<ResourceDoc>::new(),
+        resources: vec![ResourceDoc {
+            namespace: "local-model".to_string(),
+            summary: "Backend resource surface installed as ctx.resource[\"local-model\"] \
+                      (bracket access — the namespace contains a dash) for apps that declare \
+                      the local-model resource and hold the namespace grant (verb: call). Each \
+                      method runs one recorded generation at the edge and returns the reply \
+                      text; the recorded local-model.responded event replays without re-running \
+                      inference."
+                .to_string(),
+            methods: resource_method_docs(),
+        }],
         schemas: Vec::<SchemaDoc>::new(),
         examples: vec![ExampleDoc {
             title: "Pull a model and ask it for structured output".to_string(),
@@ -55,6 +65,17 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
                    what is terrane"
                 .to_string(),
             expected: "streams tokens while generating; records local-model.responded".to_string(),
+        },
+        ExampleDoc {
+            title: "Chat with the local model from an app backend".to_string(),
+            summary: "Apps declare the local-model resource and call it with bracket access \
+                      (the namespace contains a dash). Requires the local-model grant."
+                .to_string(),
+            language: "js".to_string(),
+            code: "var lm = ctx.resource[\"local-model\"];\nfunction handle(input) {\n  var reply = lm.ask(input.join(\" \"));\n  return reply == null ? \"(generation failed)\" : reply;\n}"
+                .to_string(),
+            expected: "returns the model's reply text; one local-model.responded event is recorded"
+                .to_string(),
         }],
         constraints: vec![
             "Inference runs only at the edge effect runner, never during replay; replay folds \
@@ -355,5 +376,44 @@ fn local_model_events() -> Vec<EventDoc> {
             "Records the observed local generation for replay.",
         )
         .with_effects(&["appends LocalModelState.turns[app]"]),
+    ]
+}
+
+fn resource_method_docs() -> Vec<ResourceMethodDoc> {
+    let with_returns = |mut method: ResourceMethodDoc, returns: &str| {
+        method.returns = returns.to_string();
+        method
+    };
+    vec![
+        with_returns(resource_method(
+            "ask",
+            "call",
+            &[param("prompt", "The user prompt to answer.", "string")],
+            "One recorded generation by the home's default local model; returns the reply text \
+             (string, or null when the generation recorded a failure).",
+        ), "string | null"),
+        with_returns(resource_method(
+            "askModel",
+            "call",
+            &[
+                param("model", "A registered local model id.", "model_id"),
+                param("prompt", "The user prompt to answer.", "string"),
+            ],
+            "Like ask, but names the registered model explicitly instead of using the default.",
+        ), "string | null"),
+        with_returns(resource_method(
+            "askJson",
+            "call",
+            &[
+                param(
+                    "schema",
+                    "A JSON-schema object the output must satisfy (token-mask enforced).",
+                    "json",
+                ),
+                param("prompt", "The user prompt to answer.", "string"),
+            ],
+            "Schema-constrained generation by the default model; returns JSON text matching \
+             the schema.",
+        ), "string (JSON matching schema) | null"),
     ]
 }

@@ -370,6 +370,48 @@ fn capability_docs_include_registered_relational_docs() {
         .any(|note| note.title.contains("Likely backing store")));
 }
 
+/// Every method a capability installs on `ctx.resource` must be documented
+/// in its CapabilityDoc — an app author (or a blind agent reading
+/// capability_info) discovers the in-backend surface only through these docs.
+/// Catches the gap where a manifest declares a resource method but
+/// `resource_methods`/`resources` stay empty.
+#[test]
+fn every_declared_resource_method_is_documented() {
+    let declared = terrane_core::declared_resource_surface();
+    assert!(!declared.is_empty());
+    let docs = capability_docs(true);
+    for entry in &declared {
+        let rest = entry
+            .strip_prefix("ctx.resource.")
+            .unwrap_or_else(|| panic!("unexpected surface entry {entry}"));
+        let (namespace, method) = rest
+            .rsplit_once('.')
+            .unwrap_or_else(|| panic!("unexpected surface entry {entry}"));
+        let doc = docs
+            .iter()
+            .find(|doc| doc.namespace == namespace)
+            .unwrap_or_else(|| panic!("no capability doc for resource namespace {namespace}"));
+        let documented = doc
+            .manifest
+            .resource_methods
+            .iter()
+            .find(|m| m.name == method)
+            .unwrap_or_else(|| {
+                panic!("{namespace} missing resource method doc for {method} ({entry})")
+            });
+        assert!(
+            !documented.summary.trim().is_empty(),
+            "{entry} needs a summary"
+        );
+        assert!(
+            doc.resources
+                .iter()
+                .any(|resource| resource.namespace == namespace),
+            "{namespace} declares resource methods but has no ResourceDoc"
+        );
+    }
+}
+
 #[test]
 fn all_capability_docs_are_explicit_and_operational() {
     for doc in capability_docs(true) {
