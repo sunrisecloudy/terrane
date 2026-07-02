@@ -1864,3 +1864,73 @@ fn web_host_serves_every_declared_route() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// The shell's optional Premium (Google) sign-in: the host injects the
+/// configured control-plane URL into the shell page; unset stays local-only
+/// with the menu item hidden and a `null` injection.
+#[test]
+fn shell_injects_premium_url_when_configured() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install(&mut core, "todo");
+    }
+
+    // Unconfigured: null injection, menu item present but hidden by default.
+    let (mut child, addr) = spawn_web(home);
+    let (status, body) = http(&addr, "GET", "/apps/todo", None);
+    assert_eq!(status, 200, "shell: {body}");
+    assert!(
+        body.contains("window.__terranePremiumUrl = null;"),
+        "unconfigured shell must inject null: {body}"
+    );
+    assert!(
+        body.contains("id=\"menu-premium\""),
+        "premium menu item missing: {body}"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Configured via TERRANE_PREMIUM_URL (trailing slash trimmed).
+    let (mut child, addr) = spawn_web_full(
+        home,
+        "127.0.0.1:0",
+        None,
+        &[],
+        &[("TERRANE_PREMIUM_URL", "http://127.0.0.1:8788/".to_string())],
+    );
+    let (status, body) = http(&addr, "GET", "/apps/todo", None);
+    assert_eq!(status, 200, "shell: {body}");
+    assert!(
+        body.contains("window.__terranePremiumUrl = \"http://127.0.0.1:8788\";"),
+        "configured shell must inject the premium url: {body}"
+    );
+    assert!(
+        body.contains("Sign in with Google"),
+        "google sign-in affordance missing: {body}"
+    );
+    assert!(
+        body.contains("id=\"settings-premium\""),
+        "premium settings row missing: {body}"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // The --premium-url flag works too.
+    let (mut child, addr) = spawn_web_full(
+        home,
+        "127.0.0.1:0",
+        None,
+        &["--premium-url", "http://localhost:9999"],
+        &[],
+    );
+    let (status, body) = http(&addr, "GET", "/apps/todo", None);
+    assert_eq!(status, 200, "shell: {body}");
+    assert!(
+        body.contains("window.__terranePremiumUrl = \"http://localhost:9999\";"),
+        "--premium-url must inject the premium url: {body}"
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}

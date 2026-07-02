@@ -91,6 +91,7 @@ fn main() {
                 live_reload: args.live_reload,
                 admin_base_url: &admin_base_url,
                 dev_apps: &dev_apps,
+                premium_url: args.premium_url.as_deref(),
             },
         );
         let _ = request.respond(response);

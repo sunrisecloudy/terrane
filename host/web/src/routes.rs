@@ -82,6 +82,7 @@ pub struct RouteConfig<'a> {
     pub live_reload: bool,
     pub admin_base_url: &'a str,
     pub dev_apps: &'a crate::dev_apps::DevApps,
+    pub premium_url: Option<&'a str>,
 }
 
 pub fn route(
@@ -101,6 +102,7 @@ pub fn route(
         live_reload,
         admin_base_url,
         dev_apps,
+        premium_url,
     } = config;
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
@@ -221,7 +223,7 @@ pub fn route(
         (Method::Get, ["apps", id]) => {
             let exists =
                 core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
-            crate::shell::response(exists, id, live_reload)
+            crate::shell::response(exists, id, live_reload, premium_url)
         }
         (Method::Get, ["apps", id, rest @ ..]) => {
             serve_bundle_asset(core, dev_apps, id, &rest.join("/"), live_reload)

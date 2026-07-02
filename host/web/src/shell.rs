@@ -8,7 +8,9 @@ const APP_SHELL_JS: &str = include_str!("js/app_shell.js");
 /// `GET /apps/{id}` — the host shell around the app iframe. `exists` is the
 /// router's merged catalog + dev-apps check; `live_reload` turns on catalog
 /// polling in the sidebar so newly dropped dev apps appear without a refresh.
-pub fn response(exists: bool, id: &str, live_reload: bool) -> Resp {
+/// `premium_url` (optional) points the top bar's Google sign-in at a Terrane
+/// Premium control plane; unset keeps the shell local-only.
+pub fn response(exists: bool, id: &str, live_reload: bool, premium_url: Option<&str>) -> Resp {
     if !exists {
         return json_error(404, &format!("no such app: {id}"));
     }
@@ -16,7 +18,23 @@ pub fn response(exists: bool, id: &str, live_reload: bool) -> Resp {
     let body = SHELL_HTML
         .replace("__APP_ICONS_JS__", terrane_host::home::app_icons_js())
         .replace("__APP_SHELL_JS__", APP_SHELL_JS)
-        .replace("__LIVE_RELOAD__", if live_reload { "true" } else { "false" });
+        .replace("__LIVE_RELOAD__", if live_reload { "true" } else { "false" })
+        .replace("__PREMIUM_URL__", &premium_url_js(premium_url));
     Response::from_data(body.into_bytes())
         .with_header(header("Content-Type", "text/html; charset=utf-8"))
+}
+
+/// The premium URL as a JS literal — `null` when unconfigured, otherwise a
+/// JSON string with quotes/backslashes/angles escaped so the template stays
+/// inert markup.
+fn premium_url_js(premium_url: Option<&str>) -> String {
+    match premium_url {
+        None => "null".to_string(),
+        Some(url) => format!(
+            "\"{}\"",
+            url.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('<', "\\u003c")
+        ),
+    }
 }
