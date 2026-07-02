@@ -100,6 +100,10 @@ impl MlxBackend {
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": request.config.max_tokens,
             "temperature": request.config.temperature,
+            // A seed opts the request out of mlx_lm.server's continuous-batching
+            // engine onto its sequential fast path — ~1.8× faster per request,
+            // and Terrane asks one generation at a time anyway.
+            "seed": request.config.seed,
             "stream": true,
             "stream_options": {"include_usage": true},
         });
