@@ -5,6 +5,10 @@
   var bridgeSeq = 0;
   var bridgePending = {};
   var bridgeTargetOrigin = window.location.protocol + "//" + window.location.host;
+  // Generation runs a real agent CLI and takes minutes; keep its bridge wait
+  // above the server-side harness timeout (default 180s) so the server's own
+  // error reaches the app instead of a premature bridge timeout.
+  var bridgeTimeoutsMs = { invoke: 30000, preview: 30000, builderGenerate: 300000 };
 
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
@@ -82,10 +86,15 @@
   function bridgeJson(kind, body) {
     return new Promise(function (resolve, reject) {
       var id = "terrane-bridge-" + (++bridgeSeq);
+      var timeoutMs = bridgeTimeoutsMs[kind] || 30000;
       var timeout = setTimeout(function () {
         delete bridgePending[id];
-        reject(new Error("Terrane host bridge timed out"));
-      }, 30000);
+        reject(
+          new Error(
+            "Terrane host bridge timed out after " + Math.round(timeoutMs / 1000) + "s"
+          )
+        );
+      }, timeoutMs);
       bridgePending[id] = {
         resolve: resolve,
         reject: reject,
