@@ -318,7 +318,9 @@ fn uv_release_target() -> Result<&'static str, LlmError> {
         Ok("aarch64-unknown-linux-gnu")
     } else {
         Err(LlmError::Download(
-            "no pinned uv build for this platform; install uv or mlx-lm manually".into(),
+            "no pinned uv build for this platform (MLX needs Apple silicon; \
+             Windows/other hosts should use the llama_cpp backend)"
+                .into(),
         ))
     }
 }

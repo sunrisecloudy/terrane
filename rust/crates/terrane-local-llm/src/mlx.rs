@@ -14,6 +14,7 @@
 //! llguidance path.
 
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -21,6 +22,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 use crate::server::{ensure_worker, touch};
 use crate::setup::{resolve_runtime, MlxRuntime};
 use crate::{Constraint, GenerateRequest, GenerateResponse, LlmError, LocalLlm, StopReason};
@@ -79,6 +81,10 @@ impl MlxBackend {
         deadline: Option<Instant>,
         stream_to: Option<&mut dyn FnMut(&str)>,
     ) -> Result<MlxRun, LlmError> {
+        // The resident worker rides Unix sockets; on other platforms every
+        // call takes the one-shot path (whose missing-runtime error is just
+        // as clear — MLX itself is Apple-silicon-only).
+        #[cfg(unix)]
         if resident_enabled() {
             match ensure_worker(&self.home, &self.runtime) {
                 Ok(socket) => {
@@ -96,6 +102,7 @@ impl MlxBackend {
 
     /// Stream one generation from the resident worker over its Unix-socket
     /// line protocol.
+    #[cfg(unix)]
     fn run_resident(
         &self,
         socket: &Path,
@@ -245,6 +252,7 @@ impl MlxBackend {
     }
 }
 
+#[cfg(unix)]
 fn resident_enabled() -> bool {
     std::env::var("TERRANE_MLX_RESIDENT")
         .map(|raw| raw.trim() != "0")

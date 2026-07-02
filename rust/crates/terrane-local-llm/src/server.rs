@@ -15,22 +15,30 @@
 //! Lifecycle state is pure edge plumbing — nothing here touches the event log.
 
 use std::fs;
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
+#[cfg(unix)]
+use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::setup::{engines_dir, MlxRuntime};
 use crate::LlmError;
 
 /// The Python engine shim, kept beside this file and installed into
 /// `engines/mlx-worker.py` on every spawn so upgrades propagate.
+#[cfg(unix)]
 const WORKER_PY: &str = include_str!("mlx_worker.py");
 
 /// How long an unused worker stays resident (override: `TERRANE_MLX_IDLE_MS`).
 const DEFAULT_IDLE: Duration = Duration::from_secs(600);
 /// How long to wait for a spawned worker to answer a ping.
+#[cfg(unix)]
 const STARTUP_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -78,6 +86,7 @@ fn socket_path(home: &Path) -> PathBuf {
     engines_dir(home).join("mlx-worker.sock")
 }
 
+#[cfg(unix)]
 pub(crate) fn idle_limit() -> Duration {
     std::env::var("TERRANE_MLX_IDLE_MS")
         .ok()
@@ -98,6 +107,7 @@ pub(crate) fn touch(home: &Path) {
 
 /// Return a healthy worker's socket path, starting one (plus its watchdog) if
 /// needed.
+#[cfg(unix)]
 pub(crate) fn ensure_worker(home: &Path, runtime: &MlxRuntime) -> Result<PathBuf, LlmError> {
     if let Some(state) = read_state(home) {
         if ping(Path::new(&state.socket)).is_some() {
@@ -247,11 +257,7 @@ pub fn stop_server(home: &Path) -> Result<bool, LlmError> {
     // running; recognize its state file and put it down too.
     if let Some(legacy) = read_legacy_state(home) {
         let was_running = legacy_probe(legacy.port);
-        // SAFETY: plain kill(2) on a recorded pid; the state file is removed
-        // right after so a recycled pid is signalled at most once.
-        unsafe {
-            libc::kill(legacy.pid as i32, libc::SIGTERM);
-        }
+        kill_pid(legacy.pid);
         clear_state(home);
         return Ok(was_running);
     }
@@ -259,10 +265,7 @@ pub fn stop_server(home: &Path) -> Result<bool, LlmError> {
         return Ok(false);
     };
     let was_running = ping(Path::new(&state.socket)).is_some();
-    // SAFETY: as above.
-    unsafe {
-        libc::kill(state.pid as i32, libc::SIGTERM);
-    }
+    kill_pid(state.pid);
     clear_state(home);
     Ok(was_running)
 }
@@ -270,6 +273,7 @@ pub fn stop_server(home: &Path) -> Result<bool, LlmError> {
 /// A detached `sh` loop: kill the worker once the touch file has been idle
 /// past the limit, then exit. Exits on its own when the worker dies first, so
 /// nothing stays resident after an idle shutdown.
+#[cfg(unix)]
 fn spawn_watchdog(home: &Path, pid: u32) -> Result<(), LlmError> {
     let idle_secs = idle_limit().as_secs().max(1);
     let interval = (idle_secs / 3).clamp(1, 30);
@@ -305,15 +309,14 @@ done
 }
 
 /// Detach a child from our process group so it survives CLI exit.
+#[cfg(unix)]
 fn detach(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        command.process_group(0);
-    }
+    use std::os::unix::process::CommandExt as _;
+    command.process_group(0);
 }
 
 /// Ping the worker socket; returns the loaded model ids when healthy.
+#[cfg(unix)]
 pub(crate) fn ping(socket: &Path) -> Option<Vec<String>> {
     let stream = UnixStream::connect(socket).ok()?;
     stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
@@ -342,6 +345,14 @@ pub(crate) fn ping(socket: &Path) -> Option<Vec<String>> {
     )
 }
 
+/// The MLX worker rides Unix sockets and a `sh` watchdog; other platforms
+/// (Windows: compiles-by-design, unvalidated) report it as not running. MLX
+/// itself is Apple-silicon-only, so no transport is wired for them.
+#[cfg(not(unix))]
+pub(crate) fn ping(_socket: &Path) -> Option<Vec<String>> {
+    None
+}
+
 fn read_state(home: &Path) -> Option<WorkerState> {
     let raw = fs::read_to_string(state_path(home)).ok()?;
     serde_json::from_str(&raw).ok()
@@ -353,6 +364,25 @@ fn read_legacy_state(home: &Path) -> Option<LegacyServerState> {
         return None;
     }
     serde_json::from_str(&raw).ok()
+}
+
+/// Terminate a recorded worker pid. The state file is removed right after
+/// each call site, so a recycled pid is signalled at most once.
+#[cfg(unix)]
+fn kill_pid(pid: u32) {
+    // SAFETY: plain kill(2) on a recorded pid.
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+}
+
+/// Windows: compiles-by-design, unvalidated (no worker is ever spawned there,
+/// but an inherited state file from a shared home is still cleaned up).
+#[cfg(not(unix))]
+fn kill_pid(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F"])
+        .status();
 }
 
 fn legacy_probe(port: u16) -> bool {

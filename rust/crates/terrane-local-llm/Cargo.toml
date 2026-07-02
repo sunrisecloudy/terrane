@@ -10,7 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 encoding_rs = "0.8"
-libc = { workspace = true }
 llama-cpp-2 = { workspace = true, features = ["llguidance"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -18,6 +17,9 @@ ureq = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { workspace = true, features = ["llguidance", "metal"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile.workspace = true
