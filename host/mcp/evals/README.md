@@ -8,6 +8,37 @@ source, filesystem, shell, web, and search tools denied. The model should solve
 the task by discovering Terrane through MCP tools, resources, workflows, and
 capability docs.
 
+## Harness
+
+`harness/` holds the committed runner and grader (see `docs/model-call-mcp.md`
+for the operator runbook):
+
+| Script | Role |
+| --- | --- |
+| `run-batch.sh [ROOT] [MODELS_TSV]` | whole batch: build → resume → grade |
+| `run-one.sh MODEL SLUG LABEL ROOT` | one model, build phase (8m default) |
+| `resume-one.sh MODEL SLUG LABEL ROOT` | one model, resume phase (4m default) |
+| `grade.sh ROOT` | automated grading → `report.tsv` + `report.md` |
+| `serve-ui.sh start/stop` | terrane-web lifecycle for the UI phase |
+| `grade-ui.mjs` | headless browser check (optional `npm install`) |
+| `lib.sh` | shared env knobs and lock cleanup |
+
+Env knobs: `BUILD_TIMEOUT`, `RESUME_TIMEOUT`, `PROMPT_FILE`, `NL_QUERY`,
+`UI_INPUT_TEXT`, `EVAL_WEB_PORT`, `TERRANE_OPENCODE_MAX_OUTPUT_TOKENS`,
+`MCP_BIN`/`CLI_BIN`/`WEB_BIN`/`OPENCODE_BIN`/`TIMEOUT_BIN`.
+
+`results.tsv` rows are `slug model phase exit workdir home log` (phases:
+`build`, `resume`). `report.tsv` columns: installed, app_id,
+permission_stop_ok, self_grant_attempts, grant_ok, backend_smoke, nl_query
+(`pass|zero|error|absent`), ui_check (`pass|fail|skipped|needs_grant|no_ui|
+server_failed`), ui_args_array_warn, resume_used/resume_ok/resume_recovered,
+tokens, cost. `resume_recovered` means the resume log shows `app_build_list`
+plus a reused `draft-*` id — recovery, not a from-scratch rebuild.
+
+`harness/node_modules` is optional and git-ignored; only `package.json` is
+committed. Without it (or without a system Chrome) the UI check records
+`skipped` and grading still completes.
+
 ## Eval Prompt Rules
 
 - Eval prompts are not MCP resources or MCP prompts.

@@ -15,6 +15,31 @@ Do not put capability names, workflow names, or tool order in the product prompt
 when the goal is blind discovery. Tell the model only the app outcome and proof
 requirements.
 
+## Run The Committed Harness
+
+The repeatable path is the harness under `host/mcp/evals/harness/`:
+
+```sh
+cd /Users/vehasuwat/Project/terrane/host/mcp && cargo build
+cd ../cli && cargo build
+cd ../web && cargo build   # for browser verification
+cd ../mcp/evals/harness && npm install   # optional: puppeteer-core UI check
+
+./run-batch.sh                          # full batch: build -> resume -> grade
+./run-batch.sh /private/tmp/my-root my-models.tsv
+```
+
+`run-batch.sh` runs every model in `models.tsv` sequentially (build phase),
+gives eligible timeouts a resume phase, then grades everything into
+`$ROOT/report.tsv` and `$ROOT/report.md`. Knobs are env vars resolved in
+`lib.sh`: `BUILD_TIMEOUT` (8m), `RESUME_TIMEOUT` (4m), `PROMPT_FILE`,
+`NL_QUERY`, `UI_INPUT_TEXT`, `EVAL_WEB_PORT`, and
+`TERRANE_OPENCODE_MAX_OUTPUT_TOKENS`. Only the prompt and the two smoke
+strings are task-specific — the harness itself is app-generic.
+
+The sections below document what the harness sets up (still the contract under
+test) plus the manual escape hatches.
+
 ## Preconditions
 
 Build the MCP host:
@@ -185,9 +210,51 @@ these work; the last two apply to the **running** server (no restart):
 - **CLI grant:** `terrane auth grant user:local-owner <app> <namespace>` (one per
   `structuredContent.grantCommands` entry), then retry the same `invoke`.
 
-**Single-writer lock:** while `terrane-mcp` is running against a home, a second
-`terrane` process on that home is refused. Approve **in-session or via the
-console** instead of a CLI grant, or stop the server first.
+**Single-writer lock:** while `terrane-mcp` (or `terrane-web`) is running
+against a home, a second `terrane` process on that home is refused — the lock
+is held for the server's whole lifetime. Ordering rule for grading: run **all
+CLI grants and smoke commands before starting `terrane-web`**; once the server
+is up, grant through the live admin console instead
+(`POST /__terrane/admin/grants` with header `X-Terrane-Admin: local-admin` and
+body `{"subject":"","app":"<id>","namespace":"kv"}`). A `terrane-mcp` child
+that survives a `timeout` kill also holds the lock invisibly (TERRANE_HOME is
+env, not argv) — find it with `lsof -t "$TERRANE_HOME"/*.lock`, which is what
+the harness's `kill_home_holders` does after every phase.
+
+## Resume Phase
+
+A build run that exits `124` (timeout) **without** an installed app gets one
+fresh 4-minute session in the same workdir and home, so `.mcp-drafts` drafts
+are visible. Exit 0 with no app is a model result ("early stop") and is not
+resumed. The resume message is `host/mcp/evals/prompts/resume-preamble.md`
+plus the same product prompt: it says an **unfinished draft may still be
+saved — don't start over**, in user-level words, and deliberately names no
+tools; whether the model finds `app_build_list` is part of the test. Grading
+records `resume_used`, `resume_ok` (app installed after resume), and
+`resume_recovered` (the log shows `app_build_list` plus a reused `draft-*`
+id, distinguishing recovery from a from-scratch rebuild).
+
+## Browser Verification
+
+For UI apps, backend smoke tests are not enough (run 2 shipped a frontend
+args-array bug no CLI check could see). `grade.sh` serves each home with
+`terrane-web --addr 127.0.0.1:$EVAL_WEB_PORT --no-live-reload` **after** the
+CLI phase, then `grade-ui.mjs` (puppeteer-core + system Chrome; skipped with a
+warning when missing) drives the shim-injected frame page
+`/apps/<id>/__terrane/frame` and asserts, app-generically:
+
+1. `GET /apps/<id>` returns 200.
+2. `window.terrane.invoke` is a function on the frame page (the app's HTML/JS
+   executed).
+3. Zero uncaught page errors / `console.error` during load.
+4. One interaction round-trip: type `UI_INPUT_TEXT` into the first text input,
+   submit, and require both a 200 error-free `POST /apps/<id>/invoke` and a
+   changed DOM within 10 seconds.
+
+If the invoke returns `permission_required`, the grader grants over the live
+admin console and retries once. Artifacts per model land in `$ROOT/ui-<slug>/`:
+`page-load.png`, `after-interaction.png`, `console.log`, `network.log`,
+`server.log`, `result.json`.
 
 Recent weak-model runs showed that productive models sometimes tried
 `capability_command auth.grant` after `permission_required`. Treat that as a
@@ -197,6 +264,12 @@ model mistake, not as a Terrane recovery path. The payload's
 poll `permission_check`, and retry the original call after trusted approval.
 
 ## Judge Success
+
+`grade.sh` automates the checks below into `$ROOT/report.tsv` (one row per
+model: installed, permission_stop_ok, self_grant_attempts, grant_ok,
+backend_smoke, nl_query, ui_check, ui_args_array_warn, resume_*, tokens/cost)
+and `$ROOT/report.md` (same plus output excerpts). The auto-verdicts are
+triage; the rubric in `host/mcp/evals/rubrics/` stays the human authority.
 
 Judge the produced app, not the transcript alone:
 
