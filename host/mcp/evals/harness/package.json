@@ -1,0 +1,9 @@
+{
+  "name": "terrane-mcp-eval-harness",
+  "private": true,
+  "type": "module",
+  "description": "Optional browser-verification dependency for grade-ui.mjs; uses the system Chrome, downloads no browser.",
+  "dependencies": {
+    "puppeteer-core": "^24"
+  }
+}
