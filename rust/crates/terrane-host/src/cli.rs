@@ -31,6 +31,8 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
+        ["native", "observe-default"] => run_native_observe_default(),
+        ["native", "drain-once"] => run_native_drain_once(),
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
@@ -261,6 +263,28 @@ pub fn run_kv_storage_status() -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_native_observe_default() -> Result<(), String> {
+    let mut core = crate::open()?;
+    let connector = crate::native::default_connector();
+    print_command_outcome(crate::native::observe_connector_on_core(
+        &mut core, &connector,
+    )?);
+    Ok(())
+}
+
+pub fn run_native_drain_once() -> Result<(), String> {
+    let mut core = crate::open()?;
+    let connector = crate::native::default_connector();
+    match crate::native::drain_once_on_core(&mut core, &connector)? {
+        crate::native::NativeDrainOutcome::Idle => println!("native drain idle"),
+        crate::native::NativeDrainOutcome::Drained(drained) => println!(
+            "native drained {}/{} {}",
+            drained.app, drained.request_id, drained.operation_id
+        ),
+    }
+    Ok(())
+}
+
 fn parse_kv_storage_set(rest: &[&str]) -> Result<Vec<String>, String> {
     match rest {
         ["--default", backend, tail @ ..] | ["default", backend, tail @ ..] => {
@@ -416,6 +440,8 @@ pub fn print_help() {
          \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
          \x20 terrane kv storage clear (--default | --app <app>)\n\
          \x20 terrane kv storage status\n\
+         \x20 terrane native observe-default                    record default host native support\n\
+         \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\

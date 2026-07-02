@@ -58,3 +58,17 @@ fn native_cli_records_request_and_trusted_completion() {
     );
     assert!(log.contains("native.completed demo req-1"), "log: {log}");
 }
+
+#[test]
+fn native_cli_exposes_explicit_host_drain_service() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    let (ok, out, err) = terrane(home, &["native", "observe-default"]);
+    assert!(ok, "observe default failed: {err}");
+    assert!(out.contains("native.platform.observed"), "out: {out}");
+
+    let (ok, out, err) = terrane(home, &["native", "drain-once"]);
+    assert!(ok, "drain once failed: {err}");
+    assert_eq!(out.trim(), "native drain idle");
+}
