@@ -680,9 +680,26 @@ fn tool_call(
                 Ok(value) => value,
                 Err(e) => return tool_text(id, &e, true),
             };
+            if let Some(files_value) = args.get("files") {
+                let files =
+                    match inline_files_from_value(files_value, "files", TOOL_APP_BUILD_PUT_FILE) {
+                        Ok(files) => files,
+                        Err(e) => return tool_text(id, &e, true),
+                    };
+                return match app_build_put_files_json(&draft_id, &files) {
+                    Ok(output) => tool_json(id, &output, false),
+                    Err(e) => build_error(id, TOOL_APP_BUILD_PUT_FILE, &draft_id, &e),
+                };
+            }
             let path = match required_string(args, "path", TOOL_APP_BUILD_PUT_FILE) {
                 Ok(value) => value,
-                Err(e) => return tool_text(id, &e, true),
+                Err(e) => {
+                    return tool_text(
+                        id,
+                        &format!("{e} (or pass files as an array of {{path,content}} objects to write several files in one call)"),
+                        true,
+                    )
+                }
             };
             let content =
                 match required_string_allow_empty(args, "content", TOOL_APP_BUILD_PUT_FILE) {
@@ -691,7 +708,7 @@ fn tool_call(
                 };
             match app_build_put_file_json(&draft_id, &path, &content) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_PUT_FILE, &draft_id, &e),
             }
         }
         TOOL_APP_BUILD_GET => {
@@ -713,7 +730,7 @@ fn tool_call(
             };
             match app_build_get_json(&draft_id, &path, include_content) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_GET, &draft_id, &e),
             }
         }
         TOOL_APP_BUILD_LIST => {
@@ -736,7 +753,7 @@ fn tool_call(
             };
             match app_build_validate_json(core, &draft_id) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_VALIDATE, &draft_id, &e),
             }
         }
         TOOL_APP_BUILD_COMMIT => {
@@ -760,7 +777,7 @@ fn tool_call(
                 };
             match app_build_commit_json(core, &draft_id, &validation_token, replace_existing) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_COMMIT, &draft_id, &e),
             }
         }
         TOOL_APP_BUILD_DISCARD => {
@@ -774,7 +791,7 @@ fn tool_call(
             };
             match app_build_discard_json(&draft_id) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_DISCARD, &draft_id, &e),
             }
         }
         TOOL_APP_BUNDLE_VALIDATE => {
@@ -2400,6 +2417,87 @@ fn app_build_start_json(
     .to_string())
 }
 
+/// Structured recovery for app_build_* tool errors — the same shape lesson as
+/// `permission_required`: weak models resume from machine-readable
+/// `nextToolCall` fields, not from prose. A lost/wrong draftId routes to
+/// `app_build_list`; commit failures route back through validation.
+fn build_error(id: &str, tool: &str, draft_id: &str, error: &str) -> String {
+    let next_tool_call = if error.contains("draft not found") || draft_id.trim().is_empty() {
+        json!({"tool": "app_build_list", "arguments": {}})
+    } else if tool == TOOL_APP_BUILD_COMMIT {
+        json!({"tool": "app_build_validate", "arguments": {"draftId": draft_id}})
+    } else {
+        json!({"tool": "app_build_get", "arguments": {"draftId": draft_id}})
+    };
+    let value = json!({
+        "type": "build_error",
+        "tool": tool,
+        "error": error,
+        "nextToolCall": next_tool_call
+    });
+    tool_value(id, error, &value, true)
+}
+
+/// Batch variant of app_build_put_file: validate every path and the resulting
+/// bundle size first, then write — a bad entry rejects the whole call so the
+/// draft never half-applies.
+fn app_build_put_files_json(draft_id: &str, new_files: &[InlineFile]) -> Result<String, String> {
+    if new_files.is_empty() {
+        return Err(
+            "app_build_put_file files array is empty; pass one or more {path,content} objects"
+                .to_string(),
+        );
+    }
+    let bundle = draft_bundle_dir(draft_id)?;
+    ensure_draft_exists(draft_id, &bundle)?;
+    let mut files = read_inline_bundle_files(&bundle)?;
+    for file in new_files {
+        if !is_safe_relative_path(&file.path) {
+            return Err(format!(
+                "app_build_put_file path must be a safe relative bundle path, got {:?}; no files were written",
+                file.path
+            ));
+        }
+        if file.content.len() > MAX_DRAFT_FILE_BYTES {
+            return Err(format!(
+                "app_build_put_file content for {:?} is {} bytes; limit is {MAX_DRAFT_FILE_BYTES}; no files were written",
+                file.path,
+                file.content.len()
+            ));
+        }
+    }
+    let mut merged = files.clone();
+    for file in new_files {
+        merged.retain(|existing| existing.path != file.path);
+        merged.push(file.clone());
+    }
+    let new_total: usize = merged.iter().map(|file| file.content.len()).sum();
+    if new_total > MAX_DRAFT_TOTAL_BYTES {
+        return Err(format!(
+            "app_build_put_file would make draft {new_total} bytes; total limit is {MAX_DRAFT_TOTAL_BYTES}; no files were written"
+        ));
+    }
+    for file in new_files {
+        write_draft_file(&bundle, &file.path, &file.content)?;
+    }
+    files = merged;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    write_draft_metadata(draft_id, "updated", &files)?;
+    let written: Vec<Value> = new_files.iter().map(file_summary).collect();
+    Ok(json!({
+        "draftId": draft_id,
+        "files": written,
+        "bundleHash": validation_token(&files),
+        "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": draft_id}},
+        "next": [
+            "Continue app_build_put_file for any other changed files.",
+            "When the draft is complete, call app_build_validate.",
+            "Do not call app_build_commit until validation returns valid:true."
+        ]
+    })
+    .to_string())
+}
+
 fn app_build_put_file_json(draft_id: &str, path: &str, content: &str) -> Result<String, String> {
     let bundle = draft_bundle_dir(draft_id)?;
     ensure_draft_exists(draft_id, &bundle)?;
@@ -2839,6 +2937,13 @@ fn inspect_inline_bundle(
     }
     if !ui.is_empty() {
         validate_inline_ref("manifest.ui", &ui, &file_paths, &mut errors);
+        for file in files {
+            if file.path == backend || !(file.path.ends_with(".js") || file.path.ends_with(".html"))
+            {
+                continue;
+            }
+            check_ui_invoke_arg_shape(&file.path, &file.content, &mut warnings);
+        }
     } else {
         warnings.push("manifest.ui is omitted; app is backend-only over invoke/MCP".to_string());
     }
@@ -2883,6 +2988,49 @@ fn validate_inline_ref(
             "{label} references missing file {reference:?}. app_register_inline retries must include the complete files array: manifest.json, backend, manifest.ui, ui.js/style.css, and any other referenced assets; do not send only changed files"
         ));
     }
+}
+
+/// Run-2 evals caught a UI calling `invoke('verb', [a, b])` — the browser
+/// bridge `String()`s each positional arg, so an array always reaches the
+/// backend as one comma-joined string. Backend smoke tests can't see this
+/// (they call the CLI directly), so flag it at validation time.
+fn check_ui_invoke_arg_shape(path: &str, content: &str, warnings: &mut Vec<String>) {
+    for (idx, line) in content.lines().enumerate() {
+        let mut rest = line;
+        while let Some(pos) = rest.find("invoke(") {
+            let after = &rest[pos + "invoke(".len()..];
+            if let Some(second_arg) = second_call_arg(after) {
+                if second_arg.trim_start().starts_with('[') {
+                    warnings.push(format!(
+                        "{path} line {} passes an array to invoke(). window.terrane.invoke sends positional string args and String()-joins an array into one argument. Call invoke(\"verb\", \"arg1\", \"arg2\") instead.",
+                        idx + 1
+                    ));
+                    return;
+                }
+            }
+            rest = after;
+        }
+    }
+}
+
+/// The text after the first top-level comma inside one call's argument list
+/// (single-line heuristic; quotes are not tracked — good enough for a warning).
+fn second_call_arg(after_open_paren: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, ch) in after_open_paren.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => return Some(&after_open_paren[i + 1..]),
+            _ => {}
+        }
+    }
+    None
 }
 
 const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#;
@@ -3050,13 +3198,57 @@ fn write_inline_bundle(dest: &std::path::Path, files: &[InlineFile]) -> Result<(
     Ok(())
 }
 
+/// Abandoned drafts otherwise accumulate forever under `.mcp-drafts/`; keep
+/// the newest MAX_DRAFTS and evict the rest whenever a new draft is created.
+const MAX_DRAFTS: usize = 16;
+
 fn create_build_draft(kind: &str, files: &[InlineFile]) -> Result<String, String> {
     let draft_id = new_draft_id()?;
     let draft = draft_dir(&draft_id)?;
     let bundle = draft.join("bundle");
     write_inline_bundle(&bundle, files)?;
     write_draft_metadata(&draft_id, kind, files)?;
+    evict_stale_drafts();
     Ok(draft_id)
+}
+
+/// Best-effort eviction of the oldest drafts beyond MAX_DRAFTS — hygiene must
+/// never fail the draft that was just created, so errors are swallowed.
+fn evict_stale_drafts() {
+    let root = crate::home_dir().join(".mcp-drafts");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mut drafts: Vec<(u64, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(draft_id) = name.to_str() else {
+            continue;
+        };
+        if !draft_id.starts_with("draft-") {
+            continue;
+        }
+        let updated = read_draft_metadata(draft_id)
+            .ok()
+            .and_then(|meta| meta.get("updatedAtUnix").and_then(Value::as_u64))
+            .or_else(|| {
+                entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+            })
+            .unwrap_or(0);
+        drafts.push((updated, entry.path()));
+    }
+    if drafts.len() <= MAX_DRAFTS {
+        return;
+    }
+    drafts.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, path) in drafts.into_iter().skip(MAX_DRAFTS) {
+        let _ = std::fs::remove_dir_all(&path);
+    }
 }
 
 fn new_draft_id() -> Result<String, String> {

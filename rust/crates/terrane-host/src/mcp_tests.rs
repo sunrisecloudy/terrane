@@ -1177,6 +1177,178 @@ fn ui_scaffold_escapes_app_name() {
     );
 }
 
+#[test]
+fn app_build_put_file_batch_writes_all_or_nothing() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"batch-demo","name":"Batch Demo"}}}"#,
+    )
+    .unwrap();
+    let start_content = structured_content(&start);
+    let draft_id = start_content["draftId"].as_str().unwrap().to_string();
+    let hash_before = start_content["bundleHash"].as_str().unwrap().to_string();
+
+    // One unsafe entry rejects the whole batch and writes nothing.
+    let bad = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"bad","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"files":[{{"path":"main.js","content":"function handle(input){{return 'x';}}"}},{{"path":"../evil.js","content":"x"}}]}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        bad.contains(r#""isError":true"#) && bad.contains("safe relative bundle path"),
+        "unsafe batch entry: {bad}"
+    );
+    let get = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"get","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        structured_content(&get)["bundleHash"].as_str().unwrap(),
+        hash_before,
+        "rejected batch must not change the draft: {get}"
+    );
+
+    // A good batch writes several files in one call.
+    let good = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"good","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"files":[{{"path":"main.js","content":"function handle(input){{var verb=input[0]||'';return 'ok:'+verb;}}"}},{{"path":"notes.txt","content":"hello"}}]}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let good_content = structured_content(&good);
+    assert_eq!(
+        good_content["files"].as_array().map(Vec::len),
+        Some(2),
+        "batch write summaries: {good}"
+    );
+    assert!(
+        good.contains("app_build_validate"),
+        "batch write should route to validation: {good}"
+    );
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        structured_content(&validate)["valid"],
+        true,
+        "batch-updated draft validates: {validate}"
+    );
+}
+
+#[test]
+fn app_build_validate_warns_on_ui_invoke_array_args() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"uiarg-demo","name":"UiArg Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The observed run-2 mistake: an args array as the second invoke argument.
+    let ui_js = "async function send(text, refDate) {\n  return window.terrane.invoke('nl_view', [text, refDate]);\n}\nsend('x', 'y');\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(ui_js)
+        ),
+    )
+    .unwrap();
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], true, "array-arg UI: {validate}");
+    let warnings = validation["warnings"].to_string();
+    assert!(
+        warnings.contains("passes an array to invoke()")
+            && warnings.contains("positional string args"),
+        "array-arg UI should warn with the positional contract: {warnings}"
+    );
+}
+
+#[test]
+fn app_build_errors_carry_structured_recovery() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let missing = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"missing","method":"tools/call","params":{"name":"app_build_put_file","arguments":{"draftId":"draft-00000000000000000000000000000000","path":"main.js","content":"x"}}}"#,
+    )
+    .unwrap();
+    assert!(missing.contains(r#""isError":true"#), "missing: {missing}");
+    let content = structured_content(&missing);
+    assert_eq!(content["type"], "build_error", "missing: {missing}");
+    assert_eq!(
+        content["nextToolCall"]["tool"], "app_build_list",
+        "lost draftId should route to app_build_list: {missing}"
+    );
+}
+
+#[test]
+fn stale_drafts_are_evicted_beyond_cap() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+
+    let files = vec![super::InlineFile {
+        path: "manifest.json".to_string(),
+        content: r#"{"id":"gc-demo","name":"GC","runtime":"js","backend":"main.js"}"#.to_string(),
+    }];
+    for _ in 0..20 {
+        super::create_build_draft("js_kv_notes", &files).unwrap();
+    }
+    let count = std::fs::read_dir(dir.path().join(".mcp-drafts"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("draft-"))
+        })
+        .count();
+    assert_eq!(count, 16, "draft cap should evict the oldest drafts");
+}
+
 // --- In-session approval: elicitation helpers -----------------------------
 
 #[test]

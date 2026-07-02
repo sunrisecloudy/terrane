@@ -211,6 +211,23 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
         build_list_tool.description
     );
 
+    let put_file_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_BUILD_PUT_FILE)
+        .expect("app_build_put_file tool exists");
+    assert!(
+        put_file_tool.input_schema.contains(r#""files""#)
+            && put_file_tool
+                .description
+                .contains("several files in one call")
+            && put_file_tool
+                .input_schema
+                .contains(r#""required":["draftId"]"#),
+        "app_build_put_file should advertise single and batch modes: {} / {}",
+        put_file_tool.description,
+        put_file_tool.input_schema
+    );
+
     // The initialize instructions are the one string most clients inject into
     // the model's system prompt — lock the load-bearing contracts into it.
     for token in [
