@@ -345,14 +345,23 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
         "preview frames should disable nested preview creation: {body}"
     );
 
-    let (status, body) = http(
+    let (status, headers, body) = http_raw_with_headers(
         &addr,
         "GET",
         &format!("/__terrane/previews/{preview_id}/frame/style.css"),
         None,
+        &[],
     );
     assert_eq!(status, 200, "preview style: {body}");
     assert!(body.contains("rgb(1 2 3)"), "preview style: {body}");
+    // Preview frames are sandboxed (opaque origin) like app frames, so ES
+    // module assets need CORS headers to load at all.
+    assert!(
+        headers
+            .lines()
+            .any(|l| l.to_ascii_lowercase().starts_with("access-control-allow-origin:")),
+        "preview asset missing CORS header for the sandboxed frame: {headers}"
+    );
 
     let (status, body) = http(
         &addr,
@@ -611,13 +620,24 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
         "bmi css missing app styles: {body}"
     );
 
-    let (status, body) = http(
+    let (status, headers, body) = http_raw_with_headers(
         &addr,
         "GET",
         "/apps/bmi-calculator/__terrane/frame/assets/modules/src/main.js",
         None,
+        &[],
     );
     assert_eq!(status, 200, "bmi module: {body}");
+    // The frame iframe is sandboxed without `allow-same-origin`, so its origin
+    // is opaque and the browser fetches `<script type="module">` assets in CORS
+    // mode. Without this header the module is blocked and the app renders a
+    // blank stage even though every asset serves 200.
+    assert!(
+        headers
+            .lines()
+            .any(|l| l.to_ascii_lowercase().starts_with("access-control-allow-origin:")),
+        "bmi module missing CORS header for the sandboxed frame: {headers}"
+    );
     assert!(
         body.contains("terrane-react-jsx-runtime")
             && body.contains("terrane.invoke")

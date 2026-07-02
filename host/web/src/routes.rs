@@ -519,7 +519,9 @@ fn serve_preview(previews: &PreviewStore, id: &str, rel: &str) -> Resp {
     } else {
         asset.content.into_bytes()
     };
-    Response::from_data(body).with_header(header("Content-Type", &content_type))
+    Response::from_data(body)
+        .with_header(header("Content-Type", &content_type))
+        .with_header(assets_cors_header())
 }
 
 /// `POST /mcp` — MCP JSON-RPC over HTTP, backed by the shared host MCP module.
@@ -631,7 +633,17 @@ fn serve_file(id: &str, base: &Path, target: &Path, live_reload: bool) -> Resp {
     } else {
         bytes
     };
-    Response::from_data(body).with_header(header("Content-Type", ctype))
+    Response::from_data(body)
+        .with_header(header("Content-Type", ctype))
+        .with_header(assets_cors_header())
+}
+
+/// The app frame is a sandboxed iframe without `allow-same-origin`, so its
+/// origin is opaque (`null`) and `<script type="module">` fetches its assets in
+/// CORS mode — unlike classic scripts and stylesheets. Without this header the
+/// browser blocks every ES-module asset and module-based apps render blank.
+fn assets_cors_header() -> tiny_http::Header {
+    header("Access-Control-Allow-Origin", "*")
 }
 
 fn origin_allowed(request: &Request) -> bool {
