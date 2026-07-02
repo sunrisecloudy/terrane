@@ -147,7 +147,6 @@ pub fn setup_mlx(home: &Path, on_line: &mut dyn FnMut(&str)) -> Result<SetupRepo
             found.source.describe(),
             found.generate_bin
         );
-        on_line(&summary);
         return Ok(SetupReport {
             runtime: found,
             installed: false,
@@ -209,7 +208,6 @@ pub fn setup_mlx(home: &Path, on_line: &mut dyn FnMut(&str)) -> Result<SetupRepo
         "installed mlx-lm {MLX_LM_VERSION} under {} (self-contained)",
         engines.display()
     );
-    on_line(&summary);
     Ok(SetupReport {
         runtime,
         installed: true,
