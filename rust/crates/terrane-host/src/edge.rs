@@ -26,7 +26,59 @@ use terrane_core::{Effect, EffectRunner};
 use terrane_core::{Error, EventRecord, Result};
 use terrane_core::{ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost};
 
-pub struct EdgeRunner;
+/// Results a host computed on its own worker thread, waiting to be committed.
+///
+/// A blocking host can't run a minutes-long harness inside its request loop;
+/// it runs [`generate_app_records`] on a worker, stages the records here, and
+/// re-dispatches `harness.generate-app`. The runner returns the staged records
+/// instead of re-running the CLI, so the commit still flows through the
+/// ordinary dispatch → decide → effect → record path and replay is untouched.
+#[derive(Clone, Default)]
+pub struct HarnessStaging {
+    generated:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<EventRecord>>>>,
+}
+
+impl HarnessStaging {
+    pub fn stage_generated(&self, draft_id: &str, records: Vec<EventRecord>) {
+        self.generated
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(draft_id.to_string(), records);
+    }
+
+    fn take_generated(&self, draft_id: &str) -> Option<Vec<EventRecord>> {
+        self.generated
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(draft_id)
+    }
+}
+
+#[derive(Default)]
+pub struct EdgeRunner {
+    staging: HarnessStaging,
+}
+
+impl EdgeRunner {
+    pub fn with_staging(staging: HarnessStaging) -> Self {
+        Self { staging }
+    }
+}
+
+/// Run the app-generation harness effect standalone (no core needed). Hosts
+/// that background generation call this on a worker thread, then stage the
+/// records via [`HarnessStaging`] and re-dispatch `harness.generate-app` to
+/// commit them.
+pub fn generate_app_records(
+    draft_id: &str,
+    app_id: &str,
+    name: &str,
+    harness: &str,
+    prompt: &str,
+) -> std::result::Result<Vec<EventRecord>, String> {
+    generate_app_with_harness(draft_id, app_id, name, harness, prompt).map_err(|e| e.to_string())
+}
 
 const DEFAULT_EDGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -49,7 +101,10 @@ impl EffectRunner for EdgeRunner {
                 name,
                 harness,
                 prompt,
-            } => generate_app_with_harness(draft_id, app_id, name, harness, prompt),
+            } => match self.staging.take_generated(draft_id) {
+                Some(records) => Ok(records),
+                None => generate_app_with_harness(draft_id, app_id, name, harness, prompt),
+            },
             Effect::RunHarnessJs {
                 run_id,
                 app_id,
@@ -131,7 +186,11 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
         other => return Err(Error::InvalidInput(format!("unknown agent: {other}"))),
     };
 
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_process_group(&mut command);
     let mut child = command.spawn().map_err(|e| {
         Error::Storage(format!(
             "failed to run `{agent}` (is it installed and on PATH?): {e}"
@@ -158,7 +217,7 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
         {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
@@ -269,7 +328,7 @@ fn run_harness_js(
                 ExecutionPrincipal::local_owner(),
                 bundle.resources.clone(),
             )
-            .with_runner(std::sync::Arc::new(EdgeRunner)),
+            .with_runner(std::sync::Arc::new(EdgeRunner::default())),
         ));
         let output = run_js_bundle(app_id, &[], &bundle, host.clone())?;
         Ok((js, output, host.take_records()))
@@ -506,8 +565,35 @@ fn extract_structured_output(raw: &str) -> Result<String> {
     Ok(structured.to_string())
 }
 
+/// Give a CLI child its own process group so a timeout kill reaps its whole
+/// tree. The npm `codex` wrapper hands the real work to a native child;
+/// killing only the wrapper leaves that grandchild running — and holding our
+/// stdout/stderr pipes, which blocks the reader threads forever.
+fn isolate_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+}
+
+fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::killpg(child.id() as i32, libc::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
 fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<(String, i32)> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // stdin must be closed, not inherited: `codex exec` sees a non-TTY stdin
+    // (e.g. the pipe a supervisor gave this host) and blocks reading it until
+    // EOF — which never comes, so generation hangs at 0% CPU forever.
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    isolate_process_group(command);
     let mut child = command.spawn().map_err(|e| {
         Error::Storage(format!(
             "failed to run `{label}` (is it installed and on PATH?): {e}"
@@ -533,7 +619,7 @@ fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<
         {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
@@ -676,5 +762,7 @@ fn harness_timeout() -> Duration {
         .and_then(|raw| raw.parse::<u64>().ok())
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
-        .unwrap_or(Duration::from_secs(180))
+        // Real app generations regularly need minutes; hosts background the
+        // harness, so a generous default no longer stalls anything.
+        .unwrap_or(Duration::from_secs(600))
 }

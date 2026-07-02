@@ -26,6 +26,17 @@ struct BuilderGenerateRequest {
 }
 
 #[derive(DeJson)]
+struct BuilderStatusRequest {
+    id: String,
+}
+
+#[derive(SerJson)]
+struct BuilderJobStatus {
+    id: String,
+    status: String,
+}
+
+#[derive(DeJson)]
 struct PreviewDecisionRequest {
     #[nserde(default)]
     reason: String,
@@ -61,6 +72,7 @@ struct DecisionContext<'a> {
 pub struct RouteState<'a> {
     pub previews: &'a mut PreviewStore,
     pub admin_session: &'a mut crate::admin::AdminSessionState,
+    pub builder_jobs: &'a mut crate::builder_jobs::BuilderJobs,
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +81,7 @@ pub struct RouteConfig<'a> {
     pub token: Option<&'a str>,
     pub live_reload: bool,
     pub admin_base_url: &'a str,
+    pub dev_apps: &'a crate::dev_apps::DevApps,
 }
 
 pub fn route(
@@ -80,12 +93,14 @@ pub fn route(
     let RouteState {
         previews,
         admin_session,
+        builder_jobs,
     } = state;
     let RouteConfig {
         require_auth,
         token,
         live_reload,
         admin_base_url,
+        dev_apps,
     } = config;
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
@@ -99,6 +114,7 @@ pub fn route(
         return json_error(403, "admin header required");
     }
     match (&method, segs.as_slice()) {
+        (Method::Get, []) => crate::home::page(live_reload),
         (Method::Get, ["healthz"]) => json_ok(&HealthResponse {
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
@@ -170,7 +186,12 @@ pub fn route(
             crate::admin::revoke(core, admin_session, request)
         }
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => crate::admin::page(),
-        (Method::Post, ["__terrane", "builder", "generate"]) => builder_generate(core, request),
+        (Method::Post, ["__terrane", "builder", "generate"]) => {
+            builder_generate(core, builder_jobs, request)
+        }
+        (Method::Post, ["__terrane", "builder", "status"]) => {
+            builder_status(core, builder_jobs, request)
+        }
         (Method::Post, ["__terrane", "previews"]) => create_preview(core, previews, request),
         (Method::Get, ["__terrane", "previews", id, "frame"]) => serve_preview(previews, id, ""),
         (Method::Get, ["__terrane", "previews", id, "frame", rest @ ..]) => {
@@ -181,24 +202,61 @@ pub fn route(
         }
         (Method::Delete, ["__terrane", "previews", id]) => destroy_preview(previews, id),
         (Method::Get | Method::Post, ["__terrane", "previews", ..]) => json_error(404, "not found"),
-        (Method::Get, ["apps"]) => json_ok(&terrane_host::list_apps(core)),
+        (Method::Get, ["apps"]) => json_ok(&merged_apps(core, dev_apps)),
         (Method::Post, ["mcp"]) => mcp(core, request),
         (Method::Get, ["mcp"]) => json_error(405, "method not allowed"),
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
-            crate::live_reload::response(core, id)
+            crate::live_reload::response(app_source(core, dev_apps, id), id)
         }
-        (Method::Get, ["apps", id, "__terrane", "frame"]) => serve_ui(core, id, "", live_reload),
+        (Method::Get, ["apps", id, "__terrane", "frame"]) => {
+            serve_ui(core, dev_apps, id, "", live_reload)
+        }
         (Method::Get, ["apps", id, "__terrane", "frame", rest @ ..]) => {
-            serve_ui(core, id, &rest.join("/"), live_reload)
+            serve_ui(core, dev_apps, id, &rest.join("/"), live_reload)
         }
         (Method::Get, ["apps", _id, "__terrane", ..]) => json_error(404, "not found"),
-        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request, admin_base_url),
-        (Method::Get, ["apps", id]) => crate::shell::response(core, id),
+        (Method::Post, ["apps", id, "invoke"]) => {
+            invoke(core, dev_apps, id, request, admin_base_url)
+        }
+        (Method::Get, ["apps", id]) => {
+            let exists =
+                core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
+            crate::shell::response(exists, id, live_reload)
+        }
         (Method::Get, ["apps", id, rest @ ..]) => {
-            serve_bundle_asset(core, id, &rest.join("/"), live_reload)
+            serve_bundle_asset(core, dev_apps, id, &rest.join("/"), live_reload)
         }
         _ => json_error(404, "not found"),
     }
+}
+
+/// The catalog plus any dev-scanned apps not yet cataloged (`--apps <dir>`).
+fn merged_apps(
+    core: &terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
+) -> terrane_api::AppsResponse {
+    let mut response = terrane_host::list_apps(core);
+    for summary in dev_apps.summaries() {
+        if !response.apps.iter().any(|app| app.id == summary.id) {
+            response.apps.push(summary);
+        }
+    }
+    response.apps.sort_by(|a, b| a.id.cmp(&b.id));
+    response
+}
+
+/// An app's bundle source: the catalog entry, else the dev-apps scan.
+fn app_source(
+    core: &terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
+    id: &str,
+) -> Option<String> {
+    core.state()
+        .app
+        .apps
+        .get(id)
+        .and_then(|app| app.source.clone())
+        .or_else(|| dev_apps.find(id).map(|app| app.source))
 }
 
 fn admin_requests(
@@ -404,8 +462,15 @@ fn is_admin_control_route(method: &Method, segs: &[&str]) -> bool {
     )
 }
 
-/// `POST /__terrane/builder/generate` - generate a draft app through core.
-fn builder_generate(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
+/// `POST /__terrane/builder/generate` - start generating a draft app in the
+/// background and return `{id, status: "running"}` immediately. The harness
+/// runs minutes; holding the single-threaded request loop for it would stall
+/// every other request. Poll `/__terrane/builder/status` for the draft.
+fn builder_generate(
+    core: &mut terrane_host::HostCore,
+    builder_jobs: &mut crate::builder_jobs::BuilderJobs,
+    request: &mut Request,
+) -> Resp {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return json_error(400, "cannot read request body");
@@ -414,16 +479,64 @@ fn builder_generate(core: &mut terrane_host::HostCore, request: &mut Request) ->
         Ok(req) => req,
         Err(e) => return json_error(400, &format!("bad builder body: {e}")),
     };
-    match terrane_host::generate_app_json(
-        core,
-        &parsed.id,
-        &parsed.name,
-        &parsed.prompt,
-        Some(selected_harness(&parsed.harness, &parsed.agent)),
-    ) {
-        Ok(json) => Response::from_data(json.into_bytes())
+    let draft_id = parsed.id.trim().to_string();
+    let harness = selected_harness(&parsed.harness, &parsed.agent).trim();
+    let harness = if harness.is_empty() { "codex" } else { harness };
+
+    // Fail fast on invalid requests: decide-level validation without running
+    // the effect. A valid effectful command reports "dryRun unsupported";
+    // anything else is a real validation error.
+    let args = [
+        "--harness".to_string(),
+        harness.to_string(),
+        draft_id.clone(),
+        parsed.id.clone(),
+        parsed.name.clone(),
+        parsed.prompt.clone(),
+    ];
+    match terrane_host::dry_run_on_core(core, "harness.generate-app", &args) {
+        Err(e) if e.contains("dryRun unsupported") => {}
+        Err(e) => return json_error(500, &e),
+        Ok(_) => {}
+    }
+
+    if !builder_jobs.running(&draft_id) {
+        builder_jobs.start(&draft_id, &parsed.id, &parsed.name, harness, &parsed.prompt);
+    }
+    json_ok(&BuilderJobStatus {
+        id: draft_id,
+        status: "running".into(),
+    })
+}
+
+/// `POST /__terrane/builder/status` `{id}` — poll a background generation. The
+/// poll that finds the worker finished commits its records through an ordinary
+/// `harness.generate-app` dispatch, then returns the draft JSON.
+fn builder_status(
+    core: &mut terrane_host::HostCore,
+    builder_jobs: &mut crate::builder_jobs::BuilderJobs,
+    request: &mut Request,
+) -> Resp {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed: BuilderStatusRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad builder status body: {e}")),
+    };
+
+    match builder_jobs.poll(core, parsed.id.trim()) {
+        crate::builder_jobs::JobPoll::Running => json_ok(&BuilderJobStatus {
+            id: parsed.id.trim().to_string(),
+            status: "running".into(),
+        }),
+        crate::builder_jobs::JobPoll::Done(json) => Response::from_data(json.into_bytes())
             .with_header(header("Content-Type", "application/json")),
-        Err(e) => json_error(500, &e),
+        crate::builder_jobs::JobPoll::Failed(e) => json_error(500, &e),
+        crate::builder_jobs::JobPoll::Unknown => {
+            json_error(404, &format!("no such builder job or draft: {}", parsed.id))
+        }
     }
 }
 
@@ -542,9 +655,12 @@ fn mcp(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
     }
 }
 
-/// `POST /apps/{id}/invoke` — run a verb on the app's backend, return its output.
+/// `POST /apps/{id}/invoke` — run a verb on the app's backend, return its
+/// output. A dev-scanned app is cataloged on its first invoke (the same lazy
+/// `app.add` the macOS host performs on selection).
 fn invoke(
     core: &mut terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
     id: &str,
     request: &mut Request,
     admin_base_url: &str,
@@ -557,6 +673,20 @@ fn invoke(
         Ok(req) => req,
         Err(e) => return json_error(400, &format!("bad invoke body: {e}")),
     };
+
+    if !core.state().app.apps.contains_key(id) {
+        if let Some(dev) = dev_apps.find(id) {
+            let args = vec![
+                dev.id.clone(),
+                dev.name.clone(),
+                "--source".to_string(),
+                dev.source.clone(),
+            ];
+            if let Err(e) = terrane_host::dispatch_on_core(core, "app.add", &args) {
+                return json_error(500, &format!("cannot catalog dev app {id}: {e}"));
+            }
+        }
+    }
 
     match terrane_host::invoke_app_checked_with_admin_base_and_source(
         core,
@@ -582,8 +712,14 @@ fn invoke(
 
 /// `GET /apps/{id}/…` — serve the app's UI (with the invoke shim injected) or a
 /// bundle asset. `rel` is the path under the bundle dir (empty = the UI entry).
-fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload: bool) -> Resp {
-    let Some(source) = core.state().app.apps.get(id).and_then(|a| a.source.clone()) else {
+fn serve_ui(
+    core: &mut terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
+    id: &str,
+    rel: &str,
+    live_reload: bool,
+) -> Resp {
+    let Some(source) = app_source(core, dev_apps, id) else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };
     let base = Path::new(&source);
@@ -606,11 +742,12 @@ fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload:
 /// while the iframe route resolves relative to `manifest.ui`'s directory.
 fn serve_bundle_asset(
     core: &mut terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
     id: &str,
     rel: &str,
     live_reload: bool,
 ) -> Resp {
-    let Some(source) = core.state().app.apps.get(id).and_then(|a| a.source.clone()) else {
+    let Some(source) = app_source(core, dev_apps, id) else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };
     let base = Path::new(&source);

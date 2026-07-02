@@ -54,7 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     if let app = initialApp() {
       select(app, confirmUnsaved: false)
     } else {
-      showNoApps()
+      showHome()
     }
 
     window.makeKeyAndOrderFront(nil)
@@ -79,6 +79,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   ) {
     if navigationAction.shouldPerformDownload {
       decisionHandler(.download)
+      return
+    }
+
+    // A home-page card navigates to an app frame root. Route it through
+    // native selection so the bridge, sidebar, and source editor follow.
+    if navigationAction.targetFrame?.isMainFrame != false,
+      let url = navigationAction.request.url,
+      let id = HomePage.appId(for: url),
+      id != selectedApp?.id,
+      let app = apps.first(where: { $0.id == id })
+    {
+      decisionHandler(.cancel)
+      select(app)
       return
     }
 
@@ -148,6 +161,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     appSidebar.onSelect = { [weak self] app in
       self?.select(app)
     }
+    appSidebar.onHome = { [weak self] in
+      self?.showHome(confirmUnsaved: true)
+    }
     appSidebar.onToggleCollapse = { [weak self] in
       self?.toggleSidebar()
     }
@@ -210,15 +226,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     appSidebar.render(apps: apps, selectedAppId: selectedApp?.id)
   }
 
+  /// Only an explicitly requested app id skips the landing page.
   private func initialApp() -> TerraneApp? {
-    let requested = Self.parseAppId()
-    if let requested, let app = apps.first(where: { $0.id == requested }) {
-      return app
-    }
-    if let app = apps.first(where: { $0.id == "todo" }) {
-      return app
-    }
-    return apps.first
+    guard let requested = Self.parseAppId() else { return nil }
+    return apps.first(where: { $0.id == requested })
   }
 
   private func select(_ app: TerraneApp, confirmUnsaved: Bool = true) {
@@ -244,13 +255,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       ))
   }
 
-  private func showNoApps() {
+  /// The shared landing page: also the empty state when nothing is installed.
+  private func showHome(confirmUnsaved: Bool = false) {
+    if confirmUnsaved, selectedApp != nil, !sourceEditor.confirmDiscardIfNeeded(window: window) {
+      restoreSelectedSegment()
+      return
+    }
     selectedApp = nil
     bridge?.clearSelection()
     window.title = "Terrane"
     appSidebar.select(appId: nil)
     sourceEditor?.setApp(nil)
-    webView.loadHTMLString(Self.emptyStateHTML, baseURL: nil)
+    webView.loadHTMLString(HomePage.render(apps: apps) ?? Self.emptyStateHTML, baseURL: nil)
   }
 
   private func saveSource(app: TerraneApp, file: SourceFile, text: String) throws
@@ -272,7 +288,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     apps = AppCatalog.discover(home: home)
     renderAppSwitcher()
     guard let app = apps.first(where: { $0.id == id }) else {
-      showNoApps()
+      showHome()
       throw SourceEditorError.invalidPath("App \(id) is no longer available.")
     }
     load(app, preferredSourcePath: preferredSourcePath)

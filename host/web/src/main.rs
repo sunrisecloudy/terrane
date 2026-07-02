@@ -14,6 +14,9 @@
 
 mod admin;
 mod args;
+mod builder_jobs;
+mod dev_apps;
+mod home;
 mod http;
 mod live_reload;
 mod routes;
@@ -35,7 +38,8 @@ fn main() {
         std::process::exit(1);
     }
 
-    let mut core = match terrane_host::open() {
+    let staging = terrane_host::HarnessStaging::default();
+    let mut core = match terrane_host::open_with_staging(staging.clone()) {
         Ok(core) => core,
         Err(e) => {
             eprintln!("terrane-web: {e}");
@@ -51,8 +55,9 @@ fn main() {
         }
     };
     let admin_base_url = format!("http://{}", server.server_addr());
+    let dev_apps = dev_apps::DevApps::new(args.apps_dir.clone());
     eprintln!(
-        "terrane-web: serving {} on http://{} (auth: {}, live reload: {})",
+        "terrane-web: serving {} on http://{} (auth: {}, live reload: {}{})",
         terrane_host::log_path().display(),
         server.server_addr(),
         if require_auth {
@@ -60,17 +65,24 @@ fn main() {
         } else {
             "off (loopback)"
         },
-        if args.live_reload { "on" } else { "off" }
+        if args.live_reload { "on" } else { "off" },
+        if dev_apps.enabled() {
+            format!(", dev apps: {}", dev_apps.dir_display())
+        } else {
+            String::new()
+        }
     );
 
     let mut previews = terrane_host::PreviewStore::new();
     let mut admin_session = admin::AdminSessionState::default();
+    let mut builder_jobs = builder_jobs::BuilderJobs::new(staging);
     for mut request in server.incoming_requests() {
         let response = routes::route(
             &mut core,
             routes::RouteState {
                 previews: &mut previews,
                 admin_session: &mut admin_session,
+                builder_jobs: &mut builder_jobs,
             },
             &mut request,
             routes::RouteConfig {
@@ -78,6 +90,7 @@ fn main() {
                 token: token.as_deref(),
                 live_reload: args.live_reload,
                 admin_base_url: &admin_base_url,
+                dev_apps: &dev_apps,
             },
         );
         let _ = request.respond(response);

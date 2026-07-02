@@ -184,28 +184,36 @@ final class BmiCalculatorE2ETests: XCTestCase {
 
       let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 224, height: 640))
       var selected: TerraneApp?
+      var wentHome = false
       sidebar.onSelect = { selected = $0 }
+      sidebar.onHome = { wentHome = true }
       sidebar.render(apps: [paint, todo], selectedAppId: "todo")
       sidebar.layoutSubtreeIfNeeded()
 
+      // Home leads the stack, then the discovered apps.
       let buttons = subviews(ofType: AppSidebarButton.self, in: sidebar)
-      XCTAssertEqual(buttons.map(\.title), ["Pixel Paint", "Todo"])
-      XCTAssertEqual(buttons.map(\.toolTip), ["pixel-paint", "todo"])
-      XCTAssertEqual(buttons.map(\.isSelected), [false, true])
+      XCTAssertEqual(buttons.map(\.title), ["Home", "Pixel Paint", "Todo"])
+      XCTAssertEqual(buttons.map(\.toolTip), ["", "pixel-paint", "todo"])
+      XCTAssertEqual(buttons.map(\.isSelected), [false, false, true])
       XCTAssertTrue(buttons.allSatisfy { $0.image != nil })
 
       sidebar.selectApp(at: 0)
       XCTAssertEqual(selected?.id, "pixel-paint")
 
       sidebar.select(appId: "pixel-paint")
-      XCTAssertEqual(buttons.map(\.isSelected), [true, false])
+      XCTAssertEqual(buttons.map(\.isSelected), [false, true, false])
+
+      buttons[0].performClick(nil)
+      XCTAssertTrue(wentHome, "home button should fire onHome")
+      sidebar.select(appId: nil)
+      XCTAssertEqual(buttons.map(\.isSelected), [true, false, false])
 
       sidebar.setCollapsed(true)
-      XCTAssertEqual(buttons.map(\.title), ["", ""])
-      XCTAssertEqual(buttons.map(\.toolTip), ["Pixel Paint", "Todo"])
+      XCTAssertEqual(buttons.map(\.title), ["", "", ""])
+      XCTAssertEqual(buttons.map(\.toolTip), ["Home", "Pixel Paint", "Todo"])
 
       sidebar.setCollapsed(false)
-      XCTAssertEqual(buttons.map(\.title), ["Pixel Paint", "Todo"])
+      XCTAssertEqual(buttons.map(\.title), ["Home", "Pixel Paint", "Todo"])
     }
   }
 

@@ -243,17 +243,63 @@ fn json_string_field(body: &str, field: &str) -> String {
     rest[..end].to_string()
 }
 
-/// Spawn terrane-web on an ephemeral port; return (child, addr) once it's bound.
-fn spawn_web(home: &std::path::Path) -> (Child, String) {
+/// A spawned server that dies with the test — panicking assertions must not
+/// leak `terrane-web` processes (which hold home locks) on the machine.
+struct WebServer(Child);
+
+impl WebServer {
+    fn kill(&mut self) -> std::io::Result<()> {
+        self.0.kill()
+    }
+
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.wait()
+    }
+}
+
+impl Drop for WebServer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Spawn terrane-web on an ephemeral port; return (server, addr) once it's bound.
+fn spawn_web(home: &std::path::Path) -> (WebServer, String) {
     spawn_web_with(home, "127.0.0.1:0", None)
 }
 
-fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (Child, String) {
+fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (WebServer, String) {
+    spawn_web_full(home, bind, token, &[], &[])
+}
+
+/// Spawn with `--apps <dir>` dev scanning enabled.
+fn spawn_web_dev(home: &std::path::Path, apps_dir: &std::path::Path) -> (WebServer, String) {
+    spawn_web_full(
+        home,
+        "127.0.0.1:0",
+        None,
+        &["--apps", apps_dir.to_str().unwrap()],
+        &[],
+    )
+}
+
+fn spawn_web_full(
+    home: &std::path::Path,
+    bind: &str,
+    token: Option<&str>,
+    extra_args: &[&str],
+    envs: &[(&str, String)],
+) -> (WebServer, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_terrane-web"));
     cmd.args(["--addr", bind])
+        .args(extra_args)
         .env("TERRANE_HOME", home)
         .stderr(Stdio::piped())
         .stdout(Stdio::null());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
     if let Some(token) = token {
         cmd.env("TERRANE_WEB_TOKEN", token);
     }
@@ -268,7 +314,7 @@ fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (C
             .nth(1)
             .and_then(|s| s.split_whitespace().next())
         {
-            return (child, addr.to_string());
+            return (WebServer(child), addr.to_string());
         }
         seen.push(line);
     }
@@ -528,6 +574,125 @@ function handle(input) {
     let _ = child.wait();
 }
 
+/// A fake `codex` CLI: writes a valid app bundle to the `--output-last-message`
+/// file after a short delay, so the e2e proves the background job + status
+/// polling flow without a real agent.
+fn write_fake_codex(dir: &Path) -> PathBuf {
+    let bin_dir = dir.join("fake-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let manifest = r#"{\"id\":\"bg-demo\",\"name\":\"BG Demo\",\"version\":\"0.1.0\",\"runtime\":\"js\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[]}"#;
+    let script = format!(
+        r#"#!/bin/sh
+out=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ]; then out="$a"; fi
+  prev="$a"
+done
+sleep 1
+cat > "$out" <<'JSON'
+{{"files":[{{"path":"manifest.json","content":"{manifest}"}},{{"path":"main.js","content":"function handle(input) {{ return \"ok\"; }}"}},{{"path":"index.html","content":"<!doctype html><html><body>bg demo</body></html>"}}]}}
+JSON
+exit 0
+"#
+    );
+    let path = bin_dir.join("codex");
+    std::fs::write(&path, script).unwrap();
+    let mut perms = std::fs::metadata(&path).unwrap().permissions();
+    use std::os::unix::fs::PermissionsExt;
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).unwrap();
+    bin_dir
+}
+
+#[test]
+fn builder_generate_runs_in_background_and_status_reports_the_draft() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let bin_dir = write_fake_codex(dir.path());
+    let path_env = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let (mut child, addr) = spawn_web_full(
+        &home,
+        "127.0.0.1:0",
+        None,
+        &[],
+        &[("PATH", path_env)],
+    );
+
+    // Start returns immediately with a running job, not the draft.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/builder/generate",
+        Some(r#"{"id":"bg-demo","name":"BG Demo","prompt":"make a demo","harness":"codex"}"#),
+    );
+    assert_eq!(status, 200, "generate start: {body}");
+    assert!(
+        body.contains(r#""status":"running""#) && body.contains("bg-demo"),
+        "start should report a running job: {body}"
+    );
+
+    // The loop stays free while the harness runs: other routes answer.
+    let (status, _) = http(&addr, "GET", "/healthz", None);
+    assert_eq!(status, 200, "server should serve while generating");
+
+    // Poll until the job commits; the fake harness sleeps ~1s.
+    let mut draft = String::new();
+    for _ in 0..40 {
+        let (status, body) = http(
+            &addr,
+            "POST",
+            "/__terrane/builder/status",
+            Some(r#"{"id":"bg-demo"}"#),
+        );
+        assert_eq!(status, 200, "status poll: {body}");
+        if !body.contains(r#""status":"running""#) {
+            draft = body;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert!(
+        draft.contains("manifest.json") && draft.contains("bg-demo"),
+        "final status should be the committed draft: {draft}"
+    );
+
+    // Polling again after completion still serves the draft from state.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/builder/status",
+        Some(r#"{"id":"bg-demo"}"#),
+    );
+    assert_eq!(status, 200, "post-completion status: {body}");
+    assert!(body.contains("manifest.json"), "draft from state: {body}");
+
+    // Unknown ids are a 404, not a hang.
+    let (status, _) = http(
+        &addr,
+        "POST",
+        "/__terrane/builder/status",
+        Some(r#"{"id":"ghost"}"#),
+    );
+    assert_eq!(status, 404, "unknown draft should 404");
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // The committed records replay: reopen the log and check the draft.
+    let core = Core::open(home.join("log.bin")).unwrap();
+    assert!(
+        core.state().builder.drafts.contains_key("bg-demo"),
+        "draft persisted to the log"
+    );
+    assert!(core.replay_matches().unwrap(), "replay identity holds");
+}
+
 #[test]
 fn builder_generate_route_rejects_invalid_request_before_harness() {
     let dir = tempdir().unwrap();
@@ -545,6 +710,136 @@ fn builder_generate_route_rejects_invalid_request_before_harness() {
         body.contains("unsafe") && body.contains("bad/path"),
         "builder generate error should come from core validation: {body}"
     );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn write_dev_app(dir: &Path, id: &str, name: &str) -> PathBuf {
+    let app = dir.join(id);
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("manifest.json"),
+        format!(
+            r#"{{ "id": "{id}", "name": "{name}", "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": [] }}"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("main.js"),
+        "function handle(input) { return \"pong:\" + input[0]; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("index.html"),
+        format!(
+            "<!doctype html><html><head><title>{name}</title></head><body data-dev-app=\"{id}\"></body></html>"
+        ),
+    )
+    .unwrap();
+    app
+}
+
+#[test]
+fn dev_apps_dir_scans_serves_and_lazily_catalogs() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let apps_dir = dir.path().join("bundles");
+    std::fs::create_dir_all(&apps_dir).unwrap();
+    write_dev_app(&apps_dir, "devdemo", "Dev Demo");
+
+    let (mut child, addr) = spawn_web_dev(&home, &apps_dir);
+
+    // Scanned into the catalog listing without an `app add`.
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200, "apps: {body}");
+    assert!(
+        body.contains(r#""id":"devdemo""#)
+            && body.contains("Dev Demo")
+            && body.contains(r#""has_ui":true"#),
+        "dev app missing from catalog: {body}"
+    );
+
+    // Shell, frame, and live-version all resolve the dev bundle source.
+    let (status, body) = http(&addr, "GET", "/apps/devdemo/", None);
+    assert_eq!(status, 200, "dev shell: {body}");
+    let (status, body) = http(&addr, "GET", "/apps/devdemo/__terrane/frame/", None);
+    assert_eq!(status, 200, "dev frame: {body}");
+    assert!(
+        body.contains("data-dev-app=\"devdemo\""),
+        "dev frame body: {body}"
+    );
+    let (status, body) = http(&addr, "GET", "/apps/devdemo/__terrane/live-version", None);
+    assert_eq!(status, 200, "dev live-version: {body}");
+    assert!(body.contains("\"version\""), "dev live-version body: {body}");
+
+    // First invoke lazily catalogs the dev app, then runs its backend.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/devdemo/invoke",
+        Some(r#"{"verb":"ping","args":[]}"#),
+    );
+    assert_eq!(status, 200, "dev invoke: {body}");
+    assert!(body.contains("pong:ping"), "dev invoke output: {body}");
+
+    // A bundle dropped in AFTER startup appears on the next catalog fetch and
+    // is servable immediately — no restart, no install.
+    write_dev_app(&apps_dir, "late-arrival", "Late Arrival");
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200);
+    assert!(
+        body.contains(r#""id":"late-arrival""#),
+        "late dev app missing: {body}"
+    );
+    let (status, body) = http(&addr, "GET", "/apps/late-arrival/__terrane/frame/", None);
+    assert_eq!(status, 200, "late dev frame: {body}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn serves_home_landing_page_at_root() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (mut child, addr) = spawn_web(home);
+
+    // Landing page: the shared terrane-host home page, configured for the web
+    // host — catalog fetched from `/apps`, cards linking into the `/apps/{id}/`
+    // shell, admin console in the footer.
+    let (status, body) = http(&addr, "GET", "/", None);
+    assert_eq!(status, 200, "home body: {body}");
+    assert!(body.contains("<h1>Terrane</h1>"), "brand missing: {body}");
+    assert!(
+        body.contains("id=\"home-app-list\""),
+        "dynamic app list mount missing: {body}"
+    );
+    assert!(
+        body.contains(r#""catalogUrl":"/apps""#),
+        "catalog url config missing: {body}"
+    );
+    assert!(
+        body.contains(r#""appHref":"/apps/{id}/""#),
+        "app link template missing: {body}"
+    );
+    assert!(
+        body.contains(r#""adminHref":"/__terrane/admin""#) && body.contains("home-admin-link"),
+        "admin console link missing: {body}"
+    );
+    assert!(
+        body.contains("fetch(String(config.catalogUrl)"),
+        "catalog loader missing: {body}"
+    );
+    assert!(
+        body.contains(r#""catalogPollMs":3000"#),
+        "live-reload catalog polling missing from landing page: {body}"
+    );
+
+    // The root route stays exact: unknown top-level paths still 404.
+    let (status, _body) = http(&addr, "GET", "/no-such-page", None);
+    assert_eq!(status, 404, "unknown top-level path should stay 404");
 
     let _ = child.kill();
     let _ = child.wait();
@@ -710,6 +1005,48 @@ fn serves_catalog_ui_and_invoke_over_http() {
     let (status, body) = http(&addr, "GET", "/apps/todo/", None);
     assert_eq!(status, 200, "shell body: {body}");
     assert!(body.contains("Terrane"), "shell brand missing: {body}");
+    assert!(
+        body.contains(r#"<a class="brand" href="/""#),
+        "brand should link back to the landing page: {body}"
+    );
+    assert!(
+        body.contains("window.terraneAppIcon"),
+        "shared app icons missing from shell: {body}"
+    );
+    // Top bar: breadcrumb (app / editable doc name), user menu with settings,
+    // theme switcher, login/logout, and a settings panel beside the iframe.
+    assert!(
+        body.contains("id=\"crumb-app\"")
+            && body.contains("id=\"crumb-doc\"")
+            && body.contains("contenteditable"),
+        "breadcrumb missing from topbar: {body}"
+    );
+    assert!(
+        body.contains("id=\"user-button\"") && body.contains("id=\"user-dropdown\""),
+        "user menu missing from topbar: {body}"
+    );
+    assert!(
+        body.contains("id=\"menu-settings\"") && body.contains("id=\"menu-auth\""),
+        "settings / login menu items missing: {body}"
+    );
+    assert!(
+        body.contains("data-theme=\"light\"")
+            && body.contains("data-theme=\"dark\"")
+            && body.contains("data-theme=\"system\""),
+        "theme options missing: {body}"
+    );
+    assert!(
+        body.contains("id=\"settings-panel\"") && body.contains("id=\"settings-close\""),
+        "settings panel missing: {body}"
+    );
+    assert!(
+        body.contains("terrane:document") && body.contains("/__terrane/admin/session"),
+        "topbar wiring missing from shell script: {body}"
+    );
+    assert!(
+        body.contains("window.__terraneLiveReload = true"),
+        "shell should enable catalog polling under live reload: {body}"
+    );
     assert!(
         body.contains("id=\"desktop-info-button\"")
             && body.contains("setInfoPanelOpen")

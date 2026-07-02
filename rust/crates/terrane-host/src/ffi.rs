@@ -411,6 +411,47 @@ pub unsafe extern "C" fn terrane_build_app(
     finish(code, out_error)
 }
 
+/// Render the shared landing-page HTML for a host-supplied app catalog.
+/// `catalog_json` is the host's catalog as `{"apps":[{"id","name","has_ui"}]}`
+/// (treated as opaque text — the page's script parses it); `app_href_template`
+/// is the per-app link with an `{id}` placeholder, e.g.
+/// `terrane-app://{id}/frame/`. Writes the HTML document to `out_output`.
+///
+/// # Safety
+/// `catalog_json` and `app_href_template` must be valid C strings.
+/// `out_output`/`out_error` must be valid pointers to write a `char*` into (or
+/// null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_home_page(
+    catalog_json: *const c_char,
+    app_href_template: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let catalog_json = match read_str(catalog_json) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let app_href_template = match read_str(app_href_template) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let html = crate::home_page(&crate::HomePageOptions {
+            app_href_template: &app_href_template,
+            catalog_url: None,
+            catalog_json: Some(&catalog_json),
+            admin_href: None,
+            catalog_poll_ms: None,
+        });
+        write_out(out_output, html);
+        TERRANE_OK
+    }));
+    finish(code, out_error)
+}
+
 /// Free a string returned by the Terrane host C ABI. Null-safe; non-null pointers are
 /// single-use.
 ///
