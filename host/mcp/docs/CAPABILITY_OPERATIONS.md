@@ -109,7 +109,7 @@ backend sees no `ctx.resource.<ns>` methods for it.
 | `crdt` | `read`, `write` | |
 | `relational_db` | `read`, `write` | |
 | `build` | `read` | **read-only** — no `write` verb exists |
-| `local-model` | `call` | recorded local LLM generations (default or named model) |
+| `local-model` | `call`, `read` | recorded local LLM generations, model list, Hugging Face pulls |
 
 `auth.grant` with no verbs argument grants the namespace's full verb set. An
 explicit verbs argument is validated against the allowed set above. A namespace

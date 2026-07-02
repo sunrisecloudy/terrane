@@ -31,6 +31,11 @@ struct DefaultSet {
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
+struct ChatCleared {
+    app: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
 struct Responded {
     app: String,
     model: String,
@@ -96,6 +101,17 @@ pub fn default_set_event(id: &str) -> Result<EventRecord> {
     )
 }
 
+/// Build the recorded event that clears an app's conversation transcript
+/// (a "new chat" — later `--continue`/`chat` calls start fresh).
+pub fn chat_cleared_event(app: &str) -> Result<EventRecord> {
+    encode_event(
+        "local-model.chat-cleared",
+        &ChatCleared {
+            app: app.to_string(),
+        },
+    )
+}
+
 /// Build the recorded event for one completed local inference.
 pub fn responded_event(record: &RespondedRecord) -> Result<EventRecord> {
     encode_event(
@@ -113,6 +129,17 @@ pub fn responded_event(record: &RespondedRecord) -> Result<EventRecord> {
             duration_ms: record.duration_ms,
         },
     )
+}
+
+/// The freshly registered model id inside a committed batch (used by the
+/// `pullModel` call surface to hand the new id back to the app).
+pub(crate) fn registered_id_from_records(records: &[EventRecord]) -> Option<String> {
+    records
+        .iter()
+        .rev()
+        .find(|record| record.kind == "local-model.registered")
+        .and_then(|record| decode_event::<Registered>(record).ok())
+        .map(|registered| registered.id)
 }
 
 /// The recorded response text inside a freshly committed batch (used by the
@@ -182,6 +209,12 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
                     duration_ms: e.duration_ms,
                 });
         }
+        "local-model.chat-cleared" => {
+            let e: ChatCleared = decode_event(record)?;
+            state_mut::<LocalModelState>(state, "local-model")?
+                .turns
+                .remove(&e.app);
+        }
         "app.removed" => {
             let e = decode_app_removed(record)?;
             // Transcripts are app-scoped and go with the app; specs are global
@@ -211,6 +244,10 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
         "local-model.default-set" => {
             let e: DefaultSet = decode_event(record).ok()?;
             Some(format!("local-model.default-set {}", e.id))
+        }
+        "local-model.chat-cleared" => {
+            let e: ChatCleared = decode_event(record).ok()?;
+            Some(format!("local-model.chat-cleared {}", e.app))
         }
         "local-model.responded" => {
             let e: Responded = decode_event(record).ok()?;

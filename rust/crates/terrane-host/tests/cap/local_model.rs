@@ -355,3 +355,125 @@ fn local_model_setup_mlx_bootstraps_on_a_scrubbed_path() {
         "status: {status}"
     );
 }
+
+/// Absolute path to the repo's `apps/chat` bundle.
+fn chat_app_source() -> String {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../apps/chat")
+        .canonicalize()
+        .expect("apps/chat bundle exists")
+        .to_str()
+        .unwrap()
+        .to_string()
+}
+
+#[test]
+fn chat_app_bundle_smoke_without_weights() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let src = chat_app_source();
+
+    let (ok, _, err) = terrane(home, &["app", "add", "chat", "Chat", "--source", &src]);
+    assert!(ok, "app add failed: {err}");
+    for namespace in ["kv", "local-model"] {
+        let (ok, _, err) = terrane(
+            home,
+            &["auth", "grant", "user:local-owner", "chat", namespace],
+        );
+        assert!(ok, "grant {namespace} failed: {err}");
+    }
+
+    // No models registered: the picker state is honest and send refuses
+    // with the zero-config pointer instead of committing anything.
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "chat", "state"]);
+    assert!(ok, "state failed: {err}");
+    assert!(out.contains("\"models\":[]"), "out: {out}");
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "chat", "use", "ghost"]);
+    assert!(ok, "use failed: {err}");
+    assert!(out.contains("unknown model"), "out: {out}");
+    let (ok, _, err) = terrane(home, &["js-runtime", "run", "chat", "send", "hi"]);
+    assert!(!ok, "send without models should fail");
+    assert!(err.contains("local-model pull"), "stderr: {err}");
+
+    // The actions table self-describes for agents.
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "chat", "__actions__"]);
+    assert!(ok, "__actions__ failed: {err}");
+    for verb in ["send", "models", "use", "pull", "new", "history"] {
+        assert!(
+            out.contains(&format!("\"verb\":\"{verb}\"")),
+            "missing {verb}: {out}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "real local inference; needs a GGUF at TERRANE_LOCAL_MODEL_GGUF; run with `cargo test -- --ignored`"]
+fn chat_app_conversation_e2e_real() {
+    let Some(gguf) = gguf_from_env() else { return };
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let src = chat_app_source();
+
+    terrane(home, &["app", "add", "chat", "Chat", "--source", &src]);
+    for namespace in ["kv", "local-model"] {
+        terrane(
+            home,
+            &["auth", "grant", "user:local-owner", "chat", namespace],
+        );
+    }
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "local-model",
+            "register",
+            "qwen",
+            "llama_cpp",
+            &gguf,
+            "--max-tokens",
+            "64",
+            "--temp",
+            "0",
+        ],
+    );
+    assert!(ok, "register failed: {err}");
+
+    // Two-turn conversation through the app: the second answer needs turn 1.
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "js-runtime",
+            "run",
+            "chat",
+            "send",
+            "My favorite color is teal. Just acknowledge it briefly.",
+        ],
+    );
+    assert!(ok, "send 1 failed: {err}");
+    assert!(out.contains("\"ok\":true"), "out: {out}");
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "js-runtime",
+            "run",
+            "chat",
+            "send",
+            "What is my favorite color? Answer with just the color name.",
+        ],
+    );
+    assert!(ok, "send 2 failed: {err}");
+    assert!(out.to_lowercase().contains("teal"), "recall failed: {out}");
+
+    // The visible history holds both exchanges; new chat clears everything.
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "chat", "history"]);
+    assert!(ok, "history failed: {err}");
+    assert!(out.matches("\"role\":\"user\"").count() == 2, "out: {out}");
+    let (ok, _, err) = terrane(home, &["js-runtime", "run", "chat", "new"]);
+    assert!(ok, "new failed: {err}");
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "chat", "history"]);
+    assert!(ok, "history failed: {err}");
+    assert!(out.contains("\"messages\":[]"), "out: {out}");
+
+    // Replay rebuilds the whole chat without re-running JS or inference.
+    let (ok, _, err) = terrane(home, &["replay"]);
+    assert!(ok, "replay failed: {err}");
+}

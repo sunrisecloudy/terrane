@@ -212,7 +212,7 @@ succeeds.
 | `crdt` | `read`, `write` |
 | `relational_db` | `read`, `write` |
 | `build` | `read` (read-only) |
-| `local-model` | `call` |
+| `local-model` | `call`, `read` |
 
 The local subject is always `user:local-owner`.
 

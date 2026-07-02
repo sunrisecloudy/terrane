@@ -226,7 +226,7 @@ Statuses to handle: `pending` | `approved` | `denied` | `cancelled` (the extra
 | `crdt` | `read`, `write` |
 | `relational_db` | `read`, `write` |
 | `build` | `read` (read-only) |
-| `local-model` | `call` |
+| `local-model` | `call`, `read` |
 
 `auth.grant` with no verbs argument grants the namespace's full verb set; an
 explicit verbs argument is validated against the allowed set above. A namespace a

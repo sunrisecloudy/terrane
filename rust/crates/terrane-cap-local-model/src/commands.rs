@@ -2,7 +2,7 @@ use terrane_cap_interface::{
     arg, ensure_app_exists, required_tail, state_ref, CommandCtx, Decision, Effect, Error, Result,
 };
 
-use crate::events::{default_set_event, registered_event, removed_event};
+use crate::events::{chat_cleared_event, default_set_event, registered_event, removed_event};
 use crate::types::{
     LocalModelSpec, LocalModelState, BACKENDS, RECOMMENDED_GGUF_FILE, RECOMMENDED_GGUF_REPO,
     RECOMMENDED_MODEL_ID,
@@ -311,6 +311,99 @@ pub(crate) fn decide_ask_json(ctx: CommandCtx<'_>, args: &[String]) -> Result<De
     let mut rewritten = vec![app, "--schema".to_string(), schema];
     rewritten.extend(rest.iter().cloned());
     decide_ask(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].chat(prompt)` — a conversation turn: the
+/// app's recorded exchanges with the default model are fed back as context.
+pub(crate) fn decide_chat(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let rest = args.get(1..).unwrap_or_default();
+    let mut rewritten = vec![app, "--continue".to_string()];
+    rewritten.extend(rest.iter().cloned());
+    decide_ask(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].chatModel(model, prompt)` — a conversation
+/// turn with an explicitly named registered model.
+pub(crate) fn decide_chat_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let model = arg(args, 1, "model")?;
+    let rest = args.get(2..).unwrap_or_default();
+    let mut rewritten = vec![app, "--model".to_string(), model, "--continue".to_string()];
+    rewritten.extend(rest.iter().cloned());
+    decide_ask(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].pullModel(repo[, file])` — download weights
+/// from Hugging Face and register them, exactly like the admin `pull` command
+/// but app-initiated (still behind the app's local-model grant). The model id
+/// derives from the repo name; a `.gguf` file selects the llama_cpp backend,
+/// no file snapshots the repo for mlx.
+pub(crate) fn decide_pull_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let _app = arg(args, 0, "app")?;
+    let repo = arg(args, 1, "repo")?;
+    let file = args
+        .get(2)
+        .map(String::as_str)
+        .filter(|f| !f.trim().is_empty());
+    let id = model_id_from_repo(&repo)?;
+    let mut rewritten = vec![id, repo.clone()];
+    match file {
+        Some(file) => rewritten.push(file.to_string()),
+        None => {
+            rewritten.push("--backend".to_string());
+            rewritten.push("mlx".to_string());
+        }
+    }
+    decide_pull(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].resetChat()` — start a fresh conversation:
+/// records the transcript-clearing event for this app.
+pub(crate) fn decide_reset_chat(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    Ok(Decision::Commit(vec![chat_cleared_event(&app)?]))
+}
+
+/// `ctx.resource["local-model"].models()` — the registered models as a JSON
+/// array (id, backend, default flag), for model-picker UIs.
+pub(crate) fn read_models(
+    state: &dyn terrane_cap_interface::StateStore,
+    _args: &[String],
+) -> Result<terrane_cap_interface::ReadValue> {
+    let local = state_ref::<LocalModelState>(state, "local-model")?;
+    let models: Vec<serde_json::Value> = local
+        .specs
+        .iter()
+        .map(|(id, spec)| {
+            serde_json::json!({
+                "id": id,
+                "backend": spec.backend,
+                "default": local.default_model.as_deref() == Some(id.as_str()),
+            })
+        })
+        .collect();
+    let encoded = serde_json::to_string(&models)
+        .map_err(|e| Error::InvalidInput(format!("model list encode failed: {e}")))?;
+    Ok(terrane_cap_interface::ReadValue::OptString(Some(encoded)))
+}
+
+/// Derive a registerable model id from a Hugging Face repo name:
+/// `unsloth/Qwen3.5-0.8B-GGUF` → `qwen3.5-0.8b-gguf`.
+fn model_id_from_repo(repo: &str) -> Result<String> {
+    let name = repo.rsplit('/').next().unwrap_or(repo);
+    let id: String = name
+        .chars()
+        .map(|c| {
+            let c = c.to_ascii_lowercase();
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    valid_model_id(&id)
 }
 
 /// The app's recorded, successful exchanges with this model — oldest first,

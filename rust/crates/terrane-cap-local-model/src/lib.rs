@@ -8,7 +8,7 @@
 
 use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec, GrantResourceSpec, ReadValue, ResourceMethod, Result, StateStore,
+    EventSpec, GrantResourceSpec, ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
 mod commands;
@@ -17,7 +17,8 @@ mod events;
 mod types;
 
 pub use events::{
-    default_set_event, registered_event, removed_event, responded_event, RespondedRecord,
+    chat_cleared_event, default_set_event, registered_event, removed_event, responded_event,
+    RespondedRecord,
 };
 pub use types::{
     LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS, RECOMMENDED_GGUF_FILE,
@@ -63,6 +64,9 @@ impl Capability for LocalModelCapability {
                 EventSpec {
                     kind: "local-model.responded",
                 },
+                EventSpec {
+                    kind: "local-model.chat-cleared",
+                },
             ],
             queries: Vec::new(),
             resources: vec![
@@ -78,11 +82,32 @@ impl Capability for LocalModelCapability {
                     name: "askJson",
                     params: &["schema", "prompt"],
                 },
+                ResourceMethod::Call {
+                    name: "chat",
+                    params: &["prompt"],
+                },
+                ResourceMethod::Call {
+                    name: "chatModel",
+                    params: &["model", "prompt"],
+                },
+                ResourceMethod::Call {
+                    name: "pullModel",
+                    params: &["repo", "file"],
+                },
+                ResourceMethod::Call {
+                    name: "resetChat",
+                    params: &[],
+                },
+                ResourceMethod::Read {
+                    name: "models",
+                    params: &[],
+                },
             ],
             grant_resources: vec![GrantResourceSpec::namespace_v1(
                 "local-model",
-                &["call"],
-                "Recorded local LLM generations (default or named model).",
+                &["call", "read"],
+                "Recorded local LLM generations (default or named model), the registered \
+                 model list, and Hugging Face pulls.",
             )],
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
@@ -104,6 +129,10 @@ impl Capability for LocalModelCapability {
             // ResourceMethod::Call routes (app-scoped args, positional).
             "local-model.askModel" => commands::decide_ask_model(ctx, args),
             "local-model.askJson" => commands::decide_ask_json(ctx, args),
+            "local-model.chat" => commands::decide_chat(ctx, args),
+            "local-model.chatModel" => commands::decide_chat_model(ctx, args),
+            "local-model.pullModel" => commands::decide_pull_model(ctx, args),
+            "local-model.resetChat" => commands::decide_reset_chat(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }
@@ -116,6 +145,20 @@ impl Capability for LocalModelCapability {
         events::describe(record)
     }
 
+    fn read_resource(
+        &self,
+        ctx: ResourceReadCtx<'_>,
+        name: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        match name {
+            "models" => commands::read_models(ctx.state, args),
+            other => Err(Error::InvalidInput(format!(
+                "unknown resource read: local-model.{other}"
+            ))),
+        }
+    }
+
     fn resource_call_output(
         &self,
         _state: &dyn StateStore,
@@ -124,9 +167,13 @@ impl Capability for LocalModelCapability {
         records: &[EventRecord],
     ) -> Result<ReadValue> {
         match method {
-            "ask" | "askModel" | "askJson" => Ok(ReadValue::OptString(
+            "ask" | "askModel" | "askJson" | "chat" | "chatModel" => Ok(ReadValue::OptString(
                 events::response_text_from_records(records),
             )),
+            "pullModel" => Ok(ReadValue::OptString(events::registered_id_from_records(
+                records,
+            ))),
+            "resetChat" => Ok(ReadValue::OptString(Some("ok".to_string()))),
             other => Err(Error::InvalidInput(format!(
                 "local-model.{other} is not a callable resource"
             ))),

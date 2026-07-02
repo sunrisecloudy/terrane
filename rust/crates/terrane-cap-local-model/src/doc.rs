@@ -34,6 +34,7 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
                 "local-model.removed".to_string(),
                 "local-model.default-set".to_string(),
                 "local-model.responded".to_string(),
+                "local-model.chat-cleared".to_string(),
             ],
             subscriptions: vec!["app.removed".to_string()],
             resource_methods: resource_method_docs(),
@@ -348,6 +349,17 @@ fn local_model_events() -> Vec<EventDoc> {
         )
         .with_effects(&["sets LocalModelState.default_model"]),
         event_doc(
+            "local-model.chat-cleared",
+            &[param(
+                "app",
+                "App id whose transcript is cleared.",
+                "app_id",
+            )],
+            "Records a fresh-conversation request: the app's transcript is dropped, so \
+             later chat/--continue turns start without prior context.",
+        )
+        .with_effects(&["removes LocalModelState.turns[app]"]),
+        event_doc(
             "local-model.responded",
             &[
                 param("app", "App id that requested the generation.", "app_id"),
@@ -415,5 +427,52 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
             "Schema-constrained generation by the default model; returns JSON text matching \
              the schema.",
         ), "string (JSON matching schema) | null"),
+        with_returns(resource_method(
+            "chat",
+            "call",
+            &[param("prompt", "The next user message.", "string")],
+            "A conversation turn with the default model: this app's recorded exchanges \
+             (most recent 8) are fed back as context, so the reply follows the ongoing \
+             conversation. Returns the reply text.",
+        ), "string | null"),
+        with_returns(resource_method(
+            "chatModel",
+            "call",
+            &[
+                param("model", "A registered local model id.", "model_id"),
+                param("prompt", "The next user message.", "string"),
+            ],
+            "Like chat, but with an explicitly named registered model (each model keeps \
+             its own conversation context).",
+        ), "string | null"),
+        with_returns(resource_method(
+            "pullModel",
+            "call",
+            &[
+                param("repo", "Hugging Face repo as org/name.", "string"),
+                param(
+                    "file",
+                    "A .gguf file inside the repo (llama_cpp backend); omit to snapshot \
+                     the repo for the mlx backend.",
+                    "string",
+                ),
+            ],
+            "Download weights from Hugging Face and register them (id derived from the \
+             repo name); the first registered model becomes the default. Blocking: the \
+             download runs before the call returns. Returns the new model id.",
+        ), "string (model id) | null"),
+        with_returns(resource_method(
+            "resetChat",
+            "call",
+            &[],
+            "Start a fresh conversation: clears this app's recorded transcript so the \
+             next chat call has no prior context.",
+        ), "\"ok\""),
+        with_returns(resource_method(
+            "models",
+            "read",
+            &[],
+            "The registered local models as a JSON array of {id, backend, default}.",
+        ), "string (JSON array)"),
     ]
 }

@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 
 use tempfile::tempdir;
-use terrane_cap_local_model::{responded_event, RespondedRecord};
+use terrane_cap_local_model::{registered_event, responded_event, LocalModelSpec, RespondedRecord};
 use terrane_core::{fold_records_in_memory, Core, EffectRunner, Error, State, LOCAL_OWNER_SUBJECT};
 use terrane_core::{Effect, EventRecord, Result};
 
@@ -42,6 +42,30 @@ impl EffectRunner for StubLlm {
                 token_count: 3,
                 duration_ms: 12,
             })?]),
+            Effect::LocalModelPull {
+                id,
+                repo,
+                backend,
+                file,
+                ..
+            } => Ok(vec![registered_event(
+                id,
+                &LocalModelSpec {
+                    backend: if backend == "mlx" { "mlx" } else { "llama_cpp" }.to_string(),
+                    format: if backend == "mlx" { "mlx" } else { "gguf" }.to_string(),
+                    local_path: match file {
+                        Some(file) => format!("/stub/{file}"),
+                        None => repo.clone(),
+                    },
+                    context_length: None,
+                    chat_template: None,
+                    max_tokens: None,
+                    temperature_milli: None,
+                    source: Some(format!("hf:{repo}")),
+                    size_bytes: Some(42),
+                    draft_model: None,
+                },
+            )?]),
             other => Err(Error::InvalidInput(format!(
                 "stub runner cannot perform {other:?}"
             ))),
@@ -330,7 +354,8 @@ fn ask_records_turns_via_runner_and_cascades_on_app_removal() {
         .is_empty());
 }
 
-/// A backend exercising the call surface: `ask`, `askModel`, and `askJson`.
+/// A backend exercising the call surface: ask variants plus the chat-app
+/// surface (chat context, model list, Hugging Face pull, reset).
 const CALLER_BACKEND: &str = r#"
 var lm = ctx.resource["local-model"];
 function handle(input) {
@@ -338,6 +363,11 @@ function handle(input) {
     if (verb === "ask") { return String(lm.ask(input.slice(1).join(" "))); }
     if (verb === "askModel") { return String(lm.askModel(input[1], input.slice(2).join(" "))); }
     if (verb === "askJson") { return String(lm.askJson(input[1], input.slice(2).join(" "))); }
+    if (verb === "chat") { return String(lm.chat(input.slice(1).join(" "))); }
+    if (verb === "chatModel") { return String(lm.chatModel(input[1], input.slice(2).join(" "))); }
+    if (verb === "models") { return String(lm.models()); }
+    if (verb === "pull") { return String(input.length > 2 ? lm.pullModel(input[1], input[2]) : lm.pullModel(input[1])); }
+    if (verb === "reset") { return String(lm.resetChat()); }
     if (verb === "present") { return String(typeof lm); }
     return "?";
 }
@@ -428,6 +458,100 @@ fn js_backend_calls_local_model_and_replay_never_reruns_inference() {
         .is_err());
     assert_eq!(core.state().local_model.turns["caller"].len(), before);
     assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn js_backend_chat_surface_carries_context_pulls_and_resets() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = install_caller(dir.path(), &log);
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "caller", "local-model"],
+    ))
+    .unwrap();
+
+    // models() lists the registered spec and marks the default.
+    core.dispatch(req("js-runtime.run", &["caller", "models"]))
+        .unwrap();
+    let listed = core.take_last_output().unwrap();
+    assert!(listed.contains("\"id\":\"qwen\""), "{listed}");
+    assert!(listed.contains("\"default\":true"), "{listed}");
+
+    // chat feeds back this app's prior ok exchanges as context.
+    core.dispatch(req("js-runtime.run", &["caller", "chat", "first"]))
+        .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+    core.dispatch(req("js-runtime.run", &["caller", "chat", "second"]))
+        .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=1)")
+    );
+
+    // resetChat starts a fresh conversation.
+    core.dispatch(req("js-runtime.run", &["caller", "reset"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("ok"));
+    assert!(!core.state().local_model.turns.contains_key("caller"));
+    core.dispatch(req("js-runtime.run", &["caller", "chat", "third"]))
+        .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+
+    // pullModel downloads (stubbed), registers under a derived id, and the
+    // new model is immediately usable by name.
+    core.dispatch(req(
+        "js-runtime.run",
+        &[
+            "caller",
+            "pull",
+            "unsloth/Qwen3.5-0.8B-GGUF",
+            "Qwen3.5-0.8B-Q4_K_M.gguf",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("qwen3.5-0.8b-gguf")
+    );
+    let spec = &core.state().local_model.specs["qwen3.5-0.8b-gguf"];
+    assert_eq!(spec.backend, "llama_cpp");
+    assert_eq!(spec.local_path, "/stub/Qwen3.5-0.8B-Q4_K_M.gguf");
+
+    // A file-less pull snapshots the repo for mlx.
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "pull", "mlx-community/Qwen3.5-0.8B-MLX-4bit"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("qwen3.5-0.8b-mlx-4bit")
+    );
+    assert_eq!(
+        core.state().local_model.specs["qwen3.5-0.8b-mlx-4bit"].backend,
+        "mlx"
+    );
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "chatModel", "qwen3.5-0.8b-mlx-4bit", "hello"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+
+    // Everything above is ordinary recorded events: replay is identical.
+    assert!(core.replay_matches().unwrap());
+    let reopened = Core::open(&log).unwrap();
+    assert_eq!(reopened.state().local_model.specs.len(), 3);
 }
 
 #[test]

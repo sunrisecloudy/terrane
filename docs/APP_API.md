@@ -183,6 +183,11 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.local-model.ask(prompt)` | call |
 | `ctx.resource.local-model.askModel(model, prompt)` | call |
 | `ctx.resource.local-model.askJson(schema, prompt)` | call |
+| `ctx.resource.local-model.chat(prompt)` | call |
+| `ctx.resource.local-model.chatModel(model, prompt)` | call |
+| `ctx.resource.local-model.pullModel(repo, file)` | call |
+| `ctx.resource.local-model.resetChat()` | call |
+| `ctx.resource.local-model.models()` | read |
 
 #### `ctx.resource.relational_db`
 
