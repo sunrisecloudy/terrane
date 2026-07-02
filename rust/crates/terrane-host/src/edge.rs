@@ -186,7 +186,10 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
         other => return Err(Error::InvalidInput(format!("unknown agent: {other}"))),
     };
 
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     isolate_process_group(&mut command);
     let mut child = command.spawn().map_err(|e| {
         Error::Storage(format!(
@@ -583,7 +586,13 @@ fn kill_process_tree(child: &mut std::process::Child) {
 }
 
 fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<(String, i32)> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // stdin must be closed, not inherited: `codex exec` sees a non-TTY stdin
+    // (e.g. the pipe a supervisor gave this host) and blocks reading it until
+    // EOF — which never comes, so generation hangs at 0% CPU forever.
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     isolate_process_group(command);
     let mut child = command.spawn().map_err(|e| {
         Error::Storage(format!(
