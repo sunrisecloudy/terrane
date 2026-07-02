@@ -243,17 +243,38 @@ fn json_string_field(body: &str, field: &str) -> String {
     rest[..end].to_string()
 }
 
-/// Spawn terrane-web on an ephemeral port; return (child, addr) once it's bound.
-fn spawn_web(home: &std::path::Path) -> (Child, String) {
+/// A spawned server that dies with the test — panicking assertions must not
+/// leak `terrane-web` processes (which hold home locks) on the machine.
+struct WebServer(Child);
+
+impl WebServer {
+    fn kill(&mut self) -> std::io::Result<()> {
+        self.0.kill()
+    }
+
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.0.wait()
+    }
+}
+
+impl Drop for WebServer {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Spawn terrane-web on an ephemeral port; return (server, addr) once it's bound.
+fn spawn_web(home: &std::path::Path) -> (WebServer, String) {
     spawn_web_with(home, "127.0.0.1:0", None)
 }
 
-fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (Child, String) {
+fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (WebServer, String) {
     spawn_web_full(home, bind, token, &[], &[])
 }
 
 /// Spawn with `--apps <dir>` dev scanning enabled.
-fn spawn_web_dev(home: &std::path::Path, apps_dir: &std::path::Path) -> (Child, String) {
+fn spawn_web_dev(home: &std::path::Path, apps_dir: &std::path::Path) -> (WebServer, String) {
     spawn_web_full(
         home,
         "127.0.0.1:0",
@@ -269,7 +290,7 @@ fn spawn_web_full(
     token: Option<&str>,
     extra_args: &[&str],
     envs: &[(&str, String)],
-) -> (Child, String) {
+) -> (WebServer, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_terrane-web"));
     cmd.args(["--addr", bind])
         .args(extra_args)
@@ -293,7 +314,7 @@ fn spawn_web_full(
             .nth(1)
             .and_then(|s| s.split_whitespace().next())
         {
-            return (child, addr.to_string());
+            return (WebServer(child), addr.to_string());
         }
         seen.push(line);
     }

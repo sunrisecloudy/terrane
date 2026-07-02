@@ -187,6 +187,7 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
     };
 
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    isolate_process_group(&mut command);
     let mut child = command.spawn().map_err(|e| {
         Error::Storage(format!(
             "failed to run `{agent}` (is it installed and on PATH?): {e}"
@@ -213,7 +214,7 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
         {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
@@ -561,8 +562,29 @@ fn extract_structured_output(raw: &str) -> Result<String> {
     Ok(structured.to_string())
 }
 
+/// Give a CLI child its own process group so a timeout kill reaps its whole
+/// tree. The npm `codex` wrapper hands the real work to a native child;
+/// killing only the wrapper leaves that grandchild running — and holding our
+/// stdout/stderr pipes, which blocks the reader threads forever.
+fn isolate_process_group(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+}
+
+fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    unsafe {
+        libc::killpg(child.id() as i32, libc::SIGKILL);
+    }
+    let _ = child.kill();
+}
+
 fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<(String, i32)> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    isolate_process_group(command);
     let mut child = command.spawn().map_err(|e| {
         Error::Storage(format!(
             "failed to run `{label}` (is it installed and on PATH?): {e}"
@@ -588,7 +610,7 @@ fn run_capture(command: &mut Command, label: &str, timeout: Duration) -> Result<
         {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
-                let _ = child.kill();
+                kill_process_tree(&mut child);
                 let _ = child.wait();
                 let _ = stdout_reader.join();
                 let _ = stderr_reader.join();
@@ -731,5 +753,7 @@ fn harness_timeout() -> Duration {
         .and_then(|raw| raw.parse::<u64>().ok())
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
-        .unwrap_or(Duration::from_secs(180))
+        // Real app generations regularly need minutes; hosts background the
+        // harness, so a generous default no longer stalls anything.
+        .unwrap_or(Duration::from_secs(600))
 }
