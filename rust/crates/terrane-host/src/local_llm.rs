@@ -46,9 +46,10 @@ pub(crate) fn call(
             })
             .map_err(|e| Error::Runtime(e.to_string()))?,
         ),
-        "mlx" => {
-            Box::new(MlxBackend::load(&spec.local_path).map_err(|e| Error::Runtime(e.to_string()))?)
-        }
+        "mlx" => Box::new(
+            MlxBackend::load(&crate::home_dir(), &spec.local_path)
+                .map_err(|e| Error::Runtime(e.to_string()))?,
+        ),
         other => {
             return Err(Error::Runtime(format!(
                 "local model backend {other} has no edge engine"
@@ -148,6 +149,68 @@ pub(crate) fn pull(
         size_bytes: Some(size_bytes),
     };
     Ok(vec![registered_event(id, &spec)?])
+}
+
+/// `terrane local-model setup mlx` — provision the MLX runtime (uv-pinned,
+/// self-contained under `$TERRANE_HOME/engines/`); progress lines go to
+/// stderr. Host verb, not a capability command: nothing is recorded.
+#[cfg(feature = "local-llm")]
+pub(crate) fn setup_mlx(home: &std::path::Path) -> Result<String> {
+    let report = terrane_local_llm::setup_mlx(home, &mut |line| {
+        eprintln!("{line}");
+    })
+    .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(report.summary)
+}
+
+/// `terrane local-model server status` — resident-server state as a JSON
+/// object (stable surface for the CLI and the C ABI).
+#[cfg(feature = "local-llm")]
+pub(crate) fn mlx_server_status_json(home: &std::path::Path) -> String {
+    let status = terrane_local_llm::server_status(home);
+    serde_json::json!({
+        "running": status.running,
+        "pid": status.pid,
+        "port": status.port,
+        "idleSecs": status.idle_secs,
+        "models": status.models,
+    })
+    .to_string()
+}
+
+/// `terrane local-model server stop` — kill the resident server if any.
+#[cfg(feature = "local-llm")]
+pub(crate) fn mlx_server_stop(home: &std::path::Path) -> Result<String> {
+    let stopped =
+        terrane_local_llm::stop_server(home).map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(if stopped {
+        "mlx server stopped".to_string()
+    } else {
+        "no resident mlx server".to_string()
+    })
+}
+
+#[cfg(not(feature = "local-llm"))]
+pub(crate) fn setup_mlx(_home: &std::path::Path) -> Result<String> {
+    Err(no_local_llm())
+}
+
+#[cfg(not(feature = "local-llm"))]
+pub(crate) fn mlx_server_status_json(_home: &std::path::Path) -> String {
+    r#"{"running":false,"pid":null,"port":null,"idleSecs":null,"models":[]}"#.to_string()
+}
+
+#[cfg(not(feature = "local-llm"))]
+pub(crate) fn mlx_server_stop(_home: &std::path::Path) -> Result<String> {
+    Err(no_local_llm())
+}
+
+#[cfg(not(feature = "local-llm"))]
+fn no_local_llm() -> Error {
+    Error::Runtime(
+        "this build has no local inference engine; rebuild terrane-host with --features local-llm"
+            .into(),
+    )
 }
 
 #[cfg(feature = "local-llm")]

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use terrane_local_llm::{
-    parse_json, Constraint, GenerateRequest, GenerationConfig, LlamaCppBackend, LlmError, LocalLlm,
-    ModelFile,
+    parse_json, resolve_runtime, server_status, stop_server, Constraint, GenerateRequest,
+    GenerationConfig, LlamaCppBackend, LlmError, LocalLlm, MlxBackend, ModelFile,
 };
 
 fn gguf_from_env() -> Option<PathBuf> {
@@ -52,6 +52,49 @@ fn parse_json_extracts_typed_values_and_rejects_garbage() {
     assert_eq!(parsed.answer, "42");
     assert!(parse_json::<Answer>("not json").is_err());
     assert!(parse_json::<Answer>(r#"{"other": 1}"#).is_err());
+}
+
+#[test]
+#[ignore = "starts a real resident mlx server; needs the mlx-lm runtime; run with `cargo test -- --ignored`"]
+fn resident_mlx_server_serves_warm_asks_and_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    if resolve_runtime(home).is_none() {
+        eprintln!("skipping: no mlx runtime (run `terrane local-model setup mlx`)");
+        return;
+    }
+    let mut backend = MlxBackend::load(home, "mlx-community/Qwen3.5-0.8B-MLX-4bit").unwrap();
+    let request = GenerateRequest {
+        prompt: "Reply with one word: hello".into(),
+        constraint: None,
+        config: GenerationConfig {
+            max_tokens: 16,
+            temperature: 0.0,
+            timeout: Some(Duration::from_secs(180)),
+            ..GenerationConfig::default()
+        },
+    };
+
+    // Cold: auto-starts the server (and pays the model load).
+    let cold = backend.generate(&request, &mut |_| {}).unwrap();
+    assert!(cold.ok(), "stopped by {:?}", cold.stop);
+    let status = server_status(home);
+    assert!(status.running, "server should be resident after an ask");
+    assert!(status.port.is_some() && status.pid.is_some());
+
+    // Warm: the resident server answers fast.
+    let started = std::time::Instant::now();
+    let warm = backend.generate(&request, &mut |_| {}).unwrap();
+    let elapsed = started.elapsed();
+    assert!(warm.ok(), "stopped by {:?}", warm.stop);
+    assert!(!warm.text.trim().is_empty());
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "warm ask should be sub-2s, took {elapsed:?}"
+    );
+
+    assert!(stop_server(home).unwrap(), "a resident server was stopped");
+    assert!(!server_status(home).running);
 }
 
 #[test]

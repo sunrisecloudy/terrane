@@ -1,18 +1,26 @@
-//! The MLX backend — drives `mlx_lm.generate` (the reference Apple-Silicon
-//! runtime) as a subprocess, one generation per call.
+//! The MLX backend — the reference Apple-Silicon runtime, resident-first.
+//!
+//! Generations go to the shared resident `mlx_lm.server` (see [`crate::server`])
+//! over the OpenAI-compatible streaming API, so tokens stream live and the
+//! model stays loaded between calls; if the server cannot be used
+//! (`TERRANE_MLX_RESIDENT=0`, or it fails to start) each call falls back to a
+//! one-shot `mlx_lm.generate` subprocess.
 //!
 //! GGUF and MLX builds of the same weights are two engine targets, not
-//! interchangeable engines: quantization, template handling, and samplers all
-//! shift output. Constrained output here is *typed but not mask-enforced*:
-//! a JSON schema becomes prompt guidance plus post-generation extraction and
-//! validation with one retry, unlike llama.cpp's token-mask llguidance path.
+//! interchangeable engines. Constrained output here is *typed but not
+//! mask-enforced*: a JSON schema becomes prompt guidance plus post-generation
+//! extraction and validation with one retry, unlike llama.cpp's token-mask
+//! llguidance path.
 
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::server::{ensure_server, touch};
+use crate::setup::{resolve_runtime, MlxRuntime};
 use crate::{Constraint, GenerateRequest, GenerateResponse, LlmError, LocalLlm, StopReason};
 
 /// `mlx_lm.generate` wraps the generated text between these marker lines and
@@ -20,49 +28,150 @@ use crate::{Constraint, GenerateRequest, GenerateResponse, LlmError, LocalLlm, S
 const MARKER: &str = "==========";
 
 pub struct MlxBackend {
-    binary: String,
+    runtime: MlxRuntime,
+    home: PathBuf,
     /// A Hugging Face repo id (`mlx-community/...`) or a local model directory;
     /// `mlx_lm` resolves and caches it.
     model_ref: String,
 }
 
 impl MlxBackend {
-    /// Resolve the `mlx_lm.generate` binary (override with
-    /// `TERRANE_MLX_LM_BIN`) and remember the model reference. The model
-    /// itself is resolved by `mlx_lm` on first generation.
-    pub fn load(model_ref: &str) -> Result<Self, LlmError> {
+    /// Resolve the MLX runtime for `home` (env override → engines manifest →
+    /// PATH) and remember the model reference. The model itself is resolved
+    /// by `mlx_lm` on first generation.
+    pub fn load(home: &Path, model_ref: &str) -> Result<Self, LlmError> {
         if model_ref.trim().is_empty() {
             return Err(LlmError::Load("mlx model reference is empty".into()));
         }
-        let binary = std::env::var("TERRANE_MLX_LM_BIN")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "mlx_lm.generate".to_string());
-        if Command::new(&binary)
-            .arg("--help")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_err()
-        {
-            return Err(LlmError::Load(format!(
-                "`{binary}` not found; install the MLX runtime with `uv tool install mlx-lm` \
+        let runtime = resolve_runtime(home).ok_or_else(|| {
+            LlmError::Load(
+                "no MLX runtime found; run `terrane local-model setup mlx` \
                  (or set TERRANE_MLX_LM_BIN)"
-            )));
-        }
+                    .into(),
+            )
+        })?;
         Ok(MlxBackend {
-            binary,
+            runtime,
+            home: home.to_path_buf(),
             model_ref: model_ref.to_string(),
         })
     }
 
+    /// One generation over whichever transport is available. `stream_to`
+    /// receives pieces as they arrive (resident transport streams per token;
+    /// the one-shot fallback delivers the whole body once).
+    fn run_transport(
+        &self,
+        prompt: &str,
+        request: &GenerateRequest,
+        deadline: Option<Instant>,
+        stream_to: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<MlxRun, LlmError> {
+        if resident_enabled() {
+            match ensure_server(&self.home, &self.runtime) {
+                Ok(port) => return self.run_resident(port, prompt, request, deadline, stream_to),
+                Err(error) => {
+                    // The one-shot path gives a second chance (and its own,
+                    // equally clear error when the runtime is truly absent).
+                    eprintln!("mlx resident server unavailable ({error}); falling back to one-shot generation");
+                }
+            }
+        }
+        self.run_once(prompt, request, deadline, stream_to)
+    }
+
+    /// Stream one chat completion from the resident server.
+    fn run_resident(
+        &self,
+        port: u16,
+        prompt: &str,
+        request: &GenerateRequest,
+        deadline: Option<Instant>,
+        mut stream_to: Option<&mut dyn FnMut(&str)>,
+    ) -> Result<MlxRun, LlmError> {
+        touch(&self.home);
+        let read_timeout = deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::from_secs(3600))
+            .max(Duration::from_millis(100));
+        let agent = ureq::AgentBuilder::new().timeout_read(read_timeout).build();
+        let body = serde_json::json!({
+            "model": self.model_ref,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": request.config.max_tokens,
+            "temperature": request.config.temperature,
+            "stream": true,
+            "stream_options": {"include_usage": true},
+        });
+        let response = agent
+            .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .set("Content-Type", "application/json")
+            .send_string(&body.to_string())
+            .map_err(|e| LlmError::Generate(format!("mlx server request failed: {e}")))?;
+
+        let mut text = String::new();
+        let mut delta_count: u32 = 0;
+        let mut usage_tokens: Option<u32> = None;
+        let mut finish: Option<String> = None;
+        let mut timed_out = false;
+        let reader = BufReader::new(response.into_reader());
+        for line in reader.lines() {
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                timed_out = true;
+                break;
+            }
+            let line = match line {
+                Ok(line) => line,
+                // A read timeout mid-stream is the deadline firing.
+                Err(_) => {
+                    timed_out = true;
+                    break;
+                }
+            };
+            match parse_sse_line(&line) {
+                SseEvent::Done => break,
+                SseEvent::Skip => {}
+                SseEvent::Chunk {
+                    content,
+                    finish_reason,
+                    usage_completion_tokens,
+                } => {
+                    if let Some(piece) = content {
+                        if !piece.is_empty() {
+                            if let Some(stream) = stream_to.as_deref_mut() {
+                                stream(&piece);
+                            }
+                            text.push_str(&piece);
+                            delta_count += 1;
+                        }
+                    }
+                    if finish_reason.is_some() {
+                        finish = finish_reason;
+                    }
+                    if usage_completion_tokens.is_some() {
+                        usage_tokens = usage_completion_tokens;
+                    }
+                }
+            }
+        }
+        touch(&self.home);
+        Ok(MlxRun {
+            body: text.trim().to_string(),
+            token_count: usage_tokens.unwrap_or(delta_count),
+            hit_token_budget: finish.as_deref() == Some("length"),
+            timed_out,
+        })
+    }
+
+    /// One-shot `mlx_lm.generate` subprocess (the pre-residency path).
     fn run_once(
         &self,
         prompt: &str,
         request: &GenerateRequest,
         deadline: Option<Instant>,
+        stream_to: Option<&mut dyn FnMut(&str)>,
     ) -> Result<MlxRun, LlmError> {
-        let mut command = Command::new(&self.binary);
+        let mut command = Command::new(&self.runtime.generate_bin);
         command
             .arg("--model")
             .arg(&self.model_ref)
@@ -79,22 +188,32 @@ impl MlxBackend {
             // ignore the unused variable.
             .arg("--chat-template-config")
             .arg(r#"{"enable_thinking": false}"#);
-        let (stdout, timed_out) = run_with_deadline(command, &self.binary, deadline)?;
+        let (stdout, timed_out) = run_with_deadline(command, &self.runtime.generate_bin, deadline)?;
         let mut run = parse_mlx_output(&stdout)?;
         run.timed_out = timed_out;
+        if let Some(stream) = stream_to {
+            if !run.body.is_empty() {
+                stream(&run.body);
+            }
+        }
         Ok(run)
     }
+}
+
+fn resident_enabled() -> bool {
+    std::env::var("TERRANE_MLX_RESIDENT")
+        .map(|raw| raw.trim() != "0")
+        .unwrap_or(true)
 }
 
 struct MlxRun {
     body: String,
     token_count: u32,
+    hit_token_budget: bool,
     timed_out: bool,
 }
 
 impl LocalLlm for MlxBackend {
-    /// Generate once. The subprocess boundary means tokens arrive as one
-    /// callback with the whole body rather than piece-by-piece.
     fn generate(
         &mut self,
         request: &GenerateRequest,
@@ -103,10 +222,11 @@ impl LocalLlm for MlxBackend {
         let started = Instant::now();
         let deadline = request.config.timeout.map(|budget| started + budget);
 
-        let (body, token_count, timed_out) = match &request.constraint {
+        let (run, body) = match &request.constraint {
             None => {
-                let run = self.run_once(&request.prompt, request, deadline)?;
-                (run.body, run.token_count, run.timed_out)
+                let run = self.run_transport(&request.prompt, request, deadline, Some(on_token))?;
+                let body = run.body.clone();
+                (run, body)
             }
             Some(Constraint::Gbnf(_)) => {
                 return Err(LlmError::Constraint(
@@ -114,25 +234,37 @@ impl LocalLlm for MlxBackend {
                 ));
             }
             Some(Constraint::JsonSchema(schema)) => {
-                // Prompt-guided typed output with one corrective retry.
+                // Prompt-guided typed output with one corrective retry. Output
+                // is collected (not streamed) because the recorded text is the
+                // extracted JSON, not the raw body.
                 let guided = format!(
                     "{}\n\nRespond with ONLY a single JSON object (no prose, no code fences) \
                      that matches this JSON schema:\n{schema}",
                     request.prompt
                 );
-                let first = self.run_once(&guided, request, deadline)?;
+                let first = self.run_transport(&guided, request, deadline, None)?;
                 match extract_json_object(&first.body) {
-                    Some(json) => (json, first.token_count, first.timed_out),
-                    None if first.timed_out => (first.body, first.token_count, true),
+                    Some(json) => {
+                        on_token(&json);
+                        (first, json)
+                    }
+                    None if first.timed_out => {
+                        let body = first.body.clone();
+                        (first, body)
+                    }
                     None => {
                         let retry_prompt = format!(
                             "{guided}\n\nYour previous reply was not a valid JSON object. \
                              Reply again with ONLY the JSON object."
                         );
-                        let second = self.run_once(&retry_prompt, request, deadline)?;
-                        let tokens = first.token_count.saturating_add(second.token_count);
+                        let mut second =
+                            self.run_transport(&retry_prompt, request, deadline, None)?;
+                        second.token_count = first.token_count.saturating_add(second.token_count);
                         match extract_json_object(&second.body) {
-                            Some(json) => (json, tokens, second.timed_out),
+                            Some(json) => {
+                                on_token(&json);
+                                (second, json)
+                            }
                             None => {
                                 return Err(LlmError::Constraint(
                                     "mlx output was not a valid JSON object after a retry".into(),
@@ -144,22 +276,53 @@ impl LocalLlm for MlxBackend {
             }
         };
 
-        if !body.is_empty() {
-            on_token(&body);
-        }
-        let stop = if timed_out {
+        let stop = if run.timed_out {
             StopReason::DeadlineExceeded
-        } else if token_count >= request.config.max_tokens {
+        } else if run.hit_token_budget || run.token_count >= request.config.max_tokens {
             StopReason::MaxTokens
         } else {
             StopReason::Eos
         };
         Ok(GenerateResponse {
             text: body,
-            token_count,
+            token_count: run.token_count,
             duration: started.elapsed(),
             stop,
         })
+    }
+}
+
+enum SseEvent {
+    Chunk {
+        content: Option<String>,
+        finish_reason: Option<String>,
+        usage_completion_tokens: Option<u32>,
+    },
+    Done,
+    Skip,
+}
+
+/// One SSE line from `mlx_lm.server`: `data: {chunk}`, `data: [DONE]`,
+/// keepalive comments starting with `:`, or blank separators.
+fn parse_sse_line(line: &str) -> SseEvent {
+    let trimmed = line.trim();
+    let Some(payload) = trimmed.strip_prefix("data:") else {
+        return SseEvent::Skip; // keepalive comment, blank, or unknown field
+    };
+    let payload = payload.trim();
+    if payload == "[DONE]" {
+        return SseEvent::Done;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
+        return SseEvent::Skip;
+    };
+    let choice = &value["choices"][0];
+    SseEvent::Chunk {
+        content: choice["delta"]["content"].as_str().map(str::to_string),
+        finish_reason: choice["finish_reason"].as_str().map(str::to_string),
+        usage_completion_tokens: value["usage"]["completion_tokens"]
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok()),
     }
 }
 
@@ -263,6 +426,7 @@ fn parse_mlx_output(stdout: &str) -> Result<MlxRun, LlmError> {
     Ok(MlxRun {
         body: body.trim().to_string(),
         token_count,
+        hit_token_budget: false,
         timed_out: false,
     })
 }
@@ -292,4 +456,25 @@ pub(crate) fn extract_json_object(text: &str) -> Option<String> {
         .ok()
         .filter(serde_json::Value::is_object)?;
     Some(candidate.to_string())
+}
+
+#[cfg(test)]
+pub(crate) fn parse_sse_line_for_tests(
+    line: &str,
+) -> (Option<String>, Option<String>, Option<u32>, bool, bool) {
+    match parse_sse_line(line) {
+        SseEvent::Chunk {
+            content,
+            finish_reason,
+            usage_completion_tokens,
+        } => (
+            content,
+            finish_reason,
+            usage_completion_tokens,
+            false,
+            false,
+        ),
+        SseEvent::Done => (None, None, None, true, false),
+        SseEvent::Skip => (None, None, None, false, true),
+    }
 }
