@@ -817,6 +817,816 @@ fn app_register_inline_dry_run_can_commit_by_draft_id() {
     );
 }
 
+#[test]
+fn initialize_result_carries_weak_model_instructions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    let init = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+    )
+    .unwrap();
+    assert!(
+        init.contains(r#""instructions":"#),
+        "initialize should carry server instructions: {init}"
+    );
+    for token in [
+        "app_build_start",
+        "handle(input)",
+        "window.terrane.invoke",
+        "permission_required",
+        "app_build_list",
+    ] {
+        assert!(
+            init.contains(token),
+            "instructions should mention {token}: {init}"
+        );
+    }
+}
+
+#[test]
+fn app_build_validate_rejects_runtime_incompatible_backends() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"contract-demo","name":"Contract Demo"}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let validate = |core: &mut crate::HostCore| {
+        structured_content(
+            &handle_json_rpc(
+                core,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+                    super::json_str(&draft_id)
+                ),
+            )
+            .unwrap(),
+        )
+    };
+    let put_main = |core: &mut crate::HostCore, content: &str| {
+        handle_json_rpc(
+            core,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"p","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":{}}}}}}}"#,
+                super::json_str(&draft_id),
+                super::json_str(content)
+            ),
+        )
+        .unwrap()
+    };
+
+    // Deno/Node-style module backend: plausible, but the runtime cannot run it.
+    put_main(
+        &mut core,
+        "import { serve } from 'https://deno.land/std/http/server.ts';\nexport async function addEvent(e) { return 'ok'; }",
+    );
+    let module = validate(&mut core);
+    assert_eq!(module["valid"], false, "module backend: {module}");
+    let module_errors = module["errors"].to_string();
+    assert!(
+        module_errors.contains("plain script") && module_errors.contains("import/export"),
+        "module backend errors should explain the plain-script contract: {module_errors}"
+    );
+
+    // No handle(input) and no actions table.
+    put_main(&mut core, "function addEvent(e) { return 'ok'; }");
+    let missing = validate(&mut core);
+    assert_eq!(missing["valid"], false, "missing handle: {missing}");
+    assert!(
+        missing["errors"]
+            .to_string()
+            .contains("function handle(input)"),
+        "missing-handle error should show the fix: {missing}"
+    );
+
+    // Lexical handle never lands on the global object.
+    put_main(&mut core, "const handle = (input) => 'ok';");
+    let lexical = validate(&mut core);
+    assert_eq!(lexical["valid"], false, "const handle: {lexical}");
+    assert!(
+        lexical["errors"].to_string().contains("global object"),
+        "const-handle error should explain the global requirement: {lexical}"
+    );
+
+    // Object-style dispatch is a warning with the positional contract spelled out.
+    put_main(
+        &mut core,
+        "function handle(input) { var action = input.action || 'list'; return String(action); }",
+    );
+    let object_style = validate(&mut core);
+    assert_eq!(object_style["valid"], true, "object style: {object_style}");
+    assert!(
+        object_style["warnings"]
+            .to_string()
+            .contains("array of strings"),
+        "object-style warning should state the positional contract: {object_style}"
+    );
+}
+
+#[test]
+fn app_build_validate_explains_manifest_shape_errors() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"manifest-demo","name":"Manifest Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The observed weak-model mistake: a rich object-shaped ui field.
+    let manifest = r#"{"id":"manifest-demo","name":"Manifest Demo","runtime":"js","backend":"main.js","ui":{"index":"index.html","scripts":["ui.js"],"styles":["style.css"]},"resources":["kv"]}"#;
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"manifest.json","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(manifest)
+        ),
+    )
+    .unwrap();
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], false, "ui object: {validate}");
+    let errors = validation["errors"].to_string();
+    assert!(
+        errors.contains("manifest.ui must be a string file path")
+            && errors.contains("not an object"),
+        "ui-object error should be prescriptive: {errors}"
+    );
+    assert!(
+        errors.contains(r#"\"ui\":\"index.html\""#) || errors.contains(r#""ui":"index.html""#),
+        "errors should include the corrected manifest shape: {errors}"
+    );
+}
+
+#[test]
+fn app_build_list_recovers_draft_ids() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let empty = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"empty","method":"tools/call","params":{"name":"app_build_list","arguments":{}}}"#,
+    )
+    .unwrap();
+    let empty_content = structured_content(&empty);
+    assert_eq!(
+        empty_content["drafts"].as_array().map(Vec::len),
+        Some(0),
+        "empty list: {empty}"
+    );
+    assert!(
+        empty.contains("app_build_start"),
+        "empty list should route to app_build_start: {empty}"
+    );
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"lost-draft","name":"Lost Draft"}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let list = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"list","method":"tools/call","params":{"name":"app_build_list","arguments":{}}}"#,
+    )
+    .unwrap();
+    let listed = structured_content(&list);
+    let drafts = listed["drafts"].as_array().unwrap();
+    assert_eq!(drafts.len(), 1, "list after start: {list}");
+    assert_eq!(drafts[0]["draftId"], draft_id.as_str(), "list: {list}");
+    assert_eq!(drafts[0]["app"]["id"], "lost-draft", "list: {list}");
+    assert!(
+        list.contains("app_build_get"),
+        "list should route back into the draft: {list}"
+    );
+    assert!(
+        list.contains("do not read files first"),
+        "list should route resumed models to validate-first: {list}"
+    );
+}
+
+#[test]
+fn ui_scaffold_passes_validate_untouched() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"shell-demo","name":"Shell Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let content = structured_content(&start);
+    let draft_id = content["draftId"].as_str().unwrap().to_string();
+    let paths: Vec<&str> = content["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            "index.html",
+            "main.js",
+            "manifest.json",
+            "style.css",
+            "ui.js"
+        ],
+        "shell scaffold files: {content}"
+    );
+    assert_eq!(content["kind"], "js_kv_app", "shell kind: {content}");
+    assert!(
+        content["contract"]["styleContract"]
+            .as_str()
+            .unwrap()
+            .contains("light+dark"),
+        "shell contract should advertise the design system: {content}"
+    );
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], true, "untouched shell: {validate}");
+    assert_eq!(
+        validation["errors"],
+        serde_json::Value::Null,
+        "untouched shell should have no errors: {validate}"
+    );
+    // The only expected warning is the still-the-demo-app nudge.
+    let warnings = validation["warnings"].as_array().unwrap();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "untouched shell should warn exactly once: {validate}"
+    );
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("unmodified scaffold demo app"),
+        "untouched shell warning should name the pristine backend: {validate}"
+    );
+}
+
+#[test]
+fn ui_scaffold_shell_is_substantial() {
+    let scaffold = super::app_scaffold_json("shell-demo", "Shell Demo", "js_kv_app", true).unwrap();
+    let content: serde_json::Value = serde_json::from_str(&scaffold).unwrap();
+    let file = |path: &str| -> String {
+        content["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap_or_else(|| panic!("missing {path}"))["content"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let css = file("style.css");
+    assert!(css.len() > 2500, "style.css should be a real design system");
+    for token in ["--accent", "prefers-color-scheme", ".empty-state", ".grid"] {
+        assert!(css.contains(token), "style.css should contain {token}");
+    }
+
+    let ui = file("ui.js");
+    for token in [
+        "window.terrane.invoke(",
+        "/* REPLACE:",
+        "/* KEEP:",
+        "setStatus",
+    ] {
+        assert!(ui.contains(token), "ui.js should contain {token}");
+    }
+    assert!(
+        !ui.contains("\nimport ") && !ui.contains("\nexport "),
+        "ui.js must not model module syntax"
+    );
+
+    let html = file("index.html");
+    for token in [
+        "<head>",
+        "id=\"main-input\"",
+        "id=\"status\"",
+        "id=\"list\"",
+        "id=\"empty\"",
+        "Shell Demo",
+    ] {
+        assert!(html.contains(token), "index.html should contain {token}");
+    }
+
+    let main = file("main.js");
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    super::check_js_backend_contract("main.js", &main, &mut errors, &mut warnings);
+    assert!(errors.is_empty(), "shell main.js lint errors: {errors:?}");
+    assert!(
+        warnings.is_empty(),
+        "shell main.js lint warnings: {warnings:?}"
+    );
+    assert!(
+        main.contains("kvGetOrNull"),
+        "main.js keeps defensive reads"
+    );
+}
+
+#[test]
+fn ui_scaffold_escapes_app_name() {
+    let scaffold =
+        super::app_scaffold_json("esc-demo", "A <b>&\"quote\"</b>", "js_kv_app", true).unwrap();
+    let content: serde_json::Value = serde_json::from_str(&scaffold).unwrap();
+    let html = content["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == "index.html")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !html.contains("<b>") && html.contains("&lt;b&gt;"),
+        "app name must be HTML-escaped: {html}"
+    );
+}
+
+#[test]
+fn app_build_put_file_batch_writes_all_or_nothing() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"batch-demo","name":"Batch Demo"}}}"#,
+    )
+    .unwrap();
+    let start_content = structured_content(&start);
+    let draft_id = start_content["draftId"].as_str().unwrap().to_string();
+    let hash_before = start_content["bundleHash"].as_str().unwrap().to_string();
+
+    // One unsafe entry rejects the whole batch and writes nothing.
+    let bad = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"bad","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"files":[{{"path":"main.js","content":"function handle(input){{return 'x';}}"}},{{"path":"../evil.js","content":"x"}}]}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        bad.contains(r#""isError":true"#) && bad.contains("safe relative bundle path"),
+        "unsafe batch entry: {bad}"
+    );
+    let get = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"get","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        structured_content(&get)["bundleHash"].as_str().unwrap(),
+        hash_before,
+        "rejected batch must not change the draft: {get}"
+    );
+
+    // A good batch writes several files in one call.
+    let good = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"good","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"files":[{{"path":"main.js","content":"function handle(input){{var verb=input[0]||'';return 'ok:'+verb;}}"}},{{"path":"notes.txt","content":"hello"}}]}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let good_content = structured_content(&good);
+    assert_eq!(
+        good_content["files"].as_array().map(Vec::len),
+        Some(2),
+        "batch write summaries: {good}"
+    );
+    assert!(
+        good.contains("app_build_validate"),
+        "batch write should route to validation: {good}"
+    );
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        structured_content(&validate)["valid"],
+        true,
+        "batch-updated draft validates: {validate}"
+    );
+}
+
+#[test]
+fn app_build_validate_warns_on_ui_invoke_array_args() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"uiarg-demo","name":"UiArg Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The observed run-2 mistake: an args array as the second invoke argument.
+    let ui_js = "async function send(text, refDate) {\n  return window.terrane.invoke('nl_view', [text, refDate]);\n}\nsend('x', 'y');\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(ui_js)
+        ),
+    )
+    .unwrap();
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], true, "array-arg UI: {validate}");
+    let warnings = validation["warnings"].to_string();
+    assert!(
+        warnings.contains("passes an array to invoke()")
+            && warnings.contains("positional string args"),
+        "array-arg UI should warn with the positional contract: {warnings}"
+    );
+}
+
+#[test]
+fn app_build_errors_carry_structured_recovery() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let missing = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"missing","method":"tools/call","params":{"name":"app_build_put_file","arguments":{"draftId":"draft-00000000000000000000000000000000","path":"main.js","content":"x"}}}"#,
+    )
+    .unwrap();
+    assert!(missing.contains(r#""isError":true"#), "missing: {missing}");
+    let content = structured_content(&missing);
+    assert_eq!(content["type"], "build_error", "missing: {missing}");
+    assert_eq!(
+        content["nextToolCall"]["tool"], "app_build_list",
+        "lost draftId should route to app_build_list: {missing}"
+    );
+}
+
+#[test]
+fn app_build_get_flags_unmodified_scaffold_files() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"pristine-demo","name":"Pristine Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let get_all = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"all","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let all = structured_content(&get_all);
+    assert!(
+        all["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["unmodifiedScaffold"] == true),
+        "fresh draft files are all pristine: {get_all}"
+    );
+    assert!(
+        get_all.contains("Do not read files marked unmodifiedScaffold"),
+        "summary should steer away from scaffold reads: {get_all}"
+    );
+    assert!(
+        start.contains("Reply with a tool call only")
+            && get_all.contains("Reply with a tool call only"),
+        "start/get should carry the anti-prose nextModelAction: {start}"
+    );
+
+    let get_one = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"one","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{},"path":"style.css"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        get_one.contains("unmodified scaffold shell"),
+        "pristine single-file get should carry the note: {get_one}"
+    );
+
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":"function handle(input){{if((input[0]||'')==='__actions__'){{return JSON.stringify({{actions:[]}});}}return 'ok';}}"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let after = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"after","method":"tools/call","params":{{"name":"app_build_get","arguments":{{"draftId":{},"path":"main.js"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        structured_content(&after)["unmodifiedScaffold"],
+        false,
+        "edited file is no longer pristine: {after}"
+    );
+}
+
+#[test]
+fn app_build_validate_rejects_js_syntax_errors() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"syntax-demo","name":"Syntax Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A truncated backend — the run-5 DeepSeek Flash failure class.
+    let truncated = "function handle(input) {\n  var verb = input[0] || \"\";\n  if (verb === \"__actions__\") { return JSON.stringify({actions: [\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(truncated)
+        ),
+    )
+    .unwrap();
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], false, "truncated backend: {validate}");
+    assert!(
+        validation["errors"]
+            .to_string()
+            .contains("JavaScript syntax error"),
+        "truncated backend should fail with a syntax error: {validate}"
+    );
+
+    // Broken ui.js breaks the page — also an error.
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"fixmain","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":"function handle(input){{if((input[0]||'')==='__actions__'){{return JSON.stringify({{actions:[]}});}}return 'ok';}}"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"badui","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":"const x = {{ oops: ;"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validate_ui = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v2","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation_ui = structured_content(&validate_ui);
+    assert_eq!(validation_ui["valid"], false, "broken ui.js: {validate_ui}");
+    assert!(
+        validation_ui["errors"].to_string().contains("ui.js"),
+        "broken ui.js should be named: {validate_ui}"
+    );
+}
+
+#[test]
+fn ui_raw_invoke_fetch_warns() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"fetch-demo","name":"Fetch Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ui_js = "async function load() {\n  var res = await fetch('/apps/fetch-demo/invoke', { method: 'POST', body: JSON.stringify({ verb: 'list', args: [{}] }) });\n  return res.json();\n}\nload();\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(ui_js)
+        ),
+    )
+    .unwrap();
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        structured_content(&validate)["warnings"]
+            .to_string()
+            .contains("window.terrane.invoke"),
+        "raw /invoke fetch should warn toward the bridge: {validate}"
+    );
+}
+
+#[test]
+fn ui_missing_element_id_warns() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"ids-demo","name":"Ids Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The run-6 Kimi class: ui.js wires an id its own HTML never defines.
+    let ui_js = "document.getElementById('nl-input-box').addEventListener('keydown', function () {});\ndocument.querySelector('#list').textContent = 'ok';\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(ui_js)
+        ),
+    )
+    .unwrap();
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let warnings = structured_content(&validate)["warnings"].to_string();
+    assert!(
+        warnings.contains("nl-input-box") && warnings.contains("crash on load"),
+        "missing element id should warn: {warnings}"
+    );
+    assert!(
+        !warnings.contains("that no bundle HTML defines. If they are not created dynamically")
+            || !warnings.contains("\"list\""),
+        "ids present in index.html must not be flagged: {warnings}"
+    );
+}
+
+#[test]
+fn backend_without_actions_verb_warns() {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    super::check_js_backend_contract(
+        "main.js",
+        "function handle(input) { var verb = input[0] || \"\"; return verb; }",
+        &mut errors,
+        &mut warnings,
+    );
+    assert!(errors.is_empty(), "custom handle is valid: {errors:?}");
+    assert!(
+        warnings.iter().any(|w| w.contains("__actions__")),
+        "missing __actions__ should warn: {warnings:?}"
+    );
+}
+
+#[test]
+fn stale_drafts_are_evicted_beyond_cap() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+
+    let files = vec![super::InlineFile {
+        path: "manifest.json".to_string(),
+        content: r#"{"id":"gc-demo","name":"GC","runtime":"js","backend":"main.js"}"#.to_string(),
+    }];
+    for _ in 0..20 {
+        super::create_build_draft("js_kv_notes", &files).unwrap();
+    }
+    let count = std::fs::read_dir(dir.path().join(".mcp-drafts"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("draft-"))
+        })
+        .count();
+    assert_eq!(count, 16, "draft cap should evict the oldest drafts");
+}
+
 // --- In-session approval: elicitation helpers -----------------------------
 
 #[test]

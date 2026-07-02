@@ -1,4 +1,4 @@
-# 08 — Documentation obligations and definition of done
+# 09 — Documentation obligations and definition of done
 
 ## The capability documents itself
 
@@ -28,9 +28,11 @@ states the old behaviour, in the same commit series.**
 | The `ctx.resource` surface | `docs/APP_API.md` — regenerate: `UPDATE_DOCS=1 cargo test -p terrane-core --test cap app_api_doc` (a default test fails while stale) |
 | Command classification / grants / trust boundaries | `host/mcp/docs/SECURITY.md`, `CAPABILITY_OPERATIONS.md` — then sweep `AGENT_PLAYBOOK.md`, `APP_BUILDING.md`, `CLIENTS.md`, `README.md` for stale statements |
 | The host HTTP/MCP contract | `docs/SERVER_API.md` (source of truth: `rust/crates/terrane-api`) |
+| The exported public surface | `terrane contract export`, `tools/export-public-contract.mjs`, `tools/verify-public-contract.mjs` — see [08-public-surface-and-release.md](08-public-surface-and-release.md) |
 | Capability-building conventions | this folder |
 
-Grep the docs for your command names before calling a policy change done.
+Grep the docs for your command names and event kinds before calling a policy
+change done.
 
 ## Definition of done
 
@@ -46,7 +48,17 @@ A capability lands when all of this holds:
       regenerated ([06-permissions-and-policy.md](06-permissions-and-policy.md)).
 - [ ] New commands classified in `public_authz.rs` (or deliberately left
       refused-by-default) and audited for bypass side-channels.
+- [ ] Public surface decision made: generic capability only, `ctx.resource`,
+      CLI, MCP workflow/tool, HTTP route, or deliberately private
+      ([08-public-surface-and-release.md](08-public-surface-and-release.md)).
+- [ ] Existing logs still replay. Any event/payload/reserved-KV layout change is
+      versioned or has a replay fixture for the old shape.
 - [ ] `doc()` and `describe()` implemented; affected markdown docs updated.
+- [ ] Capability discovery smokes work: `terrane cap info <ns>`, MCP
+      `capabilities_list`, MCP `capability_info(<ns>)`, and
+      `capability_command` with `help: true` for each public command.
+- [ ] If exported surface changed, contract export/verification and
+      `terrane-host/tests/contract.rs` are green.
 - [ ] From `rust/`: `cargo test` green and
       `cargo clippy --all-targets -- -D warnings` green. `host/cli` validated
       separately if touched.

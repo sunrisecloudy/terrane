@@ -262,6 +262,11 @@ fn add_a_todo_through_mcp_and_read_it_back() {
             && ui_scaffold.contains("not a JSON string"),
         "app_scaffold UI guidance: {ui_scaffold}"
     );
+    assert!(
+        ui_scaffold.contains("prefers-color-scheme")
+            && ui_scaffold.contains("window.terrane.invoke("),
+        "app_scaffold withUi should ship the design-system shell: {ui_scaffold}"
+    );
 
     send(
         &mut stdin,

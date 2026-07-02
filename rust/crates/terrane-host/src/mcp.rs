@@ -12,12 +12,13 @@ use nanoserde::{DeJson, SerJson};
 use serde_json::{json, Map, Value};
 use terrane_api::{
     mcp_prompts, mcp_resource_templates, mcp_resources, mcp_tools, MCP_PROTOCOL_VERSION,
-    TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD, TOOL_APP_BUILD_GET,
-    TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START, TOOL_APP_BUILD_VALIDATE,
-    TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE,
-    TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO,
-    TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL,
-    TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
+    MCP_SERVER_INSTRUCTIONS, TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD,
+    TOOL_APP_BUILD_GET, TOOL_APP_BUILD_LIST, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
+    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER,
+    TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND,
+    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS,
+    TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
+    TOOL_WORKFLOW_INFO,
 };
 use terrane_core::QueryValue;
 
@@ -272,8 +273,9 @@ pub fn busy_error(raw: &str) -> Option<String> {
 
 fn initialize_result() -> String {
     format!(
-        r#"{{"protocolVersion":{},"capabilities":{{"tools":{{"listChanged":false}},"resources":{{"subscribe":false,"listChanged":false}},"prompts":{{"listChanged":false}}}},"serverInfo":{{"name":"terrane-mcp","version":"0.1.0"}}}}"#,
-        json_str(MCP_PROTOCOL_VERSION)
+        r#"{{"protocolVersion":{},"capabilities":{{"tools":{{"listChanged":false}},"resources":{{"subscribe":false,"listChanged":false}},"prompts":{{"listChanged":false}}}},"serverInfo":{{"name":"terrane-mcp","version":"0.1.0"}},"instructions":{}}}"#,
+        json_str(MCP_PROTOCOL_VERSION),
+        json_str(MCP_SERVER_INSTRUCTIONS)
     )
 }
 
@@ -678,9 +680,26 @@ fn tool_call(
                 Ok(value) => value,
                 Err(e) => return tool_text(id, &e, true),
             };
+            if let Some(files_value) = args.get("files") {
+                let files =
+                    match inline_files_from_value(files_value, "files", TOOL_APP_BUILD_PUT_FILE) {
+                        Ok(files) => files,
+                        Err(e) => return tool_text(id, &e, true),
+                    };
+                return match app_build_put_files_json(&draft_id, &files) {
+                    Ok(output) => tool_json(id, &output, false),
+                    Err(e) => build_error(id, TOOL_APP_BUILD_PUT_FILE, &draft_id, &e),
+                };
+            }
             let path = match required_string(args, "path", TOOL_APP_BUILD_PUT_FILE) {
                 Ok(value) => value,
-                Err(e) => return tool_text(id, &e, true),
+                Err(e) => {
+                    return tool_text(
+                        id,
+                        &format!("{e} (or pass files as an array of {{path,content}} objects to write several files in one call)"),
+                        true,
+                    )
+                }
             };
             let content =
                 match required_string_allow_empty(args, "content", TOOL_APP_BUILD_PUT_FILE) {
@@ -689,7 +708,7 @@ fn tool_call(
                 };
             match app_build_put_file_json(&draft_id, &path, &content) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_PUT_FILE, &draft_id, &e),
             }
         }
         TOOL_APP_BUILD_GET => {
@@ -711,6 +730,15 @@ fn tool_call(
             };
             match app_build_get_json(&draft_id, &path, include_content) {
                 Ok(output) => tool_json(id, &output, false),
+                Err(e) => build_error(id, TOOL_APP_BUILD_GET, &draft_id, &e),
+            }
+        }
+        TOOL_APP_BUILD_LIST => {
+            if let Err(e) = args_object(TOOL_APP_BUILD_LIST, &params.arguments) {
+                return tool_text(id, &e, true);
+            }
+            match app_build_list_json() {
+                Ok(output) => tool_json(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }
         }
@@ -725,7 +753,7 @@ fn tool_call(
             };
             match app_build_validate_json(core, &draft_id) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_VALIDATE, &draft_id, &e),
             }
         }
         TOOL_APP_BUILD_COMMIT => {
@@ -749,7 +777,7 @@ fn tool_call(
                 };
             match app_build_commit_json(core, &draft_id, &validation_token, replace_existing) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_COMMIT, &draft_id, &e),
             }
         }
         TOOL_APP_BUILD_DISCARD => {
@@ -763,7 +791,7 @@ fn tool_call(
             };
             match app_build_discard_json(&draft_id) {
                 Ok(output) => tool_json(id, &output, false),
-                Err(e) => tool_text(id, &e, true),
+                Err(e) => build_error(id, TOOL_APP_BUILD_DISCARD, &draft_id, &e),
             }
         }
         TOOL_APP_BUNDLE_VALIDATE => {
@@ -1442,7 +1470,7 @@ fn workflows_list_json() -> String {
         "chooseByOutcome": [
             {"when": "simple notes, one app, key/value storage only", "workflow": "make_js_kv_app_no_filesystem"},
             {"when": "locked-down client with no filesystem tools must create an app", "workflow": "make_js_kv_app_no_filesystem"},
-            {"when": "visible calendar, dashboard, form, natural-language input page, or other UI app backed by app state", "workflow": "make_js_kv_app_no_filesystem", "use": "app_scaffold with withUi:true; keep browser behavior in ui.js for non-trivial pages"},
+            {"when": "visible calendar, dashboard, form, natural-language input page, or other UI app backed by app state", "workflow": "make_js_kv_app_no_filesystem", "use": "app_build_start with withUi:true; the draft ships a working UI shell — keep style.css and edit main.js/ui.js"},
             {"when": "task asks for five surfaces, multiple capabilities, relational data, CRDT/collaboration, or replica identity", "workflow": "make_js_multicap_app_no_filesystem"},
             {"when": "bundle directory already exists", "workflow": "register_app_bundle"},
             {"when": "app already exists and the task is to operate it", "workflow": "inspect_app_actions"}
@@ -1526,11 +1554,11 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
             },
             "stallRecovery": {
                 "classification": "If a new assistant stream produces no tokens after this workflow_info result, classify it as provider/client stall unless a tool error appears.",
-                "resume": "Restart or resume by calling app_scaffold. If app_scaffold already completed, call nextAfterScaffold immediately."
+                "resume": "Restart or resume by calling app_build_start. If a draft already exists, recover it with app_build_list and continue."
             },
             "steps": [
-                {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}, "why": "Create a server-side draft with manifest.json, main.js, index.html, ui.js, and style.css for visible apps. Omit withUi only for backend-only tasks."},
-                {"tool": "app_build_put_file", "arguments": {"draftId": "draftId from app_build_start", "path": "main.js", "content": "complete backend file"}, "why": "Replace one file at a time. Repeat for index.html, ui.js, style.css, or assets as needed."},
+                {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}, "why": "Create a server-side draft. With withUi:true the draft is a working app shell: index.html regions, ui.js helpers, and a full style.css design system. Omit withUi only for backend-only tasks."},
+                {"tool": "app_build_put_file", "arguments": {"draftId": "draftId from app_build_start", "path": "main.js", "content": "complete backend file"}, "why": "Put main.js first; only send index.html/ui.js/style.css if you changed them — the shell versions are already in the draft. Keep style.css unless you need custom components."},
                 {"tool": "app_build_validate", "arguments": {"draftId": "draftId from app_build_start"}, "why": "Validate without writing files or committing."},
                 {"tool": "app_build_commit", "arguments": {"draftId": "draftId from app_build_start", "validationToken": "validationToken from app_build_validate"}, "why": "Write under TERRANE_HOME/apps/<id> and commit through app.add without resending files."},
                 {"tool": "app_actions", "arguments": {"app": "notes-demo"}},
@@ -1677,6 +1705,7 @@ fn app_recipe_json(kind: &str) -> String {
                 "resources": ["kv", "crdt", "relational_db"]
             },
             "resourcePattern": "Use ctx.resource.kv, ctx.resource.crdt, and ctx.resource.relational_db inside handle(input). Use capability_command/query for replica and app catalog checks.",
+            "backendContract": "main.js is ONE plain script: no top-level import/export, no require, no modules. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data).",
             "nextAfterScaffold": {
                 "tool": "app_register_inline",
                 "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true},
@@ -1717,6 +1746,7 @@ fn app_recipe_json(kind: &str) -> String {
             "resources": ["kv"]
         },
         "resourcePattern": "Use ctx.resource.kv.get/set/rm/all/scan/range/keys inside handle(input). For optional/index keys, copy kvGetOrNull from app_scaffold and default null to [] before JSON.parse.",
+        "backendContract": "main.js is ONE plain script: no top-level import/export, no require, no modules. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data).",
         "stagedBuildContract": "app_build_start creates a server-side draft; app_build_put_file updates one file; app_build_validate returns validationToken; app_build_commit commits without file contents.",
         "inlineFilesContract": "Compatibility path: app_register_inline.files must be a JSON array of {path,content} objects. Its dryRun returns draftId/validationToken, so prefer app_build_commit after dryRun rather than resending files.",
         "nextAfterScaffold": {
@@ -1727,7 +1757,7 @@ fn app_recipe_json(kind: &str) -> String {
         },
         "uiContract": {
             "browserInvoke": "window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") sends positional backend string args. Do not use window.terrane.invoke(\"verb\", [arg1,arg2]) for two backend args.",
-            "files": "For non-trivial UI, add ui.js and keep index.html mostly markup. Syntax errors in one huge inline script can make the page unusable.",
+            "files": "The withUi scaffold ships a working shell: keep style.css (full light+dark design system) and the KEEP-marked ui.js helpers; edit the REPLACE-marked functions and main.js. Keep index.html mostly markup.",
             "verification": "When the requested outcome is a UI app, verify the page loads and one user-visible flow works; backend invoke checks alone are not enough."
         },
         "firstCalls": [
@@ -1737,6 +1767,31 @@ fn app_recipe_json(kind: &str) -> String {
         ]
     })
     .to_string()
+}
+
+/// The withUi app-shell templates: a working generic item app with a real
+/// design system, so weak models edit main.js and small ui.js deltas instead
+/// of writing ~10KB of UI from scratch inside their output budget.
+const SCAFFOLD_UI_INDEX_HTML: &str = include_str!("scaffold/js_kv_app/index.html");
+const SCAFFOLD_UI_JS: &str = include_str!("scaffold/js_kv_app/ui.js");
+const SCAFFOLD_UI_STYLE_CSS: &str = include_str!("scaffold/js_kv_app/style.css");
+const SCAFFOLD_UI_MAIN_JS: &str = include_str!("scaffold/js_kv_app/main.js");
+
+/// Escape arbitrary display text for interpolation into scaffold HTML — the
+/// app `name` is free text, unlike the safe-id-checked `id`.
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn app_scaffold_json(
@@ -1753,9 +1808,12 @@ fn app_scaffold_json(
     }
     if kind != "js_kv_notes" && kind != "js_kv_app" {
         return Err(format!(
-            "unknown scaffold kind: {kind}. Try kind \"js_kv_notes\", \"js_multicap_audit\", or omit kind."
+            "unknown scaffold kind: {kind}. Use \"js_kv_app\" for interactive/UI apps, \"js_kv_notes\" for a minimal notes demo, or \"js_multicap_audit\" for a kv+crdt+relational_db proof."
         ));
     }
+    // The UI shell is the js_kv_app scaffold; report it as such even when the
+    // kind was defaulted so downstream labels match the emitted files.
+    let kind = if with_ui { "js_kv_app" } else { kind };
     let app_id_js = serde_json::to_string(app_id).unwrap_or_else(|_| "\"app\"".to_string());
     let name_js = serde_json::to_string(name).unwrap_or_else(|_| "\"App\"".to_string());
     let manifest = if with_ui {
@@ -1835,23 +1893,22 @@ function handle(input) {{
 }}
 "#
     );
+    let main_js = if with_ui {
+        SCAFFOLD_UI_MAIN_JS
+            .replace("__APP_ID_JSON__", &app_id_js)
+            .replace("__APP_NAME_JSON__", &name_js)
+    } else {
+        main_js
+    };
     let mut files = vec![
         json!({"path": "manifest.json", "content": manifest.to_string()}),
         json!({"path": "main.js", "content": main_js}),
     ];
     if with_ui {
-        files.push(json!({
-            "path": "index.html",
-            "content": "<!doctype html><html><head><title>Terrane App</title><link rel=\"stylesheet\" href=\"style.css\"></head><body><main><h1>Terrane App</h1><button id=\"read\">Read</button><pre id=\"out\"></pre></main><script src=\"ui.js\"></script></body></html>"
-        }));
-        files.push(json!({
-            "path": "ui.js",
-            "content": "document.getElementById('read').onclick = async function () {\n  document.getElementById('out').textContent = await window.terrane.invoke('read');\n};\n"
-        }));
-        files.push(json!({
-            "path": "style.css",
-            "content": "body { font-family: system-ui, sans-serif; margin: 24px; } button { margin: 8px 0; }"
-        }));
+        let index_html = SCAFFOLD_UI_INDEX_HTML.replace("__APP_NAME__", &html_escape(name));
+        files.push(json!({"path": "index.html", "content": index_html}));
+        files.push(json!({"path": "ui.js", "content": SCAFFOLD_UI_JS}));
+        files.push(json!({"path": "style.css", "content": SCAFFOLD_UI_STYLE_CSS}));
     }
     Ok(json!({
         "kind": kind,
@@ -2297,26 +2354,147 @@ fn app_build_start_json(
         .and_then(Value::as_str)
         .unwrap_or("js_kv_notes");
     let draft_id = create_build_draft(kind, &files)?;
+    let manifest_example = if with_ui {
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": ["kv"]})
+    } else {
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "resources": ["kv"]})
+    };
+    let backend_contract = "main.js is ONE plain script: no top-level import/export, no require, no modules, no Deno/Node APIs. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data). Storage is ctx.resource.kv; wrap kv.get in try/catch because missing keys throw.";
+    let manifest_rules = "manifest.ui is a string file path, never an object; scripts and styles are referenced from index.html, not listed in the manifest.";
+    let ui_contract = "Browser code calls window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") with positional string args and awaits the backend's string reply. Do not pass an args array or an object.";
+    let contract = if with_ui {
+        json!({
+            "manifestExample": manifest_example,
+            "manifestRules": manifest_rules,
+            "backend": backend_contract,
+            "ui": ui_contract,
+            "filesToReplace": "The scaffold is a working app shell, not a placeholder. Typically replace only main.js (your verbs and data), then edit the REPLACE-marked functions in ui.js (renderItem, refresh, the submit handler). Keep the KEEP-marked invoke/status helpers.",
+            "styleContract": "Keep style.css as-is unless you need custom components; it already provides a light+dark design system with .card, .btn, .badge, .tag, .list-item, .empty-state, .status, and .grid. Add new rules at the bottom instead of rewriting the file.",
+            "uiShell": "index.html already has #input-form/#main-input, #status, #list, and #empty regions; keep the ids and edit text/labels rather than restructuring."
+        })
+    } else {
+        json!({
+            "manifestExample": manifest_example,
+            "manifestRules": manifest_rules,
+            "backend": backend_contract,
+            "ui": ui_contract,
+            "filesToReplace": "Scaffold files are placeholders for a template app. Replace the content of main.js with the requested app before validating."
+        })
+    };
+    let next = if with_ui {
+        json!([
+            "Put main.js first (your verbs and data); only send index.html/ui.js/style.css if you changed them — unchanged scaffold files are already in the draft.",
+            "Send one complete file per app_build_put_file call, or several at once via its files array.",
+            "Call app_build_validate after editing.",
+            "If validation succeeds, call app_build_commit with draftId and validationToken; do not resend the files."
+        ])
+    } else {
+        json!([
+            "Use app_build_put_file once per file you need to change; send one file at a time.",
+            "Call app_build_validate after editing.",
+            "If validation succeeds, call app_build_commit with draftId and validationToken; do not resend the files.",
+            "For visible UI apps, keep backend behavior in main.js and browser behavior in ui.js."
+        ])
+    };
     Ok(json!({
         "draftId": draft_id,
         "kind": kind,
         "app": {"id": info.id, "name": info.name, "runtime": info.runtime},
         "files": file_summaries(&files),
         "bundleHash": validation_token(&files),
+        "contract": contract,
         "nextToolCall": {
             "tool": "app_build_put_file",
             "arguments": {"draftId": draft_id, "path": "main.js", "content": "complete file content"}
         },
-        "next": [
-            "Use app_build_put_file once per file you need to change; send one file at a time.",
-            "Call app_build_validate after editing.",
-            "If validation succeeds, call app_build_commit with draftId and validationToken; do not resend the files.",
-            "For visible UI apps, keep backend behavior in main.js and browser behavior in ui.js."
-        ],
+        "nextModelAction": "Reply with a tool call only: app_build_put_file carrying your complete main.js. Do not print the app as prose and do not read scaffold files back — the contract above is all you need.",
+        "next": next,
         "stallRecovery": {
             "resume": "Call app_build_get with draftId to recover file summaries, then continue with app_build_put_file or app_build_validate.",
+            "lostDraftId": "Call app_build_list to recover draft ids.",
             "commitAfterDryRun": "After app_build_validate succeeds, app_build_commit is a small call and does not require sending file contents again."
         }
+    })
+    .to_string())
+}
+
+/// Structured recovery for app_build_* tool errors — the same shape lesson as
+/// `permission_required`: weak models resume from machine-readable
+/// `nextToolCall` fields, not from prose. A lost/wrong draftId routes to
+/// `app_build_list`; commit failures route back through validation.
+fn build_error(id: &str, tool: &str, draft_id: &str, error: &str) -> String {
+    let next_tool_call = if error.contains("draft not found") || draft_id.trim().is_empty() {
+        json!({"tool": "app_build_list", "arguments": {}})
+    } else if tool == TOOL_APP_BUILD_COMMIT {
+        json!({"tool": "app_build_validate", "arguments": {"draftId": draft_id}})
+    } else {
+        json!({"tool": "app_build_get", "arguments": {"draftId": draft_id}})
+    };
+    let value = json!({
+        "type": "build_error",
+        "tool": tool,
+        "error": error,
+        "nextToolCall": next_tool_call
+    });
+    tool_value(id, error, &value, true)
+}
+
+/// Batch variant of app_build_put_file: validate every path and the resulting
+/// bundle size first, then write — a bad entry rejects the whole call so the
+/// draft never half-applies.
+fn app_build_put_files_json(draft_id: &str, new_files: &[InlineFile]) -> Result<String, String> {
+    if new_files.is_empty() {
+        return Err(
+            "app_build_put_file files array is empty; pass one or more {path,content} objects"
+                .to_string(),
+        );
+    }
+    let bundle = draft_bundle_dir(draft_id)?;
+    ensure_draft_exists(draft_id, &bundle)?;
+    let mut files = read_inline_bundle_files(&bundle)?;
+    for file in new_files {
+        if !is_safe_relative_path(&file.path) {
+            return Err(format!(
+                "app_build_put_file path must be a safe relative bundle path, got {:?}; no files were written",
+                file.path
+            ));
+        }
+        if file.content.len() > MAX_DRAFT_FILE_BYTES {
+            return Err(format!(
+                "app_build_put_file content for {:?} is {} bytes; limit is {MAX_DRAFT_FILE_BYTES}; no files were written",
+                file.path,
+                file.content.len()
+            ));
+        }
+    }
+    let mut merged = files.clone();
+    for file in new_files {
+        merged.retain(|existing| existing.path != file.path);
+        merged.push(file.clone());
+    }
+    let new_total: usize = merged.iter().map(|file| file.content.len()).sum();
+    if new_total > MAX_DRAFT_TOTAL_BYTES {
+        return Err(format!(
+            "app_build_put_file would make draft {new_total} bytes; total limit is {MAX_DRAFT_TOTAL_BYTES}; no files were written"
+        ));
+    }
+    for file in new_files {
+        write_draft_file(&bundle, &file.path, &file.content)?;
+    }
+    files = merged;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    write_draft_metadata(draft_id, "updated", &files)?;
+    let written: Vec<Value> = new_files.iter().map(file_summary).collect();
+    Ok(json!({
+        "draftId": draft_id,
+        "files": written,
+        "bundleHash": validation_token(&files),
+        "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": draft_id}},
+        "next": [
+            "Continue app_build_put_file for any other changed files.",
+            "When the draft is complete, call app_build_validate.",
+            "Do not call app_build_commit until validation returns valid:true."
+        ]
     })
     .to_string())
 }
@@ -2374,6 +2552,7 @@ fn app_build_get_json(draft_id: &str, path: &str, include_content: bool) -> Resu
     let bundle = draft_bundle_dir(draft_id)?;
     ensure_draft_exists(draft_id, &bundle)?;
     let files = read_inline_bundle_files(&bundle)?;
+    let initial = read_initial_hashes(draft_id);
     if !path.trim().is_empty() {
         if !is_safe_relative_path(path) {
             return Err(format!(
@@ -2383,27 +2562,42 @@ fn app_build_get_json(draft_id: &str, path: &str, include_content: bool) -> Resu
         let Some(file) = files.iter().find(|file| file.path == path) else {
             return Err(format!("draft {draft_id} has no file {path:?}"));
         };
+        let pristine = is_unmodified_scaffold(&initial, file);
         let mut value = json!({
             "draftId": draft_id,
             "file": file_summary(file),
+            "unmodifiedScaffold": pristine,
             "bundleHash": validation_token(&files),
-            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": path, "content": "complete file content"}}
+            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": path, "content": "complete file content"}},
+            "nextModelAction": "Reply with a tool call only (app_build_put_file or app_build_validate). Do not print file contents or the app as prose."
         });
+        if pristine {
+            value["note"] = json!("This file is still the unmodified scaffold shell. You do not need its content — the contract from app_build_start summarizes it. Write your main.js with app_build_put_file first.");
+        }
         if include_content {
             value["content"] = json!(file.content);
         }
         return Ok(value.to_string());
     }
+    let summaries: Vec<Value> = files
+        .iter()
+        .map(|file| {
+            let mut summary = file_summary(file);
+            summary["unmodifiedScaffold"] = json!(is_unmodified_scaffold(&initial, file));
+            summary
+        })
+        .collect();
     Ok(json!({
         "draftId": draft_id,
-        "files": file_summaries(&files),
+        "files": summaries,
         "bundleHash": validation_token(&files),
         "metadata": read_draft_metadata(draft_id).unwrap_or_else(|_| json!({})),
         "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": draft_id}},
+        "nextModelAction": "Reply with a tool call only (app_build_put_file or app_build_validate). Do not read files marked unmodifiedScaffold:true and do not print the app as prose.",
         "next": [
-            "Use app_build_get with includeContent:true and a path if you need one file's current content.",
-            "Use app_build_put_file to replace one file.",
-            "Call app_build_validate when ready."
+            "Do not read files marked unmodifiedScaffold:true — they are the working shell and the contract from app_build_start summarizes them. Write your main.js first.",
+            "Use app_build_get with includeContent:true and a path only for files you already changed.",
+            "Use app_build_put_file to replace files, then call app_build_validate."
         ]
     })
     .to_string())
@@ -2415,6 +2609,18 @@ fn app_build_validate_json(core: &HostCore, draft_id: &str) -> Result<String, St
     let files = read_inline_bundle_files(&bundle)?;
     validate_draft_size(&files)?;
     let mut info = inspect_inline_bundle("", "", "", &files)?;
+    // A pristine scaffold backend validates fine but is still the demo app —
+    // run-5's resumed GLM validated a shell-only draft and stalled deciding
+    // whether it was real. Say it outright.
+    let initial = read_initial_hashes(draft_id);
+    if let Some(backend_file) = files.iter().find(|file| file.path == info.backend) {
+        if is_unmodified_scaffold(&initial, backend_file) {
+            info.warnings.push(format!(
+                "{} is still the unmodified scaffold demo app, not the requested app. Write your backend with app_build_put_file before committing.",
+                info.backend
+            ));
+        }
+    }
     let dest = crate::home_dir().join("apps").join(&info.id);
     if core.state().app.apps.contains_key(&info.id) {
         info.errors.push(format!(
@@ -2436,7 +2642,11 @@ fn app_build_validate_json(core: &HostCore, draft_id: &str) -> Result<String, St
             "errors": info.errors,
             "warnings": info.warnings,
             "files": file_summaries(&files),
-            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": "manifest.json", "content": "fixed complete file content"}}
+            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": "manifest.json", "content": "fixed complete file content"}},
+            "next": [
+                "Fix each listed error with app_build_put_file, sending the complete corrected file.",
+                "Then call app_build_validate again with the same draftId."
+            ]
         })
         .to_string());
     }
@@ -2550,6 +2760,66 @@ fn app_build_commit_json(
     .to_string())
 }
 
+fn app_build_list_json() -> Result<String, String> {
+    let root = crate::home_dir().join(".mcp-drafts");
+    let mut drafts = Vec::new();
+    if root.is_dir() {
+        let entries = std::fs::read_dir(&root)
+            .map_err(|e| format!("read drafts directory {}: {e}", root.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("read drafts entry {}: {e}", root.display()))?;
+            let name = entry.file_name();
+            let Some(draft_id) = name.to_str() else {
+                continue;
+            };
+            if !draft_id.starts_with("draft-") || !entry.path().join("bundle").is_dir() {
+                continue;
+            }
+            let metadata = read_draft_metadata(draft_id).unwrap_or_else(|_| json!({}));
+            drafts.push(json!({
+                "draftId": draft_id,
+                "kind": metadata.get("kind").cloned().unwrap_or(Value::Null),
+                "app": metadata.get("app").cloned().unwrap_or(Value::Null),
+                "updatedAtUnix": metadata.get("updatedAtUnix").cloned().unwrap_or(Value::Null),
+                "bundleHash": metadata.get("bundleHash").cloned().unwrap_or(Value::Null),
+                "files": metadata.get("files").cloned().unwrap_or(Value::Null)
+            }));
+        }
+    }
+    drafts.sort_by(|a, b| {
+        let ta = a.get("updatedAtUnix").and_then(Value::as_u64).unwrap_or(0);
+        let tb = b.get("updatedAtUnix").and_then(Value::as_u64).unwrap_or(0);
+        tb.cmp(&ta).then_with(|| {
+            let ia = a.get("draftId").and_then(Value::as_str).unwrap_or("");
+            let ib = b.get("draftId").and_then(Value::as_str).unwrap_or("");
+            ia.cmp(ib)
+        })
+    });
+    if drafts.is_empty() {
+        return Ok(json!({
+            "drafts": [],
+            "nextToolCall": {
+                "tool": "app_build_start",
+                "arguments": {"id": "my-app", "name": "My App", "kind": "js_kv_app", "withUi": true}
+            },
+            "next": "No drafts exist. Start one with app_build_start."
+        })
+        .to_string());
+    }
+    let newest = drafts[0].get("draftId").cloned().unwrap_or(Value::Null);
+    Ok(json!({
+        "drafts": drafts,
+        "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": newest}},
+        "nextModelAction": "Call app_build_validate with the newest draftId now; do not read files first. If it returns valid:true, call app_build_commit immediately.",
+        "next": [
+            "Drafts are newest-first. Resume by calling app_build_validate with your draftId; if it returns valid:true, commit immediately.",
+            "Only read files that validation complains about (app_build_get); do not re-read unmodified scaffold files.",
+            "Continue editing with app_build_put_file; discard drafts you no longer need with app_build_discard."
+        ]
+    })
+    .to_string())
+}
+
 fn app_build_discard_json(draft_id: &str) -> Result<String, String> {
     let draft = draft_dir(draft_id)?;
     if !draft.exists() {
@@ -2656,9 +2926,16 @@ fn inspect_inline_bundle(
     let manifest_file = files
         .iter()
         .find(|file| file.path == "manifest.json")
-        .ok_or_else(|| "app_register_inline requires a manifest.json file".to_string())?;
-    let mut manifest = BundleManifest::deserialize_json(&manifest_file.content)
-        .map_err(|e| format!("manifest.json: {e}"))?;
+        .ok_or_else(|| "the bundle requires a manifest.json file".to_string())?;
+    let mut manifest = match BundleManifest::deserialize_json(&manifest_file.content) {
+        Ok(manifest) => manifest,
+        Err(parse_err) => {
+            return Ok(manifest_shape_info(
+                &manifest_file.content,
+                &parse_err.to_string(),
+            ));
+        }
+    };
     if manifest.runtime.trim().is_empty() {
         manifest.runtime = "js".to_string();
     }
@@ -2684,10 +2961,41 @@ fn inspect_inline_bundle(
             errors.push("manifest.backend is required for js apps".to_string());
         } else {
             validate_inline_ref("manifest.backend", &backend, &file_paths, &mut errors);
+            if let Some(file) = files.iter().find(|file| file.path == backend) {
+                check_js_backend_contract(&backend, &file.content, &mut errors, &mut warnings);
+                if let Some(msg) = terrane_cap_js_runtime::js_script_syntax_error(&file.content) {
+                    errors.push(format!(
+                        "{backend} has a JavaScript syntax error: {msg}. Resend the COMPLETE file with app_build_put_file — this usually means the previous content was truncated."
+                    ));
+                }
+            }
         }
     }
     if !ui.is_empty() {
         validate_inline_ref("manifest.ui", &ui, &file_paths, &mut errors);
+        let html_ids = collect_html_ids(files);
+        for file in files {
+            if file.path == backend || !(file.path.ends_with(".js") || file.path.ends_with(".html"))
+            {
+                continue;
+            }
+            check_ui_invoke_arg_shape(&file.path, &file.content, &mut warnings);
+            if file.path.ends_with(".js") {
+                if let Some(msg) = terrane_cap_js_runtime::js_script_syntax_error(&file.content) {
+                    errors.push(format!(
+                        "{} has a JavaScript syntax error: {msg}. The page will break on load. Resend the COMPLETE file with app_build_put_file.",
+                        file.path
+                    ));
+                }
+                if file.content.contains("fetch(") && file.content.contains("/invoke") {
+                    warnings.push(format!(
+                        "{} fetches /invoke directly. Call window.terrane.invoke(\"verb\", \"arg1\", ...) instead — the bridge sends {{verb, args:[strings]}} and rejects objects in args.",
+                        file.path
+                    ));
+                }
+                check_ui_element_ids(&file.path, &file.content, &html_ids, &mut warnings);
+            }
+        }
     } else {
         warnings.push("manifest.ui is omitted; app is backend-only over invoke/MCP".to_string());
     }
@@ -2734,6 +3042,276 @@ fn validate_inline_ref(
     }
 }
 
+/// Run-2 evals caught a UI calling `invoke('verb', [a, b])` — the browser
+/// bridge `String()`s each positional arg, so an array always reaches the
+/// backend as one comma-joined string. Backend smoke tests can't see this
+/// (they call the CLI directly), so flag it at validation time.
+fn check_ui_invoke_arg_shape(path: &str, content: &str, warnings: &mut Vec<String>) {
+    for (idx, line) in content.lines().enumerate() {
+        let mut rest = line;
+        while let Some(pos) = rest.find("invoke(") {
+            let after = &rest[pos + "invoke(".len()..];
+            if let Some(second_arg) = second_call_arg(after) {
+                if second_arg.trim_start().starts_with('[') {
+                    warnings.push(format!(
+                        "{path} line {} passes an array to invoke(). window.terrane.invoke sends positional string args and String()-joins an array into one argument. Call invoke(\"verb\", \"arg1\", \"arg2\") instead.",
+                        idx + 1
+                    ));
+                    return;
+                }
+            }
+            rest = after;
+        }
+    }
+}
+
+/// The text after the first top-level comma inside one call's argument list
+/// (single-line heuristic; quotes are not tracked — good enough for a warning).
+fn second_call_arg(after_open_paren: &str) -> Option<&str> {
+    let mut depth = 0usize;
+    for (i, ch) in after_open_paren.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+            }
+            ',' if depth == 0 => return Some(&after_open_paren[i + 1..]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every `id="..."` / `id='...'` attribute value across the bundle's HTML
+/// files, for cross-checking against UI script lookups.
+fn collect_html_ids(files: &[InlineFile]) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for file in files {
+        if !file.path.ends_with(".html") {
+            continue;
+        }
+        for quote in ['"', '\''] {
+            let marker = format!("id={quote}");
+            let mut rest = file.content.as_str();
+            while let Some(pos) = rest.find(&marker) {
+                let after = &rest[pos + marker.len()..];
+                if let Some(end) = after.find(quote) {
+                    let id = &after[..end];
+                    if !id.is_empty() {
+                        ids.insert(id.to_string());
+                    }
+                }
+                rest = &rest[pos + marker.len()..];
+            }
+        }
+    }
+    ids
+}
+
+/// Run-6 caught a UI wiring `addEventListener` onto `getElementById` of an id
+/// its own index.html never defines — the page dies on load with
+/// "Cannot read properties of null". Warn (not error: scripts may create
+/// elements dynamically) for statically-looked-up ids missing from the HTML.
+fn check_ui_element_ids(
+    path: &str,
+    content: &str,
+    html_ids: &BTreeSet<String>,
+    warnings: &mut Vec<String>,
+) {
+    if html_ids.is_empty() {
+        return;
+    }
+    let mut missing = BTreeSet::new();
+    for (marker, close) in [
+        ("getElementById(\"", "\""),
+        ("getElementById('", "'"),
+        ("querySelector(\"#", "\""),
+        ("querySelector('#", "'"),
+    ] {
+        let mut rest = content;
+        while let Some(pos) = rest.find(marker) {
+            let after = &rest[pos + marker.len()..];
+            if let Some(end) = after.find(close) {
+                let id = &after[..end];
+                // Skip selector expressions (spaces, combinators) — only
+                // plain id lookups are checkable.
+                if !id.is_empty()
+                    && id
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                    && !html_ids.contains(id)
+                {
+                    missing.insert(id.to_string());
+                }
+            }
+            rest = &rest[pos + marker.len()..];
+        }
+    }
+    if !missing.is_empty() {
+        let list: Vec<&str> = missing.iter().map(String::as_str).collect();
+        warnings.push(format!(
+            "{path} looks up element id(s) {} that no bundle HTML defines. If they are not created dynamically, the page will crash on load (Cannot read properties of null). Add the elements to index.html or fix the ids.",
+            list.join(", ")
+        ));
+    }
+}
+
+const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#;
+
+/// A weak-model-friendly `BundleInfo` for a manifest.json that failed strict
+/// parsing: name the offending field types and show the exact accepted shape,
+/// instead of surfacing a parser error the model cannot act on.
+fn manifest_shape_info(raw: &str, parse_err: &str) -> BundleInfo {
+    let mut errors = Vec::new();
+    let mut id = String::new();
+    let mut name = String::new();
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Object(map)) => {
+            for (field, expected) in [
+                ("id", "a string such as \"my-app\""),
+                ("name", "a string such as \"My App\""),
+                ("runtime", "the string \"js\""),
+                ("backend", "a string file path such as \"main.js\""),
+                (
+                    "ui",
+                    "a string file path such as \"index.html\" (scripts and styles are referenced from index.html, not listed in the manifest)",
+                ),
+            ] {
+                match map.get(field) {
+                    None | Some(Value::String(_)) => {}
+                    Some(other) => errors.push(format!(
+                        "manifest.{field} must be {expected}, not {}",
+                        json_type_name(other)
+                    )),
+                }
+            }
+            match map.get("resources") {
+                None => {}
+                Some(Value::Array(items)) if items.iter().all(Value::is_string) => {}
+                Some(_) => errors.push(
+                    "manifest.resources must be an array of strings such as [\"kv\"]".to_string(),
+                ),
+            }
+            if errors.is_empty() {
+                errors.push(format!(
+                    "manifest.json does not match the accepted manifest shape: {parse_err}"
+                ));
+            }
+            id = map
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            name = map
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+        }
+        Ok(_) => errors.push("manifest.json must be a JSON object".to_string()),
+        Err(e) => errors.push(format!("manifest.json is not valid JSON: {e}")),
+    }
+    errors.push(format!(
+        "Fix: replace manifest.json with exactly this shape: {MANIFEST_EXAMPLE} (omit \"ui\" for backend-only apps)"
+    ));
+    BundleInfo {
+        id,
+        name,
+        runtime: "js".to_string(),
+        backend: String::new(),
+        ui: String::new(),
+        resources: Vec::new(),
+        errors,
+        warnings: Vec::new(),
+    }
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+/// Weak-model evals showed runtime-incompatible backends (ES modules, missing
+/// or object-style `handle`) validating cleanly and then failing on first
+/// invoke. The runtime evals the backend as one plain script and calls the
+/// global-object `handle(input)` with an array of strings (an `actions` table
+/// is the sanctioned alternative — the prelude synthesizes `handle` from it),
+/// so catch contract breaks here with fix-it guidance.
+fn check_js_backend_contract(
+    path: &str,
+    content: &str,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let mut module_line = None;
+    for (idx, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+            continue;
+        }
+        let is_module = trimmed.starts_with("import ")
+            || trimmed.starts_with("import{")
+            || trimmed.starts_with("import\"")
+            || trimmed.starts_with("import'")
+            || trimmed.starts_with("export ")
+            || trimmed.starts_with("export{");
+        if is_module {
+            module_line = Some(idx + 1);
+            break;
+        }
+    }
+    if let Some(line) = module_line {
+        errors.push(format!(
+            "{path} line {line} uses top-level import/export, but Terrane js backends run as one plain script: no ES modules, no require, no Deno/Node APIs. Inline all code into {path} and define one global function handle(input)"
+        ));
+    }
+    let defines_handle = content.contains("function handle(")
+        || content.contains("var handle")
+        || content.contains("handle = function")
+        || content.contains("handle=function")
+        || content.contains("globalThis.handle");
+    let lexical_handle_only =
+        !defines_handle && (content.contains("const handle") || content.contains("let handle"));
+    let defines_actions = content.contains("var actions")
+        || content.contains("const actions")
+        || content.contains("let actions")
+        || content.contains("actions =")
+        || content.contains("actions=");
+    if lexical_handle_only {
+        errors.push(format!(
+            "{path} declares handle with const/let, but the runtime reads handle from the global object, so it will not be found. Declare it as: function handle(input) {{ ... }}"
+        ));
+    } else if !defines_handle && !defines_actions {
+        errors.push(format!(
+            "{path} does not define the required entrypoint. Add: function handle(input) {{ var verb = input[0] || \"\"; ...; return \"ok\"; }} — input is an array of strings and the return value must be a string (use JSON.stringify for structured data)"
+        ));
+    }
+    for marker in ["input.action", "input.verb", "input.command", "input.args"] {
+        if content.contains(marker) {
+            warnings.push(format!(
+                "{path} reads {marker}, but handle(input) receives an array of strings, not an object: input[0] is the verb and input.slice(1) are the args. Dispatch with: var verb = input[0] || \"\";"
+            ));
+            break;
+        }
+    }
+    // Models that replace main.js often drop the __actions__ branch, which
+    // breaks app_actions/verb discovery for every client after install.
+    if defines_handle && !defines_actions && !content.contains("__actions__") {
+        warnings.push(format!(
+            "{path} does not handle the \"__actions__\" verb, so app_actions/verb discovery will return \"unknown verb\" after install. Add a branch: if (verb === \"__actions__\") return JSON.stringify({{app: \"<id>\", title: \"<name>\", actions: [{{verb, summary, args: [{{name, required}}], returns}}, ...]}});"
+        ));
+    }
+}
+
 fn write_inline_bundle(dest: &std::path::Path, files: &[InlineFile]) -> Result<(), String> {
     if dest.exists() {
         std::fs::remove_dir_all(dest)
@@ -2753,13 +3331,87 @@ fn write_inline_bundle(dest: &std::path::Path, files: &[InlineFile]) -> Result<(
     Ok(())
 }
 
+/// Abandoned drafts otherwise accumulate forever under `.mcp-drafts/`; keep
+/// the newest MAX_DRAFTS and evict the rest whenever a new draft is created.
+const MAX_DRAFTS: usize = 16;
+
 fn create_build_draft(kind: &str, files: &[InlineFile]) -> Result<String, String> {
     let draft_id = new_draft_id()?;
     let draft = draft_dir(&draft_id)?;
     let bundle = draft.join("bundle");
     write_inline_bundle(&bundle, files)?;
     write_draft_metadata(&draft_id, kind, files)?;
+    write_initial_hashes(&draft_id, files)?;
+    evict_stale_drafts();
     Ok(draft_id)
+}
+
+/// The per-file hashes at draft creation, written once and never updated —
+/// lets app_build_get tell a model "this file is still the unmodified
+/// scaffold; you don't need its content". Run-3 evals showed stall-prone
+/// models burning their whole window reading every pristine shell file.
+fn write_initial_hashes(draft_id: &str, files: &[InlineFile]) -> Result<(), String> {
+    let mut map = serde_json::Map::new();
+    for file in files {
+        map.insert(file.path.clone(), json!(stable_hash_text(&file.content)));
+    }
+    let path = draft_dir(draft_id)?.join("initial.json");
+    std::fs::write(&path, Value::Object(map).to_string())
+        .map_err(|e| format!("write draft initial hashes {}: {e}", path.display()))
+}
+
+fn read_initial_hashes(draft_id: &str) -> Value {
+    draft_dir(draft_id)
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("initial.json")).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| json!({}))
+}
+
+fn is_unmodified_scaffold(initial: &Value, file: &InlineFile) -> bool {
+    initial
+        .get(&file.path)
+        .and_then(Value::as_str)
+        .is_some_and(|hash| hash == stable_hash_text(&file.content))
+}
+
+/// Best-effort eviction of the oldest drafts beyond MAX_DRAFTS — hygiene must
+/// never fail the draft that was just created, so errors are swallowed.
+fn evict_stale_drafts() {
+    let root = crate::home_dir().join(".mcp-drafts");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return;
+    };
+    let mut drafts: Vec<(u64, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(draft_id) = name.to_str() else {
+            continue;
+        };
+        if !draft_id.starts_with("draft-") {
+            continue;
+        }
+        let updated = read_draft_metadata(draft_id)
+            .ok()
+            .and_then(|meta| meta.get("updatedAtUnix").and_then(Value::as_u64))
+            .or_else(|| {
+                entry
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+            })
+            .unwrap_or(0);
+        drafts.push((updated, entry.path()));
+    }
+    if drafts.len() <= MAX_DRAFTS {
+        return;
+    }
+    drafts.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, path) in drafts.into_iter().skip(MAX_DRAFTS) {
+        let _ = std::fs::remove_dir_all(&path);
+    }
 }
 
 fn new_draft_id() -> Result<String, String> {
@@ -3168,7 +3820,7 @@ fn tool_call_example(tool: &str) -> String {
             json!({"capability": "app", "query": "exists", "args": ["APP_ID"]})
         }
         TOOL_CAPABILITY_COMMAND => json!({"name": "app.add", "help": true}),
-        TOOL_LIST_APPS | TOOL_WORKFLOWS_LIST => json!({}),
+        TOOL_LIST_APPS | TOOL_WORKFLOWS_LIST | TOOL_APP_BUILD_LIST => json!({}),
         _ => json!({}),
     };
     json!({

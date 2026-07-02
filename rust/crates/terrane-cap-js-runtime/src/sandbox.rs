@@ -118,6 +118,29 @@ fn execute_js(
     })
 }
 
+/// Compile `source` as a plain-script function body without executing it.
+/// Returns `Some(message)` on a syntax error, `None` when it parses — or when
+/// the checker itself cannot run (absence of proof is not failure). Used by
+/// validation layers to catch truncated/broken generated JS before install.
+pub fn js_script_syntax_error(source: &str) -> Option<String> {
+    let rt = Runtime::new().ok()?;
+    let ctx = Context::full(&rt).ok()?;
+    ctx.with(|ctx| {
+        ctx.globals().set("__terrane_syntax_src", source).ok()?;
+        let compiled: rquickjs::Result<Value> =
+            ctx.eval("new Function(globalThis.__terrane_syntax_src)");
+        match compiled.catch(&ctx) {
+            Ok(_) => None,
+            Err(caught) => Some(match caught {
+                CaughtError::Exception(e) => {
+                    e.message().unwrap_or_else(|| "syntax error".to_string())
+                }
+                other => format!("{other}"),
+            }),
+        }
+    })
+}
+
 fn install_resources(
     ctx: &Ctx<'_>,
     resources: &[String],

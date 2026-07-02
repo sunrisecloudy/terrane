@@ -15,6 +15,31 @@ Do not put capability names, workflow names, or tool order in the product prompt
 when the goal is blind discovery. Tell the model only the app outcome and proof
 requirements.
 
+## Run The Committed Harness
+
+The repeatable path is the harness under `host/mcp/evals/harness/`:
+
+```sh
+cd /Users/vehasuwat/Project/terrane/host/mcp && cargo build
+cd ../cli && cargo build
+cd ../web && cargo build   # for browser verification
+cd ../mcp/evals/harness && npm install   # optional: puppeteer-core UI check
+
+./run-batch.sh                          # full batch: build -> resume -> grade
+./run-batch.sh /private/tmp/my-root my-models.tsv
+```
+
+`run-batch.sh` runs every model in `models.tsv` sequentially (build phase),
+gives eligible timeouts a resume phase, then grades everything into
+`$ROOT/report.tsv` and `$ROOT/report.md`. Knobs are env vars resolved in
+`lib.sh`: `BUILD_TIMEOUT` (8m), `RESUME_TIMEOUT` (4m), `PROMPT_FILE`,
+`NL_QUERY`, `UI_INPUT_TEXT`, `EVAL_WEB_PORT`, and
+`TERRANE_OPENCODE_MAX_OUTPUT_TOKENS`. Only the prompt and the two smoke
+strings are task-specific — the harness itself is app-generic.
+
+The sections below document what the harness sets up (still the contract under
+test) plus the manual escape hatches.
+
 ## Preconditions
 
 Build the MCP host:
@@ -185,9 +210,51 @@ these work; the last two apply to the **running** server (no restart):
 - **CLI grant:** `terrane auth grant user:local-owner <app> <namespace>` (one per
   `structuredContent.grantCommands` entry), then retry the same `invoke`.
 
-**Single-writer lock:** while `terrane-mcp` is running against a home, a second
-`terrane` process on that home is refused. Approve **in-session or via the
-console** instead of a CLI grant, or stop the server first.
+**Single-writer lock:** while `terrane-mcp` (or `terrane-web`) is running
+against a home, a second `terrane` process on that home is refused — the lock
+is held for the server's whole lifetime. Ordering rule for grading: run **all
+CLI grants and smoke commands before starting `terrane-web`**; once the server
+is up, grant through the live admin console instead
+(`POST /__terrane/admin/grants` with header `X-Terrane-Admin: local-admin` and
+body `{"subject":"","app":"<id>","namespace":"kv"}`). A `terrane-mcp` child
+that survives a `timeout` kill also holds the lock invisibly (TERRANE_HOME is
+env, not argv) — find it with `lsof -t "$TERRANE_HOME"/*.lock`, which is what
+the harness's `kill_home_holders` does after every phase.
+
+## Resume Phase
+
+A build run that exits `124` (timeout) **without** an installed app gets one
+fresh 4-minute session in the same workdir and home, so `.mcp-drafts` drafts
+are visible. Exit 0 with no app is a model result ("early stop") and is not
+resumed. The resume message is `host/mcp/evals/prompts/resume-preamble.md`
+plus the same product prompt: it says an **unfinished draft may still be
+saved — don't start over**, in user-level words, and deliberately names no
+tools; whether the model finds `app_build_list` is part of the test. Grading
+records `resume_used`, `resume_ok` (app installed after resume), and
+`resume_recovered` (the log shows `app_build_list` plus a reused `draft-*`
+id, distinguishing recovery from a from-scratch rebuild).
+
+## Browser Verification
+
+For UI apps, backend smoke tests are not enough (run 2 shipped a frontend
+args-array bug no CLI check could see). `grade.sh` serves each home with
+`terrane-web --addr 127.0.0.1:$EVAL_WEB_PORT --no-live-reload` **after** the
+CLI phase, then `grade-ui.mjs` (puppeteer-core + system Chrome; skipped with a
+warning when missing) drives the shim-injected frame page
+`/apps/<id>/__terrane/frame` and asserts, app-generically:
+
+1. `GET /apps/<id>` returns 200.
+2. `window.terrane.invoke` is a function on the frame page (the app's HTML/JS
+   executed).
+3. Zero uncaught page errors / `console.error` during load.
+4. One interaction round-trip: type `UI_INPUT_TEXT` into the first text input,
+   submit, and require both a 200 error-free `POST /apps/<id>/invoke` and a
+   changed DOM within 10 seconds.
+
+If the invoke returns `permission_required`, the grader grants over the live
+admin console and retries once. Artifacts per model land in `$ROOT/ui-<slug>/`:
+`page-load.png`, `after-interaction.png`, `console.log`, `network.log`,
+`server.log`, `result.json`.
 
 Recent weak-model runs showed that productive models sometimes tried
 `capability_command auth.grant` after `permission_required`. Treat that as a
@@ -198,14 +265,26 @@ poll `permission_check`, and retry the original call after trusted approval.
 
 ## Judge Success
 
+`grade.sh` automates the checks below into `$ROOT/report.tsv` (one row per
+model: installed, permission_stop_ok, self_grant_attempts, grant_ok,
+backend_smoke, nl_query, ui_check, ui_args_array_warn, resume_*, tokens/cost)
+and `$ROOT/report.md` (same plus output excerpts). The auto-verdicts are
+triage; the rubric in `host/mcp/evals/rubrics/` stays the human authority.
+
 Judge the produced app, not the transcript alone:
 
 - The app exists under `$TERRANE_HOME/apps/<id>`.
 - `list_apps` shows the app.
 - `app_actions` returns useful verbs.
 - `invoke` proves at least one write/read or app-specific workflow.
+- Run a **domain-specific smoke check** that exercises the hardest requested
+  behavior, not just build/commit. For the calendar task: seed events that
+  cover the requested range, then run the exact natural-language query and
+  check the matches are non-empty and correct.
 - For UI apps, the coordinator opens the hosted page and verifies one visible
-  user flow. Backend invoke success alone is not enough for a UI task.
+  user flow. Backend invoke success alone is not enough for a UI task. Check
+  UI source for the positional `window.terrane.invoke("verb", "arg1", ...)`
+  shape; an args-array call is a frontend bug backend smoke tests miss.
 - The opencode transcript shows no source reads, shell, broad filesystem list,
   web fetch, or task delegation.
 
@@ -266,16 +345,20 @@ Failure classes:
   unchanged `session.time_updated`: provider/client stall. Stop the run and
   restart from the last structured result. If the last completed call was
   `app_build_start`, call `app_build_get` or continue with `app_build_put_file`;
-  if it was `app_scaffold`, make `app_register_inline` dry-run the first
-  resumed tool call. If it was `app_recipe`, `workflow_info`, or
-  `capability_info`, resume
+  if the `draftId` was lost, `app_build_list` recovers it. If the last call was
+  `app_scaffold`, make `app_register_inline` dry-run the first resumed tool
+  call. If it was `app_recipe`, `workflow_info`, or `capability_info`, resume
   with the next concrete tool named in `firstCalls`, `steps`,
   `nextAfterScaffold`, or `nextToolCall`. In a comparison batch, allow one total
   retry for this stall class; a repeated silent stall is a provider/client
   result, not evidence that Terrane docs are missing.
-- `app_build_validate` or `app_register_inline` returns `isError: true`:
-  Terrane rejected the bundle. Fix the draft or complete files array and retry
-  validation/dry-run.
+- `app_build_validate` or `app_register_inline` returns `isError: true` or
+  `valid: false`: Terrane rejected the bundle. Validation now also enforces the
+  JS runtime contract (no top-level `import`/`export`, a global
+  `function handle(input)` or `actions` table) and prescriptive manifest shape
+  errors (`ui` must be a string path). The errors carry fix-it guidance; a
+  capable model should repair the named file and revalidate. A model that loops
+  on the same validation error is a model result, not a docs gap.
 - No `$TERRANE_HOME/apps/<id>` directory: the model never committed registration
   or registration failed.
 - App exists but UI was not opened: incomplete UI eval, not an MCP failure.

@@ -28,7 +28,9 @@ to (1) trigger the request by invoking, (2) surface the `grantCommands` /
 
 1. Call `app_recipe` with `{ "kind": "js_kv_app" }`.
 2. Call `app_build_start` with an app id and display name.
-3. Use `app_build_put_file` for each file you change, one file at a time.
+3. Use `app_build_put_file` for each file you change — `path`+`content` for
+   one file, or a `files` array of `{path,content}` objects to write several
+   complete files in one call (one bad entry rejects the whole batch).
 4. Call `app_build_validate`.
 5. Call `app_build_commit` with the returned `draftId` and `validationToken`.
 6. Call `list_apps`.
@@ -48,11 +50,58 @@ The older `app_scaffold` + `app_register_inline` route is still supported.
 the recommended next call is `app_build_commit` rather than resending the same
 large files array.
 
-For visible apps, pass `withUi: true` to `app_build_start` (or to
-`app_scaffold` on the compatibility route), or include a `manifest.ui` file
-yourself. Keep browser code in a small `index.html` plus a separate asset such
-as `ui.js` when the UI is more than a trivial button. Inline HTML scripts are
-easy for small models to break.
+For visible apps, pass `withUi: true` to `app_build_start`: the draft is a
+**working app shell**, not a placeholder. `style.css` is a full light+dark
+design system (`.card`, `.btn`, `.badge`, `.tag`, `.list-item`,
+`.empty-state`, `.status`, `.grid`) — keep it and add rules at the bottom.
+`ui.js` splits KEEP-marked plumbing (an `invoke` wrapper with loading/error
+status, safe DOM helpers) from REPLACE-marked domain functions (`renderItem`,
+`refresh`, the submit handler). `index.html` has stable regions
+(`#main-input`, `#status`, `#list`, `#empty`) — keep the ids. Typically you
+replace only `main.js` and edit the REPLACE-marked `ui.js` functions; only
+send `index.html`/`ui.js`/`style.css` if you changed them, because the shell
+versions are already in the draft.
+
+If a stall or restart loses your `draftId`, call `app_build_list`: it returns
+every draft with its app id and file summaries, newest first, so you can resume
+with `app_build_get`, `app_build_put_file`, or `app_build_validate` instead of
+starting over. Drafts are capped at 16 per home; creating a new draft evicts
+the oldest beyond the cap, and `app_build_commit` deletes its draft.
+
+## Backend And Manifest Contract
+
+These three contracts are where builds fail after discovery. Follow them
+exactly; `app_build_validate` enforces the first two and returns fix-it errors.
+
+**Backend contract.** `main.js` runs as ONE plain script in the app runtime:
+
+- No top-level `import`/`export`, no `require`, no modules, no Deno or Node
+  APIs. Inline everything.
+- Define one global `function handle(input)` (or declare an `actions` table —
+  the runtime synthesizes `handle` from it). Do not use `const handle = ...`;
+  the runtime reads `handle` from the global object.
+- `input` is an **array of strings**: `input[0]` is the verb, `input.slice(1)`
+  are the args. Never read `input.action`, `input.verb`, or `input.args`.
+- Return a **string**. Use `JSON.stringify(...)` for structured results.
+- Storage is `ctx.resource.kv` (`get`/`set`/`rm`/`scan`/...); wrap `kv.get` in
+  try/catch because missing keys throw.
+
+**Manifest contract.** `manifest.json` is exactly this shape:
+
+```json
+{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}
+```
+
+`ui` is a **string file path** — omit it for backend-only apps, and never use
+an object such as `{"index": "...", "scripts": [...]}`. Scripts and styles are
+referenced from `index.html`, not listed in the manifest.
+
+**UI contract.** Browser code calls
+`window.terrane.invoke("verb", "arg1", "arg2")` with positional string args and
+awaits the backend's string reply. Do not pass an args array or an object — the
+bridge `String()`s each argument, so an array reaches the backend as one
+comma-joined string. `app_build_validate` warns when UI code passes an array to
+`invoke()`.
 
 ## Choosing A Flow
 

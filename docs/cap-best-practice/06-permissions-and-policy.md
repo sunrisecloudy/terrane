@@ -70,6 +70,12 @@ New commands are refused until you classify them, which is safe — but classify
 deliberately rather than leaving them to rot. For `GrantGated`, the app id's
 argument position is part of the classification; keep it stable.
 
+Update `rust/crates/terrane-host/tests/public_authz.rs` with the classifier
+change. The inventory tests there lock the registered command count, the
+allow/refuse/grant-gated split, public query coverage, and side-channel probes
+such as "`app.import` must not emit `kv.storage.configured` through an untrusted
+path".
+
 **Audit for bypasses (the review-024 lesson).** A refusal is a property of the
 *event kinds it protects*, not of one command name. `app.import` was `Allow`
 while carrying `--storage`/`--path` options that repointed storage — the exact
@@ -86,6 +92,6 @@ derive from the dispatching `ExecutionPrincipal` wherever you already can —
 silent hardcoding is how multi-org support gets painful later (review-006).
 
 Changing any of this means updating the MCP docs in the same change — see
-[08-docs-and-done.md](08-docs-and-done.md).
+[09-docs-and-done.md](09-docs-and-done.md).
 
 Next: [07-testing.md](07-testing.md).

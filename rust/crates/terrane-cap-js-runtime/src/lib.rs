@@ -14,7 +14,7 @@ mod doc;
 mod sandbox;
 
 pub use bundle::{read_manifest, BundleManifest, JsRuntimeBundle};
-pub use sandbox::run_js_bundle;
+pub use sandbox::{js_script_syntax_error, run_js_bundle};
 
 pub struct JsRuntimeCapability;
 

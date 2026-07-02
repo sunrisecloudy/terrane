@@ -127,6 +127,8 @@ pub const TOOL_APP_BUILD_START: &str = "app_build_start";
 pub const TOOL_APP_BUILD_PUT_FILE: &str = "app_build_put_file";
 /// MCP tool: inspect a server-side draft app bundle.
 pub const TOOL_APP_BUILD_GET: &str = "app_build_get";
+/// MCP tool: list server-side draft app bundles (stall/lost-draftId recovery).
+pub const TOOL_APP_BUILD_LIST: &str = "app_build_list";
 /// MCP tool: validate a server-side draft app bundle without committing.
 pub const TOOL_APP_BUILD_VALIDATE: &str = "app_build_validate";
 /// MCP tool: commit a validated server-side draft app bundle through app.add.
@@ -152,6 +154,29 @@ pub const TOOL_CAPABILITY_QUERY: &str = "capability_query";
 /// (or the `app_actions` tool) returns an [`AppActions`] JSON document. Apps that
 /// don't implement it simply fall through to their "unknown verb" handling.
 pub const ACTIONS_VERB: &str = "__actions__";
+
+/// Server instructions returned in the MCP `initialize` result. Most clients
+/// inject this string into the model's system prompt, so it is the one place
+/// guidance is guaranteed to reach models that never read tools or resources
+/// carefully. Keep it short, imperative, and contract-first: weak-model evals
+/// showed failures come from contract precision (backend shape, manifest shape,
+/// invoke argument shape), not from discovery.
+pub const MCP_SERVER_INSTRUCTIONS: &str = "\
+Terrane builds and runs local apps. Build an app in 4 steps: \
+1) app_build_start {id,name,kind,withUi} creates a server-side draft; use kind js_kv_app with withUi:true for interactive/UI apps (calendars, dashboards, forms). \
+2) app_build_put_file once per file with the COMPLETE file content. \
+3) app_build_validate. 4) app_build_commit with draftId + validationToken. \
+Then list_apps, app_actions, and invoke to run verbs.\n\
+Backend contract: main.js is ONE plain script. No top-level import/export, no require, no modules. Define one global function handle(input). \
+input is an array of strings: input[0] is the verb, input.slice(1) are args. Return a string (use JSON.stringify for structured data). \
+Storage is ctx.resource.kv (get/set/rm/scan); wrap kv.get in try/catch because missing keys throw.\n\
+Manifest contract: manifest.json is exactly {\"id\":\"my-app\",\"name\":\"My App\",\"runtime\":\"js\",\"backend\":\"main.js\",\"ui\":\"index.html\",\"resources\":[\"kv\"]}. \
+ui is a string file path (omit it for backend-only apps), never an object.\n\
+UI contract: browser code calls window.terrane.invoke(\"verb\",\"arg1\",\"arg2\") with positional string args and awaits the backend's string reply. Do not pass an args array or an object.\n\
+Permissions: a result with structuredContent.type==\"permission_required\" is expected, not failure. NEVER call capability_command with auth.* or grant/approve commands. \
+Ask a trusted operator to approve adminUrl or run grantCommands, poll permission_check with requestId, then retry the original call unchanged.\n\
+Recovery: every tool result names your next step in nextToolCall. If you lose a draftId, call app_build_list, then validate and commit; only read files validation complains about.\n\
+Speed: a new withUi draft is a WORKING shell. Do not read scaffold files back — write your complete main.js immediately, keep style.css, and edit only the REPLACE-marked ui.js functions. Keep the __actions__ verb in main.js so verb discovery works after install.";
 
 /// An MCP tool descriptor: its name, a one-line description, and its input
 /// JSON Schema (as a JSON string — the MCP host drops it verbatim into the
@@ -197,7 +222,7 @@ pub fn mcp_tools() -> Vec<ToolDef> {
         },
         ToolDef {
             name: TOOL_WORKFLOW_INFO,
-            description: "Return an executable recipe of tools/call steps for one workflow. Use this before building blank-context, UI, calendar, dashboard, or locked-down app tasks. For weak models the primary route is app_build_start, app_build_put_file, app_build_validate, then app_build_commit. app_scaffold/app_register_inline remain compatibility tools; app_register_inline dryRun returns draftId for app_build_commit. Example tools/call arguments: {\"name\":\"workflow_info\",\"arguments\":{\"name\":\"make_js_kv_app\"}}.",
+            description: "Return an executable recipe of tools/call steps for one workflow. The primary app-build route is app_build_start, app_build_put_file, app_build_validate, then app_build_commit. Example tools/call arguments: {\"name\":\"workflow_info\",\"arguments\":{\"name\":\"make_js_kv_app\"}}.",
             input_schema: r#"{"type":"object","properties":{"name":{"type":"string","description":"Workflow id from workflows_list, e.g. make_js_kv_app, make_js_multicap_app_no_filesystem, or register_app_bundle."}},"required":["name"],"additionalProperties":false}"#,
         },
         ToolDef {
@@ -206,39 +231,44 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             input_schema: r#"{"type":"object","properties":{"kind":{"type":"string","description":"Recipe kind. Defaults to js_kv_app. Use js_multicap_audit for a kv+crdt+relational_db app."}},"additionalProperties":false}"#,
         },
         ToolDef {
-            name: TOOL_APP_SCAFFOLD,
-            description: "Generate a complete JS app bundle as JSON files without writing to disk. Use kind js_kv_notes for KV or js_multicap_audit for a kv+crdt+relational_db app. Set withUi:true for calendars, dashboards, forms, and natural-language input pages. The scaffold demonstrates ui.js separation and defensive KV reads. Prefer the staged app_build_start/app_build_put_file/app_build_validate/app_build_commit flow for weak models; app_register_inline remains available for clients that can safely pass large JSON file arrays.",
-            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. notes-demo."},"name":{"type":"string","description":"Display name, e.g. Notes Demo."},"kind":{"type":"string","description":"Scaffold kind. Defaults to js_kv_notes. Supported: js_kv_notes, js_kv_app, js_multicap_audit."},"withUi":{"type":"boolean","description":"Include index.html and style.css. Defaults to false."}},"required":["id","name"],"additionalProperties":false}"#,
-        },
-        ToolDef {
             name: TOOL_APP_BUILD_START,
-            description: "Primary weak-model app build entrypoint. Creates a server-side draft from the scaffold template so the model can edit one file at a time instead of sending a giant files array twice. Use withUi:true for visible apps such as calendars, dashboards, forms, and natural-language input pages. Returns draftId, file summaries, and nextToolCall.",
-            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. calendar-demo."},"name":{"type":"string","description":"Display name, e.g. Calendar Demo."},"kind":{"type":"string","description":"Scaffold kind. Defaults to js_kv_notes. Supported: js_kv_notes, js_kv_app, js_multicap_audit."},"withUi":{"type":"boolean","description":"Include index.html, ui.js, and style.css. Use true for visible apps."}},"required":["id","name"],"additionalProperties":false}"#,
+            description: "Step 1 of 4 of the primary app-build flow. Creates a server-side draft from a working template so you edit one file at a time. Use kind js_kv_app with withUi:true for interactive/UI apps such as calendars, dashboards, forms, and natural-language input pages. Returns draftId, file summaries, the exact backend/manifest/UI contract, and nextToolCall. Scaffold files are placeholders: replace their content for the requested app.",
+            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. calendar-demo."},"name":{"type":"string","description":"Display name, e.g. Calendar Demo."},"kind":{"type":"string","enum":["js_kv_app","js_kv_notes","js_multicap_audit"],"description":"js_kv_app for interactive/UI apps over KV (most tasks). js_kv_notes for a minimal backend-only notes demo. js_multicap_audit for a kv+crdt+relational_db proof. Defaults to js_kv_notes."},"withUi":{"type":"boolean","description":"Include index.html, ui.js, and style.css. Use true for any app a person looks at."}},"required":["id","name"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_BUILD_PUT_FILE,
-            description: "Replace one file in a server-side draft app bundle. Use this after app_build_start to update manifest.json, main.js, index.html, ui.js, style.css, or assets one at a time. Rejects unsafe paths and returns file hash/size plus the next validation step.",
-            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"path":{"type":"string","description":"Safe relative bundle path such as main.js, index.html, ui.js, or style.css."},"content":{"type":"string","description":"Complete new file content."}},"required":["draftId","path","content"],"additionalProperties":false}"#,
+            description: "Step 2 of 4: replace draft files with COMPLETE content. Send either path+content for one file, or files:[{path,content},...] to write several files in one call. Backend contract: main.js is one plain script (no top-level import/export, no modules); define one global function handle(input) where input is an array of strings and input[0] is the verb; return a string. UI contract: browser code calls window.terrane.invoke(\"verb\",\"arg1\",\"arg2\") with positional string args.",
+            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"path":{"type":"string","description":"Safe relative bundle path such as main.js, index.html, ui.js, or style.css. Use with content for a single file."},"content":{"type":"string","description":"Complete new file content. Use with path."},"files":{"type":"array","description":"Batch mode: several complete files in one call. A real JSON array of {path,content} objects; one bad entry rejects the whole call and writes nothing.","items":{"type":"object","properties":{"path":{"type":"string","description":"Safe relative bundle path."},"content":{"type":"string","description":"Complete file content."}},"required":["path","content"],"additionalProperties":false}}},"required":["draftId"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_BUILD_GET,
-            description: "Inspect a server-side draft app bundle after a stall or before validation. Defaults to summaries only; set includeContent:true with path to recover one file. Does not commit or run effects.",
+            description: "Inspect a server-side draft app bundle after a stall or before validation. Defaults to summaries only; set includeContent:true with path to recover one file. Does not commit or run effects. If you lost the draftId, call app_build_list first.",
             input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"path":{"type":"string","description":"Optional safe relative file path. When omitted, returns all file summaries."},"includeContent":{"type":"boolean","description":"When true and path is set, include that file's content. Defaults to false."}},"required":["draftId"],"additionalProperties":false}"#,
         },
         ToolDef {
+            name: TOOL_APP_BUILD_LIST,
+            description: "List server-side draft app bundles: draftId, app id/name, status, and file summaries. Use this to recover a lost draftId after a stall or restart, then continue with app_build_get, app_build_put_file, or app_build_validate.",
+            input_schema: r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+        },
+        ToolDef {
             name: TOOL_APP_BUILD_VALIDATE,
-            description: "Validate a server-side draft app bundle and dry-run app.add without writing the owned app or appending events. Returns structured errors/warnings plus validationToken. After success, call app_build_commit with draftId and validationToken; do not resend the files.",
+            description: "Step 3 of 4: validate the draft and dry-run app.add without writing the owned app or appending events. Returns structured errors with fix-it guidance, warnings, and validationToken. After valid:true, call app_build_commit with draftId and validationToken; do not resend the files.",
             input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."}},"required":["draftId"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_BUILD_COMMIT,
-            description: "Commit a validated server-side draft app bundle. Revalidates, writes the owned bundle under TERRANE_HOME/apps/<id>, then dispatches app.add through core. Use validationToken from app_build_validate when available. Existing app ids are refused unless a future trusted replace flow is added.",
-            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"validationToken":{"type":"string","description":"Optional token returned by app_build_validate. If provided and the draft changed, commit is refused."},"replaceExisting":{"type":"boolean","description":"Reserved for a future trusted replace flow. Currently false/default; true is refused."}},"required":["draftId"],"additionalProperties":false}"#,
+            description: "Step 4 of 4: commit a validated server-side draft. Revalidates, writes the owned bundle under TERRANE_HOME/apps/<id>, then dispatches app.add through core and deletes the draft. Use validationToken from app_build_validate. Create-only: existing app ids are refused.",
+            input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."},"validationToken":{"type":"string","description":"Token returned by app_build_validate. If provided and the draft changed since validation, commit is refused."}},"required":["draftId"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_BUILD_DISCARD,
             description: "Discard a server-side draft app bundle. Removes draft files only; never touches installed apps or app events.",
             input_schema: r#"{"type":"object","properties":{"draftId":{"type":"string","description":"Draft id returned by app_build_start or app_register_inline dryRun."}},"required":["draftId"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_SCAFFOLD,
+            description: "Compatibility tool: generate a complete JS app bundle as JSON files without a server-side draft. Prefer app_build_start. Use kind js_kv_notes for KV or js_multicap_audit for a kv+crdt+relational_db app. Set withUi:true for calendars, dashboards, forms, and natural-language input pages. The scaffold demonstrates ui.js separation and defensive KV reads.",
+            input_schema: r#"{"type":"object","properties":{"id":{"type":"string","description":"Safe app id, e.g. notes-demo."},"name":{"type":"string","description":"Display name, e.g. Notes Demo."},"kind":{"type":"string","enum":["js_kv_app","js_kv_notes","js_multicap_audit"],"description":"Scaffold kind. Defaults to js_kv_notes."},"withUi":{"type":"boolean","description":"Include index.html and style.css. Defaults to false."}},"required":["id","name"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_APP_BUNDLE_VALIDATE,
