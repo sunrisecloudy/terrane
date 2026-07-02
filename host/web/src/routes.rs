@@ -82,6 +82,7 @@ pub struct RouteConfig<'a> {
     pub live_reload: bool,
     pub admin_base_url: &'a str,
     pub dev_apps: &'a crate::dev_apps::DevApps,
+    pub premium_url: Option<&'a str>,
 }
 
 pub fn route(
@@ -101,6 +102,7 @@ pub fn route(
         live_reload,
         admin_base_url,
         dev_apps,
+        premium_url,
     } = config;
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
@@ -202,7 +204,7 @@ pub fn route(
         }
         (Method::Delete, ["__terrane", "previews", id]) => destroy_preview(previews, id),
         (Method::Get | Method::Post, ["__terrane", "previews", ..]) => json_error(404, "not found"),
-        (Method::Get, ["apps"]) => json_ok(&merged_apps(core, dev_apps)),
+        (Method::Get, ["apps"]) => with_local_cors(request, json_ok(&merged_apps(core, dev_apps))),
         (Method::Post, ["mcp"]) => mcp(core, request),
         (Method::Get, ["mcp"]) => json_error(405, "method not allowed"),
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
@@ -221,7 +223,7 @@ pub fn route(
         (Method::Get, ["apps", id]) => {
             let exists =
                 core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
-            crate::shell::response(exists, id, live_reload)
+            crate::shell::response(exists, id, live_reload, premium_url)
         }
         (Method::Get, ["apps", id, rest @ ..]) => {
             serve_bundle_asset(core, dev_apps, id, &rest.join("/"), live_reload)
@@ -781,6 +783,21 @@ fn serve_file(id: &str, base: &Path, target: &Path, live_reload: bool) -> Resp {
 /// browser blocks every ES-module asset and module-based apps render blank.
 fn assets_cors_header() -> tiny_http::Header {
     header("Access-Control-Allow-Origin", "*")
+}
+
+/// Loopback-origin pages (e.g. the Terrane Premium dashboard listing this
+/// host's apps) may read the public catalog cross-origin; any other origin
+/// gets no CORS grant and the browser blocks the read.
+fn with_local_cors(request: &Request, resp: Resp) -> Resp {
+    let Some(origin) = header_value(request, "Origin") else {
+        return resp;
+    };
+    if origin_host(origin).is_some_and(is_loopback_host) {
+        resp.with_header(header("Access-Control-Allow-Origin", origin))
+            .with_header(header("Vary", "Origin"))
+    } else {
+        resp
+    }
 }
 
 fn origin_allowed(request: &Request) -> bool {

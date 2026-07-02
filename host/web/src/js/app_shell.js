@@ -16,12 +16,22 @@
   var userSubject = document.getElementById("user-subject");
   var menuSettings = document.getElementById("menu-settings");
   var menuAuth = document.getElementById("menu-auth");
+  var menuPremium = document.getElementById("menu-premium");
   var settingsPanel = document.getElementById("settings-panel");
   var settingsClose = document.getElementById("settings-close");
 
   var DOC_KEY = "terrane.doc." + currentId;
   var THEME_KEY = "terrane.theme";
   var SIGNED_OUT_KEY = "terrane.signedOut";
+  // Optional Terrane Premium sign-in (Google). The host injects the control
+  // plane URL; unset keeps the shell local-only. The session payload is the
+  // one premium's /auth/google/callback postMessages back to this origin.
+  var PREMIUM_SESSION_KEY = "terranePremiumSession";
+  var premiumUrl =
+    typeof window.__terranePremiumUrl === "string"
+      ? window.__terranePremiumUrl.replace(/\/+$/, "")
+      : "";
+  var premiumSession = null;
   var appDisplayName = currentId;
   var settingsOpen = false;
   var currentTheme = "system";
@@ -37,6 +47,7 @@
   bindDesktopInfo();
   bindBridge();
   bindTopbar();
+  bindPremium();
   frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
 
   loadCatalog();
@@ -402,6 +413,122 @@
       "settings-session",
       out || identity.locked == null ? "-" : identity.locked ? "Locked" : "Unlocked"
     );
+    updatePremiumUi();
+  }
+
+  // --- Terrane Premium (Google) sign-in — optional, host-configured ---
+
+  function bindPremium() {
+    if (!premiumUrl || !menuPremium) return;
+    premiumSession = loadPremiumSession();
+    menuPremium.hidden = false;
+    menuPremium.addEventListener("click", function () {
+      if (premiumSession) {
+        storePremiumSession(null);
+      } else {
+        startPremiumSignIn();
+      }
+      setDropdownOpen(false);
+    });
+    window.addEventListener("message", function (event) {
+      if (event.origin !== premiumOrigin()) return;
+      var data = event.data;
+      if (!data || data.type !== "terrane-premium-session") return;
+      storePremiumSession(data);
+    });
+    if (premiumSession) refreshPremiumAccount();
+    updatePremiumUi();
+  }
+
+  function premiumOrigin() {
+    try {
+      return new URL(premiumUrl).origin;
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function loadPremiumSession() {
+    try {
+      var raw = window.localStorage.getItem(PREMIUM_SESSION_KEY);
+      var data = raw ? JSON.parse(raw) : null;
+      return data && data.user && data.session ? data : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function storePremiumSession(data) {
+    premiumSession = data;
+    try {
+      if (data) {
+        window.localStorage.setItem(PREMIUM_SESSION_KEY, JSON.stringify(data));
+      } else {
+        window.localStorage.removeItem(PREMIUM_SESSION_KEY);
+      }
+    } catch (_) {}
+    updatePremiumUi();
+  }
+
+  function startPremiumSignIn() {
+    fetch(premiumUrl + "/auth/google/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ returnOrigin: window.location.origin }),
+    })
+      .then(function (response) {
+        return response.json();
+      })
+      .then(function (body) {
+        if (!body || body.ok !== true) {
+          throw new Error((body && body.error && body.error.message) || "sign-in unavailable");
+        }
+        window.open(body.result.authUrl, "terrane-google-signin", "width=480,height=640");
+      })
+      .catch(function (error) {
+        setSettingsField("settings-premium", "Sign-in unavailable: " + error.message);
+      });
+  }
+
+  // Validate a restored session against the control plane; drop it if revoked.
+  function refreshPremiumAccount() {
+    fetch(premiumUrl + "/account/me", {
+      cache: "no-store",
+      headers: { Authorization: "Bearer " + premiumSession.session.token },
+    })
+      .then(function (response) {
+        if (response.status === 401) {
+          storePremiumSession(null);
+          return null;
+        }
+        return response.ok ? response.json() : null;
+      })
+      .then(function (body) {
+        if (!body || body.ok !== true || !premiumSession) return;
+        premiumSession.user = body.result.user;
+        var org = body.result.organizations && body.result.organizations[0];
+        if (org) premiumSession.organization = { id: org.id, name: org.name };
+        storePremiumSession(premiumSession);
+      })
+      .catch(function (_) {});
+  }
+
+  function updatePremiumUi() {
+    if (!premiumUrl || !menuPremium) return;
+    var signedIn = !!premiumSession;
+    menuPremium.textContent = signedIn
+      ? "Sign out of Premium (" + premiumSession.user.email + ")"
+      : "Sign in with Google";
+    setSettingsField(
+      "settings-premium",
+      signedIn
+        ? premiumSession.user.email +
+            (premiumSession.organization ? " · " + premiumSession.organization.name : "")
+        : "Not signed in"
+    );
+    if (signedIn && !isSignedOut()) {
+      userSubject.textContent = premiumSession.user.email;
+    }
   }
 
   function loadIdentity() {

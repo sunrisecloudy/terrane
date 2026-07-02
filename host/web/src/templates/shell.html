@@ -514,6 +514,15 @@
                 </span>
               </div>
               <button
+                id="menu-premium"
+                class="menu-item"
+                type="button"
+                role="menuitem"
+                hidden
+              >
+                Sign in with Google
+              </button>
+              <button
                 id="menu-auth"
                 class="menu-item"
                 type="button"
@@ -548,6 +557,8 @@
                 <dd id="settings-source">-</dd>
                 <dt>Local admin</dt>
                 <dd id="settings-session">-</dd>
+                <dt>Premium account</dt>
+                <dd id="settings-premium">Not signed in</dd>
               </dl>
               <div class="settings-theme">
                 <span>Theme</span>
@@ -564,8 +575,10 @@
                 </span>
               </div>
               <p class="settings-note">
-                Sign-in is local to this browser for now; the identity shown
-                here is this Terrane home's local owner.
+                The identity shown here is this Terrane home's local owner.
+                Signing in with Google connects this browser to the configured
+                Terrane Premium control plane — optional; local execution
+                never requires it.
               </p>
               <button id="settings-close" class="settings-close" type="button">
                 Back to app
@@ -577,6 +590,7 @@
     </div>
     <script>
       window.__terraneLiveReload = __LIVE_RELOAD__;
+      window.__terranePremiumUrl = __PREMIUM_URL__;
       __APP_ICONS_JS__;
       __APP_SHELL_JS__;
     </script>
