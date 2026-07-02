@@ -55,6 +55,7 @@ use terrane_cap_builder::BuilderState;
 use terrane_cap_crdt::CrdtState;
 use terrane_cap_harness::HarnessState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
+use terrane_cap_local_model::LocalModelState;
 use terrane_cap_model::ModelState;
 use terrane_cap_net::NetState;
 use terrane_cap_replica::ReplicaState;
@@ -75,6 +76,7 @@ pub struct State {
     pub kv: KvState,
     pub net: NetState,
     pub model: ModelState,
+    pub local_model: LocalModelState,
     pub crdt: CrdtState,
     pub replica: ReplicaState,
 }
@@ -89,6 +91,7 @@ impl StateStore for State {
             "kv" => Some(&self.kv),
             "net" => Some(&self.net),
             "model" => Some(&self.model),
+            "local-model" => Some(&self.local_model),
             "crdt" => Some(&self.crdt),
             "replica" => Some(&self.replica),
             _ => None,
@@ -104,6 +107,7 @@ impl StateStore for State {
             "kv" => Some(&mut self.kv),
             "net" => Some(&mut self.net),
             "model" => Some(&mut self.model),
+            "local-model" => Some(&mut self.local_model),
             "crdt" => Some(&mut self.crdt),
             "replica" => Some(&mut self.replica),
             _ => None,
@@ -390,6 +394,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_replica::ReplicaCapability));
     registry.register(Box::new(terrane_cap_net::NetCapability));
     registry.register(Box::new(terrane_cap_model::ModelCapability));
+    registry.register(Box::new(terrane_cap_local_model::LocalModelCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
     registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
     registry
@@ -603,6 +608,9 @@ pub struct RuntimeResourceHost {
     registry: Registry,
     temporary_allowed_resources: BTreeSet<String>,
     recorded: Vec<RecordedWrite>,
+    /// Runs `Decision::Effect` from `ResourceMethod::Call` invocations; calls
+    /// are refused when the host was built without one.
+    runner: Option<std::sync::Arc<dyn EffectRunner>>,
 }
 
 impl RuntimeResourceHost {
@@ -622,7 +630,15 @@ impl RuntimeResourceHost {
             registry: default_registry(),
             temporary_allowed_resources: BTreeSet::new(),
             recorded: Vec::new(),
+            runner: None,
         }
+    }
+
+    /// Attach an effect runner so `ResourceMethod::Call` invocations can run
+    /// their effects (recorded like any write).
+    pub fn with_runner(mut self, runner: std::sync::Arc<dyn EffectRunner>) -> Self {
+        self.runner = Some(runner);
+        self
     }
 
     pub fn new_with_temporary_resource_grants(
@@ -726,6 +742,61 @@ impl RuntimeHost for RuntimeResourceHost {
         Ok(())
     }
 
+    fn call_resource(
+        &mut self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        let Some(runner) = self.runner.clone() else {
+            return Err(Error::Runtime(format!(
+                "{namespace}.{method}: resource calls are not available in this runtime host"
+            )));
+        };
+        let name = format!("{namespace}.{method}");
+        let mut scoped_args = Vec::with_capacity(args.len() + 1);
+        scoped_args.push(self.app.clone());
+        scoped_args.extend(args.iter().cloned());
+
+        let bus = RegistryBus::new(&self.registry, &self.state);
+        let ctx = CommandCtx {
+            state: &self.state,
+            bus: &bus,
+        };
+        let decision = self
+            .registry
+            .get(namespace)?
+            .decide(ctx, &name, &scoped_args)?;
+        let records = match decision {
+            Decision::Commit(records) => records,
+            // The one place effects are legal inside a runtime: run once now;
+            // replay folds the recorded events without re-running the app.
+            Decision::Effect(effect) => runner.run(&effect, &self.state)?,
+            Decision::Runtime(_) => {
+                return Err(Error::Runtime(format!(
+                    "{name}: nested runtime calls are not allowed inside a runtime"
+                )));
+            }
+        };
+        for record in &records {
+            apply(&self.registry, &mut self.state, record)?;
+        }
+        let output = self.registry.get(namespace)?.resource_call_output(
+            &self.state,
+            &self.app,
+            method,
+            &records,
+        )?;
+        for record in records {
+            self.recorded.push(RecordedWrite {
+                record,
+                coalesce_key: None,
+                is_set: false,
+            });
+        }
+        Ok(output)
+    }
+
     fn take_records(&mut self) -> Vec<EventRecord> {
         coalesce(std::mem::take(&mut self.recorded))
     }
@@ -806,11 +877,11 @@ pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
 /// The engine: an on-disk event log, the State folded from it, an injected
 /// [`EffectRunner`], and the [`Registry`] of capabilities. Pure usage leaves the
 /// runner untouched, so it defaults to [`NoEffects`].
-pub struct Core<R: EffectRunner = NoEffects> {
+pub struct Core<R: EffectRunner + 'static = NoEffects> {
     log_path: PathBuf,
     state: State,
     kv_storage_plan: KvStoragePlan,
-    runner: R,
+    runner: std::sync::Arc<R>,
     registry: Registry,
     /// String printed by the most recent runtime backend, if any. Not part of
     /// State, never logged or replayed — purely a transport for the host to print.
@@ -828,7 +899,7 @@ impl Core<NoEffects> {
     }
 }
 
-impl<R: EffectRunner> Core<R> {
+impl<R: EffectRunner + 'static> Core<R> {
     /// Open (or create) a core at `log_path` with an effect runner, rebuilding
     /// State by folding the existing log through the default registry.
     pub fn open_with(log_path: impl Into<PathBuf>, runner: R) -> Result<Self> {
@@ -853,7 +924,7 @@ impl<R: EffectRunner> Core<R> {
             log_path,
             state,
             kv_storage_plan,
-            runner,
+            runner: Arc::new(runner),
             registry,
             last_output: None,
             _home_lock: home_lock,
@@ -954,11 +1025,14 @@ impl<R: EffectRunner> Core<R> {
             }
             None => None,
         };
-        let host = RuntimeHostHandle::new(Box::new(RuntimeResourceHost::new_with_principal(
-            request.app.clone(),
-            self.state.clone(),
-            principal,
-        )));
+        let host = RuntimeHostHandle::new(Box::new(
+            RuntimeResourceHost::new_with_principal(
+                request.app.clone(),
+                self.state.clone(),
+                principal,
+            )
+            .with_runner(self.runner.clone()),
+        ));
         let ctx = RuntimeCtx {
             source,
             source_files,

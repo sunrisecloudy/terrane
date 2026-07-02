@@ -169,6 +169,9 @@ fn install_resources(
                 ResourceMethod::Read { name, .. } => {
                     install_read(ctx, &obj, &ns, name, &call, params, install_ctx.clone())?;
                 }
+                ResourceMethod::Call { name, .. } => {
+                    install_call(ctx, &obj, &ns, name, &call, params, install_ctx.clone())?;
+                }
             }
         }
         resource.set(ns.as_str(), obj).map_err(js_err)?;
@@ -201,6 +204,41 @@ fn install_write<'js>(
                 }
             }
             Err(e) => capture(&install_ctx.first_error, e),
+        }
+    })
+    .map_err(js_err)?;
+    obj.set(method_name, f).map_err(js_err)
+}
+
+/// An effectful call: records events like a write and returns a value like a
+/// read (e.g. `ctx.resource["local-model"].ask(prompt)`).
+fn install_call<'js>(
+    ctx: &Ctx<'js>,
+    obj: &Object<'js>,
+    namespace: &str,
+    method_name: &'static str,
+    call: &str,
+    params: &'static [&'static str],
+    install_ctx: InstallResourceCtx,
+) -> Result<()> {
+    let namespace = namespace.to_string();
+    let call = call.to_string();
+    let f = Function::new(ctx.clone(), move |args: Rest<Value>| -> JsReadValue {
+        match string_args(&call, params, &args.0) {
+            Ok(strs) => match install_ctx
+                .host
+                .call_resource(&namespace, method_name, &strs)
+            {
+                Ok(value) => JsReadValue(value),
+                Err(e) => {
+                    capture(&install_ctx.first_error, e);
+                    JsReadValue(ReadValue::OptString(None))
+                }
+            },
+            Err(e) => {
+                capture(&install_ctx.first_error, e);
+                JsReadValue(ReadValue::OptString(None))
+            }
         }
     })
     .map_err(js_err)?;

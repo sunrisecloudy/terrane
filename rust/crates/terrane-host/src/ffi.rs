@@ -439,6 +439,108 @@ pub unsafe extern "C" fn terrane_close(h: *mut TerraneHandle) {
     let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(h))));
 }
 
+/// Provision the MLX local-model runtime for the workspace at `home`
+/// (null/empty = default home, matching [`terrane_open`]). Blocking: the first
+/// run may download the runtime (~hundreds of MB). Writes a human summary to
+/// `out_output`. No handle needed — runtime provisioning is edge plumbing and
+/// records nothing in the event log.
+///
+/// # Safety
+/// `home` must be null or a valid C string; `out_output`/`out_error` must be
+/// valid pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_local_model_setup_mlx(
+    home: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let home = match read_home(home) {
+            Ok(home) => home,
+            Err(code) => return code,
+        };
+        match crate::local_llm::setup_mlx(&home) {
+            Ok(summary) => {
+                write_out(out_output, summary);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e.to_string());
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
+/// Resident mlx server status for the workspace at `home` as a JSON object:
+/// `{"running", "pid", "port", "idleSecs", "models"}`.
+///
+/// # Safety
+/// Same as [`terrane_local_model_setup_mlx`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_local_model_server_status(
+    home: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let home = match read_home(home) {
+            Ok(home) => home,
+            Err(code) => return code,
+        };
+        write_out(out_output, crate::local_llm::mlx_server_status_json(&home));
+        TERRANE_OK
+    }));
+    finish(code, out_error)
+}
+
+/// Release in-process local-model inference engines. Call once before a
+/// normal process exit (e.g. from `applicationWillTerminate`): a cached
+/// llama.cpp model still holding Metal buffers when ggml's static destructors
+/// run aborts the process. Safe to call at any time, including when nothing
+/// is cached.
+#[no_mangle]
+pub extern "C" fn terrane_local_model_shutdown() {
+    let _ = catch_unwind(crate::local_llm_shutdown);
+}
+
+/// Stop the resident mlx server for the workspace at `home`, if one is
+/// running. Writes a short human summary to `out_output`.
+///
+/// # Safety
+/// Same as [`terrane_local_model_setup_mlx`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_local_model_server_stop(
+    home: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let home = match read_home(home) {
+            Ok(home) => home,
+            Err(code) => return code,
+        };
+        match crate::local_llm::mlx_server_stop(&home) {
+            Ok(message) => {
+                write_out(out_output, message);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e.to_string());
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
 // ---- internals ----
 
 /// Lock the core, dispatch, and write the output (backend string for runtime commands,
@@ -505,6 +607,19 @@ unsafe fn read_str(p: *const c_char) -> Result<String, c_int> {
         .to_str()
         .map(|s| s.to_string())
         .map_err(|_| TERRANE_ERR_UTF8)
+}
+
+/// A `home` argument: null/empty selects the default home (like `terrane_open`).
+unsafe fn read_home(p: *const c_char) -> Result<PathBuf, c_int> {
+    if p.is_null() {
+        return Ok(crate::home_dir());
+    }
+    let raw = read_str(p)?;
+    if raw.trim().is_empty() {
+        Ok(crate::home_dir())
+    } else {
+        Ok(PathBuf::from(raw))
+    }
 }
 
 unsafe fn read_argv(argc: usize, argv: *const *const c_char) -> Result<Vec<String>, c_int> {

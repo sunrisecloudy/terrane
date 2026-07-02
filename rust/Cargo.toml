@@ -10,6 +10,7 @@ members = [
   "crates/terrane-cap-harness",
   "crates/terrane-cap-kv",
   "crates/terrane-cap-js-runtime",
+  "crates/terrane-cap-local-model",
   "crates/terrane-cap-relational-db",
   "crates/terrane-cap-model",
   "crates/terrane-cap-net",
@@ -19,6 +20,7 @@ members = [
   "crates/terrane-host",
   "crates/terrane-api",
   "crates/terrane-app-build",
+  "crates/terrane-local-llm",
 ]
 
 [workspace.package]
@@ -37,6 +39,7 @@ terrane-cap-crdt = { path = "crates/terrane-cap-crdt" }
 terrane-cap-harness = { path = "crates/terrane-cap-harness" }
 terrane-cap-kv = { path = "crates/terrane-cap-kv" }
 terrane-cap-js-runtime = { path = "crates/terrane-cap-js-runtime" }
+terrane-cap-local-model = { path = "crates/terrane-cap-local-model" }
 terrane-cap-relational-db = { path = "crates/terrane-cap-relational-db" }
 terrane-cap-model = { path = "crates/terrane-cap-model" }
 terrane-cap-net = { path = "crates/terrane-cap-net" }
@@ -44,7 +47,12 @@ terrane-cap-replica = { path = "crates/terrane-cap-replica" }
 terrane-cap-wasm-runtime = { path = "crates/terrane-cap-wasm-runtime" }
 terrane-host = { path = "crates/terrane-host" }
 terrane-app-build = { path = "crates/terrane-app-build" }
+terrane-local-llm = { path = "crates/terrane-local-llm" }
 borsh = { version = "1", features = ["derive"] }
+# Local inference edge engine only — never a dependency of the deterministic core.
+llama-cpp-2 = "0.1"
+libc = "0.2"
+ureq = "2"
 # JSON path only — no binary/ron/toml. borsh stays the event-log format; this
 # only reads hand-authored bundle manifests at the edge.
 nanoserde = { version = "0.2", default-features = false, features = ["json"] }

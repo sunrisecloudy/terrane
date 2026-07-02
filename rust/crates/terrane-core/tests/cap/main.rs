@@ -15,6 +15,7 @@ mod harness;
 mod host;
 mod interface;
 mod kv;
+mod local_model;
 mod log;
 mod model;
 mod net;

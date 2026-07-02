@@ -516,6 +516,30 @@ fn null_safety_and_single_use_contracts() {
 }
 
 #[test]
+fn local_model_server_exports_report_and_stop_without_a_runtime() {
+    unsafe {
+        let dir = tempdir().unwrap();
+        let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+
+        let mut out: *mut c_char = ptr::null_mut();
+        let mut err: *mut c_char = ptr::null_mut();
+        let code = terrane_local_model_server_status(home.as_ptr(), &mut out, &mut err);
+        assert_eq!(code, TERRANE_OK);
+        let json = CStr::from_ptr(out).to_str().unwrap();
+        assert!(json.contains("\"running\":false"), "{json}");
+        terrane_string_free(out);
+
+        let mut out: *mut c_char = ptr::null_mut();
+        let mut err: *mut c_char = ptr::null_mut();
+        let code = terrane_local_model_server_stop(home.as_ptr(), &mut out, &mut err);
+        assert_eq!(code, TERRANE_OK);
+        let message = CStr::from_ptr(out).to_str().unwrap();
+        assert!(message.contains("no resident"), "{message}");
+        terrane_string_free(out);
+    }
+}
+
+#[test]
 fn checked_in_c_header_declares_the_exported_abi() {
     let header =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("include/terrane_host.h"))
@@ -530,6 +554,10 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "int terrane_preview_invoke(",
         "int terrane_builder_generate(",
         "int terrane_build_app(",
+        "int terrane_local_model_setup_mlx(",
+        "int terrane_local_model_server_status(",
+        "int terrane_local_model_server_stop(",
+        "void terrane_local_model_shutdown(",
         "void terrane_string_free(",
         "void terrane_close(",
         "#define TERRANE_OK 0",

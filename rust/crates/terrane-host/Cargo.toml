@@ -10,7 +10,8 @@ path = "src/lib.rs"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
-default = []
+default = ["local-llm"]
+local-llm = ["dep:terrane-local-llm"]
 rocksdb-storage = [
   "terrane-core/rocksdb-storage",
   "terrane-cap-kv/rocksdb-storage",
@@ -34,11 +35,13 @@ terrane-cap-crdt.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-kv.workspace = true
+terrane-cap-local-model.workspace = true
 terrane-cap-model.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 terrane-core.workspace = true
+terrane-local-llm = { workspace = true, optional = true }
 rocksdb = { workspace = true, optional = true }
 
 [dev-dependencies]

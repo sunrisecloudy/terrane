@@ -27,8 +27,8 @@ or no prior knowledge of Terrane, but the same steps work for any model.
 - Do not use `capability_command app.add` while app-specific tools are
   available.
 - Use direct `capability_command` only after `help: true`. Direct `kv`, `crdt`,
-  and `relational_db` resource commands require grants and can return
-  `permission_required`; storage config, raw `app.import`, `app.remove`, runtime,
+  `relational_db`, and `local-model.ask` resource commands require grants and
+  can return `permission_required`; storage config, raw `app.import`, `app.remove`, runtime,
   network, model, and harness effect commands are refused on the public MCP path.
 - After `app_build_start`, update files with `app_build_put_file`, validate with
   `app_build_validate`, then commit with `app_build_commit`. Do not pause to
@@ -86,7 +86,8 @@ errors; fix the named file with `app_build_put_file` and validate again.
 **This is the most important section. Do not skip it. Do not give up when you
 hit it.**
 
-Declaring a resource in `manifest.json` (`kv`, `crdt`, `relational_db`, `build`)
+Declaring a resource in `manifest.json` (`kv`, `crdt`, `relational_db`,
+`build`, `local-model`)
 does **not** grant it. Resources are **default-deny**: the manifest only
 *requests* a namespace, and `ctx.resource.<ns>` is absent inside the app until
 an admin grants it. So the **first** `invoke` on a fresh app usually comes back
@@ -211,6 +212,7 @@ succeeds.
 | `crdt` | `read`, `write` |
 | `relational_db` | `read`, `write` |
 | `build` | `read` (read-only) |
+| `local-model` | `call` |
 
 The local subject is always `user:local-owner`.
 

@@ -6,7 +6,7 @@ unless the host is explicitly wrapped by auth and policy.
 ## Default-Deny Resource Model (read this first)
 
 Declaring a resource in an app's `manifest.json` (`kv`, `crdt`, `relational_db`,
-`build`) **no longer auto-grants it**. Resources are **default-deny**:
+`build`, `local-model`) **no longer auto-grants it**. Resources are **default-deny**:
 
 - A manifest only *requests* a namespace. It does not receive it.
 - Inside the app backend, `ctx.resource.<ns>` is **absent** until an admin grants
@@ -226,6 +226,7 @@ Statuses to handle: `pending` | `approved` | `denied` | `cancelled` (the extra
 | `crdt` | `read`, `write` |
 | `relational_db` | `read`, `write` |
 | `build` | `read` (read-only) |
+| `local-model` | `call` |
 
 `auth.grant` with no verbs argument grants the namespace's full verb set; an
 explicit verbs argument is validated against the allowed set above. A namespace a
@@ -293,10 +294,12 @@ Examples:
   non-dry-run path; its dry-run returns a draft id for `app_build_commit`.
 - `app_register` validates a source bundle, then dispatches `app.add`.
 - `capability_command` applies the public command policy before dispatching
-  through core: `kv` / `crdt` / `relational_db` resource commands require the
-  same grants as `invoke`, while `auth.*`, `kv.storage.*`, `app.import`,
-  `app.remove`, `net.fetch`, `model.ask`, `harness.*`, and
-  `js-runtime.run` / `wasm-runtime.run` are refused on the untrusted MCP path.
+  through core: `kv` / `crdt` / `relational_db` / `local-model.ask` resource
+  commands require the same grants as `invoke`, while `auth.*`, `kv.storage.*`,
+  `app.import`, `app.remove`, `net.fetch`, `model.ask`,
+  `local-model.register/pull/rm/default` (machine-local model-spec management),
+  `harness.*`, and `js-runtime.run` / `wasm-runtime.run` are refused on the
+  untrusted MCP path.
 
 ## Destructive Actions
 

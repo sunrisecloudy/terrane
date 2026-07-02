@@ -62,6 +62,45 @@ impl EffectRunner for EdgeRunner {
                 storage_path,
             } => import_app_bundle(source, storage_backend, storage_path, state),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
+            Effect::LocalModelCall {
+                app,
+                model,
+                prompt,
+                system,
+                history,
+                schema,
+                grammar,
+            } => crate::local_llm::call(
+                app,
+                model,
+                prompt,
+                system.as_deref(),
+                history,
+                schema.as_deref(),
+                grammar.as_deref(),
+                state,
+            ),
+            Effect::LocalModelPull {
+                id,
+                repo,
+                backend,
+                file,
+                context_length,
+                chat_template,
+                max_tokens,
+                temperature_milli,
+                draft_model,
+            } => crate::local_llm::pull(
+                id,
+                repo,
+                backend,
+                file.as_deref(),
+                *context_length,
+                chat_template.clone(),
+                *max_tokens,
+                *temperature_milli,
+                draft_model.clone(),
+            ),
         }
     }
 }
@@ -229,7 +268,8 @@ fn run_harness_js(
                 state.clone(),
                 ExecutionPrincipal::local_owner(),
                 bundle.resources.clone(),
-            ),
+            )
+            .with_runner(std::sync::Arc::new(EdgeRunner)),
         ));
         let output = run_js_bundle(app_id, &[], &bundle, host.clone())?;
         Ok((js, output, host.take_records()))

@@ -168,6 +168,28 @@ pub enum Effect {
         storage_path: Option<String>,
     },
     NewReplicaId,
+    LocalModelCall {
+        app: String,
+        model: String,
+        prompt: String,
+        system: Option<String>,
+        /// Prior (user, assistant) exchanges to continue from, oldest first.
+        history: Vec<(String, String)>,
+        schema: Option<String>,
+        grammar: Option<String>,
+    },
+    LocalModelPull {
+        id: String,
+        repo: String,
+        backend: String,
+        /// The file inside the repo for gguf pulls; mlx pulls snapshot the repo.
+        file: Option<String>,
+        context_length: Option<u32>,
+        chat_template: Option<String>,
+        max_tokens: Option<u32>,
+        temperature_milli: Option<u32>,
+        draft_model: Option<String>,
+    },
 }
 
 /// Encode a capability's typed event into a name-tagged [`EventRecord`].

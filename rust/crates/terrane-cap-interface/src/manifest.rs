@@ -102,18 +102,30 @@ pub enum ResourceMethod {
         name: &'static str,
         params: &'static [&'static str],
     },
+    /// An effectful invocation that records events *and* returns a value
+    /// (e.g. a local-model generation). Routed through decide like a write,
+    /// with `Decision::Effect` allowed; the result comes from
+    /// `Capability::resource_call_output`.
+    Call {
+        name: &'static str,
+        params: &'static [&'static str],
+    },
 }
 
 impl ResourceMethod {
     pub fn name(&self) -> &'static str {
         match self {
-            ResourceMethod::Write { name, .. } | ResourceMethod::Read { name, .. } => name,
+            ResourceMethod::Write { name, .. }
+            | ResourceMethod::Read { name, .. }
+            | ResourceMethod::Call { name, .. } => name,
         }
     }
 
     pub fn params(&self) -> &'static [&'static str] {
         match self {
-            ResourceMethod::Write { params, .. } | ResourceMethod::Read { params, .. } => params,
+            ResourceMethod::Write { params, .. }
+            | ResourceMethod::Read { params, .. }
+            | ResourceMethod::Call { params, .. } => params,
         }
     }
 
@@ -121,6 +133,7 @@ impl ResourceMethod {
         match self {
             ResourceMethod::Write { .. } => "write",
             ResourceMethod::Read { .. } => "read",
+            ResourceMethod::Call { .. } => "call",
         }
     }
 }

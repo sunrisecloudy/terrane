@@ -9,6 +9,7 @@ final class AppSidebarView: NSVisualEffectView {
   private let title = NSTextField(labelWithString: "Terrane")
   private let caption = NSTextField(labelWithString: "Apps")
   private let stack = NSStackView()
+  let localModelPanel = LocalModelPanel()
   private var apps: [TerraneApp] = []
   private var selectedAppId: String?
   private var buttons: [AppSidebarButton] = []
@@ -52,6 +53,7 @@ final class AppSidebarView: NSVisualEffectView {
     brandIcon.isHidden = collapsed
     title.isHidden = collapsed
     caption.isHidden = collapsed
+    localModelPanel.isHidden = collapsed
     collapseButton.image = NSImage(
       systemSymbolName: collapsed ? "sidebar.right" : "sidebar.left",
       accessibilityDescription: nil
@@ -120,11 +122,20 @@ final class AppSidebarView: NSVisualEffectView {
     stack.spacing = 4
     stack.translatesAutoresizingMaskIntoConstraints = false
 
+    localModelPanel.translatesAutoresizingMaskIntoConstraints = false
+
     addSubview(brandIcon)
     addSubview(collapseButton)
     addSubview(title)
     addSubview(caption)
     addSubview(stack)
+    addSubview(localModelPanel)
+
+    NSLayoutConstraint.activate([
+      localModelPanel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+      localModelPanel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+      localModelPanel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+    ])
 
     NSLayoutConstraint.activate([
       brandIcon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18),

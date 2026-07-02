@@ -63,6 +63,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationWillTerminate(_ notification: Notification) {
     bridge?.close()
+    // Cached local-model engines must be released before ggml's static
+    // destructors run at exit, or the process aborts.
+    terrane_local_model_shutdown()
   }
 
   private func buildContentView() -> NSView {
@@ -75,6 +78,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     appSidebar.onToggleCollapse = { [weak self] in
       self?.toggleSidebar()
     }
+    appSidebar.localModelPanel.configure(home: home)
 
     let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false

@@ -176,6 +176,14 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.kv.range(start, endExclusive, limit)` | read |
 | `ctx.resource.kv.keys(prefix, limit)` | read |
 
+#### `ctx.resource.local-model`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.local-model.ask(prompt)` | call |
+| `ctx.resource.local-model.askModel(model, prompt)` | call |
+| `ctx.resource.local-model.askJson(schema, prompt)` | call |
+
 #### `ctx.resource.relational_db`
 
 | Method | Kind |
