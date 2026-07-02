@@ -16,6 +16,7 @@ pub(crate) struct SpecOptions {
     pub chat_template: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature_milli: Option<u32>,
+    pub draft_model: Option<String>,
 }
 
 /// `local-model.register <id> <backend> <path> [--context N] [--template T]
@@ -35,6 +36,7 @@ pub(crate) fn decide_register(_ctx: CommandCtx<'_>, args: &[String]) -> Result<D
             "--backend is a pull option; register takes the backend positionally".into(),
         ));
     }
+    ensure_draft_supported(&backend, &options)?;
     let spec = LocalModelSpec {
         format: backend_format(&backend).to_string(),
         backend,
@@ -45,6 +47,7 @@ pub(crate) fn decide_register(_ctx: CommandCtx<'_>, args: &[String]) -> Result<D
         temperature_milli: options.temperature_milli,
         source: None,
         size_bytes: None,
+        draft_model: options.draft_model,
     };
     Ok(Decision::Commit(vec![registered_event(&id, &spec)?]))
 }
@@ -131,6 +134,7 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
                     "gguf pull expects a .gguf file, got {file:?}"
                 )));
             }
+            ensure_draft_supported("llama_cpp", &options)?;
             Ok(Decision::Effect(Effect::LocalModelPull {
                 id,
                 repo,
@@ -140,6 +144,7 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
                 chat_template: options.chat_template,
                 max_tokens: options.max_tokens,
                 temperature_milli: options.temperature_milli,
+                draft_model: None,
             }))
         }
         _ => {
@@ -157,9 +162,21 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
                 chat_template: options.chat_template,
                 max_tokens: options.max_tokens,
                 temperature_milli: options.temperature_milli,
+                draft_model: options.draft_model,
             }))
         }
     }
+}
+
+/// Speculative decoding is an mlx-only lever: llama_cpp asks run a single
+/// in-process model, so a draft spec there would silently do nothing.
+fn ensure_draft_supported(backend: &str, options: &SpecOptions) -> Result<()> {
+    if options.draft_model.is_some() && backend != "mlx" {
+        return Err(Error::InvalidInput(format!(
+            "--draft is mlx-only (speculative decoding); the {backend} backend does not use it"
+        )));
+    }
+    Ok(())
 }
 
 fn valid_repo(repo: &str) -> Result<String> {
@@ -412,10 +429,18 @@ pub(crate) fn parse_spec_options(args: &[String], from: usize) -> Result<SpecOpt
                 options.temperature_milli = Some(temperature_milli(arg(args, i + 1, "--temp")?)?);
                 i += 2;
             }
+            "--draft" => {
+                let value = arg(args, i + 1, "--draft value")?;
+                if value.trim().is_empty() {
+                    return Err(Error::InvalidInput("--draft must not be empty".into()));
+                }
+                options.draft_model = Some(value);
+                i += 2;
+            }
             other => {
                 return Err(Error::InvalidInput(format!(
                     "unknown option {other:?}; expected --backend, --context, --template, \
-                     --max-tokens, or --temp"
+                     --max-tokens, --temp, or --draft"
                 )));
             }
         }

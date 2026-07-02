@@ -84,6 +84,7 @@ pub(crate) fn call(
         }
         "mlx" => MlxBackend::load(&crate::home_dir(), &spec.local_path)
             .map_err(|e| Error::Runtime(e.to_string()))?
+            .with_draft(spec.draft_model.clone())
             .generate(&request, &mut on_token),
         other => {
             return Err(Error::Runtime(format!(
@@ -126,6 +127,7 @@ pub(crate) fn pull(
     chat_template: Option<String>,
     max_tokens: Option<u32>,
     temperature_milli: Option<u32>,
+    draft_model: Option<String>,
 ) -> Result<Vec<EventRecord>> {
     use terrane_cap_local_model::{registered_event, LocalModelSpec};
 
@@ -147,6 +149,7 @@ pub(crate) fn pull(
                 temperature_milli,
                 source: Some(format!("hf:{repo}")),
                 size_bytes: Some(size_bytes),
+                draft_model,
             }
         }
         _ => {
@@ -180,6 +183,7 @@ pub(crate) fn pull(
                 temperature_milli,
                 source: Some(format!("hf:{repo}/{file}")),
                 size_bytes: Some(size_bytes),
+                draft_model: None,
             }
         }
     };
@@ -302,6 +306,7 @@ pub(crate) fn pull(
     _chat_template: Option<String>,
     _max_tokens: Option<u32>,
     _temperature_milli: Option<u32>,
+    _draft_model: Option<String>,
 ) -> Result<Vec<EventRecord>> {
     Err(Error::Runtime(
         "this build has no local inference engine; rebuild terrane-host with --features local-llm"

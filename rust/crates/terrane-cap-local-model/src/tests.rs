@@ -66,6 +66,7 @@ fn store_with_backend(model: Option<&str>, backend: &str) -> Store {
                 temperature_milli: None,
                 source: None,
                 size_bytes: None,
+                draft_model: None,
             },
         );
         // Mirrors the fold: the first registered model becomes the default.
@@ -134,6 +135,7 @@ fn spec_options_parse_and_reject_unknown_flags() {
             chat_template: Some("chatml".into()),
             max_tokens: Some(256),
             temperature_milli: Some(700),
+            draft_model: None,
         }
     );
 
@@ -435,4 +437,60 @@ fn ask_without_any_model_explains_the_zero_config_path() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("qwen"), "{err}");
+}
+
+#[test]
+fn draft_model_is_mlx_only_and_flows_into_the_pull_effect() {
+    let store = Store {
+        local_model: LocalModelState::default(),
+    };
+    let bus = Bus { apps: Vec::new() };
+    let ctx = || CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    // register: --draft on llama_cpp is refused with a clear message…
+    let err = decide_register(
+        ctx(),
+        &strings(&[
+            "qwen",
+            "llama_cpp",
+            "/models/qwen.gguf",
+            "--draft",
+            "some/draft",
+        ]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("mlx-only"), "{err}");
+
+    // …and lands on the spec for mlx.
+    let decision = decide_register(
+        ctx(),
+        &strings(&["big", "mlx", "org/big-model", "--draft", "org/tiny-model"]),
+    )
+    .unwrap();
+    let Decision::Commit(records) = decision else {
+        panic!("register should commit");
+    };
+    let described = crate::events::describe(&records[0]).unwrap();
+    assert!(described.contains("big"), "{described}");
+
+    // pull: gguf refuses --draft; mlx carries it into the effect.
+    let err = decide_pull(
+        ctx(),
+        &strings(&["m", "org/repo", "f.gguf", "--draft", "org/tiny"]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("mlx-only"), "{err}");
+
+    let decision = decide_pull(
+        ctx(),
+        &strings(&["m", "org/repo", "--backend", "mlx", "--draft", "org/tiny"]),
+    )
+    .unwrap();
+    let Decision::Effect(Effect::LocalModelPull { draft_model, .. }) = decision else {
+        panic!("mlx pull should be an effect");
+    };
+    assert_eq!(draft_model.as_deref(), Some("org/tiny"));
 }

@@ -36,6 +36,9 @@ pub struct LocalModelSpec {
     /// Where the weights came from (e.g. `hf:<repo>/<file>`), when pulled.
     pub source: Option<String>,
     pub size_bytes: Option<u64>,
+    /// A smaller same-tokenizer model for speculative decoding (mlx only;
+    /// requires a model whose caches can rewind — standard attention).
+    pub draft_model: Option<String>,
 }
 
 /// One recorded local inference exchange.

@@ -147,6 +147,12 @@ fn local_model_commands() -> Vec<CommandDoc> {
             "Optional sampling temperature between 0.0 and 2.0.",
             "number",
         ),
+        param(
+            "--draft",
+            "Optional draft model for speculative decoding (mlx only; needs a \
+             smaller same-tokenizer model and rewindable caches).",
+            "string",
+        ),
     ];
     let mut register_params = vec![
         param(

@@ -231,6 +231,7 @@ fn describe_renders_own_events() {
             temperature_milli: None,
             source: None,
             size_bytes: None,
+            draft_model: None,
         },
     )
     .unwrap();

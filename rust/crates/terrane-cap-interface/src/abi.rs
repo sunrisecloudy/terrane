@@ -188,6 +188,7 @@ pub enum Effect {
         chat_template: Option<String>,
         max_tokens: Option<u32>,
         temperature_milli: Option<u32>,
+        draft_model: Option<String>,
     },
 }
 

@@ -89,6 +89,7 @@ impl EffectRunner for EdgeRunner {
                 chat_template,
                 max_tokens,
                 temperature_milli,
+                draft_model,
             } => crate::local_llm::pull(
                 id,
                 repo,
@@ -98,6 +99,7 @@ impl EffectRunner for EdgeRunner {
                 chat_template.clone(),
                 *max_tokens,
                 *temperature_milli,
+                draft_model.clone(),
             ),
         }
     }

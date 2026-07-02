@@ -17,6 +17,7 @@ struct Registered {
     temperature_milli: Option<u32>,
     source: Option<String>,
     size_bytes: Option<u64>,
+    draft_model: Option<String>,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -77,6 +78,7 @@ pub fn registered_event(id: &str, spec: &LocalModelSpec) -> Result<EventRecord> 
             temperature_milli: spec.temperature_milli,
             source: spec.source.clone(),
             size_bytes: spec.size_bytes,
+            draft_model: spec.draft_model.clone(),
         },
     )
 }
@@ -142,6 +144,7 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
                     temperature_milli: e.temperature_milli,
                     source: e.source,
                     size_bytes: e.size_bytes,
+                    draft_model: e.draft_model,
                 },
             );
             // The first registered model becomes the default automatically.

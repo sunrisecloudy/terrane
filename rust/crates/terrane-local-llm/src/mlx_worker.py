@@ -188,13 +188,21 @@ def handle(conn):
                 constrained = "mask"
             else:
                 constrained = "guided"
-        cache, suffix, reused = restore_prompt_cache(req["model"], model, prompt)
-        if boundary is not None and boundary > reused:
-            # Feed up to the history boundary ourselves, snapshot the pristine
-            # state, then let stream_generate handle the generation tail.
-            prefill(model, cache, prompt[reused:boundary])
-            snapshot_prompt_cache(req["model"], cache, prompt[:boundary])
-            suffix = prompt[boundary:]
+        draft_model = None
+        if req.get("draftModel"):
+            # Speculative decoding: mlx_lm rewinds caches on rejected drafts,
+            # so this needs rewindable (standard-attention) caches and manages
+            # its own prompt cache — the conversation snapshot is skipped.
+            draft_model, _ = get_model(req["draftModel"])
+        cache, suffix, reused = (None, prompt, 0)
+        if draft_model is None:
+            cache, suffix, reused = restore_prompt_cache(req["model"], model, prompt)
+            if boundary is not None and boundary > reused:
+                # Feed up to the history boundary ourselves, snapshot the
+                # pristine state, then let stream_generate handle the tail.
+                prefill(model, cache, prompt[reused:boundary])
+                snapshot_prompt_cache(req["model"], cache, prompt[:boundary])
+                suffix = prompt[boundary:]
         last = None
         pending = 0
         for resp in stream_generate(
@@ -205,6 +213,7 @@ def handle(conn):
             sampler=sampler,
             logits_processors=processors,
             prompt_cache=cache,
+            draft_model=draft_model,
         ):
             last = resp
             if resp.text:

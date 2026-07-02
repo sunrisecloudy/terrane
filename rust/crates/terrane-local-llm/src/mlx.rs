@@ -35,6 +35,9 @@ pub struct MlxBackend {
     /// A Hugging Face repo id (`mlx-community/...`) or a local model directory;
     /// `mlx_lm` resolves and caches it.
     model_ref: String,
+    /// A smaller same-tokenizer model for speculative decoding (resident
+    /// transport only; requires rewindable caches).
+    draft_ref: Option<String>,
 }
 
 impl MlxBackend {
@@ -56,7 +59,14 @@ impl MlxBackend {
             runtime,
             home: home.to_path_buf(),
             model_ref: model_ref.to_string(),
+            draft_ref: None,
         })
+    }
+
+    /// Enable speculative decoding with a draft model reference.
+    pub fn with_draft(mut self, draft_ref: Option<String>) -> Self {
+        self.draft_ref = draft_ref.filter(|d| !d.trim().is_empty());
+        self
     }
 
     /// One generation over whichever transport is available. `stream_to`
@@ -113,6 +123,7 @@ impl MlxBackend {
         };
         let body = serde_json::json!({
             "model": self.model_ref,
+            "draftModel": self.draft_ref,
             "prompt": prompt,
             "system": request.system,
             "history": request.history,
@@ -202,6 +213,9 @@ impl MlxBackend {
         let mut command = Command::new(&self.runtime.generate_bin);
         if let Some(system) = &request.system {
             command.arg("--system-prompt").arg(system);
+        }
+        if let Some(draft) = &self.draft_ref {
+            command.arg("--draft-model").arg(draft);
         }
         command
             .arg("--model")
