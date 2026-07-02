@@ -739,6 +739,36 @@ fn serves_catalog_ui_and_invoke_over_http() {
         body.contains("window.terraneAppIcon"),
         "shared app icons missing from shell: {body}"
     );
+    // Top bar: breadcrumb (app / editable doc name), user menu with settings,
+    // theme switcher, login/logout, and a settings panel beside the iframe.
+    assert!(
+        body.contains("id=\"crumb-app\"")
+            && body.contains("id=\"crumb-doc\"")
+            && body.contains("contenteditable"),
+        "breadcrumb missing from topbar: {body}"
+    );
+    assert!(
+        body.contains("id=\"user-button\"") && body.contains("id=\"user-dropdown\""),
+        "user menu missing from topbar: {body}"
+    );
+    assert!(
+        body.contains("id=\"menu-settings\"") && body.contains("id=\"menu-auth\""),
+        "settings / login menu items missing: {body}"
+    );
+    assert!(
+        body.contains("data-theme=\"light\"")
+            && body.contains("data-theme=\"dark\"")
+            && body.contains("data-theme=\"system\""),
+        "theme options missing: {body}"
+    );
+    assert!(
+        body.contains("id=\"settings-panel\"") && body.contains("id=\"settings-close\""),
+        "settings panel missing: {body}"
+    );
+    assert!(
+        body.contains("terrane:document") && body.contains("/__terrane/admin/session"),
+        "topbar wiring missing from shell script: {body}"
+    );
     assert!(
         body.contains("id=\"desktop-info-button\"")
             && body.contains("setInfoPanelOpen")
