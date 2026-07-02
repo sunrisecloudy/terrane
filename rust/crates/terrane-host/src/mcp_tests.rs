@@ -1537,6 +1537,54 @@ fn ui_raw_invoke_fetch_warns() {
 }
 
 #[test]
+fn ui_missing_element_id_warns() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"ids-demo","name":"Ids Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The run-6 Kimi class: ui.js wires an id its own HTML never defines.
+    let ui_js = "document.getElementById('nl-input-box').addEventListener('keydown', function () {});\ndocument.querySelector('#list').textContent = 'ok';\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(ui_js)
+        ),
+    )
+    .unwrap();
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let warnings = structured_content(&validate)["warnings"].to_string();
+    assert!(
+        warnings.contains("nl-input-box") && warnings.contains("crash on load"),
+        "missing element id should warn: {warnings}"
+    );
+    assert!(
+        !warnings.contains("that no bundle HTML defines. If they are not created dynamically")
+            || !warnings.contains("\"list\""),
+        "ids present in index.html must not be flagged: {warnings}"
+    );
+}
+
+#[test]
 fn backend_without_actions_verb_warns() {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();

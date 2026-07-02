@@ -30,6 +30,9 @@ PROMPT_FILE="${PROMPT_FILE:-$TERRANE_REPO/host/mcp/evals/prompts/calendar-app-ou
 RESUME_PREAMBLE="${RESUME_PREAMBLE:-$TERRANE_REPO/host/mcp/evals/prompts/resume-preamble.md}"
 NL_QUERY="${NL_QUERY:-look at my events on saturdays over the last 5 months but show only the saturdays that have events}"
 UI_INPUT_TEXT="${UI_INPUT_TEXT:-Dinner with Nok next Friday at 7pm at Siam Paragon}"
+# One event guaranteed to match NL_QUERY — used to separate "thin seed data"
+# from "broken query logic" when the first query returns zero.
+NL_SEED_TEXT="${NL_SEED_TEXT:-Brunch with family last Saturday at 11am}"
 
 log() {
   printf '%s\n' "$*" | tee -a "$ROOT/batch.log"

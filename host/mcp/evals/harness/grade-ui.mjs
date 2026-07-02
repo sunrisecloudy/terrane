@@ -32,6 +32,8 @@ const result = {
   page200: false,
   shim_ok: false,
   console_errors: 0,
+  invoke_requests: 0,
+  last_invoke_status: null,
   invoke_roundtrip: false,
   dom_changed: false,
   needs_grant: null,
@@ -107,6 +109,8 @@ try {
   });
   page.on("response", async (res) => {
     if (res.url().includes("/invoke")) {
+      result.invoke_requests += 1;
+      result.last_invoke_status = res.status();
       let body = "";
       try {
         body = await res.text();
@@ -149,6 +153,7 @@ try {
   await input.click();
   await input.type(uiInputText);
 
+  const invokesBeforeSubmit = result.invoke_requests;
   const invokeResponse = page
     .waitForResponse((res) => res.url().includes(`/apps/${appId}/invoke`), {
       timeout: 10000,
@@ -211,9 +216,15 @@ try {
   if (result.invoke_roundtrip && result.dom_changed) {
     finish("pass", "interaction round-trip succeeded and the DOM updated");
   }
+  // Explain the failure shape: local-only UI updates vs failed backend calls.
+  const invokesAfterSubmit = result.invoke_requests - invokesBeforeSubmit;
+  const invokeDiag =
+    invokesAfterSubmit === 0
+      ? "no /invoke request was made after submit (UI updates locally only or the submit wiring is broken)"
+      : `last /invoke status ${result.last_invoke_status} across ${invokesAfterSubmit} post-submit request(s)`;
   finish(
     "fail",
-    `invoke_roundtrip=${result.invoke_roundtrip} dom_changed=${result.dom_changed}`
+    `invoke_roundtrip=${result.invoke_roundtrip} dom_changed=${result.dom_changed}; ${invokeDiag}`
   );
 } catch (err) {
   finish("fail", `exception: ${err?.message ?? err}`);

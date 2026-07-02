@@ -144,16 +144,32 @@ except Exception:
     nl_query="absent"; nl_out=""
     nl_candidates="$(echo "$verbs" | tr ' ' '\n' | grep -ivE 'parse' | grep -iE 'natural|nl_|nlq|query|view|search|ask' | head -3)
 $(echo "$verbs" | tr ' ' '\n' | grep -iE 'parse' | grep -iE 'view|query|natural|nl' | head -1)"
+    nl_verb_used=""
     for candidate in $nl_candidates; do
       out="$(run_verb "$home" "$app_id" "$candidate" "$NL_QUERY")"
       verdict="$(classify_output "$out")"
       case "$nl_query" in
         pass) break ;;
-        absent|error) nl_query="$verdict"; nl_out="$out" ;;
-        zero) if [ "$verdict" = "pass" ]; then nl_query="$verdict"; nl_out="$out"; fi ;;
+        absent|error) nl_query="$verdict"; nl_out="$out"; nl_verb_used="$candidate" ;;
+        zero) if [ "$verdict" = "pass" ]; then nl_query="$verdict"; nl_out="$out"; nl_verb_used="$candidate"; fi ;;
       esac
       [ "$nl_query" = "pass" ] && break
     done
+
+    # A "zero" can mean thin seed data rather than broken query logic. Prove
+    # it: add one event that matches the query, re-run it, and record
+    # pass_after_add when the new event shows up.
+    if [ "$nl_query" = "zero" ] && [ -n "$nl_verb_used" ]; then
+      add_verb="$(echo "$verbs" | tr ' ' '\n' | grep -iE 'nl_event|nl_create|nlcreate|parse_event|parseevent|add|create|new' | grep -ivE 'view|query' | head -1)"
+      if [ -n "$add_verb" ]; then
+        run_verb "$home" "$app_id" "$add_verb" "$NL_SEED_TEXT" >/dev/null 2>&1
+        out="$(run_verb "$home" "$app_id" "$nl_verb_used" "$NL_QUERY")"
+        if [ "$(classify_output "$out")" = "pass" ]; then
+          nl_query="pass_after_add"
+          nl_out="$out"
+        fi
+      fi
+    fi
 
     # Static run-1 lesson: args array passed to the invoke bridge.
     if grep -rE 'invoke\([^)]*, *\[' "$home/apps/$app_id" --include='*.js' --include='*.html' >/dev/null 2>&1; then

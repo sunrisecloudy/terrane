@@ -2973,6 +2973,7 @@ fn inspect_inline_bundle(
     }
     if !ui.is_empty() {
         validate_inline_ref("manifest.ui", &ui, &file_paths, &mut errors);
+        let html_ids = collect_html_ids(files);
         for file in files {
             if file.path == backend || !(file.path.ends_with(".js") || file.path.ends_with(".html"))
             {
@@ -2992,6 +2993,7 @@ fn inspect_inline_bundle(
                         file.path
                     ));
                 }
+                check_ui_element_ids(&file.path, &file.content, &html_ids, &mut warnings);
             }
         }
     } else {
@@ -3081,6 +3083,80 @@ fn second_call_arg(after_open_paren: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Every `id="..."` / `id='...'` attribute value across the bundle's HTML
+/// files, for cross-checking against UI script lookups.
+fn collect_html_ids(files: &[InlineFile]) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for file in files {
+        if !file.path.ends_with(".html") {
+            continue;
+        }
+        for quote in ['"', '\''] {
+            let marker = format!("id={quote}");
+            let mut rest = file.content.as_str();
+            while let Some(pos) = rest.find(&marker) {
+                let after = &rest[pos + marker.len()..];
+                if let Some(end) = after.find(quote) {
+                    let id = &after[..end];
+                    if !id.is_empty() {
+                        ids.insert(id.to_string());
+                    }
+                }
+                rest = &rest[pos + marker.len()..];
+            }
+        }
+    }
+    ids
+}
+
+/// Run-6 caught a UI wiring `addEventListener` onto `getElementById` of an id
+/// its own index.html never defines — the page dies on load with
+/// "Cannot read properties of null". Warn (not error: scripts may create
+/// elements dynamically) for statically-looked-up ids missing from the HTML.
+fn check_ui_element_ids(
+    path: &str,
+    content: &str,
+    html_ids: &BTreeSet<String>,
+    warnings: &mut Vec<String>,
+) {
+    if html_ids.is_empty() {
+        return;
+    }
+    let mut missing = BTreeSet::new();
+    for (marker, close) in [
+        ("getElementById(\"", "\""),
+        ("getElementById('", "'"),
+        ("querySelector(\"#", "\""),
+        ("querySelector('#", "'"),
+    ] {
+        let mut rest = content;
+        while let Some(pos) = rest.find(marker) {
+            let after = &rest[pos + marker.len()..];
+            if let Some(end) = after.find(close) {
+                let id = &after[..end];
+                // Skip selector expressions (spaces, combinators) — only
+                // plain id lookups are checkable.
+                if !id.is_empty()
+                    && id
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                    && !html_ids.contains(id)
+                {
+                    missing.insert(id.to_string());
+                }
+            }
+            rest = &rest[pos + marker.len()..];
+        }
+    }
+    if !missing.is_empty() {
+        let list: Vec<&str> = missing.iter().map(String::as_str).collect();
+        warnings.push(format!(
+            "{path} looks up element id(s) {} that no bundle HTML defines. If they are not created dynamically, the page will crash on load (Cannot read properties of null). Add the elements to index.html or fix the ids.",
+            list.join(", ")
+        ));
+    }
 }
 
 const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#;

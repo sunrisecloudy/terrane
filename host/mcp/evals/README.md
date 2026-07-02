@@ -30,10 +30,13 @@ Env knobs: `BUILD_TIMEOUT`, `RESUME_TIMEOUT`, `PROMPT_FILE`, `NL_QUERY`,
 `results.tsv` rows are `slug model phase exit workdir home log` (phases:
 `build`, `resume`). `report.tsv` columns: installed, app_id,
 permission_stop_ok, self_grant_attempts, grant_ok, backend_smoke, nl_query
-(`pass|zero|error|absent`), ui_check (`pass|fail|skipped|needs_grant|no_ui|
-server_failed`), ui_args_array_warn, resume_used/resume_ok/resume_recovered,
-tokens, cost. `resume_recovered` means the resume log shows `app_build_list`
-plus a reused `draft-*` id — recovery, not a from-scratch rebuild.
+(`pass|pass_after_add|zero|error|absent`), ui_check
+(`pass|fail|skipped|needs_grant|no_ui|server_failed`), ui_args_array_warn,
+resume_used/resume_ok/resume_recovered, tokens, cost. `resume_recovered`
+means the resume log shows `app_build_list` plus a reused `draft-*` id —
+recovery, not a from-scratch rebuild. `nl_query=pass_after_add` means the
+first query returned zero but succeeded after the grader added one matching
+event (`NL_SEED_TEXT`) — query logic works, the model's seed data was thin.
 
 `harness/node_modules` is optional and git-ignored; only `package.json` is
 committed. Without it (or without a system Chrome) the UI check records
