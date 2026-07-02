@@ -26,7 +26,59 @@ use terrane_core::{Effect, EffectRunner};
 use terrane_core::{Error, EventRecord, Result};
 use terrane_core::{ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost};
 
-pub struct EdgeRunner;
+/// Results a host computed on its own worker thread, waiting to be committed.
+///
+/// A blocking host can't run a minutes-long harness inside its request loop;
+/// it runs [`generate_app_records`] on a worker, stages the records here, and
+/// re-dispatches `harness.generate-app`. The runner returns the staged records
+/// instead of re-running the CLI, so the commit still flows through the
+/// ordinary dispatch → decide → effect → record path and replay is untouched.
+#[derive(Clone, Default)]
+pub struct HarnessStaging {
+    generated:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<EventRecord>>>>,
+}
+
+impl HarnessStaging {
+    pub fn stage_generated(&self, draft_id: &str, records: Vec<EventRecord>) {
+        self.generated
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(draft_id.to_string(), records);
+    }
+
+    fn take_generated(&self, draft_id: &str) -> Option<Vec<EventRecord>> {
+        self.generated
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(draft_id)
+    }
+}
+
+#[derive(Default)]
+pub struct EdgeRunner {
+    staging: HarnessStaging,
+}
+
+impl EdgeRunner {
+    pub fn with_staging(staging: HarnessStaging) -> Self {
+        Self { staging }
+    }
+}
+
+/// Run the app-generation harness effect standalone (no core needed). Hosts
+/// that background generation call this on a worker thread, then stage the
+/// records via [`HarnessStaging`] and re-dispatch `harness.generate-app` to
+/// commit them.
+pub fn generate_app_records(
+    draft_id: &str,
+    app_id: &str,
+    name: &str,
+    harness: &str,
+    prompt: &str,
+) -> std::result::Result<Vec<EventRecord>, String> {
+    generate_app_with_harness(draft_id, app_id, name, harness, prompt).map_err(|e| e.to_string())
+}
 
 const DEFAULT_EDGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -49,7 +101,10 @@ impl EffectRunner for EdgeRunner {
                 name,
                 harness,
                 prompt,
-            } => generate_app_with_harness(draft_id, app_id, name, harness, prompt),
+            } => match self.staging.take_generated(draft_id) {
+                Some(records) => Ok(records),
+                None => generate_app_with_harness(draft_id, app_id, name, harness, prompt),
+            },
             Effect::RunHarnessJs {
                 run_id,
                 app_id,
@@ -269,7 +324,7 @@ fn run_harness_js(
                 ExecutionPrincipal::local_owner(),
                 bundle.resources.clone(),
             )
-            .with_runner(std::sync::Arc::new(EdgeRunner)),
+            .with_runner(std::sync::Arc::new(EdgeRunner::default())),
         ));
         let output = run_js_bundle(app_id, &[], &bundle, host.clone())?;
         Ok((js, output, host.take_records()))

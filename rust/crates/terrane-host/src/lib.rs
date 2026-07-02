@@ -15,7 +15,8 @@ use terrane_cap_builder::draft_json;
 use terrane_cap_crdt::crdt_export_hex;
 use terrane_cap_kv::app_bundle_source;
 use terrane_core::Core;
-use terrane_core::{Decision, Error, EventRecord, QueryValue, Request};
+use terrane_core::{Decision, Error, QueryValue, Request};
+pub use terrane_core::EventRecord;
 
 pub mod cap_doc;
 pub mod cli;
@@ -30,7 +31,7 @@ pub mod preview;
 pub mod public_authz;
 pub mod sync;
 
-pub use edge::EdgeRunner;
+pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};
 pub use home::{home_page, HomePageOptions};
 pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 
@@ -127,7 +128,31 @@ pub fn open_at_home(home: impl AsRef<Path>) -> Result<HostCore, String> {
 
 /// Open a specific event log path.
 pub fn open_at_log_path(log_path: impl Into<PathBuf>) -> Result<HostCore, String> {
-    let mut core = Core::open_with(log_path.into(), EdgeRunner).map_err(|e| e.to_string())?;
+    open_at_log_path_with(log_path, EdgeRunner::default())
+}
+
+/// Open the default home with a [`HarnessStaging`] handle attached, so the
+/// host can background `harness.generate-app` and commit staged results.
+pub fn open_with_staging(staging: HarnessStaging) -> Result<HostCore, String> {
+    open_at_home_with_staging(home_dir(), staging)
+}
+
+/// Open a specific home with a [`HarnessStaging`] handle attached.
+pub fn open_at_home_with_staging(
+    home: impl AsRef<Path>,
+    staging: HarnessStaging,
+) -> Result<HostCore, String> {
+    open_at_log_path_with(
+        log_path_for_home(home),
+        EdgeRunner::with_staging(staging),
+    )
+}
+
+fn open_at_log_path_with(
+    log_path: impl Into<PathBuf>,
+    runner: EdgeRunner,
+) -> Result<HostCore, String> {
+    let mut core = Core::open_with(log_path.into(), runner).map_err(|e| e.to_string())?;
     ensure_identity(&mut core)?;
     Ok(core)
 }
@@ -440,6 +465,11 @@ pub fn generate_app_json(
         .get(draft_id)
         .ok_or_else(|| format!("builder draft missing after generation: {draft_id}"))?;
     Ok(draft_json(draft))
+}
+
+/// The JSON view of a builder draft, if it exists in state.
+pub fn builder_draft_json(core: &HostCore, draft_id: &str) -> Option<String> {
+    core.state().builder.drafts.get(draft_id).map(draft_json)
 }
 
 pub fn list_apps(core: &HostCore) -> AppsResponse {
