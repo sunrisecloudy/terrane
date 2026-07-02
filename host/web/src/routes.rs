@@ -204,7 +204,7 @@ pub fn route(
         }
         (Method::Delete, ["__terrane", "previews", id]) => destroy_preview(previews, id),
         (Method::Get | Method::Post, ["__terrane", "previews", ..]) => json_error(404, "not found"),
-        (Method::Get, ["apps"]) => json_ok(&merged_apps(core, dev_apps)),
+        (Method::Get, ["apps"]) => with_local_cors(request, json_ok(&merged_apps(core, dev_apps))),
         (Method::Post, ["mcp"]) => mcp(core, request),
         (Method::Get, ["mcp"]) => json_error(405, "method not allowed"),
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
@@ -771,6 +771,21 @@ fn serve_file(id: &str, base: &Path, target: &Path, live_reload: bool) -> Resp {
         bytes
     };
     Response::from_data(body).with_header(header("Content-Type", ctype))
+}
+
+/// Loopback-origin pages (e.g. the Terrane Premium dashboard listing this
+/// host's apps) may read the public catalog cross-origin; any other origin
+/// gets no CORS grant and the browser blocks the read.
+fn with_local_cors(request: &Request, resp: Resp) -> Resp {
+    let Some(origin) = header_value(request, "Origin") else {
+        return resp;
+    };
+    if origin_host(origin).is_some_and(is_loopback_host) {
+        resp.with_header(header("Access-Control-Allow-Origin", origin))
+            .with_header(header("Vary", "Origin"))
+    } else {
+        resp
+    }
 }
 
 fn origin_allowed(request: &Request) -> bool {

@@ -1934,3 +1934,47 @@ fn shell_injects_premium_url_when_configured() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+/// The catalog allows loopback cross-origin reads (the Premium dashboard
+/// lists this host's apps); foreign origins get no CORS grant.
+#[test]
+fn apps_catalog_grants_cors_to_loopback_origins_only() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install(&mut core, "todo");
+    }
+    let (mut child, addr) = spawn_web(home);
+
+    let (status, headers, _body) = http_raw_with_headers(
+        &addr,
+        "GET",
+        "/apps",
+        None,
+        &[("Origin", "http://127.0.0.1:8788")],
+    );
+    assert_eq!(status, 200);
+    assert!(
+        headers
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin: http://127.0.0.1:8788"),
+        "loopback origin must get a CORS grant: {headers}"
+    );
+
+    let (status, headers, _body) = http_raw_with_headers(
+        &addr,
+        "GET",
+        "/apps",
+        None,
+        &[("Origin", "https://evil.example")],
+    );
+    assert_eq!(status, 200);
+    assert!(
+        !headers.to_ascii_lowercase().contains("access-control-allow-origin"),
+        "foreign origins must get no CORS grant: {headers}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
