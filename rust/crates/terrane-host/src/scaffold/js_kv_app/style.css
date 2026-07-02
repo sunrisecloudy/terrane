@@ -1,0 +1,207 @@
+/* KEEP THIS FILE. Design system with light + dark mode.
+   Existing components: .card .btn .badge .tag .list .list-item .empty-state
+   .status .grid .input-row .row .spread — reuse them.
+   Add new rules at the bottom instead of rewriting the file. */
+
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #eef0f4;
+  --text: #1b1e24;
+  --text-muted: #667085;
+  --border: #d8dde6;
+  --accent: #2f6fed;
+  --accent-contrast: #ffffff;
+  --danger: #d92d20;
+  --ok: #12805c;
+  --warn: #b54708;
+  --focus-ring: rgba(47, 111, 237, 0.35);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.1);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --fs-sm: 13px;
+  --fs-base: 15px;
+  --fs-lg: 18px;
+  --fs-xl: 24px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101318;
+    --surface: #181c23;
+    --surface-2: #21262f;
+    --text: #e6e9ee;
+    --text-muted: #9aa4b2;
+    --border: #313845;
+    --accent: #5b8def;
+    --accent-contrast: #0d1117;
+    --danger: #f97066;
+    --ok: #3ccb7f;
+    --warn: #f7b27a;
+    --focus-ring: rgba(91, 141, 239, 0.4);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: var(--space-4) var(--space-3);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+}
+
+.app-header,
+.app-main { max-width: 680px; margin: 0 auto; }
+.app-header { margin-bottom: var(--space-4); }
+.app-header h1 { margin: 0 0 var(--space-1); font-size: var(--fs-xl); }
+.app-header p { margin: 0; }
+
+.muted { color: var(--text-muted); font-size: var(--fs-sm); }
+code, pre { font-family: var(--font-mono); font-size: var(--fs-sm); }
+
+button, input, textarea, select { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+::selection { background: var(--accent); color: var(--accent-contrast); }
+
+/* --- inputs --------------------------------------------------------------- */
+input[type="text"],
+input:not([type]),
+textarea,
+select {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+input[type="text"]:focus,
+input:not([type]):focus,
+textarea:focus,
+select:focus { border-color: var(--accent); }
+
+.input-row { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); }
+.input-row input { flex: 1; }
+
+/* --- buttons -------------------------------------------------------------- */
+.btn {
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--surface-2); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+.btn-primary:hover { filter: brightness(1.08); background: var(--accent); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+.btn-ghost:hover { background: var(--surface-2); color: var(--text); }
+.btn-sm { padding: 4px 10px; font-size: var(--fs-sm); }
+
+/* --- surfaces ------------------------------------------------------------- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-3);
+}
+
+/* --- lists ---------------------------------------------------------------- */
+.list { list-style: none; margin: 0; padding: 0; }
+.list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+}
+.list-item:hover { border-color: var(--accent); }
+.item-title { font-weight: 500; overflow-wrap: anywhere; }
+.item-meta { color: var(--text-muted); }
+.item-actions { display: flex; gap: var(--space-1); flex-shrink: 0; }
+
+/* --- badges / tags ---------------------------------------------------------- */
+.badge,
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--fs-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+}
+.badge-accent { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+.badge-ok { color: var(--ok); border-color: var(--ok); background: transparent; }
+.badge-warn { color: var(--warn); border-color: var(--warn); background: transparent; }
+.badge-danger { color: var(--danger); border-color: var(--danger); background: transparent; }
+
+/* --- status line ------------------------------------------------------------ */
+.status {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  margin-bottom: var(--space-3);
+  font-size: var(--fs-sm);
+}
+.status.loading { color: var(--text-muted); }
+.status.loading::before {
+  content: "";
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 8px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: -1px;
+}
+.status.error { color: var(--danger); border-color: var(--danger); }
+.status.ok { color: var(--ok); border-color: var(--ok); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- empty state ------------------------------------------------------------ */
+.empty-state {
+  text-align: center;
+  padding: var(--space-5) var(--space-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+}
+.empty-state p { margin: var(--space-1) 0; }
+
+/* --- layout helpers ---------------------------------------------------------- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--space-2);
+}
+.row { display: flex; align-items: center; gap: var(--space-2); }
+.spread { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+
+@media (max-width: 480px) {
+  body { padding: var(--space-3) var(--space-2); }
+  .input-row { flex-direction: column; }
+}
+
+/* ADD: new component rules below this line. */

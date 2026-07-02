@@ -1453,7 +1453,7 @@ fn workflows_list_json() -> String {
         "chooseByOutcome": [
             {"when": "simple notes, one app, key/value storage only", "workflow": "make_js_kv_app_no_filesystem"},
             {"when": "locked-down client with no filesystem tools must create an app", "workflow": "make_js_kv_app_no_filesystem"},
-            {"when": "visible calendar, dashboard, form, natural-language input page, or other UI app backed by app state", "workflow": "make_js_kv_app_no_filesystem", "use": "app_scaffold with withUi:true; keep browser behavior in ui.js for non-trivial pages"},
+            {"when": "visible calendar, dashboard, form, natural-language input page, or other UI app backed by app state", "workflow": "make_js_kv_app_no_filesystem", "use": "app_build_start with withUi:true; the draft ships a working UI shell — keep style.css and edit main.js/ui.js"},
             {"when": "task asks for five surfaces, multiple capabilities, relational data, CRDT/collaboration, or replica identity", "workflow": "make_js_multicap_app_no_filesystem"},
             {"when": "bundle directory already exists", "workflow": "register_app_bundle"},
             {"when": "app already exists and the task is to operate it", "workflow": "inspect_app_actions"}
@@ -1537,11 +1537,11 @@ fn workflow_info_json(name: &str) -> Result<String, String> {
             },
             "stallRecovery": {
                 "classification": "If a new assistant stream produces no tokens after this workflow_info result, classify it as provider/client stall unless a tool error appears.",
-                "resume": "Restart or resume by calling app_scaffold. If app_scaffold already completed, call nextAfterScaffold immediately."
+                "resume": "Restart or resume by calling app_build_start. If a draft already exists, recover it with app_build_list and continue."
             },
             "steps": [
-                {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}, "why": "Create a server-side draft with manifest.json, main.js, index.html, ui.js, and style.css for visible apps. Omit withUi only for backend-only tasks."},
-                {"tool": "app_build_put_file", "arguments": {"draftId": "draftId from app_build_start", "path": "main.js", "content": "complete backend file"}, "why": "Replace one file at a time. Repeat for index.html, ui.js, style.css, or assets as needed."},
+                {"tool": "app_build_start", "arguments": {"id": "notes-demo", "name": "Notes Demo", "withUi": true}, "why": "Create a server-side draft. With withUi:true the draft is a working app shell: index.html regions, ui.js helpers, and a full style.css design system. Omit withUi only for backend-only tasks."},
+                {"tool": "app_build_put_file", "arguments": {"draftId": "draftId from app_build_start", "path": "main.js", "content": "complete backend file"}, "why": "Put main.js first; only send index.html/ui.js/style.css if you changed them — the shell versions are already in the draft. Keep style.css unless you need custom components."},
                 {"tool": "app_build_validate", "arguments": {"draftId": "draftId from app_build_start"}, "why": "Validate without writing files or committing."},
                 {"tool": "app_build_commit", "arguments": {"draftId": "draftId from app_build_start", "validationToken": "validationToken from app_build_validate"}, "why": "Write under TERRANE_HOME/apps/<id> and commit through app.add without resending files."},
                 {"tool": "app_actions", "arguments": {"app": "notes-demo"}},
@@ -1740,7 +1740,7 @@ fn app_recipe_json(kind: &str) -> String {
         },
         "uiContract": {
             "browserInvoke": "window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") sends positional backend string args. Do not use window.terrane.invoke(\"verb\", [arg1,arg2]) for two backend args.",
-            "files": "For non-trivial UI, add ui.js and keep index.html mostly markup. Syntax errors in one huge inline script can make the page unusable.",
+            "files": "The withUi scaffold ships a working shell: keep style.css (full light+dark design system) and the KEEP-marked ui.js helpers; edit the REPLACE-marked functions and main.js. Keep index.html mostly markup.",
             "verification": "When the requested outcome is a UI app, verify the page loads and one user-visible flow works; backend invoke checks alone are not enough."
         },
         "firstCalls": [
@@ -1750,6 +1750,31 @@ fn app_recipe_json(kind: &str) -> String {
         ]
     })
     .to_string()
+}
+
+/// The withUi app-shell templates: a working generic item app with a real
+/// design system, so weak models edit main.js and small ui.js deltas instead
+/// of writing ~10KB of UI from scratch inside their output budget.
+const SCAFFOLD_UI_INDEX_HTML: &str = include_str!("scaffold/js_kv_app/index.html");
+const SCAFFOLD_UI_JS: &str = include_str!("scaffold/js_kv_app/ui.js");
+const SCAFFOLD_UI_STYLE_CSS: &str = include_str!("scaffold/js_kv_app/style.css");
+const SCAFFOLD_UI_MAIN_JS: &str = include_str!("scaffold/js_kv_app/main.js");
+
+/// Escape arbitrary display text for interpolation into scaffold HTML — the
+/// app `name` is free text, unlike the safe-id-checked `id`.
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 fn app_scaffold_json(
@@ -1769,6 +1794,9 @@ fn app_scaffold_json(
             "unknown scaffold kind: {kind}. Use \"js_kv_app\" for interactive/UI apps, \"js_kv_notes\" for a minimal notes demo, or \"js_multicap_audit\" for a kv+crdt+relational_db proof."
         ));
     }
+    // The UI shell is the js_kv_app scaffold; report it as such even when the
+    // kind was defaulted so downstream labels match the emitted files.
+    let kind = if with_ui { "js_kv_app" } else { kind };
     let app_id_js = serde_json::to_string(app_id).unwrap_or_else(|_| "\"app\"".to_string());
     let name_js = serde_json::to_string(name).unwrap_or_else(|_| "\"App\"".to_string());
     let manifest = if with_ui {
@@ -1848,23 +1876,22 @@ function handle(input) {{
 }}
 "#
     );
+    let main_js = if with_ui {
+        SCAFFOLD_UI_MAIN_JS
+            .replace("__APP_ID_JSON__", &app_id_js)
+            .replace("__APP_NAME_JSON__", &name_js)
+    } else {
+        main_js
+    };
     let mut files = vec![
         json!({"path": "manifest.json", "content": manifest.to_string()}),
         json!({"path": "main.js", "content": main_js}),
     ];
     if with_ui {
-        files.push(json!({
-            "path": "index.html",
-            "content": "<!doctype html><html><head><title>Terrane App</title><link rel=\"stylesheet\" href=\"style.css\"></head><body><main><h1>Terrane App</h1><button id=\"read\">Read</button><pre id=\"out\"></pre></main><script src=\"ui.js\"></script></body></html>"
-        }));
-        files.push(json!({
-            "path": "ui.js",
-            "content": "document.getElementById('read').onclick = async function () {\n  document.getElementById('out').textContent = await window.terrane.invoke('read');\n};\n"
-        }));
-        files.push(json!({
-            "path": "style.css",
-            "content": "body { font-family: system-ui, sans-serif; margin: 24px; } button { margin: 8px 0; }"
-        }));
+        let index_html = SCAFFOLD_UI_INDEX_HTML.replace("__APP_NAME__", &html_escape(name));
+        files.push(json!({"path": "index.html", "content": index_html}));
+        files.push(json!({"path": "ui.js", "content": SCAFFOLD_UI_JS}));
+        files.push(json!({"path": "style.css", "content": SCAFFOLD_UI_STYLE_CSS}));
     }
     Ok(json!({
         "kind": kind,
@@ -2315,29 +2342,55 @@ fn app_build_start_json(
     } else {
         json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "resources": ["kv"]})
     };
+    let backend_contract = "main.js is ONE plain script: no top-level import/export, no require, no modules, no Deno/Node APIs. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data). Storage is ctx.resource.kv; wrap kv.get in try/catch because missing keys throw.";
+    let manifest_rules = "manifest.ui is a string file path, never an object; scripts and styles are referenced from index.html, not listed in the manifest.";
+    let ui_contract = "Browser code calls window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") with positional string args and awaits the backend's string reply. Do not pass an args array or an object.";
+    let contract = if with_ui {
+        json!({
+            "manifestExample": manifest_example,
+            "manifestRules": manifest_rules,
+            "backend": backend_contract,
+            "ui": ui_contract,
+            "filesToReplace": "The scaffold is a working app shell, not a placeholder. Typically replace only main.js (your verbs and data), then edit the REPLACE-marked functions in ui.js (renderItem, refresh, the submit handler). Keep the KEEP-marked invoke/status helpers.",
+            "styleContract": "Keep style.css as-is unless you need custom components; it already provides a light+dark design system with .card, .btn, .badge, .tag, .list-item, .empty-state, .status, and .grid. Add new rules at the bottom instead of rewriting the file.",
+            "uiShell": "index.html already has #input-form/#main-input, #status, #list, and #empty regions; keep the ids and edit text/labels rather than restructuring."
+        })
+    } else {
+        json!({
+            "manifestExample": manifest_example,
+            "manifestRules": manifest_rules,
+            "backend": backend_contract,
+            "ui": ui_contract,
+            "filesToReplace": "Scaffold files are placeholders for a template app. Replace the content of main.js with the requested app before validating."
+        })
+    };
+    let next = if with_ui {
+        json!([
+            "Put main.js first (your verbs and data); only send index.html/ui.js/style.css if you changed them — unchanged scaffold files are already in the draft.",
+            "Send one complete file per app_build_put_file call, or several at once via its files array.",
+            "Call app_build_validate after editing.",
+            "If validation succeeds, call app_build_commit with draftId and validationToken; do not resend the files."
+        ])
+    } else {
+        json!([
+            "Use app_build_put_file once per file you need to change; send one file at a time.",
+            "Call app_build_validate after editing.",
+            "If validation succeeds, call app_build_commit with draftId and validationToken; do not resend the files.",
+            "For visible UI apps, keep backend behavior in main.js and browser behavior in ui.js."
+        ])
+    };
     Ok(json!({
         "draftId": draft_id,
         "kind": kind,
         "app": {"id": info.id, "name": info.name, "runtime": info.runtime},
         "files": file_summaries(&files),
         "bundleHash": validation_token(&files),
-        "contract": {
-            "manifestExample": manifest_example,
-            "manifestRules": "manifest.ui is a string file path, never an object; scripts and styles are referenced from index.html, not listed in the manifest.",
-            "backend": "main.js is ONE plain script: no top-level import/export, no require, no modules, no Deno/Node APIs. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data). Storage is ctx.resource.kv; wrap kv.get in try/catch because missing keys throw.",
-            "ui": "Browser code calls window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") with positional string args and awaits the backend's string reply. Do not pass an args array or an object.",
-            "filesToReplace": "Scaffold files are placeholders for a template app. Replace the content of main.js (and index.html/ui.js/style.css for UI apps) with the requested app before validating."
-        },
+        "contract": contract,
         "nextToolCall": {
             "tool": "app_build_put_file",
             "arguments": {"draftId": draft_id, "path": "main.js", "content": "complete file content"}
         },
-        "next": [
-            "Use app_build_put_file once per file you need to change; send one file at a time.",
-            "Call app_build_validate after editing.",
-            "If validation succeeds, call app_build_commit with draftId and validationToken; do not resend the files.",
-            "For visible UI apps, keep backend behavior in main.js and browser behavior in ui.js."
-        ],
+        "next": next,
         "stallRecovery": {
             "resume": "Call app_build_get with draftId to recover file summaries, then continue with app_build_put_file or app_build_validate.",
             "lostDraftId": "Call app_build_list to recover draft ids.",

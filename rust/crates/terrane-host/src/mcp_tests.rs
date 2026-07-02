@@ -1033,6 +1033,150 @@ fn app_build_list_recovers_draft_ids() {
     );
 }
 
+#[test]
+fn ui_scaffold_passes_validate_untouched() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"shell-demo","name":"Shell Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let content = structured_content(&start);
+    let draft_id = content["draftId"].as_str().unwrap().to_string();
+    let paths: Vec<&str> = content["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            "index.html",
+            "main.js",
+            "manifest.json",
+            "style.css",
+            "ui.js"
+        ],
+        "shell scaffold files: {content}"
+    );
+    assert_eq!(content["kind"], "js_kv_app", "shell kind: {content}");
+    assert!(
+        content["contract"]["styleContract"]
+            .as_str()
+            .unwrap()
+            .contains("light+dark"),
+        "shell contract should advertise the design system: {content}"
+    );
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], true, "untouched shell: {validate}");
+    assert_eq!(
+        validation["errors"],
+        serde_json::Value::Null,
+        "untouched shell should have no errors: {validate}"
+    );
+    assert_eq!(
+        validation["warnings"].as_array().map(Vec::len),
+        Some(0),
+        "untouched shell should have no warnings: {validate}"
+    );
+}
+
+#[test]
+fn ui_scaffold_shell_is_substantial() {
+    let scaffold = super::app_scaffold_json("shell-demo", "Shell Demo", "js_kv_app", true).unwrap();
+    let content: serde_json::Value = serde_json::from_str(&scaffold).unwrap();
+    let file = |path: &str| -> String {
+        content["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap_or_else(|| panic!("missing {path}"))["content"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let css = file("style.css");
+    assert!(css.len() > 2500, "style.css should be a real design system");
+    for token in ["--accent", "prefers-color-scheme", ".empty-state", ".grid"] {
+        assert!(css.contains(token), "style.css should contain {token}");
+    }
+
+    let ui = file("ui.js");
+    for token in [
+        "window.terrane.invoke(",
+        "/* REPLACE:",
+        "/* KEEP:",
+        "setStatus",
+    ] {
+        assert!(ui.contains(token), "ui.js should contain {token}");
+    }
+    assert!(
+        !ui.contains("\nimport ") && !ui.contains("\nexport "),
+        "ui.js must not model module syntax"
+    );
+
+    let html = file("index.html");
+    for token in [
+        "<head>",
+        "id=\"main-input\"",
+        "id=\"status\"",
+        "id=\"list\"",
+        "id=\"empty\"",
+        "Shell Demo",
+    ] {
+        assert!(html.contains(token), "index.html should contain {token}");
+    }
+
+    let main = file("main.js");
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    super::check_js_backend_contract("main.js", &main, &mut errors, &mut warnings);
+    assert!(errors.is_empty(), "shell main.js lint errors: {errors:?}");
+    assert!(
+        warnings.is_empty(),
+        "shell main.js lint warnings: {warnings:?}"
+    );
+    assert!(
+        main.contains("kvGetOrNull"),
+        "main.js keeps defensive reads"
+    );
+}
+
+#[test]
+fn ui_scaffold_escapes_app_name() {
+    let scaffold =
+        super::app_scaffold_json("esc-demo", "A <b>&\"quote\"</b>", "js_kv_app", true).unwrap();
+    let content: serde_json::Value = serde_json::from_str(&scaffold).unwrap();
+    let html = content["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["path"] == "index.html")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(
+        !html.contains("<b>") && html.contains("&lt;b&gt;"),
+        "app name must be HTML-escaped: {html}"
+    );
+}
+
 // --- In-session approval: elicitation helpers -----------------------------
 
 #[test]

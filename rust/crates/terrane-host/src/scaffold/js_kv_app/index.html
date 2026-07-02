@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__APP_NAME__</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="app-header">
+    <h1 id="app-title">__APP_NAME__</h1>
+    <p id="app-subtitle" class="muted">Add items below; they persist between visits.</p>
+  </header>
+  <main class="app-main">
+    <form id="input-form" class="input-row">
+      <input id="main-input" type="text" placeholder="Add an item…" autocomplete="off">
+      <button id="submit-btn" class="btn btn-primary" type="submit">Add</button>
+    </form>
+    <div id="status" class="status" hidden></div>
+    <section id="content">
+      <ul id="list" class="list"></ul>
+      <div id="empty" class="empty-state" hidden>
+        <p>Nothing here yet.</p>
+        <p class="muted">Add your first item above.</p>
+      </div>
+    </section>
+  </main>
+  <script src="ui.js"></script>
+</body>
+</html>
