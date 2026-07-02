@@ -31,6 +31,15 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
+        // Host verbs for the local-model edge (runtime + resident server) —
+        // machine plumbing, not capability commands: nothing is recorded.
+        ["local-model", "setup", "mlx"] => run_local_model_setup_mlx(),
+        ["local-model", "server", "status"] => run_local_model_server_status(),
+        ["local-model", "server", "stop"] => run_local_model_server_stop(),
+        ["local-model", "setup" | "server", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane local-model (setup mlx | server status | server stop)".into())
+        }
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
@@ -58,6 +67,27 @@ pub fn dispatch(command: &str, args: &[&str]) -> Result<(), String> {
 
 pub fn run_install(path: &str) -> Result<(), String> {
     println!("{}", crate::install_app(path)?.message());
+    Ok(())
+}
+
+fn run_local_model_setup_mlx() -> Result<(), String> {
+    let summary = crate::local_llm::setup_mlx(&crate::home_dir()).map_err(|e| e.to_string())?;
+    println!("{summary}");
+    Ok(())
+}
+
+fn run_local_model_server_status() -> Result<(), String> {
+    println!(
+        "{}",
+        crate::local_llm::mlx_server_status_json(&crate::home_dir())
+    );
+    Ok(())
+}
+
+fn run_local_model_server_stop() -> Result<(), String> {
+    let message =
+        crate::local_llm::mlx_server_stop(&crate::home_dir()).map_err(|e| e.to_string())?;
+    println!("{message}");
     Ok(())
 }
 
@@ -444,6 +474,8 @@ pub fn print_help() {
          \x20 terrane local-model pull <id> <hf-repo> <file.gguf> [options…]  download weights + register\n\
          \x20 terrane local-model ask <app> <id> [--schema <json>|--grammar <gbnf>] <prompt…>  local inference; record it\n\
          \x20 terrane local-model rm <id>        unregister a local model spec\n\
+         \x20 terrane local-model setup mlx      install the Apple-Silicon MLX runtime (pinned, self-contained)\n\
+         \x20 terrane local-model server status|stop   inspect or stop the resident mlx server\n\
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
          \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
          \x20 terrane js-runtime run <app> [input…]            run an app's JS backend\n\

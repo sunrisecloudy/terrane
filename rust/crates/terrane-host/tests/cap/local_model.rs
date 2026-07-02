@@ -38,6 +38,25 @@ fn local_model_register_and_rm_e2e_smoke() {
     assert!(err.contains("unknown local model"), "stderr: {err}");
 }
 
+#[test]
+fn local_model_server_status_and_stop_e2e_smoke() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    let (ok, out, err) = terrane(home, &["local-model", "server", "status"]);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("\"running\":false"), "out: {out}");
+
+    let (ok, out, err) = terrane(home, &["local-model", "server", "stop"]);
+    assert!(ok, "stderr: {err}");
+    assert!(out.contains("no resident"), "out: {out}");
+
+    // Bad sub-verbs get usage, not a dispatch attempt.
+    let (ok, _, err) = terrane(home, &["local-model", "server", "restart"]);
+    assert!(!ok);
+    assert!(err.contains("usage:"), "stderr: {err}");
+}
+
 fn gguf_from_env() -> Option<String> {
     match std::env::var("TERRANE_LOCAL_MODEL_GGUF") {
         Ok(path) if !path.trim().is_empty() => Some(path),

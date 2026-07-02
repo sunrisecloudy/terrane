@@ -76,6 +76,23 @@ int terrane_builder_generate(TerraneHandle *h, const char *app_id,
  * generated dist path and file count. */
 int terrane_build_app(const char *app_dir, char **out_output, char **out_error);
 
+/* Provision the MLX local-model runtime for the workspace at `home`
+ * (null/empty = default home). Blocking: the first run may download the
+ * runtime (~hundreds of MB). On success writes a human summary. Handle-free:
+ * runtime provisioning is edge plumbing and records nothing in the event log. */
+int terrane_local_model_setup_mlx(const char *home, char **out_output,
+                                  char **out_error);
+
+/* Resident mlx server status for the workspace at `home` as JSON:
+ * {"running", "pid", "port", "idleSecs", "models"}. */
+int terrane_local_model_server_status(const char *home, char **out_output,
+                                      char **out_error);
+
+/* Stop the resident mlx server for the workspace at `home`, if any. Writes a
+ * short human summary. */
+int terrane_local_model_server_stop(const char *home, char **out_output,
+                                    char **out_error);
+
 /* Free a string returned by this library. Null-safe; non-null pointers are
  * single-use and must be freed exactly once. */
 void terrane_string_free(char *s);
