@@ -161,9 +161,22 @@ impl LlamaCppBackend {
             messages.push(message("assistant", assistant)?);
         }
         messages.push(message("user", &request.prompt)?);
-        self.model
+        let mut prompt = self
+            .model
             .apply_chat_template(template, &messages, true)
-            .map_err(|e| LlmError::Generate(format!("chat template failed: {e}")))
+            .map_err(|e| LlmError::Generate(format!("chat template failed: {e}")))?;
+        // Thinking-capable templates (Qwen3-family): llama.cpp cannot pass
+        // enable_thinking=false, so pre-fill the empty think block the HF
+        // template would render — the model then answers directly instead of
+        // spending the token budget on (or leaking) reasoning.
+        if template
+            .to_str()
+            .is_ok_and(|source| source.contains("<think>"))
+            && !prompt.trim_end().ends_with("<think>")
+        {
+            prompt.push_str("<think>\n\n</think>\n\n");
+        }
+        Ok(prompt)
     }
 
     fn build_sampler(&self, request: &GenerateRequest) -> Result<LlamaSampler, LlmError> {
@@ -275,7 +288,7 @@ impl LocalLlm for LlamaCppBackend {
         };
 
         Ok(GenerateResponse {
-            text,
+            text: strip_think_prefix(&text).to_string(),
             token_count,
             duration: started.elapsed(),
             stop,
@@ -288,5 +301,20 @@ impl LocalLlm for LlamaCppBackend {
                 .to_string()
             }),
         })
+    }
+}
+
+/// Drop a leading `<think>…</think>` block (plus surrounding whitespace) from
+/// generated text: reasoning is not part of the answer an app or user asked
+/// for. An unclosed block is left untouched — a budget-truncated response
+/// should stay visibly truncated rather than become silently empty.
+pub fn strip_think_prefix(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    let Some(rest) = trimmed.strip_prefix("<think>") else {
+        return text;
+    };
+    match rest.find("</think>") {
+        Some(end) => rest[end + "</think>".len()..].trim_start(),
+        None => text,
     }
 }

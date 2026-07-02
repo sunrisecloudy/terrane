@@ -14,7 +14,7 @@ mod server;
 mod setup;
 
 pub use download::{download_model, download_url};
-pub use llama::{cached_llama, clear_llama_cache, LlamaCppBackend, ModelFile};
+pub use llama::{cached_llama, clear_llama_cache, strip_think_prefix, LlamaCppBackend, ModelFile};
 pub use mlx::MlxBackend;
 pub use server::{server_status, stop_server, MlxServerStatus};
 pub use setup::{

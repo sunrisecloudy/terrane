@@ -102,6 +102,33 @@ fn cached_llama_reuses_the_loaded_engine_across_asks() {
 }
 
 #[test]
+fn think_prefix_is_stripped_but_truncated_reasoning_is_kept() {
+    use terrane_local_llm::strip_think_prefix;
+    // The Qwen3-family empty block (exactly what leaked into app replies).
+    assert_eq!(
+        strip_think_prefix("<think>\n\n</think>\n\nI am Qwen3.5."),
+        "I am Qwen3.5."
+    );
+    // A full reasoning block is dropped too.
+    assert_eq!(
+        strip_think_prefix("  <think>step 1... step 2...</think>  the answer is 4"),
+        "the answer is 4"
+    );
+    // No block: untouched.
+    assert_eq!(strip_think_prefix("plain answer"), "plain answer");
+    // Mid-text tags are not a prefix: untouched.
+    assert_eq!(
+        strip_think_prefix("a <think>b</think> c"),
+        "a <think>b</think> c"
+    );
+    // Unclosed (budget-truncated) reasoning stays visible.
+    assert_eq!(
+        strip_think_prefix("<think>half a thought"),
+        "<think>half a thought"
+    );
+}
+
+#[test]
 fn generation_config_defaults_are_sane() {
     let config = GenerationConfig::default();
     assert_eq!(config.max_tokens, 512);
