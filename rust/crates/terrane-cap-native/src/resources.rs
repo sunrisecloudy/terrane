@@ -68,9 +68,8 @@ fn read_pending(ctx: ResourceReadCtx<'_>) -> Result<ReadValue> {
         .map(|requests| {
             requests
                 .iter()
-                .filter_map(|(id, record)| {
-                    (record.status == NativeRequestStatus::Pending).then(|| id.clone())
-                })
+                .filter(|(_, record)| record.status == NativeRequestStatus::Pending)
+                .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();

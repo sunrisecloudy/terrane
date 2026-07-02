@@ -26,29 +26,31 @@ pub fn platform_observed_event(
     )
 }
 
-pub fn requested_event(
-    app: &str,
-    request_id: &str,
-    operation_id: &str,
-    executor_host_id: &str,
-    origin_replica: Option<u64>,
-    sequence: u64,
-    input_json: String,
-    result_size_class: &str,
-    retention_class: &str,
-) -> Result<EventRecord> {
+pub(crate) struct RequestedEvent<'a> {
+    pub app: &'a str,
+    pub request_id: &'a str,
+    pub operation_id: &'a str,
+    pub executor_host_id: &'a str,
+    pub origin_replica: Option<u64>,
+    pub sequence: u64,
+    pub input_json: String,
+    pub result_size_class: &'a str,
+    pub retention_class: &'a str,
+}
+
+pub(crate) fn requested_event(event: RequestedEvent<'_>) -> Result<EventRecord> {
     encode_event(
         "native.requested",
         &Requested {
-            request_id: request_id.to_string(),
-            app: app.to_string(),
-            operation_id: operation_id.to_string(),
-            executor_host_id: executor_host_id.to_string(),
-            origin_replica,
-            sequence,
-            input_json,
-            result_size_class: result_size_class.to_string(),
-            retention_class: retention_class.to_string(),
+            request_id: event.request_id.to_string(),
+            app: event.app.to_string(),
+            operation_id: event.operation_id.to_string(),
+            executor_host_id: event.executor_host_id.to_string(),
+            origin_replica: event.origin_replica,
+            sequence: event.sequence,
+            input_json: event.input_json,
+            result_size_class: event.result_size_class.to_string(),
+            retention_class: event.retention_class.to_string(),
         },
     )
 }
@@ -226,12 +228,8 @@ fn enforce_retention(state: &mut NativeState, app: &str) {
     };
     let mut terminal: Vec<(u64, String)> = requests
         .iter()
-        .filter_map(|(id, record)| {
-            record
-                .status
-                .is_terminal()
-                .then(|| (record.sequence, id.clone()))
-        })
+        .filter(|(_, record)| record.status.is_terminal())
+        .map(|(id, record)| (record.sequence, id.clone()))
         .collect();
     let limit = terminal_retention_limit();
     if terminal.len() <= limit {

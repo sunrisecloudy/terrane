@@ -4,6 +4,7 @@ use terrane_cap_interface::{
 
 use crate::events::{
     cancelled_event, completed_event, failed_event, platform_observed_event, requested_event,
+    RequestedEvent,
 };
 use crate::operations::{
     default_supported_operations, operation_for_command, result_size_for_operation, CANCEL,
@@ -64,17 +65,17 @@ fn decide_request(ctx: CommandCtx<'_>, command: &str, args: &[String]) -> Result
     let host_id = active_supported_host(state, operation_id)?;
     let sequence = state.next_sequence + 1;
     let origin_replica = replica_peer(ctx.bus)?;
-    Ok(Decision::Commit(vec![requested_event(
-        &app,
-        &request_id,
+    Ok(Decision::Commit(vec![requested_event(RequestedEvent {
+        app: &app,
+        request_id: &request_id,
         operation_id,
-        &host_id,
+        executor_host_id: &host_id,
         origin_replica,
         sequence,
         input_json,
-        result_size_for_operation(operation_id),
-        RETENTION_KEEP_LAST,
-    )?]))
+        result_size_class: result_size_for_operation(operation_id),
+        retention_class: RETENTION_KEEP_LAST,
+    })?]))
 }
 
 fn decide_complete(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
