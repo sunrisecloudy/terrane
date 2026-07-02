@@ -247,6 +247,9 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(html.contains(#"download="photobooth.png""#), html)
     XCTAssertTrue(html.contains("function clearPhoto()"), html)
     XCTAssertTrue(html.contains("function hasLiveStream()"), html)
+    XCTAssertTrue(html.contains("URL.createObjectURL"), html)
+    XCTAssertTrue(html.contains("new Blob"), html)
+    XCTAssertTrue(html.contains("URL.revokeObjectURL"), html)
     XCTAssertTrue(html.contains("video.srcObject = null"), html)
     XCTAssertTrue(html.contains("setTimeout(function ()"), html)
     XCTAssertTrue(html.contains("Camera request timed out. Try Start again."), html)
@@ -275,11 +278,18 @@ final class BmiCalculatorE2ETests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(appDelegate.contains("WKUIDelegate"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("WKNavigationDelegate"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("WKDownloadDelegate"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("webView.navigationDelegate = self"), appDelegate)
     XCTAssertTrue(appDelegate.contains("requestMediaCapturePermissionFor"), appDelegate)
     XCTAssertTrue(appDelegate.contains("case .camera:"), appDelegate)
     XCTAssertTrue(appDelegate.contains("decisionHandler(.prompt)"), appDelegate)
     XCTAssertTrue(appDelegate.contains("case .microphone, .cameraAndMicrophone:"), appDelegate)
     XCTAssertTrue(appDelegate.contains("decisionHandler(.deny)"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("navigationAction.shouldPerformDownload"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("decisionHandler(.download)"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("download.delegate = self"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("NSSavePanel"), appDelegate)
   }
 
   func testSourceSyntaxHighlighterColorsCodeTokens() throws {

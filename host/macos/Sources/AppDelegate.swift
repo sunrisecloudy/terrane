@@ -3,7 +3,9 @@ import WebKit
 
 /// The macOS host window: a native app switcher over plain HTML app UIs, with a
 /// WKWebView stage and a Terrane bridge scoped to the selected app.
-final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNavigationDelegate,
+  WKDownloadDelegate
+{
   private var window: NSWindow!
   private var webView: WKWebView!
   private var sourceEditor: SourceEditorPanel!
@@ -36,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
     config.setURLSchemeHandler(previewSchemeHandler, forURLScheme: PreviewSchemeHandler.scheme)
     webView = WKWebView(frame: .zero, configuration: config)
     webView.uiDelegate = self
+    webView.navigationDelegate = self
 
     window = NSWindow(
       contentRect: NSRect(x: 0, y: 0, width: 960, height: 680),
@@ -64,6 +67,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
 
   func applicationWillTerminate(_ notification: Notification) {
     bridge?.close()
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    decidePolicyFor navigationAction: WKNavigationAction,
+    decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+  ) {
+    if navigationAction.shouldPerformDownload {
+      decisionHandler(.download)
+      return
+    }
+
+    decisionHandler(.allow)
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    navigationAction: WKNavigationAction,
+    didBecome download: WKDownload
+  ) {
+    download.delegate = self
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    navigationResponse: WKNavigationResponse,
+    didBecome download: WKDownload
+  ) {
+    download.delegate = self
+  }
+
+  func download(
+    _ download: WKDownload,
+    decideDestinationUsing response: URLResponse,
+    suggestedFilename: String,
+    completionHandler: @escaping (URL?) -> Void
+  ) {
+    let panel = NSSavePanel()
+    panel.canCreateDirectories = true
+    panel.nameFieldStringValue = Self.safeDownloadFilename(suggestedFilename)
+    panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+
+    if let window {
+      panel.beginSheetModal(for: window) { result in
+        completionHandler(result == .OK ? panel.url : nil)
+      }
+    } else {
+      panel.begin { result in
+        completionHandler(result == .OK ? panel.url : nil)
+      }
+    }
   }
 
   @available(macOS 12.0, *)
@@ -258,6 +312,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate {
       return args[1]
     }
     return nil
+  }
+
+  static func safeDownloadFilename(_ suggested: String) -> String {
+    let trimmed = suggested.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = trimmed.isEmpty ? "download" : trimmed
+    let invalid = CharacterSet(charactersIn: "/:")
+    return name.components(separatedBy: invalid).joined(separator: "-")
   }
 
   private static let emptyStateHTML = """

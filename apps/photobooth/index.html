@@ -280,6 +280,7 @@
     <script>
       var stream = null;
       var startAttempt = 0;
+      var photoBlobUrl = null;
       var video = document.getElementById("video");
       var canvas = document.getElementById("canvas");
       var photo = document.getElementById("photo");
@@ -297,12 +298,33 @@
         statusEl.textContent = text;
       }
 
+      function revokePhotoBlob() {
+        if (!photoBlobUrl) return;
+        URL.revokeObjectURL(photoBlobUrl);
+        photoBlobUrl = null;
+      }
+
+      function dataUrlToBlob(dataUrl) {
+        var parts = dataUrl.split(",");
+        var header = parts[0] || "";
+        var mimeMatch = header.match(/data:([^;]+)/);
+        var mime = mimeMatch ? mimeMatch[1] : "application/octet-stream";
+        var binary = atob(parts[1] || "");
+        var bytes = new Uint8Array(binary.length);
+        for (var index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
+        }
+        return new Blob([bytes], { type: mime });
+      }
+
       function setPhoto(dataUrl, width, height) {
+        revokePhotoBlob();
+        photoBlobUrl = URL.createObjectURL(dataUrlToBlob(dataUrl));
         photo.src = dataUrl;
         photo.style.display = "block";
         video.style.display = "none";
         empty.style.display = "none";
-        downloadLink.href = dataUrl;
+        downloadLink.href = photoBlobUrl;
         downloadLink.setAttribute("aria-disabled", "false");
         retakeButton.disabled = false;
         photoState.textContent = "Captured";
@@ -310,6 +332,7 @@
       }
 
       function clearPhoto() {
+        revokePhotoBlob();
         photo.removeAttribute("src");
         downloadLink.href = "#";
         downloadLink.setAttribute("aria-disabled", "true");
@@ -441,7 +464,13 @@
         showPreview();
         setStatus(stream ? "Camera ready" : "Ready");
       });
+      downloadLink.addEventListener("click", function (event) {
+        if (downloadLink.getAttribute("aria-disabled") === "true") {
+          event.preventDefault();
+        }
+      });
       window.addEventListener("pagehide", stopStream);
+      window.addEventListener("pagehide", revokePhotoBlob);
     </script>
   </body>
 </html>
