@@ -1,0 +1,218 @@
+//! The llama.cpp backend — loads GGUF weights and runs one generation at a
+//! time. Metal offload is enabled on macOS builds.
+
+use std::num::NonZeroU32;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use std::time::Instant;
+
+use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
+use llama_cpp_2::sampling::LlamaSampler;
+
+use crate::{Constraint, GenerateRequest, GenerateResponse, LlmError, LocalLlm, StopReason};
+
+/// A resolved model file plus per-model overrides from the spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFile {
+    pub path: PathBuf,
+    pub context_length: Option<u32>,
+    /// A chat template name (`"chatml"`) or full template string; defaults to
+    /// the template embedded in the GGUF.
+    pub chat_template_override: Option<String>,
+}
+
+/// When no context length is configured, cap the model's trained context to
+/// keep memory use sane for small local models.
+const DEFAULT_MAX_CONTEXT: u32 = 8192;
+
+/// llama.cpp initializes process-globally exactly once; hold the proof of
+/// initialization forever so repeated effects share it.
+fn backend() -> Result<&'static LlamaBackend, LlmError> {
+    static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
+    BACKEND
+        .get_or_init(|| LlamaBackend::init().map_err(|e| e.to_string()))
+        .as_ref()
+        .map_err(|e| LlmError::Load(format!("llama backend init failed: {e}")))
+}
+
+pub struct LlamaCppBackend {
+    model: LlamaModel,
+    context_length: u32,
+    chat_template: Option<LlamaChatTemplate>,
+}
+
+impl LlamaCppBackend {
+    /// Load GGUF weights. Fails fast (before touching llama.cpp) when the
+    /// file is missing — the registered spec's path is machine-local claim,
+    /// verified only here at the edge.
+    pub fn load(file: &ModelFile) -> Result<Self, LlmError> {
+        if !file.path.is_file() {
+            return Err(LlmError::Load(format!(
+                "model file not found: {} (re-run local-model pull, or fix the registered path)",
+                file.path.display()
+            )));
+        }
+        let backend = backend()?;
+
+        let mut model_params = LlamaModelParams::default();
+        if cfg!(target_os = "macos") {
+            // Offload every layer to Metal; llama.cpp falls back to CPU when
+            // the build has no GPU backend.
+            model_params = model_params.with_n_gpu_layers(1_000_000);
+        }
+        let model = LlamaModel::load_from_file(backend, &file.path, &model_params)
+            .map_err(|e| LlmError::Load(format!("{}: {e}", file.path.display())))?;
+
+        let chat_template = match &file.chat_template_override {
+            Some(template) => Some(LlamaChatTemplate::new(template).map_err(|e| {
+                LlmError::Load(format!("invalid chat template override {template:?}: {e}"))
+            })?),
+            // A missing embedded template is fine — prompts go in raw.
+            None => model.chat_template(None).ok(),
+        };
+        let context_length = file
+            .context_length
+            .unwrap_or_else(|| model.n_ctx_train().min(DEFAULT_MAX_CONTEXT))
+            .max(1);
+
+        Ok(LlamaCppBackend {
+            model,
+            context_length,
+            chat_template,
+        })
+    }
+
+    /// Render one user message through the model's chat template (leaving the
+    /// assistant tag open), or pass the prompt through raw when the model has
+    /// no template.
+    fn render_prompt(&self, user_prompt: &str) -> Result<String, LlmError> {
+        let Some(template) = &self.chat_template else {
+            return Ok(user_prompt.to_string());
+        };
+        let message = LlamaChatMessage::new("user".to_string(), user_prompt.to_string())
+            .map_err(|e| LlmError::Generate(format!("bad chat message: {e}")))?;
+        self.model
+            .apply_chat_template(template, &[message], true)
+            .map_err(|e| LlmError::Generate(format!("chat template failed: {e}")))
+    }
+
+    fn build_sampler(&self, request: &GenerateRequest) -> Result<LlamaSampler, LlmError> {
+        let mut chain = Vec::new();
+        match &request.constraint {
+            Some(Constraint::JsonSchema(schema)) => {
+                chain.push(
+                    LlamaSampler::llguidance(&self.model, "json_schema", schema)
+                        .map_err(|e| LlmError::Constraint(format!("json schema: {e}")))?,
+                );
+            }
+            Some(Constraint::Gbnf(grammar)) => {
+                chain.push(
+                    LlamaSampler::grammar(&self.model, grammar, "root")
+                        .map_err(|e| LlmError::Constraint(format!("gbnf grammar: {e}")))?,
+                );
+            }
+            None => {}
+        }
+        if request.config.temperature <= 0.0 {
+            chain.push(LlamaSampler::greedy());
+        } else {
+            chain.push(LlamaSampler::temp(request.config.temperature));
+            chain.push(LlamaSampler::dist(request.config.seed));
+        }
+        Ok(LlamaSampler::chain_simple(chain))
+    }
+}
+
+impl LocalLlm for LlamaCppBackend {
+    fn generate(
+        &mut self,
+        request: &GenerateRequest,
+        on_token: &mut dyn FnMut(&str),
+    ) -> Result<GenerateResponse, LlmError> {
+        let started = Instant::now();
+        let deadline = request.config.timeout.map(|budget| started + budget);
+
+        let prompt = self.render_prompt(&request.prompt)?;
+        let tokens = self
+            .model
+            .str_to_token(&prompt, AddBos::Always)
+            .map_err(|e| LlmError::Generate(format!("tokenize failed: {e}")))?;
+        let prompt_len = u32::try_from(tokens.len())
+            .map_err(|_| LlmError::Generate("prompt too long".into()))?;
+        if prompt_len + request.config.max_tokens > self.context_length {
+            return Err(LlmError::Generate(format!(
+                "prompt ({prompt_len} tokens) plus max_tokens ({}) exceeds the context length ({})",
+                request.config.max_tokens, self.context_length
+            )));
+        }
+
+        let batch_capacity = (tokens.len().max(512)) as u32;
+        let context_params = LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(self.context_length))
+            .with_n_batch(batch_capacity);
+        let mut context = self
+            .model
+            .new_context(backend()?, context_params)
+            .map_err(|e| LlmError::Generate(format!("context init failed: {e}")))?;
+        let mut sampler = self.build_sampler(request)?;
+
+        // Feed the whole prompt, asking for logits on its last token only.
+        let mut batch = LlamaBatch::new(batch_capacity as usize, 1);
+        for (i, token) in tokens.iter().enumerate() {
+            batch
+                .add(*token, i as i32, &[0], i + 1 == tokens.len())
+                .map_err(|e| LlmError::Generate(format!("batch add failed: {e}")))?;
+        }
+        context
+            .decode(&mut batch)
+            .map_err(|e| LlmError::Generate(format!("prompt decode failed: {e}")))?;
+
+        // One token per step: sample (the chain also accepts it), emit, decode.
+        let mut text = String::new();
+        let mut decoder = encoding_rs::UTF_8.new_decoder();
+        let mut position = tokens.len() as i32;
+        let mut token_count: u32 = 0;
+        let stop = loop {
+            if token_count >= request.config.max_tokens {
+                break StopReason::MaxTokens;
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                break StopReason::DeadlineExceeded;
+            }
+
+            let token = sampler.sample(&context, batch.n_tokens() - 1);
+            if self.model.is_eog_token(token) {
+                break StopReason::Eos;
+            }
+            let piece = self
+                .model
+                .token_to_piece(token, &mut decoder, false, None)
+                .map_err(|e| LlmError::Generate(format!("detokenize failed: {e}")))?;
+            if !piece.is_empty() {
+                on_token(&piece);
+                text.push_str(&piece);
+            }
+            token_count += 1;
+
+            batch.clear();
+            batch
+                .add(token, position, &[0], true)
+                .map_err(|e| LlmError::Generate(format!("batch add failed: {e}")))?;
+            position += 1;
+            context
+                .decode(&mut batch)
+                .map_err(|e| LlmError::Generate(format!("decode failed: {e}")))?;
+        };
+
+        Ok(GenerateResponse {
+            text,
+            token_count,
+            duration: started.elapsed(),
+            stop,
+        })
+    }
+}
