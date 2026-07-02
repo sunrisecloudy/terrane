@@ -1,9 +1,11 @@
 # Terrane Host API
 
 The contract terrane's **edge hosts** expose — the **web host** (HTTP plus MCP
-over HTTP) and the **MCP host** (stdio JSON-RPC). It is the _open subset_:
-`terrane-premium` implements a **superset** of everything here, so apps and
-clients written against this surface are portable upward.
+over HTTP) and the **MCP host** (stdio JSON-RPC). Terrane's hosts are the only
+implementations of this surface. `terrane-premium` is a hosted **control
+plane**, not a host: it pins and consumes this contract as
+`public-contract.json` (see [Export & conformance](#export--conformance)); it
+does not serve these routes or tools.
 
 The source of truth is the [`terrane-api`](../rust/crates/terrane-api)
 crate (typed, OSS-side) and the exported `public-contract.json` that premium
@@ -57,6 +59,15 @@ requesting agent cannot self-serve them.
 Approving a request mints exactly the grants named in it. `POST /__terrane/admin/grants`
 lets the admin grant a namespace without a pending request. Both are trusted
 admin actions gated by the header above.
+
+The admin surface is **host-owned** and deliberately outside the machine-pinned
+contract — `public-contract.json` does not list these routes, so hosts can
+evolve them without a contract version bump. The table above is representative,
+not exhaustive: the web host also serves session lock/unlock, apps, grants,
+agents, and audit views, request deny, and agent delegation under the same
+header gate. External tooling (including `terrane-premium`) integrates through
+the contract-frozen `auth.*` events and grant specs, not by scripting these
+routes.
 
 `POST /mcp` is a transport endpoint for the same shared MCP host tools exposed
 over stdio. It accepts a single JSON-RPC request body and returns
@@ -342,6 +353,8 @@ Derived from every registered capability's grant spec:
 | `crdt` | `read`, `write` |
 | `relational_db` | `read`, `write` |
 | `build` | `read` (read-only) |
+| `local-model` | `call`, `read` |
+| `native` | `read`, `write` |
 
 A namespace a manifest requests but that is not grantable is skipped, not
 blocked.
@@ -349,12 +362,17 @@ blocked.
 ### Weak-model recipe (copy-paste)
 
 1. `workflows_list` → pick a workflow (e.g. `make_js_kv_app`).
-2. `app_scaffold` with `{ "id": "notes-demo", "name": "Notes Demo" }` (add
-   `"withUi": true` for a page).
-3. `app_register_inline` with `{ "files": <structuredContent.files>, "dryRun": true }`,
-   then again without `dryRun` to commit.
-4. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
-5. If the result is `"isError": true` with
+2. `app_build_start` with `{ "id": "notes-demo", "name": "Notes Demo", "withUi": true }`
+   → a server-side draft seeded from a working app shell; note the returned
+   `draftId`.
+3. `app_build_put_file` with `{ "draftId": ..., "path": "main.js", "content": ... }`
+   for each file you change (the shell files are already in the draft).
+4. `app_build_validate` with `{ "draftId": ... }` → note the returned
+   `validationToken`.
+5. `app_build_commit` with `{ "draftId": ..., "validationToken": ... }` to
+   install the app.
+6. `invoke` with `{ "app": "notes-demo", "verb": "write", "args": ["hello"] }`.
+7. If the result is `"isError": true` with
    `structuredContent.type == "permission_required"`, the app's namespace is
    ungranted. Do one of:
    - **Human/CLI**: run each string in `structuredContent.grantCommands`, e.g.
@@ -363,7 +381,10 @@ blocked.
      action).
    - **Poll**: call `permission_check` with
      `{ "requestId": structuredContent.requestId }` until `status` is `approved`.
-6. Once `approved`, **retry `invoke`** with the same args → success.
+8. Once `approved`, **retry `invoke`** with the same args → success.
+
+(`app_scaffold` + `app_register_inline` remain available as compatibility
+tools; the staged draft flow above is primary.)
 
 Do **not** try `capability_command` with an `auth.*` name — it is refused as
 trusted-admin-only.
@@ -387,17 +408,24 @@ contract, sync) comes from `terrane contract export` — derived from the
 `terrane-host/tests/contract.rs`).
 Its `conformance.commands` are what a consumer runs to prove an implementation.
 
-## Subset rule (terrane ⊆ premium)
+## Consumption rule (hosts implement, premium pins)
 
-Every route and tool above must exist in `terrane-premium` with the same request
-and response shapes. Premium adds hosted concerns (accounts, orgs, billing,
-encrypted sync, marketplace, signing, admin) **on top**; it never removes or
-redefines anything here. The mechanical guarantees:
+Terrane's hosts (CLI, web, MCP, macOS) are the only implementations of this
+surface. `terrane-premium` is a hosted control plane — accounts, orgs, billing,
+encrypted sync, marketplace, signing, admin governance — that **consumes** the
+contract rather than implementing it; it never redefines app-visible semantics.
+Its stable integration points are:
+
+- the pinned `public-contract.json` (hash-verified on every premium release);
+- the `auth.*` event vocabulary and the per-namespace grant specs;
+- the capability docs and the `crdt.update` sync wire.
+
+The mechanical guarantees:
 
 - **Drift**: `terrane-host/tests/contract.rs` asserts the exported surface
   matches the live declarations; `tools/verify-public-contract.mjs` re-checks
   it + the contract file hashes.
 - **Behaviour**: the host e2e suites are the conformance tests — e.g.
   `host/web/tests/web.rs` drives the running server and asserts it serves
-  _every_ declared route. Premium re-runs the analogous black-box checks against
-  its server in CI.
+  _every_ declared route. Premium re-runs the contract's
+  `conformance.commands` against its pinned checkout in CI.
