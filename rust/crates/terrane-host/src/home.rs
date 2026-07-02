@@ -8,6 +8,14 @@
 
 const HOME_HTML: &str = include_str!("home/home.html");
 const HOME_JS: &str = include_str!("home/home.js");
+const ICONS_JS: &str = include_str!("home/icons.js");
+
+/// The shared app-icon script: defines `window.terraneAppIcon(id)`, mirroring
+/// the macOS sidebar's SF Symbol mapping. Included in the landing page and
+/// reusable by host shells that list apps.
+pub fn app_icons_js() -> &'static str {
+    ICONS_JS
+}
 
 /// How a host wires the landing page to its own catalog and app links.
 pub struct HomePageOptions<'a> {
@@ -28,7 +36,7 @@ pub fn home_page(options: &HomePageOptions) -> String {
     // JS first: the config carries host/user-controlled text, so substituting
     // it last keeps a literal `__HOME_JS__` inside it from being re-expanded.
     HOME_HTML
-        .replace("__HOME_JS__", HOME_JS)
+        .replace("__HOME_JS__", &format!("{ICONS_JS}\n{HOME_JS}"))
         .replace("__HOME_CONFIG__", &config_json(options))
 }
 

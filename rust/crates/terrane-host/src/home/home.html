@@ -53,8 +53,10 @@
         gap: 12px;
       }
       .app-card {
-        display: block;
-        padding: 16px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
         border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
         border-radius: 10px;
         background: color-mix(in srgb, Canvas 96%, CanvasText 4%);
@@ -62,7 +64,24 @@
         text-decoration: none;
         min-width: 0;
       }
-      .app-card span {
+      .app-icon {
+        flex: none;
+        display: inline-grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 9px;
+        background: color-mix(in srgb, CanvasText 8%, transparent);
+        color: color-mix(in srgb, CanvasText 72%, transparent);
+      }
+      .app-icon svg {
+        width: 19px;
+        height: 19px;
+      }
+      .app-card-text {
+        min-width: 0;
+      }
+      .app-card-text span {
         display: block;
         font-size: 15px;
         font-weight: 600;
@@ -70,7 +89,7 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .app-card small {
+      .app-card-text small {
         display: block;
         margin-top: 4px;
         color: color-mix(in srgb, CanvasText 55%, transparent);

@@ -11,7 +11,9 @@ pub fn response(core: &terrane_host::HostCore, current_id: &str) -> Resp {
         return json_error(404, &format!("no such app: {current_id}"));
     }
 
-    let body = SHELL_HTML.replace("__APP_SHELL_JS__", APP_SHELL_JS);
+    let body = SHELL_HTML
+        .replace("__APP_ICONS_JS__", terrane_host::home::app_icons_js())
+        .replace("__APP_SHELL_JS__", APP_SHELL_JS);
     Response::from_data(body.into_bytes())
         .with_header(header("Content-Type", "text/html; charset=utf-8"))
 }

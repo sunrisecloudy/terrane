@@ -77,14 +77,20 @@
       root.className += " disabled";
     }
 
+    root.appendChild(window.terraneAppIcon(id));
+
+    var text = document.createElement("span");
+    text.className = "app-card-text";
+
     var label = document.createElement("span");
     label.textContent = name;
-    root.appendChild(label);
+    text.appendChild(label);
 
     var meta = document.createElement("small");
     meta.textContent = app && app.has_ui ? id : id + " - no UI";
-    root.appendChild(meta);
+    text.appendChild(meta);
 
+    root.appendChild(text);
     return root;
   }
 

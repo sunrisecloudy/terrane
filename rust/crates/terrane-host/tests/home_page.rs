@@ -49,6 +49,10 @@ fn web_shaped_options_render_fetch_config_and_admin_link() {
         "config reader missing: {html}"
     );
     assert!(
+        html.contains("window.terraneAppIcon"),
+        "shared app icons missing: {html}"
+    );
+    assert!(
         html.contains("fetch(String(config.catalogUrl)"),
         "catalog fetch missing: {html}"
     );

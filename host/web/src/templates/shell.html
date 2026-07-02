@@ -33,6 +33,11 @@
       .brand {
         font-size: 14px;
         font-weight: 700;
+        color: inherit;
+        text-decoration: none;
+      }
+      .brand:hover {
+        text-decoration: underline;
       }
       .brand-row {
         display: flex;
@@ -94,20 +99,39 @@
         gap: 6px;
       }
       .app-link {
-        display: block;
-        padding: 9px 10px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 7px 10px;
         border: 1px solid transparent;
         border-radius: 8px;
         color: inherit;
         text-decoration: none;
       }
-      .app-link span {
+      .app-icon {
+        flex: none;
+        display: inline-grid;
+        place-items: center;
+        width: 28px;
+        height: 28px;
+        border-radius: 7px;
+        background: color-mix(in srgb, CanvasText 8%, transparent);
+        color: color-mix(in srgb, CanvasText 72%, transparent);
+      }
+      .app-icon svg {
+        width: 16px;
+        height: 16px;
+      }
+      .app-link-text {
+        min-width: 0;
+      }
+      .app-link-text span {
         display: block;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
-      .app-link small {
+      .app-link-text small {
         display: block;
         margin-top: 2px;
         color: color-mix(in srgb, CanvasText 55%, transparent);
@@ -178,7 +202,7 @@
     <div class="shell">
       <nav class="sidebar" aria-label="Apps">
         <div class="brand-row">
-          <div class="brand">Terrane</div>
+          <a class="brand" href="/" title="Terrane home">Terrane</a>
           <button
             id="desktop-info-button"
             class="desktop-info-button"
@@ -225,6 +249,7 @@
       </main>
     </div>
     <script>
+      __APP_ICONS_JS__;
       __APP_SHELL_JS__;
     </script>
   </body>

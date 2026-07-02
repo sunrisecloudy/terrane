@@ -732,6 +732,14 @@ fn serves_catalog_ui_and_invoke_over_http() {
     assert_eq!(status, 200, "shell body: {body}");
     assert!(body.contains("Terrane"), "shell brand missing: {body}");
     assert!(
+        body.contains(r#"<a class="brand" href="/""#),
+        "brand should link back to the landing page: {body}"
+    );
+    assert!(
+        body.contains("window.terraneAppIcon"),
+        "shared app icons missing from shell: {body}"
+    );
+    assert!(
         body.contains("id=\"desktop-info-button\"")
             && body.contains("setInfoPanelOpen")
             && body.contains("Terrane desktop app"),
