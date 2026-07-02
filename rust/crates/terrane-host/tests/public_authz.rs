@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        14,
+        15,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 25, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 24, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -66,7 +66,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
         .collect();
     assert_eq!(
         grantable,
-        BTreeSet::from(["build", "crdt", "kv", "relational_db"])
+        BTreeSet::from(["build", "crdt", "kv", "local-model", "relational_db"])
     );
 
     let mut bad = Vec::new();
@@ -160,7 +160,6 @@ fn dangerous_and_effect_commands_are_refused() {
         "wasm-runtime.run",
         "net.fetch",
         "model.ask",
-        "local-model.ask",
         "local-model.register",
         "local-model.pull",
         "local-model.rm",

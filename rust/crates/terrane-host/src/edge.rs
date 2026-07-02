@@ -266,7 +266,8 @@ fn run_harness_js(
                 state.clone(),
                 ExecutionPrincipal::local_owner(),
                 bundle.resources.clone(),
-            ),
+            )
+            .with_runner(std::sync::Arc::new(EdgeRunner)),
         ));
         let output = run_js_bundle(app_id, &[], &bundle, host.clone())?;
         Ok((js, output, host.take_records()))

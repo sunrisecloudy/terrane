@@ -113,6 +113,17 @@ pub fn responded_event(record: &RespondedRecord) -> Result<EventRecord> {
     )
 }
 
+/// The recorded response text inside a freshly committed batch (used by the
+/// `ctx.resource["local-model"]` call surface to hand the answer back).
+pub(crate) fn response_text_from_records(records: &[EventRecord]) -> Option<String> {
+    records
+        .iter()
+        .rev()
+        .find(|record| record.kind == "local-model.responded")
+        .and_then(|record| decode_event::<Responded>(record).ok())
+        .map(|responded| responded.response)
+}
+
 pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
     match record.kind.as_str() {
         "local-model.registered" => {

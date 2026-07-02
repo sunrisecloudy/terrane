@@ -70,6 +70,20 @@ pub trait RuntimeHost {
 
     fn write_resource(&mut self, namespace: &str, method: &str, args: &[String]) -> Result<()>;
 
+    /// Run an effectful resource call: records events like a write and
+    /// returns a value like a read. Default: unsupported.
+    fn call_resource(
+        &mut self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        let _ = args;
+        Err(crate::abi::Error::Runtime(format!(
+            "{namespace}.{method}: resource calls are not supported by this runtime host"
+        )))
+    }
+
     fn take_records(&mut self) -> Vec<EventRecord>;
 }
 
@@ -106,6 +120,17 @@ impl RuntimeHostHandle {
         self.inner
             .borrow_mut()
             .write_resource(namespace, method, args)
+    }
+
+    pub fn call_resource(
+        &self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> Result<ReadValue> {
+        self.inner
+            .borrow_mut()
+            .call_resource(namespace, method, args)
     }
 
     pub fn take_records(&self) -> Vec<EventRecord> {

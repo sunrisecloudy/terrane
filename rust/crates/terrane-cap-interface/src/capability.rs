@@ -47,6 +47,22 @@ pub trait Capability {
         self.manifest().resources
     }
 
+    /// Translate the events one `ResourceMethod::Call` just recorded into the
+    /// value handed back to the calling app backend.
+    fn resource_call_output(
+        &self,
+        state: &dyn StateStore,
+        app: &str,
+        method: &str,
+        records: &[EventRecord],
+    ) -> Result<ReadValue> {
+        let _ = (state, app, records);
+        Err(Error::InvalidInput(format!(
+            "{}.{method} is not a callable resource",
+            self.namespace()
+        )))
+    }
+
     fn grant_resource_specs(&self) -> Vec<GrantResourceSpec> {
         self.manifest().grant_resources
     }

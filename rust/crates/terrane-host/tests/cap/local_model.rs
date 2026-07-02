@@ -211,6 +211,78 @@ fn local_model_schema_ask_e2e_real() {
 }
 
 #[test]
+#[ignore = "real local inference; needs a GGUF at TERRANE_LOCAL_MODEL_GGUF; run with `cargo test -- --ignored`"]
+fn local_model_app_backend_call_e2e_real() {
+    let Some(gguf) = gguf_from_env() else { return };
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    // A JS app whose backend asks the default local model.
+    let bundle = home.join("caller");
+    std::fs::create_dir(&bundle).unwrap();
+    std::fs::write(
+        bundle.join("manifest.json"),
+        r#"{ "id": "caller", "name":"Caller","runtime":"js","backend":"main.js", "resources": ["local-model"] }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        bundle.join("main.js"),
+        r#"
+var lm = ctx.resource["local-model"];
+function handle(input) { return "model said: " + lm.ask(input.join(" ")); }
+"#,
+    )
+    .unwrap();
+
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "app",
+            "add",
+            "caller",
+            "Caller",
+            "--source",
+            bundle.to_str().unwrap(),
+        ],
+    );
+    assert!(ok, "app add failed: {err}");
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "caller", "local-model"],
+    );
+    assert!(ok, "grant failed: {err}");
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "local-model",
+            "register",
+            "qwen",
+            "llama_cpp",
+            &gguf,
+            "--max-tokens",
+            "32",
+        ],
+    );
+    assert!(ok, "register failed: {err}");
+
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "caller", "say", "hello"]);
+    assert!(ok, "app-backend ask failed; stderr: {err}");
+    assert!(out.contains("model said: "), "out: {out}");
+    assert!(
+        out.trim_end() != "model said:" && !out.contains("model said: null"),
+        "backend received a real response: {out}"
+    );
+
+    // The generation is an ordinary recorded event: replay rebuilds it
+    // without re-running JS or inference.
+    let (ok, out, err) = terrane(home, &["log"]);
+    assert!(ok, "log failed: {err}");
+    assert!(out.contains("local-model.responded caller"), "log: {out}");
+    let (ok, _, err) = terrane(home, &["replay"]);
+    assert!(ok, "replay failed: {err}");
+}
+
+#[test]
 #[ignore = "downloads ~500 MB from Hugging Face; run with `cargo test -- --ignored`"]
 fn local_model_pull_e2e_real() {
     let dir = tempdir().unwrap();

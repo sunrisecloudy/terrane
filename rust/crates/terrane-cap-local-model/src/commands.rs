@@ -274,6 +274,28 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
     }))
 }
 
+/// `ctx.resource["local-model"].askModel(model, prompt)` — positional args
+/// scoped as [app, model, prompt…].
+pub(crate) fn decide_ask_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let model = arg(args, 1, "model")?;
+    let rest = args.get(2..).unwrap_or_default();
+    let mut rewritten = vec![app, "--model".to_string(), model];
+    rewritten.extend(rest.iter().cloned());
+    decide_ask(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].askJson(schema, prompt)` — positional args
+/// scoped as [app, schema, prompt…], answered by the default model.
+pub(crate) fn decide_ask_json(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let schema = arg(args, 1, "schema")?;
+    let rest = args.get(2..).unwrap_or_default();
+    let mut rewritten = vec![app, "--schema".to_string(), schema];
+    rewritten.extend(rest.iter().cloned());
+    decide_ask(ctx, &rewritten)
+}
+
 /// The app's recorded, successful exchanges with this model — oldest first,
 /// capped at the most recent [`CONTINUE_TURN_LIMIT`].
 pub(crate) fn conversation_history(

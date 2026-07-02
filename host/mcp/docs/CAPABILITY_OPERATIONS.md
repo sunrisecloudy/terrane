@@ -85,16 +85,18 @@ any `auth.*` name (e.g. `auth.grant`, `auth.permission.approve`) with
 flow"`. You cannot grant yourself a resource over MCP. Granting is a trusted
 admin/CLI action — see [How to grant](#how-to-grant).
 
-Direct `kv`, `crdt`, and `relational_db` resource commands are grant-gated by
-app id and can return `permission_required`. Raw storage configuration
-(`kv.storage.*`), raw bundle import (`app.import`), app removal, runtime
-execution, network, model, local model (`local-model.*` — inference and
-machine-local model-spec management), and harness effect commands are refused
-on the public MCP path.
+Direct `kv`, `crdt`, `relational_db`, and `local-model.ask` resource commands
+are grant-gated by app id and can return `permission_required`. Raw storage
+configuration (`kv.storage.*`), raw bundle import (`app.import`), app removal,
+runtime execution, network, model, local model-spec management
+(`local-model.register/pull/rm/default` — machine-local weights are
+trusted-admin-only), and harness effect commands are refused on the public MCP
+path.
 
 ## Default-Deny Permissions
 
-A manifest that lists `kv`, `crdt`, `relational_db`, or `build` under its
+A manifest that lists `kv`, `crdt`, `relational_db`, `build`, or
+`local-model` under its
 resources is only *requesting* those namespaces. Nothing is auto-granted. Until
 an admin grants a namespace to the executing subject for that app, the app
 backend sees no `ctx.resource.<ns>` methods for it.
@@ -107,6 +109,7 @@ backend sees no `ctx.resource.<ns>` methods for it.
 | `crdt` | `read`, `write` | |
 | `relational_db` | `read`, `write` | |
 | `build` | `read` | **read-only** — no `write` verb exists |
+| `local-model` | `call` | recorded local LLM generations (default or named model) |
 
 `auth.grant` with no verbs argument grants the namespace's full verb set. An
 explicit verbs argument is validated against the allowed set above. A namespace

@@ -8,7 +8,7 @@
 
 use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec, Result, StateStore,
+    EventSpec, GrantResourceSpec, ReadValue, ResourceMethod, Result, StateStore,
 };
 
 mod commands;
@@ -65,8 +65,25 @@ impl Capability for LocalModelCapability {
                 },
             ],
             queries: Vec::new(),
-            resources: Vec::new(),
-            grant_resources: Vec::new(),
+            resources: vec![
+                ResourceMethod::Call {
+                    name: "ask",
+                    params: &["prompt"],
+                },
+                ResourceMethod::Call {
+                    name: "askModel",
+                    params: &["model", "prompt"],
+                },
+                ResourceMethod::Call {
+                    name: "askJson",
+                    params: &["schema", "prompt"],
+                },
+            ],
+            grant_resources: vec![GrantResourceSpec::namespace_v1(
+                "local-model",
+                &["call"],
+                "Recorded local LLM generations (default or named model).",
+            )],
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
             }],
@@ -84,6 +101,9 @@ impl Capability for LocalModelCapability {
             "local-model.rm" => commands::decide_rm(ctx, args),
             "local-model.default" => commands::decide_default(ctx, args),
             "local-model.ask" => commands::decide_ask(ctx, args),
+            // ResourceMethod::Call routes (app-scoped args, positional).
+            "local-model.askModel" => commands::decide_ask_model(ctx, args),
+            "local-model.askJson" => commands::decide_ask_json(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }
@@ -94,6 +114,23 @@ impl Capability for LocalModelCapability {
 
     fn describe(&self, record: &EventRecord) -> Option<String> {
         events::describe(record)
+    }
+
+    fn resource_call_output(
+        &self,
+        _state: &dyn StateStore,
+        _app: &str,
+        method: &str,
+        records: &[EventRecord],
+    ) -> Result<ReadValue> {
+        match method {
+            "ask" | "askModel" | "askJson" => Ok(ReadValue::OptString(
+                events::response_text_from_records(records),
+            )),
+            other => Err(Error::InvalidInput(format!(
+                "local-model.{other} is not a callable resource"
+            ))),
+        }
     }
 }
 

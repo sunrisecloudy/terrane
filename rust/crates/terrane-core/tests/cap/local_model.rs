@@ -1,9 +1,12 @@
 //! Engine tests for the `local-model` capability — registered specs plus the
 //! recorded-inference effect, driven end to end with a stub runner.
 
+use std::fs;
+use std::path::Path;
+
 use tempfile::tempdir;
 use terrane_cap_local_model::{responded_event, RespondedRecord};
-use terrane_core::{fold_records_in_memory, Core, EffectRunner, Error, State};
+use terrane_core::{fold_records_in_memory, Core, EffectRunner, Error, State, LOCAL_OWNER_SUBJECT};
 use terrane_core::{Effect, EventRecord, Result};
 
 use crate::helpers::req;
@@ -325,6 +328,118 @@ fn ask_records_turns_via_runner_and_cascades_on_app_removal() {
         .local_model
         .turns
         .is_empty());
+}
+
+/// A backend exercising the call surface: `ask`, `askModel`, and `askJson`.
+const CALLER_BACKEND: &str = r#"
+var lm = ctx.resource["local-model"];
+function handle(input) {
+    var verb = input[0];
+    if (verb === "ask") { return String(lm.ask(input.slice(1).join(" "))); }
+    if (verb === "askModel") { return String(lm.askModel(input[1], input.slice(2).join(" "))); }
+    if (verb === "askJson") { return String(lm.askJson(input[1], input.slice(2).join(" "))); }
+    if (verb === "present") { return String(typeof lm); }
+    return "?";
+}
+"#;
+
+/// Install a JS app declaring the `local-model` resource on a stub-runner core.
+fn install_caller(dir: &Path, log: &Path) -> Core<StubLlm> {
+    let bundle = dir.join("caller");
+    fs::create_dir(&bundle).unwrap();
+    fs::write(
+        bundle.join("manifest.json"),
+        r#"{ "id": "caller", "name":"Caller","runtime":"js","backend":"main.js", "resources": ["local-model"] }"#,
+    )
+    .unwrap();
+    fs::write(bundle.join("main.js"), CALLER_BACKEND).unwrap();
+
+    let mut core = Core::open_with(log, StubLlm).unwrap();
+    core.dispatch(req(
+        "app.add",
+        &["caller", "Caller", "--source", bundle.to_str().unwrap()],
+    ))
+    .unwrap();
+    core.dispatch(req(
+        "local-model.register",
+        &["qwen", "llama_cpp", "/models/qwen.gguf"],
+    ))
+    .unwrap();
+    core
+}
+
+#[test]
+fn js_backend_calls_local_model_and_replay_never_reruns_inference() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = install_caller(dir.path(), &log);
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "caller", "local-model"],
+    ))
+    .unwrap();
+
+    // ask → default model, response text handed back to JS, one recorded turn.
+    let records = core
+        .dispatch(req("js-runtime.run", &["caller", "ask", "say", "hi"]))
+        .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, "local-model.responded");
+    let turn = &core.state().local_model.turns["caller"][0];
+    assert_eq!(turn.model, "qwen");
+    assert_eq!(turn.prompt, "say hi");
+
+    // askModel names the model explicitly; askJson constrains with a schema.
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "askModel", "qwen", "pick one"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "askJson", r#"{"type":"object"}"#, "as json"],
+    ))
+    .unwrap();
+    let turns = &core.state().local_model.turns["caller"];
+    assert_eq!(turns.len(), 3);
+    assert_eq!(turns[2].constraint.as_deref(), Some("schema-mask"));
+
+    // Option A: the log carries only recorded responses — replay rebuilds the
+    // identical transcript without JS or inference.
+    assert!(core.replay_matches().unwrap());
+    let reopened = Core::open(&log).unwrap();
+    assert_eq!(reopened.state().local_model.turns["caller"].len(), 3);
+
+    // A model the decide step can't resolve fails the run, records nothing.
+    let before = core.state().local_model.turns["caller"].len();
+    assert!(core
+        .dispatch(req(
+            "js-runtime.run",
+            &["caller", "askModel", "ghost", "hi"]
+        ))
+        .is_err());
+    assert_eq!(core.state().local_model.turns["caller"].len(), before);
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn ungranted_local_model_resource_is_not_installed() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = install_caller(dir.path(), &log);
+
+    // Declared in the manifest but never granted → the namespace is absent.
+    core.dispatch(req("js-runtime.run", &["caller", "present"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("undefined"));
 }
 
 #[test]
