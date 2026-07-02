@@ -21,18 +21,67 @@ import sys
 
 import mlx.core as mx
 from mlx_lm import load, stream_generate
+from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.sample_utils import make_sampler
 
 SOCKET_PATH = sys.argv[1]
 
 _models = {}
 _ll_tokenizers = {}
+_prompt_caches = {}
 
 
 def get_model(ref):
     if ref not in _models:
         _models[ref] = load(ref)
     return _models[ref]
+
+
+# Conversation prefix caching. The snapshot is taken at the HISTORY BOUNDARY
+# (the rendering without the generation tail): chat templates render past
+# turns consistently across requests, while the generation tail (e.g. Qwen3's
+# empty `<think/>` block under enable_thinking=False) and the generated reply
+# are re-rendered differently next turn — so nothing past the boundary is
+# ever stored. MLX arrays are immutable, so a snapshot is a cheap reference
+# copy that later generation steps cannot corrupt, and restoring works for
+# every cache type including recurrent layers (ArraysCache — Qwen3.5's
+# hybrid graph) that cannot rewind.
+PREFILL_CHUNK = 2048
+
+
+def prefill(model, cache, tokens):
+    """Feed tokens into the cache without sampling (mirrors generate_step's
+    chunked prefill)."""
+    i = 0
+    while i < len(tokens):
+        n = min(PREFILL_CHUNK, len(tokens) - i)
+        model(mx.array(tokens[i : i + n])[None], cache=cache)
+        mx.eval([c.state for c in cache])
+        i += n
+
+
+def restore_prompt_cache(ref, model, prompt_tokens):
+    """Restore the model's snapshot when this prompt extends the snapshotted
+    conversation. Returns (cache, suffix_tokens, reused_token_count)."""
+    entry = _prompt_caches.get(ref)
+    if entry is not None:
+        cached = entry["tokens"]
+        if 0 < len(cached) < len(prompt_tokens) and prompt_tokens[: len(cached)] == cached:
+            cache = make_prompt_cache(model)
+            for layer, state, meta in zip(cache, entry["state"], entry["meta"]):
+                layer.state = state
+                if meta:
+                    layer.meta_state = meta
+            return cache, prompt_tokens[len(cached) :], len(cached)
+    return make_prompt_cache(model), prompt_tokens, 0
+
+
+def snapshot_prompt_cache(ref, cache, tokens):
+    _prompt_caches[ref] = {
+        "tokens": list(tokens),
+        "state": [layer.state for layer in cache],
+        "meta": [getattr(layer, "meta_state", ()) for layer in cache],
+    }
 
 
 class LlgProcessor:
@@ -110,11 +159,25 @@ def handle(conn):
         messages.append({"role": "user", "content": req["prompt"]})
         # Same template handling as the CLI's --chat-template-config; the
         # thinking flag is ignored by templates that lack it.
-        prompt = tokenizer.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            enable_thinking=False,
+        prompt = list(
+            tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                enable_thinking=False,
+            )
         )
+        bare = list(
+            tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=False,
+                enable_thinking=False,
+            )
+        )
+        # History boundary: where the consistently-rendered conversation ends
+        # and the per-turn generation tail begins.
+        boundary = len(bare) if prompt[: len(bare)] == bare else None
+        if boundary is not None and boundary >= len(prompt):
+            boundary = None
         sampler = make_sampler(temp=req.get("temperature", 0.0))
         constrained = None
         processors = None
@@ -125,15 +188,23 @@ def handle(conn):
                 constrained = "mask"
             else:
                 constrained = "guided"
+        cache, suffix, reused = restore_prompt_cache(req["model"], model, prompt)
+        if boundary is not None and boundary > reused:
+            # Feed up to the history boundary ourselves, snapshot the pristine
+            # state, then let stream_generate handle the generation tail.
+            prefill(model, cache, prompt[reused:boundary])
+            snapshot_prompt_cache(req["model"], cache, prompt[:boundary])
+            suffix = prompt[boundary:]
         last = None
         pending = 0
         for resp in stream_generate(
             model,
             tokenizer,
-            prompt,
+            suffix,
             max_tokens=req.get("maxTokens", 256),
             sampler=sampler,
             logits_processors=processors,
+            prompt_cache=cache,
         ):
             last = resp
             if resp.text:
@@ -154,6 +225,7 @@ def handle(conn):
                 "promptTps": last.prompt_tps if last else 0.0,
                 "finish": (last.finish_reason if last else None) or "stop",
                 "constrained": constrained,
+                "cachedTokens": reused,
             }
         )
     except (BrokenPipeError, ConnectionResetError):
