@@ -75,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     appSidebar.onToggleCollapse = { [weak self] in
       self?.toggleSidebar()
     }
+    appSidebar.localModelPanel.configure(home: home)
 
     let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false
