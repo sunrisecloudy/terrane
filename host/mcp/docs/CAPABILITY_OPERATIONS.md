@@ -88,8 +88,9 @@ admin/CLI action — see [How to grant](#how-to-grant).
 Direct `kv`, `crdt`, and `relational_db` resource commands are grant-gated by
 app id and can return `permission_required`. Raw storage configuration
 (`kv.storage.*`), raw bundle import (`app.import`), app removal, runtime
-execution, network, model, and harness effect commands are refused on the public
-MCP path.
+execution, network, model, local model (`local-model.*` — inference and
+machine-local model-spec management), and harness effect commands are refused
+on the public MCP path.
 
 ## Default-Deny Permissions
 

@@ -295,7 +295,8 @@ Examples:
 - `capability_command` applies the public command policy before dispatching
   through core: `kv` / `crdt` / `relational_db` resource commands require the
   same grants as `invoke`, while `auth.*`, `kv.storage.*`, `app.import`,
-  `app.remove`, `net.fetch`, `model.ask`, `harness.*`, and
+  `app.remove`, `net.fetch`, `model.ask`, `local-model.*` (local inference and
+  machine-local model-spec management), `harness.*`, and
   `js-runtime.run` / `wasm-runtime.run` are refused on the untrusted MCP path.
 
 ## Destructive Actions
