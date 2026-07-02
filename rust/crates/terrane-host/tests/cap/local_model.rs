@@ -30,10 +30,16 @@ fn local_model_register_and_rm_e2e_smoke() {
     assert!(ok, "stderr: {err}");
     assert!(out.contains("local-model.removed"), "out: {out}");
 
-    // Asking against an unregistered model is refused in decide, before any
-    // engine work — no weights are needed for this to be exercised.
+    // With every model removed, ask explains the zero-config path; an
+    // explicit unknown --model is refused by name. No weights needed.
     terrane(home, &["app", "add", "demo", "Demo"]);
-    let (ok, _, err) = terrane(home, &["local-model", "ask", "demo", "qwen", "hi"]);
+    let (ok, _, err) = terrane(home, &["local-model", "ask", "demo", "hi"]);
+    assert!(!ok, "ask should be refused with no registered models");
+    assert!(err.contains("local-model pull"), "stderr: {err}");
+    let (ok, _, err) = terrane(
+        home,
+        &["local-model", "ask", "demo", "--model", "qwen", "hi"],
+    );
     assert!(!ok, "ask should be refused for an unregistered model");
     assert!(err.contains("unknown local model"), "stderr: {err}");
 }
@@ -88,10 +94,7 @@ fn local_model_ask_e2e_real() {
     );
     assert!(ok, "register failed: {err}");
 
-    let (ok, out, err) = terrane(
-        home,
-        &["local-model", "ask", "demo", "qwen", "say", "hello"],
-    );
+    let (ok, out, err) = terrane(home, &["local-model", "ask", "demo", "say", "hello"]);
     assert!(ok, "ask failed; stderr: {err}");
     assert!(out.contains("local-model.responded"), "out: {out}");
 }
@@ -127,7 +130,6 @@ fn local_model_schema_ask_e2e_real() {
             "local-model",
             "ask",
             "demo",
-            "qwen",
             "--schema",
             schema,
             "What is the capital of France? Answer as JSON.",

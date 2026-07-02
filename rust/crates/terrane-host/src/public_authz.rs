@@ -72,7 +72,7 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "local-model.ask" => PublicCommandDisposition::Refuse {
             reason: "local-model.ask is not available through untrusted capability_command",
         },
-        "local-model.register" | "local-model.pull" | "local-model.rm" => {
+        "local-model.register" | "local-model.pull" | "local-model.rm" | "local-model.default" => {
             PublicCommandDisposition::Refuse {
                 reason: "local model specs configure machine-local weights and are trusted-admin-only",
             }

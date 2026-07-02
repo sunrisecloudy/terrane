@@ -116,18 +116,21 @@ fn ask_and_pull_validate_purely_before_any_effect() {
     ))
     .unwrap();
     assert!(core
-        .dispatch(req("local-model.ask", &["demo", "qwen", "hi"]))
+        .dispatch(req("local-model.ask", &["demo", "hi"]))
         .unwrap_err()
         .to_string()
         .contains("no effect runner"));
 
     // …while bad requests are rejected in decide, before the runner.
     assert_eq!(
-        core.dispatch(req("local-model.ask", &["ghost", "qwen", "hi"])),
+        core.dispatch(req("local-model.ask", &["ghost", "hi"])),
         Err(Error::AppNotFound("ghost".into()))
     );
     assert!(matches!(
-        core.dispatch(req("local-model.ask", &["demo", "unregistered", "hi"])),
+        core.dispatch(req(
+            "local-model.ask",
+            &["demo", "--model", "unregistered", "hi"]
+        )),
         Err(Error::InvalidInput(_))
     ));
     assert!(matches!(
@@ -135,7 +138,6 @@ fn ask_and_pull_validate_purely_before_any_effect() {
             "local-model.ask",
             &[
                 "demo",
-                "qwen",
                 "--schema",
                 "{}",
                 "--grammar",
@@ -150,6 +152,64 @@ fn ask_and_pull_validate_purely_before_any_effect() {
         core.dispatch(req("local-model.pull", &["qwen", "not-a-repo", "m.gguf"])),
         Err(Error::InvalidInput(_))
     ));
+    // A bare pull resolves to the recommended model before the runner refuses.
+    let bare = core
+        .dispatch(req("local-model.pull", &[]))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        bare.contains(terrane_cap_local_model::RECOMMENDED_GGUF_REPO),
+        "{bare}"
+    );
+}
+
+#[test]
+fn default_model_selection_flows_through_ask() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open_with(&log, StubLlm).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    core.dispatch(req(
+        "local-model.register",
+        &["first", "llama_cpp", "/models/first.gguf"],
+    ))
+    .unwrap();
+    core.dispatch(req(
+        "local-model.register",
+        &["second", "llama_cpp", "/models/second.gguf"],
+    ))
+    .unwrap();
+    // First registration is the automatic default.
+    assert_eq!(
+        core.state().local_model.default_model.as_deref(),
+        Some("first")
+    );
+
+    core.dispatch(req("local-model.ask", &["demo", "hi"]))
+        .unwrap();
+    assert_eq!(core.state().local_model.turns["demo"][0].model, "first");
+
+    // An explicit default redirects subsequent asks.
+    core.dispatch(req("local-model.default", &["second"]))
+        .unwrap();
+    core.dispatch(req("local-model.ask", &["demo", "hi again"]))
+        .unwrap();
+    assert_eq!(core.state().local_model.turns["demo"][1].model, "second");
+
+    // Removing the default clears it; ask then explains itself.
+    core.dispatch(req("local-model.rm", &["second"])).unwrap();
+    assert_eq!(core.state().local_model.default_model, None);
+    let err = core
+        .dispatch(req("local-model.ask", &["demo", "hi"]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("first"), "{err}");
+
+    assert!(core.replay_matches().unwrap());
+    assert_eq!(
+        Core::open(&log).unwrap().state().local_model.default_model,
+        None
+    );
 }
 
 #[test]
@@ -165,7 +225,10 @@ fn ask_records_turns_via_runner_and_cascades_on_app_removal() {
     .unwrap();
 
     let events = core
-        .dispatch(req("local-model.ask", &["demo", "qwen", "say", "hi"]))
+        .dispatch(req(
+            "local-model.ask",
+            &["demo", "--model", "qwen", "say", "hi"],
+        ))
         .unwrap();
     assert_eq!(events.len(), 1, "one recorded response per ask");
     let turns = &core.state().local_model.turns["demo"];
@@ -176,14 +239,7 @@ fn ask_records_turns_via_runner_and_cascades_on_app_removal() {
 
     core.dispatch(req(
         "local-model.ask",
-        &[
-            "demo",
-            "qwen",
-            "--schema",
-            r#"{"type":"object"}"#,
-            "say",
-            "hi",
-        ],
+        &["demo", "--schema", r#"{"type":"object"}"#, "say", "hi"],
     ))
     .unwrap();
     assert!(core.state().local_model.turns["demo"][1].constrained);

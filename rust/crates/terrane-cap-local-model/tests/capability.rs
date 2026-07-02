@@ -84,8 +84,11 @@ fn register_ask_and_cascade_through_the_trait_surface() {
     assert_eq!(spec.format, "gguf");
     assert_eq!(spec.local_path, "/models/qwen.gguf");
     assert_eq!(spec.temperature_milli, Some(700));
+    // The first registered model becomes the default.
+    assert_eq!(store.local_model.default_model.as_deref(), Some("qwen"));
 
-    // Ask is an effect carrying the validated request.
+    // Ask is an effect carrying the validated request; no --model needed once
+    // a default exists.
     let decision = cap
         .decide(
             CommandCtx {
@@ -93,7 +96,7 @@ fn register_ask_and_cascade_through_the_trait_surface() {
                 bus: &bus,
             },
             "local-model.ask",
-            &strings(&["demo", "qwen", "say", "hi"]),
+            &strings(&["demo", "say", "hi"]),
         )
         .unwrap();
     assert_eq!(
@@ -133,7 +136,7 @@ fn register_ask_and_cascade_through_the_trait_surface() {
     cap.fold(&mut store, &foreign).unwrap();
     assert!(cap.describe(&foreign).is_none());
 
-    // Rm folds the spec away.
+    // Rm folds the spec away and clears the default that pointed at it.
     let Decision::Commit(records) = cap
         .decide(
             CommandCtx {
@@ -151,6 +154,60 @@ fn register_ask_and_cascade_through_the_trait_surface() {
         cap.fold(&mut store, record).unwrap();
     }
     assert!(store.local_model.specs.is_empty());
+    assert_eq!(store.local_model.default_model, None);
+}
+
+#[test]
+fn explicit_default_survives_later_registrations() {
+    let cap = LocalModelCapability;
+    let mut store = Store {
+        local_model: LocalModelState::default(),
+    };
+    let bus = Bus;
+    fn commit(cap: &LocalModelCapability, store: &mut Store, bus: &Bus, name: &str, args: &[&str]) {
+        let Decision::Commit(records) = cap
+            .decide(CommandCtx { state: store, bus }, name, &strings(args))
+            .unwrap()
+        else {
+            panic!("{name} should commit");
+        };
+        for record in &records {
+            cap.fold(store, record).unwrap();
+        }
+    }
+
+    commit(
+        &cap,
+        &mut store,
+        &bus,
+        "local-model.register",
+        &["a", "llama_cpp", "/a.gguf"],
+    );
+    commit(
+        &cap,
+        &mut store,
+        &bus,
+        "local-model.register",
+        &["b", "llama_cpp", "/b.gguf"],
+    );
+    // First registration won the default; the second didn't steal it.
+    assert_eq!(store.local_model.default_model.as_deref(), Some("a"));
+
+    commit(&cap, &mut store, &bus, "local-model.default", &["b"]);
+    assert_eq!(store.local_model.default_model.as_deref(), Some("b"));
+
+    // Setting an unregistered default is refused.
+    let err = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "local-model.default",
+            &strings(&["ghost"]),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("unknown local model"), "{err}");
 }
 
 #[test]

@@ -25,6 +25,11 @@ struct Removed {
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
+struct DefaultSet {
+    id: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
 struct Responded {
     app: String,
     model: String,
@@ -62,6 +67,14 @@ pub fn removed_event(id: &str) -> Result<EventRecord> {
     encode_event("local-model.removed", &Removed { id: id.to_string() })
 }
 
+/// Build the recorded event for an explicit default-model change.
+pub fn default_set_event(id: &str) -> Result<EventRecord> {
+    encode_event(
+        "local-model.default-set",
+        &DefaultSet { id: id.to_string() },
+    )
+}
+
 /// Build the recorded event for one completed local inference. Called by an
 /// `EffectRunner` once generation finished (or failed), so the
 /// `"local-model.responded"` kind and payload shape stay owned here.
@@ -95,28 +108,38 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
     match record.kind.as_str() {
         "local-model.registered" => {
             let e: Registered = decode_event(record)?;
-            state_mut::<LocalModelState>(state, "local-model")?
-                .specs
-                .insert(
-                    e.id,
-                    LocalModelSpec {
-                        backend: e.backend,
-                        format: e.format,
-                        local_path: e.local_path,
-                        context_length: e.context_length,
-                        chat_template: e.chat_template,
-                        max_tokens: e.max_tokens,
-                        temperature_milli: e.temperature_milli,
-                        source: e.source,
-                        size_bytes: e.size_bytes,
-                    },
-                );
+            let local = state_mut::<LocalModelState>(state, "local-model")?;
+            let id = e.id.clone();
+            local.specs.insert(
+                e.id,
+                LocalModelSpec {
+                    backend: e.backend,
+                    format: e.format,
+                    local_path: e.local_path,
+                    context_length: e.context_length,
+                    chat_template: e.chat_template,
+                    max_tokens: e.max_tokens,
+                    temperature_milli: e.temperature_milli,
+                    source: e.source,
+                    size_bytes: e.size_bytes,
+                },
+            );
+            // The first registered model becomes the default automatically.
+            if local.default_model.is_none() {
+                local.default_model = Some(id);
+            }
         }
         "local-model.removed" => {
             let e: Removed = decode_event(record)?;
-            state_mut::<LocalModelState>(state, "local-model")?
-                .specs
-                .remove(&e.id);
+            let local = state_mut::<LocalModelState>(state, "local-model")?;
+            local.specs.remove(&e.id);
+            if local.default_model.as_deref() == Some(e.id.as_str()) {
+                local.default_model = None;
+            }
+        }
+        "local-model.default-set" => {
+            let e: DefaultSet = decode_event(record)?;
+            state_mut::<LocalModelState>(state, "local-model")?.default_model = Some(e.id);
         }
         "local-model.responded" => {
             let e: Responded = decode_event(record)?;
@@ -159,6 +182,10 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
         "local-model.removed" => {
             let e: Removed = decode_event(record).ok()?;
             Some(format!("local-model.removed {}", e.id))
+        }
+        "local-model.default-set" => {
+            let e: DefaultSet = decode_event(record).ok()?;
+            Some(format!("local-model.default-set {}", e.id))
         }
         "local-model.responded" => {
             let e: Responded = decode_event(record).ok()?;

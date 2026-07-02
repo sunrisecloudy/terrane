@@ -68,6 +68,8 @@ fn store_with_backend(model: Option<&str>, backend: &str) -> Store {
                 size_bytes: None,
             },
         );
+        // Mirrors the fold: the first registered model becomes the default.
+        state.default_model = Some(id.to_string());
     }
     Store { local_model: state }
 }
@@ -85,15 +87,29 @@ fn ask_rejects_gbnf_grammars_on_the_mlx_backend() {
 
     let err = decide_ask(
         ctx,
-        &strings(&["demo", "qwen-mlx", "--grammar", "root ::= \"x\"", "hi"]),
+        &strings(&[
+            "demo",
+            "--model",
+            "qwen-mlx",
+            "--grammar",
+            "root ::= \"x\"",
+            "hi",
+        ]),
     )
     .unwrap_err();
     assert!(err.to_string().contains("llama_cpp-only"), "{err}");
 
-    // A schema is fine on mlx — it lowers to prompt-guided typed output.
+    // A schema is fine on mlx — it lowers to typed output at the edge.
     let ok = decide_ask(
         ctx,
-        &strings(&["demo", "qwen-mlx", "--schema", r#"{"type":"object"}"#, "hi"]),
+        &strings(&[
+            "demo",
+            "--model",
+            "qwen-mlx",
+            "--schema",
+            r#"{"type":"object"}"#,
+            "hi",
+        ]),
     );
     assert!(ok.is_ok(), "{ok:?}");
 }
@@ -113,6 +129,7 @@ fn spec_options_parse_and_reject_unknown_flags() {
     assert_eq!(
         parse_spec_options(&args, 0).unwrap(),
         SpecOptions {
+            backend: None,
             context_length: Some(8192),
             chat_template: Some("chatml".into()),
             max_tokens: Some(256),
@@ -209,6 +226,8 @@ fn pull_validates_repo_and_file_shape() {
         vec!["qwen", "org/name", "nested/m.gguf"],
         vec!["qwen", "org/name", "../m.gguf"],
         vec!["qwen", "org/name", "m.safetensors"],
+        vec!["only-an-id"],
+        vec!["qwen", "org/name", "m.gguf", "extra-positional"],
     ] {
         assert!(
             matches!(
@@ -221,7 +240,31 @@ fn pull_validates_repo_and_file_shape() {
 }
 
 #[test]
-fn ask_parses_constraints_and_rejects_conflicts() {
+fn bare_pull_targets_the_recommended_model() {
+    let store = store_with(None);
+    let bus = Bus { apps: Vec::new() };
+    let ctx = || CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    let Decision::Effect(Effect::LocalModelPull { id, repo, file, .. }) =
+        decide_pull(ctx(), &[]).unwrap()
+    else {
+        panic!("bare pull should be an effect");
+    };
+    assert_eq!(id, crate::RECOMMENDED_MODEL_ID);
+    assert_eq!(repo, crate::RECOMMENDED_GGUF_REPO);
+    assert_eq!(file, crate::RECOMMENDED_GGUF_FILE);
+
+    // The mlx snapshot pull lands in a later slice; the error points at the
+    // register workaround meanwhile.
+    let err = decide_pull(ctx(), &strings(&["--backend", "mlx"])).unwrap_err();
+    assert!(err.to_string().contains("register"), "{err}");
+}
+
+#[test]
+fn ask_resolves_models_parses_constraints_and_rejects_conflicts() {
     let store = store_with(Some("qwen"));
     let bus = Bus {
         apps: vec!["demo".into()],
@@ -232,8 +275,12 @@ fn ask_parses_constraints_and_rejects_conflicts() {
     };
     let schema = r#"{"type":"object"}"#;
 
-    let decision =
-        decide_ask(ctx(), &strings(&["demo", "qwen", "--schema", schema, "hi"])).unwrap();
+    // Explicit --model wins.
+    let decision = decide_ask(
+        ctx(),
+        &strings(&["demo", "--model", "qwen", "--schema", schema, "hi"]),
+    )
+    .unwrap();
     let Decision::Effect(Effect::LocalModelCall {
         app,
         model,
@@ -251,33 +298,70 @@ fn ask_parses_constraints_and_rejects_conflicts() {
     assert_eq!(parsed_schema.as_deref(), Some(schema));
     assert_eq!(grammar, None);
 
+    // No --model: the default model answers.
+    let decision = decide_ask(ctx(), &strings(&["demo", "hello", "there"])).unwrap();
+    let Decision::Effect(Effect::LocalModelCall { model, prompt, .. }) = decision else {
+        panic!("ask should be an effect");
+    };
+    assert_eq!(model, "qwen");
+    assert_eq!(prompt, "hello there");
+
     // A prompt that merely starts with a dash-word is still a prompt.
-    let decision = decide_ask(ctx(), &strings(&["demo", "qwen", "--not-a-flag", "hi"])).unwrap();
+    let decision = decide_ask(ctx(), &strings(&["demo", "--not-a-flag", "hi"])).unwrap();
     let Decision::Effect(Effect::LocalModelCall { prompt, .. }) = decision else {
         panic!("ask should be an effect");
     };
     assert_eq!(prompt, "--not-a-flag hi");
 
     for bad in [
-        vec!["ghost", "qwen", "hi"],
-        vec!["demo", "unregistered", "hi"],
-        vec!["demo", "qwen", "--schema", "[1,2]", "hi"],
-        vec!["demo", "qwen", "--schema", "not json", "hi"],
+        vec!["ghost", "hi"],
+        vec!["demo", "--model", "unregistered", "hi"],
+        vec!["demo", "--schema", "[1,2]", "hi"],
+        vec!["demo", "--schema", "not json", "hi"],
         vec![
             "demo",
-            "qwen",
             "--schema",
             schema,
             "--grammar",
             "root ::= \"x\"",
             "hi",
         ],
-        vec!["demo", "qwen", "--schema", schema],
-        vec!["demo", "qwen"],
+        vec!["demo", "--schema", schema],
+        vec!["demo"],
     ] {
         assert!(
             decide_ask(ctx(), &strings(&bad)).is_err(),
             "expected rejection for {bad:?}"
         );
     }
+}
+
+#[test]
+fn ask_without_any_model_explains_the_zero_config_path() {
+    let store = store_with(None);
+    let bus = Bus {
+        apps: vec!["demo".into()],
+    };
+    let err = decide_ask(
+        CommandCtx {
+            state: &store,
+            bus: &bus,
+        },
+        &strings(&["demo", "hi"]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("local-model pull"), "{err}");
+
+    // Models registered but no default: the error lists the candidates.
+    let mut store = store_with(Some("qwen"));
+    store.local_model.default_model = None;
+    let err = decide_ask(
+        CommandCtx {
+            state: &store,
+            bus: &bus,
+        },
+        &strings(&["demo", "hi"]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("qwen"), "{err}");
 }

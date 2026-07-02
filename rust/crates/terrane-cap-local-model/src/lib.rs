@@ -16,8 +16,11 @@ mod doc;
 mod events;
 mod types;
 
-pub use events::{registered_event, removed_event, responded_event};
-pub use types::{LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS};
+pub use events::{default_set_event, registered_event, removed_event, responded_event};
+pub use types::{
+    LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS, RECOMMENDED_GGUF_FILE,
+    RECOMMENDED_GGUF_REPO, RECOMMENDED_MLX_MODEL_ID, RECOMMENDED_MLX_REPO, RECOMMENDED_MODEL_ID,
+};
 
 pub struct LocalModelCapability;
 
@@ -39,6 +42,9 @@ impl Capability for LocalModelCapability {
                     name: "local-model.rm",
                 },
                 CommandSpec {
+                    name: "local-model.default",
+                },
+                CommandSpec {
                     name: "local-model.ask",
                 },
             ],
@@ -48,6 +54,9 @@ impl Capability for LocalModelCapability {
                 },
                 EventSpec {
                     kind: "local-model.removed",
+                },
+                EventSpec {
+                    kind: "local-model.default-set",
                 },
                 EventSpec {
                     kind: "local-model.responded",
@@ -71,6 +80,7 @@ impl Capability for LocalModelCapability {
             "local-model.register" => commands::decide_register(ctx, args),
             "local-model.pull" => commands::decide_pull(ctx, args),
             "local-model.rm" => commands::decide_rm(ctx, args),
+            "local-model.default" => commands::decide_default(ctx, args),
             "local-model.ask" => commands::decide_ask(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }

@@ -2,12 +2,16 @@ use terrane_cap_interface::{
     arg, ensure_app_exists, required_tail, state_ref, CommandCtx, Decision, Effect, Error, Result,
 };
 
-use crate::events::{registered_event, removed_event};
-use crate::types::{LocalModelSpec, LocalModelState, BACKENDS};
+use crate::events::{default_set_event, registered_event, removed_event};
+use crate::types::{
+    LocalModelSpec, LocalModelState, BACKENDS, RECOMMENDED_GGUF_FILE, RECOMMENDED_GGUF_REPO,
+    RECOMMENDED_MODEL_ID,
+};
 
 /// The optional spec flags shared by `register` and `pull`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct SpecOptions {
+    pub backend: Option<String>,
     pub context_length: Option<u32>,
     pub chat_template: Option<String>,
     pub max_tokens: Option<u32>,
@@ -26,6 +30,11 @@ pub(crate) fn decide_register(_ctx: CommandCtx<'_>, args: &[String]) -> Result<D
         return Err(Error::InvalidInput("model path must not be empty".into()));
     }
     let options = parse_spec_options(args, 3)?;
+    if options.backend.is_some() {
+        return Err(Error::InvalidInput(
+            "--backend is a pull option; register takes the backend positionally".into(),
+        ));
+    }
     let spec = LocalModelSpec {
         format: backend_format(&backend).to_string(),
         backend,
@@ -40,12 +49,109 @@ pub(crate) fn decide_register(_ctx: CommandCtx<'_>, args: &[String]) -> Result<D
     Ok(Decision::Commit(vec![registered_event(&id, &spec)?]))
 }
 
-/// `local-model.pull <id> <hf-repo> <file> [--context N] [--template T]
-/// [--max-tokens N] [--temp F]` — download weights from Hugging Face at the
-/// edge; the runner records `local-model.registered` with the resolved path.
-pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+/// `local-model.default <id>` — make a registered model the one `ask` uses
+/// when no `--model` is given.
+pub(crate) fn decide_default(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let id = model_id(args, 0)?;
-    let repo = arg(args, 1, "hugging face repo (org/name)")?;
+    let known = state_ref::<LocalModelState>(ctx.state, "local-model")?
+        .specs
+        .contains_key(&id);
+    if !known {
+        return Err(Error::InvalidInput(format!("unknown local model: {id}")));
+    }
+    Ok(Decision::Commit(vec![default_set_event(&id)?]))
+}
+
+/// `local-model.pull [<id> <hf-repo> [<file>]] [--backend gguf|mlx]
+/// [--context N] [--template T] [--max-tokens N] [--temp F]` — download
+/// weights from Hugging Face at the edge; the runner records
+/// `local-model.registered` with the resolved path. A bare `pull` fetches the
+/// recommended model (Qwen3.5-0.8B).
+pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    // Split positionals (id, repo, optional file) from the flag tail.
+    let flags_from = args
+        .iter()
+        .position(|a| a.starts_with("--"))
+        .unwrap_or(args.len());
+    let positional = &args[..flags_from];
+    let options = parse_spec_options(args, flags_from)?;
+    let backend = match options.backend.as_deref() {
+        None | Some("gguf") => "gguf",
+        Some("mlx") => "mlx",
+        Some(other) => {
+            return Err(Error::InvalidInput(format!(
+                "unknown pull backend {other:?}; expected gguf or mlx"
+            )))
+        }
+    };
+
+    let (id, repo, file) = match positional {
+        // Zero-config: the recommended model for the chosen backend.
+        [] => match backend {
+            "gguf" => (
+                RECOMMENDED_MODEL_ID.to_string(),
+                RECOMMENDED_GGUF_REPO.to_string(),
+                Some(RECOMMENDED_GGUF_FILE.to_string()),
+            ),
+            _ => {
+                // The mlx snapshot pull arrives in the next slice.
+                return Err(Error::InvalidInput(format!(
+                    "mlx pull is not wired yet; register the repo directly: \
+                     local-model register <id> mlx {}",
+                    crate::types::RECOMMENDED_MLX_REPO
+                )));
+            }
+        },
+        [id, repo, rest @ ..] if rest.len() <= 1 => {
+            let id = valid_model_id(id)?;
+            let repo = valid_repo(repo)?;
+            (id, repo, rest.first().cloned())
+        }
+        _ => {
+            return Err(Error::InvalidInput(
+                "usage: local-model.pull [<id> <repo> [<file>]] [--backend gguf|mlx] [options]"
+                    .into(),
+            ))
+        }
+    };
+
+    match backend {
+        "gguf" => {
+            let file = file.ok_or_else(|| {
+                Error::InvalidInput("gguf pull needs a file name inside the repo".into())
+            })?;
+            if file.trim().is_empty()
+                || file.contains('/')
+                || file.contains('\\')
+                || file.contains("..")
+            {
+                return Err(Error::InvalidInput(format!(
+                    "model file must be a plain file name, got {file:?}"
+                )));
+            }
+            if !file.ends_with(".gguf") {
+                return Err(Error::InvalidInput(format!(
+                    "gguf pull expects a .gguf file, got {file:?}"
+                )));
+            }
+            Ok(Decision::Effect(Effect::LocalModelPull {
+                id,
+                repo,
+                file,
+                context_length: options.context_length,
+                chat_template: options.chat_template,
+                max_tokens: options.max_tokens,
+                temperature_milli: options.temperature_milli,
+            }))
+        }
+        _ => Err(Error::InvalidInput(format!(
+            "mlx pull is not wired yet; register the repo directly: \
+             local-model register {id} mlx {repo}"
+        ))),
+    }
+}
+
+fn valid_repo(repo: &str) -> Result<String> {
     let (org, name) = repo
         .split_once('/')
         .ok_or_else(|| Error::InvalidInput(format!("repo must be org/name, got {repo:?}")))?;
@@ -54,27 +160,7 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
             "repo must be org/name, got {repo:?}"
         )));
     }
-    let file = arg(args, 2, "model file name")?;
-    if file.trim().is_empty() || file.contains('/') || file.contains('\\') || file.contains("..") {
-        return Err(Error::InvalidInput(format!(
-            "model file must be a plain file name, got {file:?}"
-        )));
-    }
-    if !file.ends_with(".gguf") {
-        return Err(Error::InvalidInput(format!(
-            "only gguf files are supported for pull, got {file:?}"
-        )));
-    }
-    let options = parse_spec_options(args, 3)?;
-    Ok(Decision::Effect(Effect::LocalModelPull {
-        id,
-        repo,
-        file,
-        context_length: options.context_length,
-        chat_template: options.chat_template,
-        max_tokens: options.max_tokens,
-        temperature_milli: options.temperature_milli,
-    }))
+    Ok(repo.to_string())
 }
 
 /// `local-model.rm <id>` — unregister a spec. Weights on disk are untouched.
@@ -89,27 +175,23 @@ pub(crate) fn decide_rm(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision
     Ok(Decision::Commit(vec![removed_event(&id)?]))
 }
 
-/// `local-model.ask <app> <model-id> [--schema <json>] [--grammar <gbnf>]
-/// <prompt…>` — validate purely; inference runs at the edge.
+/// `local-model.ask <app> [--model <id>] [--schema <json>] [--grammar <gbnf>]
+/// <prompt…>` — validate purely; inference runs at the edge. Without
+/// `--model` the ask resolves to the home's default model.
 pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
-    let model = arg(args, 1, "model id")?;
     ensure_app_exists(ctx.bus, &app)?;
-    let backend = state_ref::<LocalModelState>(ctx.state, "local-model")?
-        .specs
-        .get(&model)
-        .map(|spec| spec.backend.clone())
-        .ok_or_else(|| {
-            Error::InvalidInput(format!(
-                "unknown local model: {model}; register or pull it first"
-            ))
-        })?;
 
+    let mut explicit_model = None;
     let mut schema = None;
     let mut grammar = None;
-    let mut i = 2;
+    let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
+            "--model" => {
+                explicit_model = Some(model_id(args, i + 1)?);
+                i += 2;
+            }
             "--schema" => {
                 schema = Some(json_object_schema(arg(args, i + 1, "--schema value")?)?);
                 i += 2;
@@ -125,6 +207,15 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
             _ => break,
         }
     }
+
+    let local = state_ref::<LocalModelState>(ctx.state, "local-model")?;
+    let model = resolve_model(local, explicit_model)?;
+    let backend = local
+        .specs
+        .get(&model)
+        .map(|spec| spec.backend.clone())
+        .unwrap_or_default();
+
     if schema.is_some() && grammar.is_some() {
         return Err(Error::InvalidInput(
             "--schema and --grammar are mutually exclusive".into(),
@@ -146,9 +237,41 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
     }))
 }
 
+/// `--model` → the home's default → a helpful error. Public within the crate:
+/// the app-facing resource surface resolves models the same way.
+pub(crate) fn resolve_model(local: &LocalModelState, explicit: Option<String>) -> Result<String> {
+    if let Some(model) = explicit {
+        if !local.specs.contains_key(&model) {
+            return Err(Error::InvalidInput(format!(
+                "unknown local model: {model}; register or pull it first"
+            )));
+        }
+        return Ok(model);
+    }
+    if let Some(default) = &local.default_model {
+        return Ok(default.clone());
+    }
+    if local.specs.is_empty() {
+        Err(Error::InvalidInput(
+            "no local models registered; run `terrane local-model pull` to fetch the \
+             recommended model, or register one"
+                .into(),
+        ))
+    } else {
+        Err(Error::InvalidInput(format!(
+            "no default model set; pass --model or run `local-model default <id>` \
+             (registered: {})",
+            local.specs.keys().cloned().collect::<Vec<_>>().join(", ")
+        )))
+    }
+}
+
 /// A model id is a plain token: it names a spec and a file stem at the edge.
 fn model_id(args: &[String], index: usize) -> Result<String> {
-    let id = arg(args, index, "model id")?;
+    valid_model_id(&arg(args, index, "model id")?)
+}
+
+fn valid_model_id(id: &str) -> Result<String> {
     let valid = !id.is_empty()
         && id
             .chars()
@@ -158,7 +281,7 @@ fn model_id(args: &[String], index: usize) -> Result<String> {
             "model id must be [A-Za-z0-9_.-]+, got {id:?}"
         )));
     }
-    Ok(id)
+    Ok(id.to_string())
 }
 
 fn supported_backend(raw: String) -> Result<String> {
@@ -185,6 +308,10 @@ pub(crate) fn parse_spec_options(args: &[String], from: usize) -> Result<SpecOpt
     let mut i = from;
     while i < args.len() {
         match args[i].as_str() {
+            "--backend" => {
+                options.backend = Some(arg(args, i + 1, "--backend value")?);
+                i += 2;
+            }
             "--context" => {
                 options.context_length = Some(positive_u32(args, i + 1, "--context")?);
                 i += 2;
@@ -207,7 +334,8 @@ pub(crate) fn parse_spec_options(args: &[String], from: usize) -> Result<SpecOpt
             }
             other => {
                 return Err(Error::InvalidInput(format!(
-                    "unknown option {other:?}; expected --context, --template, --max-tokens, or --temp"
+                    "unknown option {other:?}; expected --backend, --context, --template, \
+                     --max-tokens, or --temp"
                 )));
             }
         }

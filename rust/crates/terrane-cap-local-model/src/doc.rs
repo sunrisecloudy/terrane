@@ -25,12 +25,14 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
                 "local-model.register".to_string(),
                 "local-model.pull".to_string(),
                 "local-model.rm".to_string(),
+                "local-model.default".to_string(),
                 "local-model.ask".to_string(),
             ],
             queries: Vec::new(),
             events: vec![
                 "local-model.registered".to_string(),
                 "local-model.removed".to_string(),
+                "local-model.default-set".to_string(),
                 "local-model.responded".to_string(),
             ],
             subscriptions: vec!["app.removed".to_string()],
@@ -160,11 +162,16 @@ fn local_model_commands() -> Vec<CommandDoc> {
     let mut pull_params = vec![
         param(
             "id",
-            "Model id ([A-Za-z0-9_.-]+) the spec is stored under.",
+            "Optional model id; a bare pull uses the recommended model.",
             "model_id",
         ),
-        param("repo", "Hugging Face repo as org/name.", "string"),
+        param(
+            "repo",
+            "Optional Hugging Face repo as org/name (defaults to the recommended model).",
+            "string",
+        ),
         param("file", "GGUF file name inside the repo.", "string"),
+        param("--backend", "gguf (default) or mlx.", "backend"),
     ];
     pull_params.extend(spec_flags.iter().cloned());
     vec![
@@ -198,10 +205,20 @@ fn local_model_commands() -> Vec<CommandDoc> {
             "local-model.rm",
             &[param("id", "Registered model id.", "model_id")],
             "commit",
-            "Unregister a model spec; weight files on disk are untouched.",
+            "Unregister a model spec; weight files on disk are untouched. Clears the \
+             default when it pointed here.",
         )
         .with_errors(&["unknown model id"])
         .with_emits(&["local-model.removed"]),
+        command_doc(
+            "local-model.default",
+            &[param("id", "Registered model id.", "model_id")],
+            "commit",
+            "Choose the model asks use when --model is omitted (the first registered \
+             model is the automatic default).",
+        )
+        .with_errors(&["unknown model id"])
+        .with_emits(&["local-model.default-set"]),
         command_doc(
             "local-model.ask",
             &[
@@ -210,7 +227,11 @@ fn local_model_commands() -> Vec<CommandDoc> {
                     "Existing app id that owns the recorded turn.",
                     "app_id",
                 ),
-                param("model", "Registered model id.", "model_id"),
+                param(
+                    "--model",
+                    "Optional registered model id; defaults to the home's default model.",
+                    "model_id",
+                ),
                 param(
                     "--schema",
                     "Optional JSON schema (object) the output must satisfy.",
@@ -274,7 +295,18 @@ fn local_model_events() -> Vec<EventDoc> {
             &[param("id", "Model id removed.", "model_id")],
             "Records an unregistered model spec.",
         )
-        .with_effects(&["removes LocalModelState.specs[id]"]),
+        .with_effects(&["removes LocalModelState.specs[id]; clears a default pointing here"]),
+        event_doc(
+            "local-model.default-set",
+            &[param(
+                "id",
+                "Model id that becomes the default.",
+                "model_id",
+            )],
+            "Records an explicit default-model choice (the first registered model is the \
+             automatic default).",
+        )
+        .with_effects(&["sets LocalModelState.default_model"]),
         event_doc(
             "local-model.responded",
             &[
