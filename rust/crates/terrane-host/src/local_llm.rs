@@ -30,7 +30,7 @@ pub(crate) fn call(
 
     use terrane_cap_local_model::{responded_event, RespondedRecord};
     use terrane_local_llm::{
-        Constraint, GenerateRequest, GenerationConfig, LlamaCppBackend, LocalLlm, MlxBackend,
+        cached_llama, Constraint, GenerateRequest, GenerationConfig, LocalLlm, MlxBackend,
         ModelFile,
     };
 
@@ -39,26 +39,6 @@ pub(crate) fn call(
         .specs
         .get(model)
         .ok_or_else(|| Error::InvalidInput(format!("unknown local model: {model}")))?;
-
-    let mut backend: Box<dyn LocalLlm> = match spec.backend.as_str() {
-        "llama_cpp" => Box::new(
-            LlamaCppBackend::load(&ModelFile {
-                path: std::path::PathBuf::from(&spec.local_path),
-                context_length: spec.context_length,
-                chat_template_override: spec.chat_template.clone(),
-            })
-            .map_err(|e| Error::Runtime(e.to_string()))?,
-        ),
-        "mlx" => Box::new(
-            MlxBackend::load(&crate::home_dir(), &spec.local_path)
-                .map_err(|e| Error::Runtime(e.to_string()))?,
-        ),
-        other => {
-            return Err(Error::Runtime(format!(
-                "local model backend {other} has no edge engine"
-            )))
-        }
-    };
 
     let constraint = match (schema, grammar) {
         (Some(schema), _) => Some(Constraint::JsonSchema(schema.to_string())),
@@ -83,13 +63,35 @@ pub(crate) fn call(
     // Stream tokens to stderr as they are sampled; stdout stays reserved for
     // the recorded outcome the CLI prints after commit.
     let mut streamed = false;
-    let response = backend
-        .generate(&request, &mut |piece| {
-            streamed = true;
-            eprint!("{piece}");
-            let _ = std::io::stderr().flush();
-        })
-        .map_err(|e| Error::Runtime(e.to_string()))?;
+    let mut on_token = |piece: &str| {
+        streamed = true;
+        eprint!("{piece}");
+        let _ = std::io::stderr().flush();
+    };
+    let response = match spec.backend.as_str() {
+        "llama_cpp" => {
+            // Cached process-globally: long-lived hosts pay the GGUF load once.
+            let engine = cached_llama(&ModelFile {
+                path: std::path::PathBuf::from(&spec.local_path),
+                context_length: spec.context_length,
+                chat_template_override: spec.chat_template.clone(),
+            })
+            .map_err(|e| Error::Runtime(e.to_string()))?;
+            let mut engine = engine
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            engine.generate(&request, &mut on_token)
+        }
+        "mlx" => MlxBackend::load(&crate::home_dir(), &spec.local_path)
+            .map_err(|e| Error::Runtime(e.to_string()))?
+            .generate(&request, &mut on_token),
+        other => {
+            return Err(Error::Runtime(format!(
+                "local model backend {other} has no edge engine"
+            )))
+        }
+    }
+    .map_err(|e| Error::Runtime(e.to_string()))?;
     if streamed {
         eprintln!();
     }
@@ -183,6 +185,17 @@ pub(crate) fn pull(
     };
     Ok(vec![registered_event(id, &spec)?])
 }
+
+/// Drop the in-process engine cache. Hosts MUST call this before a normal
+/// exit: a cached llama.cpp model still holding Metal buffers when ggml's
+/// static destructors run aborts the process (residency-set assert).
+#[cfg(feature = "local-llm")]
+pub(crate) fn shutdown() {
+    terrane_local_llm::clear_llama_cache();
+}
+
+#[cfg(not(feature = "local-llm"))]
+pub(crate) fn shutdown() {}
 
 /// `terrane local-model setup mlx` — provision the MLX runtime (uv-pinned,
 /// self-contained under `$TERRANE_HOME/engines/`); progress lines go to

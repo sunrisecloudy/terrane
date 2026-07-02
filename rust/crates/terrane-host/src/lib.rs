@@ -30,6 +30,12 @@ pub mod sync;
 
 pub use edge::EdgeRunner;
 pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
+
+/// Release in-process local-model engines. Hosts (and the CLI) call this once
+/// before a normal exit; safe to call when nothing is cached.
+pub fn local_llm_shutdown() {
+    local_llm::shutdown();
+}
 pub use sync::{serve_conn, sync_conn};
 pub use terrane_cap_auth::agent_subject;
 pub use terrane_core::LOCAL_OWNER_SUBJECT;

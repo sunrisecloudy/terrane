@@ -1,9 +1,10 @@
 //! The llama.cpp backend — loads GGUF weights and runs one generation at a
 //! time. Metal offload is enabled on macOS builds.
 
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -16,7 +17,7 @@ use llama_cpp_2::sampling::LlamaSampler;
 use crate::{Constraint, GenerateRequest, GenerateResponse, LlmError, LocalLlm, StopReason};
 
 /// A resolved model file plus per-model overrides from the spec.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelFile {
     pub path: PathBuf,
     pub context_length: Option<u32>,
@@ -43,6 +44,40 @@ pub struct LlamaCppBackend {
     model: LlamaModel,
     context_length: u32,
     chat_template: Option<LlamaChatTemplate>,
+}
+
+/// A process-global cache of loaded engines, keyed by the resolved model file.
+/// Long-lived hosts (macOS app, MCP, serve) skip the GGUF reload per ask; the
+/// cache holds only the weights — each generation still gets a fresh context,
+/// so cached engines stay stateless between asks. Entries live for the life of
+/// the process (weights for local models are expected to be few and reused).
+pub fn cached_llama(file: &ModelFile) -> Result<Arc<Mutex<LlamaCppBackend>>, LlmError> {
+    let mut cache = llama_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(engine) = cache.get(file) {
+        return Ok(engine.clone());
+    }
+    let engine = Arc::new(Mutex::new(LlamaCppBackend::load(file)?));
+    cache.insert(file.clone(), engine.clone());
+    Ok(engine)
+}
+
+/// Drop every cached engine. Hosts MUST call this before a normal process
+/// exit: a model still holding Metal buffers when ggml's static destructors
+/// run trips `GGML_ASSERT(residency sets empty)` and aborts the process.
+pub fn clear_llama_cache() {
+    llama_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clear();
+}
+
+#[allow(clippy::type_complexity)]
+fn llama_cache() -> &'static Mutex<HashMap<ModelFile, Arc<Mutex<LlamaCppBackend>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<ModelFile, Arc<Mutex<LlamaCppBackend>>>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 impl LlamaCppBackend {

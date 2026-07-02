@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use terrane_local_llm::{
-    parse_json, resolve_runtime, server_status, stop_server, Constraint, GenerateRequest,
-    GenerationConfig, LlamaCppBackend, LlmError, LocalLlm, MlxBackend, ModelFile,
+    cached_llama, parse_json, resolve_runtime, server_status, stop_server, Constraint,
+    GenerateRequest, GenerationConfig, LlamaCppBackend, LlmError, LocalLlm, MlxBackend, ModelFile,
 };
 
 fn gguf_from_env() -> Option<PathBuf> {
@@ -32,6 +32,73 @@ fn missing_model_file_fails_fast_with_a_typed_error() {
     };
     assert!(matches!(err, LlmError::Load(_)));
     assert!(err.to_string().contains("/nonexistent/model.gguf"), "{err}");
+}
+
+#[test]
+fn cached_llama_never_caches_load_failures() {
+    let missing = ModelFile {
+        path: PathBuf::from("/nonexistent/cached.gguf"),
+        context_length: None,
+        chat_template_override: None,
+    };
+    // Both attempts hit the loader (a cached error would mask a later fix).
+    assert!(matches!(cached_llama(&missing), Err(LlmError::Load(_))));
+    assert!(matches!(cached_llama(&missing), Err(LlmError::Load(_))));
+}
+
+#[test]
+#[ignore = "real local inference; needs a GGUF at TERRANE_LOCAL_MODEL_GGUF; run with `cargo test -- --ignored`"]
+fn cached_llama_reuses_the_loaded_engine_across_asks() {
+    let Some(path) = gguf_from_env() else { return };
+    let file = ModelFile {
+        path,
+        context_length: None,
+        chat_template_override: None,
+    };
+    let started = std::time::Instant::now();
+    let cold = cached_llama(&file).unwrap();
+    let cold_load = started.elapsed();
+
+    let started = std::time::Instant::now();
+    let warm = cached_llama(&file).unwrap();
+    let warm_load = started.elapsed();
+    assert!(
+        std::sync::Arc::ptr_eq(&cold, &warm),
+        "same key returns the same engine"
+    );
+    assert!(
+        warm_load < Duration::from_millis(10),
+        "cache hit should be instant (cold {cold_load:?}, warm {warm_load:?})"
+    );
+
+    // The cached engine still generates (contexts are per-generate).
+    let response = warm
+        .lock()
+        .unwrap()
+        .generate(
+            &GenerateRequest {
+                prompt: "Reply with one word: hello".into(),
+                system: None,
+                history: Vec::new(),
+                constraint: None,
+                config: GenerationConfig {
+                    max_tokens: 8,
+                    temperature: 0.0,
+                    timeout: Some(Duration::from_secs(120)),
+                    ..GenerationConfig::default()
+                },
+            },
+            &mut |_| {},
+        )
+        .unwrap();
+    assert!(!response.text.trim().is_empty());
+    eprintln!("cached_llama: cold load {cold_load:?}, cache hit {warm_load:?}");
+
+    // Drop the cached engine before the test process exits — a live Metal
+    // model during ggml's static destructors aborts the whole test binary.
+    drop(cold);
+    drop(warm);
+    terrane_local_llm::clear_llama_cache();
 }
 
 #[test]

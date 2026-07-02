@@ -557,6 +557,7 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "int terrane_local_model_setup_mlx(",
         "int terrane_local_model_server_status(",
         "int terrane_local_model_server_stop(",
+        "void terrane_local_model_shutdown(",
         "void terrane_string_free(",
         "void terrane_close(",
         "#define TERRANE_OK 0",

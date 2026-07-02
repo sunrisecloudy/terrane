@@ -499,6 +499,16 @@ pub unsafe extern "C" fn terrane_local_model_server_status(
     finish(code, out_error)
 }
 
+/// Release in-process local-model inference engines. Call once before a
+/// normal process exit (e.g. from `applicationWillTerminate`): a cached
+/// llama.cpp model still holding Metal buffers when ggml's static destructors
+/// run aborts the process. Safe to call at any time, including when nothing
+/// is cached.
+#[no_mangle]
+pub extern "C" fn terrane_local_model_shutdown() {
+    let _ = catch_unwind(crate::local_llm_shutdown);
+}
+
 /// Stop the resident mlx server for the workspace at `home`, if one is
 /// running. Writes a short human summary to `out_output`.
 ///

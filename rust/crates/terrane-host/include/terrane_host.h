@@ -88,6 +88,10 @@ int terrane_local_model_setup_mlx(const char *home, char **out_output,
 int terrane_local_model_server_status(const char *home, char **out_output,
                                       char **out_error);
 
+/* Release in-process local-model inference engines. Call once before a normal
+ * process exit (e.g. applicationWillTerminate); safe to call at any time. */
+void terrane_local_model_shutdown(void);
+
 /* Stop the resident mlx server for the workspace at `home`, if any. Writes a
  * short human summary. */
 int terrane_local_model_server_stop(const char *home, char **out_output,
