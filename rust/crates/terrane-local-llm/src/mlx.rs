@@ -73,7 +73,12 @@ impl MlxBackend {
             .arg("--temp")
             .arg(request.config.temperature.to_string())
             .arg("--seed")
-            .arg(request.config.seed.to_string());
+            .arg(request.config.seed.to_string())
+            // Qwen-family templates default to a thinking preamble that eats
+            // the token budget before any answer; templates without the flag
+            // ignore the unused variable.
+            .arg("--chat-template-config")
+            .arg(r#"{"enable_thinking": false}"#);
         let (stdout, timed_out) = run_with_deadline(command, &self.binary, deadline)?;
         let mut run = parse_mlx_output(&stdout)?;
         run.timed_out = timed_out;
