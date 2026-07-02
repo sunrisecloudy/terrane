@@ -8,20 +8,32 @@
     adminLink.hidden = false;
   }
 
+  var lastCatalogText = "";
+
   if (config.catalog) {
     renderCatalogText(String(config.catalog));
   } else if (config.catalogUrl) {
+    loadCatalog();
+    var pollMs = Number(config.catalogPollMs || 0);
+    if (pollMs > 0) setInterval(loadCatalog, pollMs);
+  } else {
+    showError("Cannot load apps");
+  }
+
+  function loadCatalog() {
     fetch(String(config.catalogUrl), { cache: "no-store" })
       .then(function (response) {
         if (!response.ok) throw new Error("cannot load apps");
         return response.text();
       })
-      .then(renderCatalogText)
+      .then(function (text) {
+        if (text === lastCatalogText) return;
+        lastCatalogText = text;
+        renderCatalogText(text);
+      })
       .catch(function () {
-        showError("Cannot load apps");
+        if (!lastCatalogText) showError("Cannot load apps");
       });
-  } else {
-    showError("Cannot load apps");
   }
 
   function readConfig() {

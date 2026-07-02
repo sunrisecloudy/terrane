@@ -29,6 +29,9 @@ pub struct HomePageOptions<'a> {
     pub catalog_json: Option<&'a str>,
     /// Admin console link for the footer; `None` hides the link.
     pub admin_href: Option<&'a str>,
+    /// Re-fetch `catalog_url` every N ms so newly added apps appear without a
+    /// reload (dev hosts). `None` fetches once.
+    pub catalog_poll_ms: Option<u32>,
 }
 
 /// Render the landing page HTML for a host's [`HomePageOptions`].
@@ -59,6 +62,10 @@ fn config_json(options: &HomePageOptions) -> String {
     if let Some(href) = options.admin_href {
         config.push_str(",\"adminHref\":");
         config.push_str(&json_string(href));
+    }
+    if let Some(ms) = options.catalog_poll_ms {
+        config.push_str(",\"catalogPollMs\":");
+        config.push_str(&ms.to_string());
     }
     config.push('}');
     config

@@ -11,6 +11,7 @@ fn web_options() -> HomePageOptions<'static> {
         catalog_url: Some("/apps"),
         catalog_json: None,
         admin_href: Some("/__terrane/admin"),
+        catalog_poll_ms: None,
     }
 }
 
@@ -63,6 +64,25 @@ fn web_shaped_options_render_fetch_config_and_admin_link() {
 }
 
 #[test]
+fn catalog_poll_config_is_optional_and_numeric() {
+    let mut options = web_options();
+    assert!(
+        !home_page(&options).contains(r#""catalogPollMs":"#),
+        "poll config should be absent by default"
+    );
+    options.catalog_poll_ms = Some(3000);
+    let html = home_page(&options);
+    assert!(
+        html.contains(r#""catalogPollMs":3000"#),
+        "poll config missing: {html}"
+    );
+    assert!(
+        html.contains("setInterval(loadCatalog"),
+        "catalog polling loop missing: {html}"
+    );
+}
+
+#[test]
 fn native_shaped_options_inline_catalog_without_admin_link() {
     let catalog = r#"{"apps":[{"id":"todo","name":"Todo","has_ui":true}]}"#;
     let html = home_page(&HomePageOptions {
@@ -70,6 +90,7 @@ fn native_shaped_options_inline_catalog_without_admin_link() {
         catalog_url: None,
         catalog_json: Some(catalog),
         admin_href: None,
+        catalog_poll_ms: None,
     });
 
     assert!(
@@ -94,6 +115,7 @@ fn config_escapes_script_closers_in_user_controlled_names() {
         catalog_url: None,
         catalog_json: Some(catalog),
         admin_href: None,
+        catalog_poll_ms: None,
     });
 
     let config_block = html
