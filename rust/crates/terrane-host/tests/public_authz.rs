@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        36,
+        40,
         "registered commands changed: {commands:?}"
     );
 
@@ -55,7 +55,7 @@ fn public_command_inventory_covers_every_registered_command() {
         14,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 20, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 24, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -160,6 +160,10 @@ fn dangerous_and_effect_commands_are_refused() {
         "wasm-runtime.run",
         "net.fetch",
         "model.ask",
+        "local-model.ask",
+        "local-model.register",
+        "local-model.pull",
+        "local-model.rm",
         "harness.generate-app",
         "harness.run-js",
         "app.import",

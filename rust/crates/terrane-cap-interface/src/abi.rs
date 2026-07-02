@@ -168,6 +168,22 @@ pub enum Effect {
         storage_path: Option<String>,
     },
     NewReplicaId,
+    LocalModelCall {
+        app: String,
+        model: String,
+        prompt: String,
+        schema: Option<String>,
+        grammar: Option<String>,
+    },
+    LocalModelPull {
+        id: String,
+        repo: String,
+        file: String,
+        context_length: Option<u32>,
+        chat_template: Option<String>,
+        max_tokens: Option<u32>,
+        temperature_milli: Option<u32>,
+    },
 }
 
 /// Encode a capability's typed event into a name-tagged [`EventRecord`].
