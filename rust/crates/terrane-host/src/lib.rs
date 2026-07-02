@@ -21,6 +21,7 @@ pub mod cap_doc;
 pub mod cli;
 pub mod edge;
 pub mod ffi;
+mod local_llm;
 pub mod mcp;
 pub mod permission;
 pub mod preview;

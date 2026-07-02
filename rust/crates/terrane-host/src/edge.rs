@@ -62,13 +62,37 @@ impl EffectRunner for EdgeRunner {
                 storage_path,
             } => import_app_bundle(source, storage_backend, storage_path, state),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
-            // Wired to the terrane-local-llm engine in the next slice.
-            Effect::LocalModelCall { model, .. } => Err(Error::Runtime(format!(
-                "local model inference is not implemented in this build (model {model})"
-            ))),
-            Effect::LocalModelPull { id, .. } => Err(Error::Runtime(format!(
-                "local model pull is not implemented in this build (model {id})"
-            ))),
+            Effect::LocalModelCall {
+                app,
+                model,
+                prompt,
+                schema,
+                grammar,
+            } => crate::local_llm::call(
+                app,
+                model,
+                prompt,
+                schema.as_deref(),
+                grammar.as_deref(),
+                state,
+            ),
+            Effect::LocalModelPull {
+                id,
+                repo,
+                file,
+                context_length,
+                chat_template,
+                max_tokens,
+                temperature_milli,
+            } => crate::local_llm::pull(
+                id,
+                repo,
+                file,
+                *context_length,
+                chat_template.clone(),
+                *max_tokens,
+                *temperature_milli,
+            ),
         }
     }
 }

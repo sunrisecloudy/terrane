@@ -166,6 +166,28 @@ pub fn run_state() -> Result<(), String> {
         }
     }
 
+    println!("local models:");
+    if state.local_model.specs.is_empty() && state.local_model.turns.is_empty() {
+        println!("  (none)");
+    }
+    for (id, spec) in &state.local_model.specs {
+        println!(
+            "  {id} ({}/{}) at {}",
+            spec.backend, spec.format, spec.local_path
+        );
+    }
+    for (app, turns) in &state.local_model.turns {
+        for turn in turns {
+            println!(
+                "  {app} [{}] {} {} tokens ({} chars)",
+                turn.model,
+                if turn.ok { "ok" } else { "failed" },
+                turn.token_count,
+                turn.response.len()
+            );
+        }
+    }
+
     println!("builder:");
     if state.builder.drafts.is_empty() {
         println!("  (none)");
@@ -418,6 +440,10 @@ pub fn print_help() {
          \x20 terrane kv storage status\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
+         \x20 terrane local-model register <id> llama_cpp <path.gguf> [--context N] [--template T] [--max-tokens N] [--temp F]\n\
+         \x20 terrane local-model pull <id> <hf-repo> <file.gguf> [options…]  download weights + register\n\
+         \x20 terrane local-model ask <app> <id> [--schema <json>|--grammar <gbnf>] <prompt…>  local inference; record it\n\
+         \x20 terrane local-model rm <id>        unregister a local model spec\n\
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
          \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
          \x20 terrane js-runtime run <app> [input…]            run an app's JS backend\n\
