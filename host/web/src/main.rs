@@ -14,6 +14,7 @@
 
 mod admin;
 mod args;
+mod home;
 mod http;
 mod live_reload;
 mod routes;

@@ -542,6 +542,42 @@ fn builder_generate_route_rejects_invalid_request_before_harness() {
 }
 
 #[test]
+fn serves_home_landing_page_at_root() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (mut child, addr) = spawn_web(home);
+
+    // Landing page: brand hero, the client-side app catalog loader, and the
+    // admin console link. App cards link into the `/apps/{id}/` shell.
+    let (status, body) = http(&addr, "GET", "/", None);
+    assert_eq!(status, 200, "home body: {body}");
+    assert!(body.contains("<h1>Terrane</h1>"), "brand missing: {body}");
+    assert!(
+        body.contains("id=\"home-app-list\""),
+        "dynamic app list mount missing: {body}"
+    );
+    assert!(
+        body.contains("fetch(\"/apps\""),
+        "catalog loader missing: {body}"
+    );
+    assert!(
+        body.contains("\"/apps/\" + encodeURIComponent(id) + \"/\""),
+        "app links should open the app shell: {body}"
+    );
+    assert!(
+        body.contains("href=\"/__terrane/admin\""),
+        "admin console link missing: {body}"
+    );
+
+    // The root route stays exact: unknown top-level paths still 404.
+    let (status, _body) = http(&addr, "GET", "/no-such-page", None);
+    assert_eq!(status, 404, "unknown top-level path should stay 404");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn serves_bmi_calculator_shell_frame_assets_and_backend() {
     let dir = tempdir().unwrap();
     let home = dir.path();

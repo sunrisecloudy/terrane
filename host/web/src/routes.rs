@@ -99,6 +99,7 @@ pub fn route(
         return json_error(403, "admin header required");
     }
     match (&method, segs.as_slice()) {
+        (Method::Get, []) => crate::home::page(),
         (Method::Get, ["healthz"]) => json_ok(&HealthResponse {
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
