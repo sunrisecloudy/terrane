@@ -1092,10 +1092,19 @@ fn ui_scaffold_passes_validate_untouched() {
         serde_json::Value::Null,
         "untouched shell should have no errors: {validate}"
     );
+    // The only expected warning is the still-the-demo-app nudge.
+    let warnings = validation["warnings"].as_array().unwrap();
     assert_eq!(
-        validation["warnings"].as_array().map(Vec::len),
-        Some(0),
-        "untouched shell should have no warnings: {validate}"
+        warnings.len(),
+        1,
+        "untouched shell should warn exactly once: {validate}"
+    );
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("unmodified scaffold demo app"),
+        "untouched shell warning should name the pristine backend: {validate}"
     );
 }
 
@@ -1404,6 +1413,126 @@ fn app_build_get_flags_unmodified_scaffold_files() {
         structured_content(&after)["unmodifiedScaffold"],
         false,
         "edited file is no longer pristine: {after}"
+    );
+}
+
+#[test]
+fn app_build_validate_rejects_js_syntax_errors() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"syntax-demo","name":"Syntax Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // A truncated backend — the run-5 DeepSeek Flash failure class.
+    let truncated = "function handle(input) {\n  var verb = input[0] || \"\";\n  if (verb === \"__actions__\") { return JSON.stringify({actions: [\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(truncated)
+        ),
+    )
+    .unwrap();
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], false, "truncated backend: {validate}");
+    assert!(
+        validation["errors"]
+            .to_string()
+            .contains("JavaScript syntax error"),
+        "truncated backend should fail with a syntax error: {validate}"
+    );
+
+    // Broken ui.js breaks the page — also an error.
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"fixmain","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":"function handle(input){{if((input[0]||'')==='__actions__'){{return JSON.stringify({{actions:[]}});}}return 'ok';}}"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"badui","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":"const x = {{ oops: ;"}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validate_ui = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v2","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation_ui = structured_content(&validate_ui);
+    assert_eq!(validation_ui["valid"], false, "broken ui.js: {validate_ui}");
+    assert!(
+        validation_ui["errors"].to_string().contains("ui.js"),
+        "broken ui.js should be named: {validate_ui}"
+    );
+}
+
+#[test]
+fn ui_raw_invoke_fetch_warns() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"fetch-demo","name":"Fetch Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let ui_js = "async function load() {\n  var res = await fetch('/apps/fetch-demo/invoke', { method: 'POST', body: JSON.stringify({ verb: 'list', args: [{}] }) });\n  return res.json();\n}\nload();\n";
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"ui.js","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(ui_js)
+        ),
+    )
+    .unwrap();
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    assert!(
+        structured_content(&validate)["warnings"]
+            .to_string()
+            .contains("window.terrane.invoke"),
+        "raw /invoke fetch should warn toward the bridge: {validate}"
     );
 }
 

@@ -2609,6 +2609,18 @@ fn app_build_validate_json(core: &HostCore, draft_id: &str) -> Result<String, St
     let files = read_inline_bundle_files(&bundle)?;
     validate_draft_size(&files)?;
     let mut info = inspect_inline_bundle("", "", "", &files)?;
+    // A pristine scaffold backend validates fine but is still the demo app —
+    // run-5's resumed GLM validated a shell-only draft and stalled deciding
+    // whether it was real. Say it outright.
+    let initial = read_initial_hashes(draft_id);
+    if let Some(backend_file) = files.iter().find(|file| file.path == info.backend) {
+        if is_unmodified_scaffold(&initial, backend_file) {
+            info.warnings.push(format!(
+                "{} is still the unmodified scaffold demo app, not the requested app. Write your backend with app_build_put_file before committing.",
+                info.backend
+            ));
+        }
+    }
     let dest = crate::home_dir().join("apps").join(&info.id);
     if core.state().app.apps.contains_key(&info.id) {
         info.errors.push(format!(
@@ -2951,6 +2963,11 @@ fn inspect_inline_bundle(
             validate_inline_ref("manifest.backend", &backend, &file_paths, &mut errors);
             if let Some(file) = files.iter().find(|file| file.path == backend) {
                 check_js_backend_contract(&backend, &file.content, &mut errors, &mut warnings);
+                if let Some(msg) = terrane_cap_js_runtime::js_script_syntax_error(&file.content) {
+                    errors.push(format!(
+                        "{backend} has a JavaScript syntax error: {msg}. Resend the COMPLETE file with app_build_put_file — this usually means the previous content was truncated."
+                    ));
+                }
             }
         }
     }
@@ -2962,6 +2979,20 @@ fn inspect_inline_bundle(
                 continue;
             }
             check_ui_invoke_arg_shape(&file.path, &file.content, &mut warnings);
+            if file.path.ends_with(".js") {
+                if let Some(msg) = terrane_cap_js_runtime::js_script_syntax_error(&file.content) {
+                    errors.push(format!(
+                        "{} has a JavaScript syntax error: {msg}. The page will break on load. Resend the COMPLETE file with app_build_put_file.",
+                        file.path
+                    ));
+                }
+                if file.content.contains("fetch(") && file.content.contains("/invoke") {
+                    warnings.push(format!(
+                        "{} fetches /invoke directly. Call window.terrane.invoke(\"verb\", \"arg1\", ...) instead — the bridge sends {{verb, args:[strings]}} and rejects objects in args.",
+                        file.path
+                    ));
+                }
+            }
         }
     } else {
         warnings.push("manifest.ui is omitted; app is backend-only over invoke/MCP".to_string());
