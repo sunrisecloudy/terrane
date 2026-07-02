@@ -91,6 +91,7 @@ try {
 
   browser = await puppeteer.launch({ executablePath, headless: true });
   const page = await browser.newPage();
+  await page.setViewport({ width: 1280, height: 900 });
   page.on("console", (msg) => {
     consoleLines.push(`[${msg.type()}] ${msg.text()}`);
     // Resource-load failures are counted from the network listener instead,
@@ -154,13 +155,21 @@ try {
     })
     .catch(() => null);
 
-  // Submit: nearest form/submit button, else Enter on the input.
+  // Submit: form submit button, else the nearest button walking up from the
+  // input's container (many generated UIs pair a textarea with a sibling
+  // button and no <form> — Enter in a textarea only adds a newline).
   const submitted = await page.evaluate(() => {
     const active = document.activeElement;
     const form = active?.closest("form");
-    const btn =
-      form?.querySelector('button[type="submit"], button') ??
-      document.querySelector('button[type="submit"]');
+    let btn = form?.querySelector('button[type="submit"], button') ?? null;
+    if (!btn) {
+      let node = active;
+      while (node && node !== document.body && !btn) {
+        node = node.parentElement;
+        btn = node?.querySelector("button") ?? null;
+      }
+    }
+    btn = btn ?? document.querySelector('button[type="submit"]');
     if (btn) {
       btn.click();
       return "click";

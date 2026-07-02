@@ -36,14 +36,33 @@ try:
     data = json.loads(out)
 except Exception:
     print("pass" if len(out) > 0 else "zero"); sys.exit()
+# Count only result-shaped content: explicit count keys and arrays under
+# result-ish keys. Filter metadata (daysOfWeek etc.) must not count.
+COUNT_KEYS = {"count", "total", "totalEvents", "matchedCount", "matched_count"}
+RESULT_KEYS = {"events", "results", "items", "groups", "matches", "entries", "rows"}
+def leaf(d):
+    return not any(k in RESULT_KEYS and isinstance(v, list) for k, v in d.items())
+def count_item(x):
+    if isinstance(x, dict):
+        return 1 if leaf(x) else count(x)
+    if isinstance(x, list):
+        return sum(count_item(y) for y in x)
+    return 1
 def count(node):
     if isinstance(node, list):
-        return len(node) + sum(count(x) for x in node if isinstance(x, (dict, list)))
+        return sum(count_item(x) for x in node)
     if isinstance(node, dict):
-        for key in ("count", "total", "matchedCount"):
-            if isinstance(node.get(key), int):
-                return node[key]
-        return sum(count(v) for v in node.values() if isinstance(v, (dict, list)))
+        explicit = max(
+            (v for k, v in node.items() if k in COUNT_KEYS and isinstance(v, int)),
+            default=0,
+        )
+        structural = sum(
+            sum(count_item(x) for x in v)
+            for k, v in node.items()
+            if k in RESULT_KEYS and isinstance(v, list)
+        )
+        nested = sum(count(v) for v in node.values() if isinstance(v, dict))
+        return max(explicit, structural + nested)
     return 0
 if isinstance(data, dict) and str(data.get("ok")).lower() == "false":
     print("error"); sys.exit()
@@ -99,6 +118,13 @@ try:
 except Exception:
     print('')
 " "$actions_json" 2>/dev/null)"
+    # Models sometimes drop __actions__ when replacing main.js — fall back to
+    # grepping the dispatcher (case 'verb': / verb === 'verb') for verb names.
+    if [ -z "$(echo "$verbs" | tr -d ' ')" ]; then
+      verbs="$(grep -ohE "case ['\"][a-zA-Z_]+['\"]|verb *===? *['\"][a-zA-Z_]+['\"]" \
+        "$home/apps/$app_id"/*.js 2>/dev/null | \
+        grep -oE "['\"][a-zA-Z_]+['\"]" | tr -d "\"'" | sort -u | tr '\n' ' ')"
+    fi
 
     seed_verb="$(echo "$verbs" | tr ' ' '\n' | grep -iE 'seed|sample|init|demo' | head -1)"
     if [ -n "$seed_verb" ]; then
