@@ -9,9 +9,11 @@ use std::time::Duration;
 
 mod download;
 mod llama;
+mod mlx;
 
 pub use download::download_model;
 pub use llama::{LlamaCppBackend, ModelFile};
+pub use mlx::MlxBackend;
 
 /// Errors from loading, generating, or downloading. Typed, no panics.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,3 +127,6 @@ pub fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, LlmEr
     serde_json::from_str(text.trim())
         .map_err(|e| LlmError::Generate(format!("output was not the requested JSON shape: {e}")))
 }
+
+#[cfg(test)]
+mod tests;
