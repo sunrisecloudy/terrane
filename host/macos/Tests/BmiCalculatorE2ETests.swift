@@ -245,6 +245,12 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(html.contains("audio: false"), html)
     XCTAssertTrue(html.contains(#"toDataURL("image/png")"#), html)
     XCTAssertTrue(html.contains(#"download="photobooth.png""#), html)
+    XCTAssertTrue(html.contains("function clearPhoto()"), html)
+    XCTAssertTrue(html.contains("function hasLiveStream()"), html)
+    XCTAssertTrue(html.contains("video.srcObject = null"), html)
+    XCTAssertTrue(html.contains("setTimeout(function ()"), html)
+    XCTAssertTrue(html.contains("Camera request timed out. Try Start again."), html)
+    XCTAssertTrue(html.contains(#"downloadLink.setAttribute("aria-disabled", "true")"#), html)
 
     let frameAsset = AppAssetStore.asset(apps: [app], appId: "photobooth", relPath: "")
     guard case .success(let frame) = frameAsset else {

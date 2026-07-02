@@ -279,6 +279,7 @@
 
     <script>
       var stream = null;
+      var startAttempt = 0;
       var video = document.getElementById("video");
       var canvas = document.getElementById("canvas");
       var photo = document.getElementById("photo");
@@ -308,6 +309,14 @@
         sizeState.textContent = width + " x " + height;
       }
 
+      function clearPhoto() {
+        photo.removeAttribute("src");
+        downloadLink.href = "#";
+        downloadLink.setAttribute("aria-disabled", "true");
+        photoState.textContent = "None";
+        sizeState.textContent = "-";
+      }
+
       function showPreview() {
         photo.style.display = "none";
         video.style.display = stream ? "block" : "none";
@@ -315,18 +324,30 @@
         retakeButton.disabled = true;
       }
 
+      function hasLiveStream() {
+        return !!stream && stream.getTracks().some(function (track) {
+          return track.readyState === "live";
+        });
+      }
+
       function setCameraReady(ready) {
         captureButton.disabled = !ready;
         cameraState.textContent = ready ? "On" : "Off";
-        startButton.textContent = ready ? "Restart" : "Start";
+        startButton.textContent = ready ? "Reset" : "Start";
+        startButton.disabled = false;
       }
 
       function stopStream() {
-        if (!stream) return;
-        stream.getTracks().forEach(function (track) {
-          track.stop();
-        });
+        if (stream) {
+          stream.getTracks().forEach(function (track) {
+            track.stop();
+          });
+        }
         stream = null;
+        video.pause();
+        video.srcObject = null;
+        video.removeAttribute("src");
+        video.load();
         setCameraReady(false);
       }
 
@@ -335,26 +356,65 @@
           setStatus("Camera API unavailable in this host");
           return;
         }
-        setStatus("Opening camera...");
-        stopStream();
-        navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 960 },
-            facingMode: "user"
-          },
-          audio: false
-        }).then(function (mediaStream) {
-          stream = mediaStream;
-          video.srcObject = stream;
+        if (hasLiveStream()) {
+          clearPhoto();
           setCameraReady(true);
           showPreview();
           setStatus("Camera ready");
-        }).catch(function (error) {
-          setCameraReady(false);
-          showPreview();
-          setStatus(error && error.message ? error.message : String(error));
-        });
+          return;
+        }
+        var attempt = ++startAttempt;
+        setStatus("Opening camera...");
+        stopStream();
+        startButton.disabled = true;
+        captureButton.disabled = true;
+        retakeButton.disabled = true;
+        clearPhoto();
+        showPreview();
+        setTimeout(function () {
+          var timeoutId = setTimeout(function () {
+            if (attempt !== startAttempt || stream) return;
+            startAttempt++;
+            setCameraReady(false);
+            showPreview();
+            setStatus("Camera request timed out. Try Start again.");
+          }, 12000);
+
+          navigator.mediaDevices.getUserMedia({
+            video: {
+              width: { ideal: 1280 },
+              height: { ideal: 960 },
+              facingMode: "user"
+            },
+            audio: false
+          }).then(function (mediaStream) {
+            clearTimeout(timeoutId);
+            if (attempt !== startAttempt) {
+              mediaStream.getTracks().forEach(function (track) {
+                track.stop();
+              });
+              return;
+            }
+            stream = mediaStream;
+            video.srcObject = stream;
+            var playPromise = video.play();
+            if (playPromise && typeof playPromise.catch === "function") {
+              playPromise.catch(function (error) {
+                if (attempt !== startAttempt) return;
+                setStatus(error && error.message ? error.message : String(error));
+              });
+            }
+            setCameraReady(true);
+            showPreview();
+            setStatus("Camera ready");
+          }).catch(function (error) {
+            clearTimeout(timeoutId);
+            if (attempt !== startAttempt) return;
+            setCameraReady(false);
+            showPreview();
+            setStatus(error && error.message ? error.message : String(error));
+          });
+        }, 180);
       }
 
       function capturePhoto() {
@@ -377,6 +437,7 @@
       startButton.addEventListener("click", startCamera);
       captureButton.addEventListener("click", capturePhoto);
       retakeButton.addEventListener("click", function () {
+        clearPhoto();
         showPreview();
         setStatus(stream ? "Camera ready" : "Ready");
       });
