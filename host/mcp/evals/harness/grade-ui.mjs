@@ -93,7 +93,12 @@ try {
   const page = await browser.newPage();
   page.on("console", (msg) => {
     consoleLines.push(`[${msg.type()}] ${msg.text()}`);
-    if (msg.type() === "error") result.console_errors += 1;
+    // Resource-load failures are counted from the network listener instead,
+    // where the URL is known (a missing favicon is browser noise, not an
+    // app bug).
+    if (msg.type() === "error" && !msg.text().includes("Failed to load resource")) {
+      result.console_errors += 1;
+    }
   });
   page.on("pageerror", (err) => {
     consoleLines.push(`[pageerror] ${err.message}`);
@@ -110,10 +115,15 @@ try {
       networkLines.push(`${res.status()} ${res.url()} ${body}`);
     } else if (res.status() >= 400) {
       networkLines.push(`${res.status()} ${res.url()}`);
+      if (!res.url().endsWith("/favicon.ico")) {
+        result.console_errors += 1;
+      }
     }
   });
 
-  const frameUrl = `${baseUrl}/apps/${appId}/__terrane/frame`;
+  // Trailing slash matters: relative asset refs (style.css, ui.js) resolve
+  // against the frame directory only when the URL ends with `/`.
+  const frameUrl = `${baseUrl}/apps/${appId}/__terrane/frame/`;
   await page.goto(frameUrl, { waitUntil: "networkidle0", timeout: 20000 });
   result.shim_ok = await page.evaluate(
     () => typeof window.terrane?.invoke === "function"

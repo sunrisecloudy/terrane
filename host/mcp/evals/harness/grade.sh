@@ -112,14 +112,22 @@ except Exception:
       backend_smoke="absent"
     fi
 
-    nl_verb="$(echo "$verbs" | tr ' ' '\n' | grep -iE 'natural|nl' | head -1)"
-    [ -z "$nl_verb" ] && nl_verb="$(echo "$verbs" | tr ' ' '\n' | grep -iE 'query|view|search|ask' | head -1)"
-    if [ -n "$nl_verb" ]; then
-      nl_out="$(run_verb "$home" "$app_id" "$nl_verb" "$NL_QUERY")"
-      nl_query="$(classify_output "$nl_out")"
-    else
-      nl_query="absent"
-    fi
+    # Try up to three query-shaped verbs and keep the best classification —
+    # apps often expose a parse-only verb (returns the interpreted filter,
+    # zero results) next to the real query verb.
+    nl_query="absent"; nl_out=""
+    nl_candidates="$(echo "$verbs" | tr ' ' '\n' | grep -ivE 'parse' | grep -iE 'natural|nl_|nlq|query|view|search|ask' | head -3)
+$(echo "$verbs" | tr ' ' '\n' | grep -iE 'parse' | grep -iE 'view|query|natural|nl' | head -1)"
+    for candidate in $nl_candidates; do
+      out="$(run_verb "$home" "$app_id" "$candidate" "$NL_QUERY")"
+      verdict="$(classify_output "$out")"
+      case "$nl_query" in
+        pass) break ;;
+        absent|error) nl_query="$verdict"; nl_out="$out" ;;
+        zero) if [ "$verdict" = "pass" ]; then nl_query="$verdict"; nl_out="$out"; fi ;;
+      esac
+      [ "$nl_query" = "pass" ] && break
+    done
 
     # Static run-1 lesson: args array passed to the invoke bridge.
     if grep -rE 'invoke\([^)]*, *\[' "$home/apps/$app_id" --include='*.js' --include='*.html' >/dev/null 2>&1; then
@@ -132,8 +140,8 @@ except Exception:
       kill_home_holders "$home"
       if "$harness_dir/serve-ui.sh" start "$home" "$EVAL_WEB_PORT" "$ui_dir" >/dev/null; then
         base="http://127.0.0.1:$EVAL_WEB_PORT"
-        node "$harness_dir/grade-ui.mjs" "$base" "$app_id" "$ui_dir" "$UI_INPUT_TEXT" >/dev/null 2>>"$ui_dir/grade-ui.err"
-        verdict="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','fail'))" "$ui_dir/result.json" 2>/dev/null || echo fail)"
+        node "$harness_dir/grade-ui.mjs" "$base" "$app_id" "$ui_dir" "$UI_INPUT_TEXT" >>"$ui_dir/grade-ui.out" 2>>"$ui_dir/grade-ui.err"
+        verdict="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('verdict','fail'))" "$ui_dir/result.json" 2>/dev/null || echo error)"
         if [ "$verdict" = "needs_grant" ]; then
           # Late grant over the live admin console, then one retry.
           ns_list="$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('needs_grant') or 'kv')" "$ui_dir/result.json" 2>/dev/null)"
@@ -155,9 +163,18 @@ except Exception:
     fi
   fi
 
-  tokens="$(sqlite3 -tabs ~/.local/share/opencode/opencode.db \
-    "select coalesce(sum(tokens_input),0), coalesce(sum(tokens_output),0), coalesce(sum(cost),0)
-     from session where title like 'Terrane eval $TAG - % - $slug - %';" 2>/dev/null || printf '0\t0\t0')"
+  # Session totals can lag or the DB can be briefly locked right after a run;
+  # retry once before accepting zeros.
+  tokens_query() {
+    sqlite3 -tabs ~/.local/share/opencode/opencode.db \
+      "select coalesce(sum(tokens_input),0), coalesce(sum(tokens_output),0), coalesce(sum(cost),0)
+       from session where title like 'Terrane eval $TAG - % - $slug - %';" 2>/dev/null || printf '0\t0\t0'
+  }
+  tokens="$(tokens_query)"
+  if [ "$(echo "$tokens" | cut -f1)" = "0" ]; then
+    sleep 5
+    tokens="$(tokens_query)"
+  fi
   tokens_in="$(echo "$tokens" | cut -f1)"
   tokens_out="$(echo "$tokens" | cut -f2)"
   cost="$(echo "$tokens" | cut -f3)"
