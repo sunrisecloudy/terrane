@@ -6,13 +6,13 @@ use terrane_api::{
     host_contract, mcp_tools, Action, ApiError, AppActions, AppSummary, AppsResponse,
     CapabilityCommandHelpInfo, CapabilityCommandInfo, CapabilityDocInfo, CapabilityEventInfo,
     CapabilityExampleInfo, CapabilityManifestInfo, CapabilityParamInfo, CapabilityQueryInfo,
-    HealthResponse, InvokeRequest, InvokeResponse, TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT,
-    TOOL_APP_BUILD_DISCARD, TOOL_APP_BUILD_GET, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
-    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER,
-    TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND,
-    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS,
-    TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
-    TOOL_WORKFLOW_INFO,
+    HealthResponse, InvokeRequest, InvokeResponse, MCP_SERVER_INSTRUCTIONS, TOOL_APP_ACTIONS,
+    TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD, TOOL_APP_BUILD_GET, TOOL_APP_BUILD_LIST,
+    TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START, TOOL_APP_BUILD_VALIDATE,
+    TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE,
+    TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO,
+    TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL,
+    TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
 };
 
 #[test]
@@ -89,13 +89,14 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
             TOOL_WORKFLOWS_LIST,
             TOOL_WORKFLOW_INFO,
             TOOL_APP_RECIPE,
-            TOOL_APP_SCAFFOLD,
             TOOL_APP_BUILD_START,
             TOOL_APP_BUILD_PUT_FILE,
             TOOL_APP_BUILD_GET,
+            TOOL_APP_BUILD_LIST,
             TOOL_APP_BUILD_VALIDATE,
             TOOL_APP_BUILD_COMMIT,
             TOOL_APP_BUILD_DISCARD,
+            TOOL_APP_SCAFFOLD,
             TOOL_APP_BUNDLE_VALIDATE,
             TOOL_APP_REGISTER_INLINE,
             TOOL_APP_REGISTER,
@@ -182,6 +183,52 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
         build_commit_tool.description,
         build_commit_tool.input_schema
     );
+    assert!(
+        !build_commit_tool.input_schema.contains("replaceExisting"),
+        "app_build_commit schema must not advertise the refused replaceExisting flag: {}",
+        build_commit_tool.input_schema
+    );
+
+    let build_start_schema = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_BUILD_START)
+        .expect("app_build_start tool exists")
+        .input_schema;
+    assert!(
+        build_start_schema.contains(r#""enum":["js_kv_app","js_kv_notes","js_multicap_audit"]"#),
+        "app_build_start kind should be a closed enum: {build_start_schema}"
+    );
+
+    let build_list_tool = tools
+        .iter()
+        .find(|tool| tool.name == TOOL_APP_BUILD_LIST)
+        .expect("app_build_list tool exists");
+    assert!(
+        build_list_tool
+            .description
+            .contains("recover a lost draftId"),
+        "app_build_list should advertise stall recovery: {}",
+        build_list_tool.description
+    );
+
+    // The initialize instructions are the one string most clients inject into
+    // the model's system prompt — lock the load-bearing contracts into it.
+    for token in [
+        "app_build_start",
+        "app_build_put_file",
+        "app_build_validate",
+        "app_build_commit",
+        "function handle(input)",
+        "window.terrane.invoke",
+        "permission_required",
+        "app_build_list",
+        "never an object",
+    ] {
+        assert!(
+            MCP_SERVER_INSTRUCTIONS.contains(token),
+            "MCP_SERVER_INSTRUCTIONS should mention {token}"
+        );
+    }
 
     let inline_tool = tools
         .iter()
@@ -266,13 +313,14 @@ fn host_contract_lists_the_v1_subset() {
             TOOL_WORKFLOWS_LIST,
             TOOL_WORKFLOW_INFO,
             TOOL_APP_RECIPE,
-            TOOL_APP_SCAFFOLD,
             TOOL_APP_BUILD_START,
             TOOL_APP_BUILD_PUT_FILE,
             TOOL_APP_BUILD_GET,
+            TOOL_APP_BUILD_LIST,
             TOOL_APP_BUILD_VALIDATE,
             TOOL_APP_BUILD_COMMIT,
             TOOL_APP_BUILD_DISCARD,
+            TOOL_APP_SCAFFOLD,
             TOOL_APP_BUNDLE_VALIDATE,
             TOOL_APP_REGISTER_INLINE,
             TOOL_APP_REGISTER,

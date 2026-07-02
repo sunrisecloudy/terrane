@@ -12,12 +12,13 @@ use nanoserde::{DeJson, SerJson};
 use serde_json::{json, Map, Value};
 use terrane_api::{
     mcp_prompts, mcp_resource_templates, mcp_resources, mcp_tools, MCP_PROTOCOL_VERSION,
-    TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD, TOOL_APP_BUILD_GET,
-    TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START, TOOL_APP_BUILD_VALIDATE,
-    TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE,
-    TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO,
-    TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL,
-    TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
+    MCP_SERVER_INSTRUCTIONS, TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD,
+    TOOL_APP_BUILD_GET, TOOL_APP_BUILD_LIST, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
+    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER,
+    TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND,
+    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS,
+    TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
+    TOOL_WORKFLOW_INFO,
 };
 use terrane_core::QueryValue;
 
@@ -272,8 +273,9 @@ pub fn busy_error(raw: &str) -> Option<String> {
 
 fn initialize_result() -> String {
     format!(
-        r#"{{"protocolVersion":{},"capabilities":{{"tools":{{"listChanged":false}},"resources":{{"subscribe":false,"listChanged":false}},"prompts":{{"listChanged":false}}}},"serverInfo":{{"name":"terrane-mcp","version":"0.1.0"}}}}"#,
-        json_str(MCP_PROTOCOL_VERSION)
+        r#"{{"protocolVersion":{},"capabilities":{{"tools":{{"listChanged":false}},"resources":{{"subscribe":false,"listChanged":false}},"prompts":{{"listChanged":false}}}},"serverInfo":{{"name":"terrane-mcp","version":"0.1.0"}},"instructions":{}}}"#,
+        json_str(MCP_PROTOCOL_VERSION),
+        json_str(MCP_SERVER_INSTRUCTIONS)
     )
 }
 
@@ -710,6 +712,15 @@ fn tool_call(
                 Err(e) => return tool_text(id, &e, true),
             };
             match app_build_get_json(&draft_id, &path, include_content) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_BUILD_LIST => {
+            if let Err(e) = args_object(TOOL_APP_BUILD_LIST, &params.arguments) {
+                return tool_text(id, &e, true);
+            }
+            match app_build_list_json() {
                 Ok(output) => tool_json(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }
@@ -1677,6 +1688,7 @@ fn app_recipe_json(kind: &str) -> String {
                 "resources": ["kv", "crdt", "relational_db"]
             },
             "resourcePattern": "Use ctx.resource.kv, ctx.resource.crdt, and ctx.resource.relational_db inside handle(input). Use capability_command/query for replica and app catalog checks.",
+            "backendContract": "main.js is ONE plain script: no top-level import/export, no require, no modules. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data).",
             "nextAfterScaffold": {
                 "tool": "app_register_inline",
                 "arguments": {"files": "structuredContent.files from app_scaffold", "dryRun": true},
@@ -1717,6 +1729,7 @@ fn app_recipe_json(kind: &str) -> String {
             "resources": ["kv"]
         },
         "resourcePattern": "Use ctx.resource.kv.get/set/rm/all/scan/range/keys inside handle(input). For optional/index keys, copy kvGetOrNull from app_scaffold and default null to [] before JSON.parse.",
+        "backendContract": "main.js is ONE plain script: no top-level import/export, no require, no modules. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data).",
         "stagedBuildContract": "app_build_start creates a server-side draft; app_build_put_file updates one file; app_build_validate returns validationToken; app_build_commit commits without file contents.",
         "inlineFilesContract": "Compatibility path: app_register_inline.files must be a JSON array of {path,content} objects. Its dryRun returns draftId/validationToken, so prefer app_build_commit after dryRun rather than resending files.",
         "nextAfterScaffold": {
@@ -1753,7 +1766,7 @@ fn app_scaffold_json(
     }
     if kind != "js_kv_notes" && kind != "js_kv_app" {
         return Err(format!(
-            "unknown scaffold kind: {kind}. Try kind \"js_kv_notes\", \"js_multicap_audit\", or omit kind."
+            "unknown scaffold kind: {kind}. Use \"js_kv_app\" for interactive/UI apps, \"js_kv_notes\" for a minimal notes demo, or \"js_multicap_audit\" for a kv+crdt+relational_db proof."
         ));
     }
     let app_id_js = serde_json::to_string(app_id).unwrap_or_else(|_| "\"app\"".to_string());
@@ -2297,12 +2310,24 @@ fn app_build_start_json(
         .and_then(Value::as_str)
         .unwrap_or("js_kv_notes");
     let draft_id = create_build_draft(kind, &files)?;
+    let manifest_example = if with_ui {
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": ["kv"]})
+    } else {
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "resources": ["kv"]})
+    };
     Ok(json!({
         "draftId": draft_id,
         "kind": kind,
         "app": {"id": info.id, "name": info.name, "runtime": info.runtime},
         "files": file_summaries(&files),
         "bundleHash": validation_token(&files),
+        "contract": {
+            "manifestExample": manifest_example,
+            "manifestRules": "manifest.ui is a string file path, never an object; scripts and styles are referenced from index.html, not listed in the manifest.",
+            "backend": "main.js is ONE plain script: no top-level import/export, no require, no modules, no Deno/Node APIs. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data). Storage is ctx.resource.kv; wrap kv.get in try/catch because missing keys throw.",
+            "ui": "Browser code calls window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") with positional string args and awaits the backend's string reply. Do not pass an args array or an object.",
+            "filesToReplace": "Scaffold files are placeholders for a template app. Replace the content of main.js (and index.html/ui.js/style.css for UI apps) with the requested app before validating."
+        },
         "nextToolCall": {
             "tool": "app_build_put_file",
             "arguments": {"draftId": draft_id, "path": "main.js", "content": "complete file content"}
@@ -2315,6 +2340,7 @@ fn app_build_start_json(
         ],
         "stallRecovery": {
             "resume": "Call app_build_get with draftId to recover file summaries, then continue with app_build_put_file or app_build_validate.",
+            "lostDraftId": "Call app_build_list to recover draft ids.",
             "commitAfterDryRun": "After app_build_validate succeeds, app_build_commit is a small call and does not require sending file contents again."
         }
     })
@@ -2436,7 +2462,11 @@ fn app_build_validate_json(core: &HostCore, draft_id: &str) -> Result<String, St
             "errors": info.errors,
             "warnings": info.warnings,
             "files": file_summaries(&files),
-            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": "manifest.json", "content": "fixed complete file content"}}
+            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": "manifest.json", "content": "fixed complete file content"}},
+            "next": [
+                "Fix each listed error with app_build_put_file, sending the complete corrected file.",
+                "Then call app_build_validate again with the same draftId."
+            ]
         })
         .to_string());
     }
@@ -2550,6 +2580,64 @@ fn app_build_commit_json(
     .to_string())
 }
 
+fn app_build_list_json() -> Result<String, String> {
+    let root = crate::home_dir().join(".mcp-drafts");
+    let mut drafts = Vec::new();
+    if root.is_dir() {
+        let entries = std::fs::read_dir(&root)
+            .map_err(|e| format!("read drafts directory {}: {e}", root.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("read drafts entry {}: {e}", root.display()))?;
+            let name = entry.file_name();
+            let Some(draft_id) = name.to_str() else {
+                continue;
+            };
+            if !draft_id.starts_with("draft-") || !entry.path().join("bundle").is_dir() {
+                continue;
+            }
+            let metadata = read_draft_metadata(draft_id).unwrap_or_else(|_| json!({}));
+            drafts.push(json!({
+                "draftId": draft_id,
+                "kind": metadata.get("kind").cloned().unwrap_or(Value::Null),
+                "app": metadata.get("app").cloned().unwrap_or(Value::Null),
+                "updatedAtUnix": metadata.get("updatedAtUnix").cloned().unwrap_or(Value::Null),
+                "bundleHash": metadata.get("bundleHash").cloned().unwrap_or(Value::Null),
+                "files": metadata.get("files").cloned().unwrap_or(Value::Null)
+            }));
+        }
+    }
+    drafts.sort_by(|a, b| {
+        let ta = a.get("updatedAtUnix").and_then(Value::as_u64).unwrap_or(0);
+        let tb = b.get("updatedAtUnix").and_then(Value::as_u64).unwrap_or(0);
+        tb.cmp(&ta).then_with(|| {
+            let ia = a.get("draftId").and_then(Value::as_str).unwrap_or("");
+            let ib = b.get("draftId").and_then(Value::as_str).unwrap_or("");
+            ia.cmp(ib)
+        })
+    });
+    if drafts.is_empty() {
+        return Ok(json!({
+            "drafts": [],
+            "nextToolCall": {
+                "tool": "app_build_start",
+                "arguments": {"id": "my-app", "name": "My App", "kind": "js_kv_app", "withUi": true}
+            },
+            "next": "No drafts exist. Start one with app_build_start."
+        })
+        .to_string());
+    }
+    let newest = drafts[0].get("draftId").cloned().unwrap_or(Value::Null);
+    Ok(json!({
+        "drafts": drafts,
+        "nextToolCall": {"tool": "app_build_get", "arguments": {"draftId": newest}},
+        "next": [
+            "Drafts are newest-first. Pick your draftId, then continue with app_build_get, app_build_put_file, or app_build_validate.",
+            "Discard drafts you no longer need with app_build_discard."
+        ]
+    })
+    .to_string())
+}
+
 fn app_build_discard_json(draft_id: &str) -> Result<String, String> {
     let draft = draft_dir(draft_id)?;
     if !draft.exists() {
@@ -2656,9 +2744,16 @@ fn inspect_inline_bundle(
     let manifest_file = files
         .iter()
         .find(|file| file.path == "manifest.json")
-        .ok_or_else(|| "app_register_inline requires a manifest.json file".to_string())?;
-    let mut manifest = BundleManifest::deserialize_json(&manifest_file.content)
-        .map_err(|e| format!("manifest.json: {e}"))?;
+        .ok_or_else(|| "the bundle requires a manifest.json file".to_string())?;
+    let mut manifest = match BundleManifest::deserialize_json(&manifest_file.content) {
+        Ok(manifest) => manifest,
+        Err(parse_err) => {
+            return Ok(manifest_shape_info(
+                &manifest_file.content,
+                &parse_err.to_string(),
+            ));
+        }
+    };
     if manifest.runtime.trim().is_empty() {
         manifest.runtime = "js".to_string();
     }
@@ -2684,6 +2779,9 @@ fn inspect_inline_bundle(
             errors.push("manifest.backend is required for js apps".to_string());
         } else {
             validate_inline_ref("manifest.backend", &backend, &file_paths, &mut errors);
+            if let Some(file) = files.iter().find(|file| file.path == backend) {
+                check_js_backend_contract(&backend, &file.content, &mut errors, &mut warnings);
+            }
         }
     }
     if !ui.is_empty() {
@@ -2731,6 +2829,152 @@ fn validate_inline_ref(
         errors.push(format!(
             "{label} references missing file {reference:?}. app_register_inline retries must include the complete files array: manifest.json, backend, manifest.ui, ui.js/style.css, and any other referenced assets; do not send only changed files"
         ));
+    }
+}
+
+const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#;
+
+/// A weak-model-friendly `BundleInfo` for a manifest.json that failed strict
+/// parsing: name the offending field types and show the exact accepted shape,
+/// instead of surfacing a parser error the model cannot act on.
+fn manifest_shape_info(raw: &str, parse_err: &str) -> BundleInfo {
+    let mut errors = Vec::new();
+    let mut id = String::new();
+    let mut name = String::new();
+    match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Object(map)) => {
+            for (field, expected) in [
+                ("id", "a string such as \"my-app\""),
+                ("name", "a string such as \"My App\""),
+                ("runtime", "the string \"js\""),
+                ("backend", "a string file path such as \"main.js\""),
+                (
+                    "ui",
+                    "a string file path such as \"index.html\" (scripts and styles are referenced from index.html, not listed in the manifest)",
+                ),
+            ] {
+                match map.get(field) {
+                    None | Some(Value::String(_)) => {}
+                    Some(other) => errors.push(format!(
+                        "manifest.{field} must be {expected}, not {}",
+                        json_type_name(other)
+                    )),
+                }
+            }
+            match map.get("resources") {
+                None => {}
+                Some(Value::Array(items)) if items.iter().all(Value::is_string) => {}
+                Some(_) => errors.push(
+                    "manifest.resources must be an array of strings such as [\"kv\"]".to_string(),
+                ),
+            }
+            if errors.is_empty() {
+                errors.push(format!(
+                    "manifest.json does not match the accepted manifest shape: {parse_err}"
+                ));
+            }
+            id = map
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            name = map
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+        }
+        Ok(_) => errors.push("manifest.json must be a JSON object".to_string()),
+        Err(e) => errors.push(format!("manifest.json is not valid JSON: {e}")),
+    }
+    errors.push(format!(
+        "Fix: replace manifest.json with exactly this shape: {MANIFEST_EXAMPLE} (omit \"ui\" for backend-only apps)"
+    ));
+    BundleInfo {
+        id,
+        name,
+        runtime: "js".to_string(),
+        backend: String::new(),
+        ui: String::new(),
+        resources: Vec::new(),
+        errors,
+        warnings: Vec::new(),
+    }
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "an array",
+        Value::Object(_) => "an object",
+    }
+}
+
+/// Weak-model evals showed runtime-incompatible backends (ES modules, missing
+/// or object-style `handle`) validating cleanly and then failing on first
+/// invoke. The runtime evals the backend as one plain script and calls the
+/// global-object `handle(input)` with an array of strings (an `actions` table
+/// is the sanctioned alternative — the prelude synthesizes `handle` from it),
+/// so catch contract breaks here with fix-it guidance.
+fn check_js_backend_contract(
+    path: &str,
+    content: &str,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) {
+    let mut module_line = None;
+    for (idx, line) in content.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+            continue;
+        }
+        let is_module = trimmed.starts_with("import ")
+            || trimmed.starts_with("import{")
+            || trimmed.starts_with("import\"")
+            || trimmed.starts_with("import'")
+            || trimmed.starts_with("export ")
+            || trimmed.starts_with("export{");
+        if is_module {
+            module_line = Some(idx + 1);
+            break;
+        }
+    }
+    if let Some(line) = module_line {
+        errors.push(format!(
+            "{path} line {line} uses top-level import/export, but Terrane js backends run as one plain script: no ES modules, no require, no Deno/Node APIs. Inline all code into {path} and define one global function handle(input)"
+        ));
+    }
+    let defines_handle = content.contains("function handle(")
+        || content.contains("var handle")
+        || content.contains("handle = function")
+        || content.contains("handle=function")
+        || content.contains("globalThis.handle");
+    let lexical_handle_only =
+        !defines_handle && (content.contains("const handle") || content.contains("let handle"));
+    let defines_actions = content.contains("var actions")
+        || content.contains("const actions")
+        || content.contains("let actions")
+        || content.contains("actions =")
+        || content.contains("actions=");
+    if lexical_handle_only {
+        errors.push(format!(
+            "{path} declares handle with const/let, but the runtime reads handle from the global object, so it will not be found. Declare it as: function handle(input) {{ ... }}"
+        ));
+    } else if !defines_handle && !defines_actions {
+        errors.push(format!(
+            "{path} does not define the required entrypoint. Add: function handle(input) {{ var verb = input[0] || \"\"; ...; return \"ok\"; }} — input is an array of strings and the return value must be a string (use JSON.stringify for structured data)"
+        ));
+    }
+    for marker in ["input.action", "input.verb", "input.command", "input.args"] {
+        if content.contains(marker) {
+            warnings.push(format!(
+                "{path} reads {marker}, but handle(input) receives an array of strings, not an object: input[0] is the verb and input.slice(1) are the args. Dispatch with: var verb = input[0] || \"\";"
+            ));
+            break;
+        }
     }
 }
 
@@ -3168,7 +3412,7 @@ fn tool_call_example(tool: &str) -> String {
             json!({"capability": "app", "query": "exists", "args": ["APP_ID"]})
         }
         TOOL_CAPABILITY_COMMAND => json!({"name": "app.add", "help": true}),
-        TOOL_LIST_APPS | TOOL_WORKFLOWS_LIST => json!({}),
+        TOOL_LIST_APPS | TOOL_WORKFLOWS_LIST | TOOL_APP_BUILD_LIST => json!({}),
         _ => json!({}),
     };
     json!({

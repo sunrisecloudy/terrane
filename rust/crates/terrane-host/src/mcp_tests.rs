@@ -817,6 +817,222 @@ fn app_register_inline_dry_run_can_commit_by_draft_id() {
     );
 }
 
+#[test]
+fn initialize_result_carries_weak_model_instructions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    let init = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+    )
+    .unwrap();
+    assert!(
+        init.contains(r#""instructions":"#),
+        "initialize should carry server instructions: {init}"
+    );
+    for token in [
+        "app_build_start",
+        "handle(input)",
+        "window.terrane.invoke",
+        "permission_required",
+        "app_build_list",
+    ] {
+        assert!(
+            init.contains(token),
+            "instructions should mention {token}: {init}"
+        );
+    }
+}
+
+#[test]
+fn app_build_validate_rejects_runtime_incompatible_backends() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"contract-demo","name":"Contract Demo"}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let validate = |core: &mut crate::HostCore| {
+        structured_content(
+            &handle_json_rpc(
+                core,
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+                    super::json_str(&draft_id)
+                ),
+            )
+            .unwrap(),
+        )
+    };
+    let put_main = |core: &mut crate::HostCore, content: &str| {
+        handle_json_rpc(
+            core,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":"p","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":{}}}}}}}"#,
+                super::json_str(&draft_id),
+                super::json_str(content)
+            ),
+        )
+        .unwrap()
+    };
+
+    // Deno/Node-style module backend: plausible, but the runtime cannot run it.
+    put_main(
+        &mut core,
+        "import { serve } from 'https://deno.land/std/http/server.ts';\nexport async function addEvent(e) { return 'ok'; }",
+    );
+    let module = validate(&mut core);
+    assert_eq!(module["valid"], false, "module backend: {module}");
+    let module_errors = module["errors"].to_string();
+    assert!(
+        module_errors.contains("plain script") && module_errors.contains("import/export"),
+        "module backend errors should explain the plain-script contract: {module_errors}"
+    );
+
+    // No handle(input) and no actions table.
+    put_main(&mut core, "function addEvent(e) { return 'ok'; }");
+    let missing = validate(&mut core);
+    assert_eq!(missing["valid"], false, "missing handle: {missing}");
+    assert!(
+        missing["errors"]
+            .to_string()
+            .contains("function handle(input)"),
+        "missing-handle error should show the fix: {missing}"
+    );
+
+    // Lexical handle never lands on the global object.
+    put_main(&mut core, "const handle = (input) => 'ok';");
+    let lexical = validate(&mut core);
+    assert_eq!(lexical["valid"], false, "const handle: {lexical}");
+    assert!(
+        lexical["errors"].to_string().contains("global object"),
+        "const-handle error should explain the global requirement: {lexical}"
+    );
+
+    // Object-style dispatch is a warning with the positional contract spelled out.
+    put_main(
+        &mut core,
+        "function handle(input) { var action = input.action || 'list'; return String(action); }",
+    );
+    let object_style = validate(&mut core);
+    assert_eq!(object_style["valid"], true, "object style: {object_style}");
+    assert!(
+        object_style["warnings"]
+            .to_string()
+            .contains("array of strings"),
+        "object-style warning should state the positional contract: {object_style}"
+    );
+}
+
+#[test]
+fn app_build_validate_explains_manifest_shape_errors() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"manifest-demo","name":"Manifest Demo","withUi":true}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The observed weak-model mistake: a rich object-shaped ui field.
+    let manifest = r#"{"id":"manifest-demo","name":"Manifest Demo","runtime":"js","backend":"main.js","ui":{"index":"index.html","scripts":["ui.js"],"styles":["style.css"]},"resources":["kv"]}"#;
+    handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"manifest.json","content":{}}}}}}}"#,
+            super::json_str(&draft_id),
+            super::json_str(manifest)
+        ),
+    )
+    .unwrap();
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"v","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+    assert_eq!(validation["valid"], false, "ui object: {validate}");
+    let errors = validation["errors"].to_string();
+    assert!(
+        errors.contains("manifest.ui must be a string file path")
+            && errors.contains("not an object"),
+        "ui-object error should be prescriptive: {errors}"
+    );
+    assert!(
+        errors.contains(r#"\"ui\":\"index.html\""#) || errors.contains(r#""ui":"index.html""#),
+        "errors should include the corrected manifest shape: {errors}"
+    );
+}
+
+#[test]
+fn app_build_list_recovers_draft_ids() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let empty = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"empty","method":"tools/call","params":{"name":"app_build_list","arguments":{}}}"#,
+    )
+    .unwrap();
+    let empty_content = structured_content(&empty);
+    assert_eq!(
+        empty_content["drafts"].as_array().map(Vec::len),
+        Some(0),
+        "empty list: {empty}"
+    );
+    assert!(
+        empty.contains("app_build_start"),
+        "empty list should route to app_build_start: {empty}"
+    );
+
+    let start = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{"name":"app_build_start","arguments":{"id":"lost-draft","name":"Lost Draft"}}}"#,
+    )
+    .unwrap();
+    let draft_id = structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let list = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":"list","method":"tools/call","params":{"name":"app_build_list","arguments":{}}}"#,
+    )
+    .unwrap();
+    let listed = structured_content(&list);
+    let drafts = listed["drafts"].as_array().unwrap();
+    assert_eq!(drafts.len(), 1, "list after start: {list}");
+    assert_eq!(drafts[0]["draftId"], draft_id.as_str(), "list: {list}");
+    assert_eq!(drafts[0]["app"]["id"], "lost-draft", "list: {list}");
+    assert!(
+        list.contains("app_build_get"),
+        "list should route back into the draft: {list}"
+    );
+}
+
 // --- In-session approval: elicitation helpers -----------------------------
 
 #[test]
