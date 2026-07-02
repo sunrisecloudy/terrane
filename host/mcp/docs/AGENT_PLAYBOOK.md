@@ -22,7 +22,7 @@ or no prior knowledge of Terrane, but the same steps work for any model.
   resources are default-deny, so a manifest resource is not usable until granted.
   When it happens, see **When A Resource Is Denied (permission_required)** —
   never abandon the task over it.
-- For UI apps, use `app_scaffold` with `withUi: true` and keep frontend code
+- For UI apps, use `app_build_start` with `withUi: true` and keep frontend code
   simple enough to parse.
 - Do not use `capability_command app.add` while app-specific tools are
   available.
@@ -38,8 +38,34 @@ or no prior knowledge of Terrane, but the same steps work for any model.
   budget or a smaller first bundle. If the client stalls with no new output
   tokens after `app_build_start` or `app_scaffold`, resume with
   `app_build_get`/`app_build_put_file` or call `app_register_inline` dry-run as
-  a bridge. Treat one silent no-token retry as enough evidence of
-  provider/client trouble before changing provider/model.
+  a bridge. If you lost the `draftId`, call `app_build_list` to recover it.
+  Treat one silent no-token retry as enough evidence of provider/client trouble
+  before changing provider/model.
+
+## Contract Crib Sheet (Read Before Writing Files)
+
+Weak-model failures cluster on these three contracts, not on tool discovery.
+Get them right the first time:
+
+- **Backend (`main.js`)** is ONE plain script. No top-level `import`/`export`,
+  no `require`, no modules, no Deno/Node APIs. Define one global
+  `function handle(input)`. `input` is an **array of strings**: `input[0]` is
+  the verb, `input.slice(1)` are the args — never `input.action` or
+  `input.args`. Return a **string** (`JSON.stringify(...)` for structured
+  data). Storage is `ctx.resource.kv`; wrap `kv.get` in try/catch because
+  missing keys throw.
+- **Manifest (`manifest.json`)** is exactly:
+  `{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}`.
+  `ui` is a **string file path** (omit it for backend-only apps), never an
+  object; scripts and styles are referenced from `index.html`, not listed in
+  the manifest.
+- **UI (browser code)** calls
+  `window.terrane.invoke("verb", "arg1", "arg2")` with positional string args
+  and awaits the backend's string reply. Do not pass an args array or an
+  object.
+
+`app_build_validate` enforces the backend and manifest rules and returns fix-it
+errors; fix the named file with `app_build_put_file` and validate again.
 
 ## Minimal App Creation Path
 
@@ -210,13 +236,12 @@ If the outcome is unclear, call `app_recipe` after `workflow_info`. Recipes are
 orientation helpers, not mutations. They help confirm scaffold kinds and expected
 follow-up tools before you commit state.
 
-## Post-Scaffold Rule
+## Compatibility Route: After app_scaffold
 
-`app_scaffold` returns a ready-to-edit `files` array. Once that array exists, the
-model has enough structure to validate through Terrane. Prefer
-`app_build_start`/`app_build_put_file` for new work; if you already have an
-`app_scaffold` result, the next output should be the compatibility dry-run
-bridge:
+Use `app_build_start` for new work; this section applies only when you already
+hold an `app_scaffold` result (for example after resuming an old run).
+`app_scaffold` returns a ready-to-edit `files` array; the next output should be
+the compatibility dry-run bridge:
 
 ```json
 {

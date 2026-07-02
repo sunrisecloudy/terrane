@@ -117,6 +117,16 @@ When updating MCP docs after such runs, prefer machine-readable fields in tool
 results (`nextToolCall`, `nextAfterScaffold`, `operatorActionRequired`,
 `allowedMcpTools`, `forbiddenMcpTools`, `nextModelAction`) over longer prose.
 
+The staged run of the same calendar batch added a third finding: weak models no
+longer fail at discovery, they fail at **contract precision** after discovery —
+Deno/Node module backends that validated but could not run, `input.action`
+object dispatch instead of positional `input[0]`, and object-shaped
+`manifest.ui`. The fixes shipped after that run move the contracts into the
+closest surface: the `initialize` result's `instructions` field, an inline
+`contract` object in `app_build_start`, JS-contract and manifest-shape
+enforcement with fix-it errors in `app_build_validate`, and `app_build_list`
+for lost-draftId stall recovery.
+
 ## Watchdog Checks
 
 For long locked-agent runs, keep a small watchdog loop outside the model:

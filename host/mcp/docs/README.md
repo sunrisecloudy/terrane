@@ -44,6 +44,14 @@ For app building:
 8. Inspect with `app_actions`.
 9. Act with `invoke`.
 
+Before writing files, read the **Backend And Manifest Contract** section of
+`terrane://docs/app-building`: the backend is one plain script with a global
+`function handle(input)` over an array of strings; the manifest's `ui` is a
+string file path, never an object. The `initialize` result's `instructions`
+field and every `app_build_start` result repeat the same contract, and
+`app_build_validate` enforces it with fix-it errors. If you lose a `draftId`,
+recover it with `app_build_list`.
+
 Step 9 can come back with `isError: true` and a `permission_required` object
 instead of a result: the app declared a resource (such as `kv`) in its manifest,
 but declaring a resource no longer auto-grants it — resources are default-deny.

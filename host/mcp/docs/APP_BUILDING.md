@@ -54,6 +54,43 @@ yourself. Keep browser code in a small `index.html` plus a separate asset such
 as `ui.js` when the UI is more than a trivial button. Inline HTML scripts are
 easy for small models to break.
 
+If a stall or restart loses your `draftId`, call `app_build_list`: it returns
+every draft with its app id and file summaries, newest first, so you can resume
+with `app_build_get`, `app_build_put_file`, or `app_build_validate` instead of
+starting over.
+
+## Backend And Manifest Contract
+
+These three contracts are where builds fail after discovery. Follow them
+exactly; `app_build_validate` enforces the first two and returns fix-it errors.
+
+**Backend contract.** `main.js` runs as ONE plain script in the app runtime:
+
+- No top-level `import`/`export`, no `require`, no modules, no Deno or Node
+  APIs. Inline everything.
+- Define one global `function handle(input)` (or declare an `actions` table —
+  the runtime synthesizes `handle` from it). Do not use `const handle = ...`;
+  the runtime reads `handle` from the global object.
+- `input` is an **array of strings**: `input[0]` is the verb, `input.slice(1)`
+  are the args. Never read `input.action`, `input.verb`, or `input.args`.
+- Return a **string**. Use `JSON.stringify(...)` for structured results.
+- Storage is `ctx.resource.kv` (`get`/`set`/`rm`/`scan`/...); wrap `kv.get` in
+  try/catch because missing keys throw.
+
+**Manifest contract.** `manifest.json` is exactly this shape:
+
+```json
+{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}
+```
+
+`ui` is a **string file path** — omit it for backend-only apps, and never use
+an object such as `{"index": "...", "scripts": [...]}`. Scripts and styles are
+referenced from `index.html`, not listed in the manifest.
+
+**UI contract.** Browser code calls
+`window.terrane.invoke("verb", "arg1", "arg2")` with positional string args and
+awaits the backend's string reply. Do not pass an args array or an object.
+
 ## Choosing A Flow
 
 Start with `workflows_list` when the user describes an outcome rather than a

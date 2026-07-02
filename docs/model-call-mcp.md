@@ -204,8 +204,14 @@ Judge the produced app, not the transcript alone:
 - `list_apps` shows the app.
 - `app_actions` returns useful verbs.
 - `invoke` proves at least one write/read or app-specific workflow.
+- Run a **domain-specific smoke check** that exercises the hardest requested
+  behavior, not just build/commit. For the calendar task: seed events that
+  cover the requested range, then run the exact natural-language query and
+  check the matches are non-empty and correct.
 - For UI apps, the coordinator opens the hosted page and verifies one visible
-  user flow. Backend invoke success alone is not enough for a UI task.
+  user flow. Backend invoke success alone is not enough for a UI task. Check
+  UI source for the positional `window.terrane.invoke("verb", "arg1", ...)`
+  shape; an args-array call is a frontend bug backend smoke tests miss.
 - The opencode transcript shows no source reads, shell, broad filesystem list,
   web fetch, or task delegation.
 
@@ -266,16 +272,20 @@ Failure classes:
   unchanged `session.time_updated`: provider/client stall. Stop the run and
   restart from the last structured result. If the last completed call was
   `app_build_start`, call `app_build_get` or continue with `app_build_put_file`;
-  if it was `app_scaffold`, make `app_register_inline` dry-run the first
-  resumed tool call. If it was `app_recipe`, `workflow_info`, or
-  `capability_info`, resume
+  if the `draftId` was lost, `app_build_list` recovers it. If the last call was
+  `app_scaffold`, make `app_register_inline` dry-run the first resumed tool
+  call. If it was `app_recipe`, `workflow_info`, or `capability_info`, resume
   with the next concrete tool named in `firstCalls`, `steps`,
   `nextAfterScaffold`, or `nextToolCall`. In a comparison batch, allow one total
   retry for this stall class; a repeated silent stall is a provider/client
   result, not evidence that Terrane docs are missing.
-- `app_build_validate` or `app_register_inline` returns `isError: true`:
-  Terrane rejected the bundle. Fix the draft or complete files array and retry
-  validation/dry-run.
+- `app_build_validate` or `app_register_inline` returns `isError: true` or
+  `valid: false`: Terrane rejected the bundle. Validation now also enforces the
+  JS runtime contract (no top-level `import`/`export`, a global
+  `function handle(input)` or `actions` table) and prescriptive manifest shape
+  errors (`ui` must be a string path). The errors carry fix-it guidance; a
+  capable model should repair the named file and revalidate. A model that loops
+  on the same validation error is a model result, not a docs gap.
 - No `$TERRANE_HOME/apps/<id>` directory: the model never committed registration
   or registration failed.
 - App exists but UI was not opened: incomplete UI eval, not an MCP failure.
