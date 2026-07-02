@@ -172,7 +172,7 @@ pub(crate) fn mlx_server_status_json(home: &std::path::Path) -> String {
     serde_json::json!({
         "running": status.running,
         "pid": status.pid,
-        "port": status.port,
+        "socket": status.socket,
         "idleSecs": status.idle_secs,
         "models": status.models,
         "runtimeAvailable": runtime.is_some(),

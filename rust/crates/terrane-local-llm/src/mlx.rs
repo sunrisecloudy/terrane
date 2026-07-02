@@ -1,8 +1,9 @@
 //! The MLX backend — the reference Apple-Silicon runtime, resident-first.
 //!
-//! Generations go to the shared resident `mlx_lm.server` (see [`crate::server`])
-//! over the OpenAI-compatible streaming API, so tokens stream live and the
-//! model stays loaded between calls; if the server cannot be used
+//! Generations go to the shared resident MLX worker (see [`crate::server`]) —
+//! Terrane's own Rust-managed serving layer over the bare `mlx_lm` generation
+//! loop — so tokens stream live at the engine's full decode speed and the
+//! model stays loaded between calls; if the worker cannot be used
 //! (`TERRANE_MLX_RESIDENT=0`, or it fails to start) each call falls back to a
 //! one-shot `mlx_lm.generate` subprocess.
 //!
@@ -12,14 +13,15 @@
 //! extraction and validation with one retry, unlike llama.cpp's token-mask
 //! llguidance path.
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::server::{ensure_server, touch};
+use crate::server::{ensure_worker, touch};
 use crate::setup::{resolve_runtime, MlxRuntime};
 use crate::{Constraint, GenerateRequest, GenerateResponse, LlmError, LocalLlm, StopReason};
 
@@ -68,22 +70,25 @@ impl MlxBackend {
         stream_to: Option<&mut dyn FnMut(&str)>,
     ) -> Result<MlxRun, LlmError> {
         if resident_enabled() {
-            match ensure_server(&self.home, &self.runtime) {
-                Ok(port) => return self.run_resident(port, prompt, request, deadline, stream_to),
+            match ensure_worker(&self.home, &self.runtime) {
+                Ok(socket) => {
+                    return self.run_resident(&socket, prompt, request, deadline, stream_to)
+                }
                 Err(error) => {
                     // The one-shot path gives a second chance (and its own,
                     // equally clear error when the runtime is truly absent).
-                    eprintln!("mlx resident server unavailable ({error}); falling back to one-shot generation");
+                    eprintln!("mlx resident worker unavailable ({error}); falling back to one-shot generation");
                 }
             }
         }
         self.run_once(prompt, request, deadline, stream_to)
     }
 
-    /// Stream one chat completion from the resident server.
+    /// Stream one generation from the resident worker over its Unix-socket
+    /// line protocol.
     fn run_resident(
         &self,
-        port: u16,
+        socket: &Path,
         prompt: &str,
         request: &GenerateRequest,
         deadline: Option<Instant>,
@@ -94,74 +99,75 @@ impl MlxBackend {
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
             .unwrap_or(Duration::from_secs(3600))
             .max(Duration::from_millis(100));
-        let agent = ureq::AgentBuilder::new().timeout_read(read_timeout).build();
+        let stream = UnixStream::connect(socket)
+            .map_err(|e| LlmError::Generate(format!("mlx worker connect failed: {e}")))?;
+        stream
+            .set_read_timeout(Some(read_timeout))
+            .map_err(|e| LlmError::Generate(format!("mlx worker socket setup failed: {e}")))?;
+        let mut writer = stream
+            .try_clone()
+            .map_err(|e| LlmError::Generate(format!("mlx worker socket setup failed: {e}")))?;
         let body = serde_json::json!({
             "model": self.model_ref,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": request.config.max_tokens,
+            "prompt": prompt,
+            "maxTokens": request.config.max_tokens,
             "temperature": request.config.temperature,
-            // A seed opts the request out of mlx_lm.server's continuous-batching
-            // engine onto its sequential fast path — ~1.8× faster per request,
-            // and Terrane asks one generation at a time anyway.
             "seed": request.config.seed,
-            "stream": true,
-            "stream_options": {"include_usage": true},
         });
-        let response = agent
-            .post(&format!("http://127.0.0.1:{port}/v1/chat/completions"))
-            .set("Content-Type", "application/json")
-            .send_string(&body.to_string())
-            .map_err(|e| LlmError::Generate(format!("mlx server request failed: {e}")))?;
+        writer
+            .write_all(format!("{body}\n").as_bytes())
+            .and_then(|()| writer.flush())
+            .map_err(|e| LlmError::Generate(format!("mlx worker request failed: {e}")))?;
 
         let mut text = String::new();
         let mut delta_count: u32 = 0;
-        let mut usage_tokens: Option<u32> = None;
+        let mut done_tokens: Option<u32> = None;
         let mut finish: Option<String> = None;
         let mut timed_out = false;
-        let reader = BufReader::new(response.into_reader());
-        for line in reader.lines() {
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 timed_out = true;
                 break;
             }
-            let line = match line {
-                Ok(line) => line,
-                // A read timeout mid-stream is the deadline firing.
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) => break, // worker hung up without a done line
+                Ok(_) => {}
+                // A read timeout mid-stream is the deadline firing; dropping
+                // the connection makes the worker abandon the generation.
                 Err(_) => {
                     timed_out = true;
                     break;
                 }
-            };
-            match parse_sse_line(&line) {
-                SseEvent::Done => break,
-                SseEvent::Skip => {}
-                SseEvent::Chunk {
-                    content,
-                    finish_reason,
-                    usage_completion_tokens,
-                } => {
-                    if let Some(piece) = content {
-                        if !piece.is_empty() {
-                            if let Some(stream) = stream_to.as_deref_mut() {
-                                stream(&piece);
-                            }
-                            text.push_str(&piece);
-                            delta_count += 1;
-                        }
+            }
+            match parse_worker_line(&line) {
+                WorkerEvent::Delta(piece) => {
+                    if let Some(stream) = stream_to.as_deref_mut() {
+                        stream(&piece);
                     }
-                    if finish_reason.is_some() {
-                        finish = finish_reason;
-                    }
-                    if usage_completion_tokens.is_some() {
-                        usage_tokens = usage_completion_tokens;
-                    }
+                    text.push_str(&piece);
+                    delta_count += 1;
                 }
+                WorkerEvent::Done {
+                    tokens,
+                    finish_reason,
+                } => {
+                    done_tokens = tokens;
+                    finish = finish_reason;
+                    break;
+                }
+                WorkerEvent::Error(message) => {
+                    return Err(LlmError::Generate(format!("mlx worker: {message}")));
+                }
+                WorkerEvent::Skip => {}
             }
         }
         touch(&self.home);
         Ok(MlxRun {
             body: text.trim().to_string(),
-            token_count: usage_tokens.unwrap_or(delta_count),
+            token_count: done_tokens.unwrap_or(delta_count),
             hit_token_budget: finish.as_deref() == Some("length"),
             timed_out,
         })
@@ -296,37 +302,38 @@ impl LocalLlm for MlxBackend {
     }
 }
 
-enum SseEvent {
-    Chunk {
-        content: Option<String>,
+enum WorkerEvent {
+    Delta(String),
+    Done {
+        tokens: Option<u32>,
         finish_reason: Option<String>,
-        usage_completion_tokens: Option<u32>,
     },
-    Done,
+    Error(String),
     Skip,
 }
 
-/// One SSE line from `mlx_lm.server`: `data: {chunk}`, `data: [DONE]`,
-/// keepalive comments starting with `:`, or blank separators.
-fn parse_sse_line(line: &str) -> SseEvent {
+/// One newline-delimited JSON line from the resident worker: a text delta
+/// (`{"t": …}`), the terminal `{"done": true, …}` record, or an error.
+fn parse_worker_line(line: &str) -> WorkerEvent {
     let trimmed = line.trim();
-    let Some(payload) = trimmed.strip_prefix("data:") else {
-        return SseEvent::Skip; // keepalive comment, blank, or unknown field
-    };
-    let payload = payload.trim();
-    if payload == "[DONE]" {
-        return SseEvent::Done;
+    if trimmed.is_empty() {
+        return WorkerEvent::Skip;
     }
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return SseEvent::Skip;
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return WorkerEvent::Skip;
     };
-    let choice = &value["choices"][0];
-    SseEvent::Chunk {
-        content: choice["delta"]["content"].as_str().map(str::to_string),
-        finish_reason: choice["finish_reason"].as_str().map(str::to_string),
-        usage_completion_tokens: value["usage"]["completion_tokens"]
-            .as_u64()
-            .and_then(|n| u32::try_from(n).ok()),
+    if let Some(message) = value["error"].as_str() {
+        return WorkerEvent::Error(message.to_string());
+    }
+    if value["done"].as_bool() == Some(true) {
+        return WorkerEvent::Done {
+            tokens: value["tokens"].as_u64().and_then(|n| u32::try_from(n).ok()),
+            finish_reason: value["finish"].as_str().map(str::to_string),
+        };
+    }
+    match value["t"].as_str() {
+        Some(piece) if !piece.is_empty() => WorkerEvent::Delta(piece.to_string()),
+        _ => WorkerEvent::Skip,
     }
 }
 
@@ -463,22 +470,29 @@ pub(crate) fn extract_json_object(text: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-pub(crate) fn parse_sse_line_for_tests(
-    line: &str,
-) -> (Option<String>, Option<String>, Option<u32>, bool, bool) {
-    match parse_sse_line(line) {
-        SseEvent::Chunk {
-            content,
+#[derive(Debug)]
+pub(crate) enum WorkerEventForTests {
+    Delta(String),
+    Done {
+        tokens: Option<u32>,
+        finish_reason: Option<String>,
+    },
+    Error(String),
+    Skip,
+}
+
+#[cfg(test)]
+pub(crate) fn parse_worker_line_for_tests(line: &str) -> WorkerEventForTests {
+    match parse_worker_line(line) {
+        WorkerEvent::Delta(piece) => WorkerEventForTests::Delta(piece),
+        WorkerEvent::Done {
+            tokens,
             finish_reason,
-            usage_completion_tokens,
-        } => (
-            content,
+        } => WorkerEventForTests::Done {
+            tokens,
             finish_reason,
-            usage_completion_tokens,
-            false,
-            false,
-        ),
-        SseEvent::Done => (None, None, None, true, false),
-        SseEvent::Skip => (None, None, None, false, true),
+        },
+        WorkerEvent::Error(message) => WorkerEventForTests::Error(message),
+        WorkerEvent::Skip => WorkerEventForTests::Skip,
     }
 }

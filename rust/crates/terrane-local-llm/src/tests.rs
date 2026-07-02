@@ -2,7 +2,9 @@
 //! resolution. Engine behaviour with real weights lives in `tests/engine.rs`
 //! (`#[ignore]`d).
 
-use crate::mlx::{extract_json_object, parse_generation_tokens, parse_sse_line_for_tests};
+use crate::mlx::{
+    extract_json_object, parse_generation_tokens, parse_worker_line_for_tests, WorkerEventForTests,
+};
 
 #[test]
 fn generation_tokens_parse_from_mlx_stats() {
@@ -28,36 +30,46 @@ fn json_object_extraction_survives_prose_and_fences() {
 }
 
 #[test]
-fn sse_lines_parse_deltas_done_usage_and_keepalives() {
-    // Content delta.
-    let (content, finish, usage, done, skip) = parse_sse_line_for_tests(
-        r#"data: {"object":"chat.completion.chunk","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":"hi"}}]}"#,
-    );
-    assert_eq!(content.as_deref(), Some("hi"));
-    assert_eq!(finish, None);
-    assert!(!done && !skip && usage.is_none());
+fn worker_lines_parse_deltas_done_and_errors() {
+    // Text delta.
+    match parse_worker_line_for_tests(r#"{"t": "hi"}"#) {
+        WorkerEventForTests::Delta(piece) => assert_eq!(piece, "hi"),
+        other => panic!("expected delta, got {other:?}"),
+    }
 
-    // Final chunk carries finish_reason without content.
-    let (content, finish, _, done, _) = parse_sse_line_for_tests(
-        r#"data: {"choices":[{"index":0,"finish_reason":"stop","delta":{"role":"assistant"}}]}"#,
-    );
-    assert_eq!(content, None);
-    assert_eq!(finish.as_deref(), Some("stop"));
-    assert!(!done);
+    // Terminal record with engine stats.
+    match parse_worker_line_for_tests(
+        r#"{"done": true, "tokens": 256, "genTps": 380.1, "promptTps": 542.0, "finish": "length"}"#,
+    ) {
+        WorkerEventForTests::Done {
+            tokens,
+            finish_reason,
+        } => {
+            assert_eq!(tokens, Some(256));
+            assert_eq!(finish_reason.as_deref(), Some("length"));
+        }
+        other => panic!("expected done, got {other:?}"),
+    }
 
-    // Usage-only chunk (include_usage) has an empty choices array.
-    let (content, _, usage, done, _) = parse_sse_line_for_tests(
-        r#"data: {"choices":[],"usage":{"prompt_tokens":13,"completion_tokens":4,"total_tokens":17}}"#,
-    );
-    assert_eq!(content, None);
-    assert_eq!(usage, Some(4));
-    assert!(!done);
+    // Worker-side failure.
+    match parse_worker_line_for_tests(r#"{"error": "model not found"}"#) {
+        WorkerEventForTests::Error(message) => assert!(message.contains("model not found")),
+        other => panic!("expected error, got {other:?}"),
+    }
 
-    // Terminator, keepalive comment, and blank separator.
-    assert!(parse_sse_line_for_tests("data: [DONE]").3);
-    assert!(parse_sse_line_for_tests(": keepalive 3/17").4);
-    assert!(parse_sse_line_for_tests("").4);
-    assert!(parse_sse_line_for_tests("data: not-json").4);
+    // Blank and malformed lines are skipped.
+    assert!(matches!(
+        parse_worker_line_for_tests(""),
+        WorkerEventForTests::Skip
+    ));
+    assert!(matches!(
+        parse_worker_line_for_tests("not-json"),
+        WorkerEventForTests::Skip
+    ));
+    assert!(matches!(
+        parse_worker_line_for_tests(r#"{"t": ""}"#),
+        WorkerEventForTests::Skip
+    ));
 }
 
 mod resolution {
@@ -112,15 +124,15 @@ mod server_state {
         assert!(!status.running);
         assert_eq!(status.pid, None);
 
-        // A state file pointing at a dead port reports not-running.
+        // A state file pointing at a dead socket reports not-running.
         fs::create_dir_all(home.join("engines")).unwrap();
         fs::write(
             home.join("engines/mlx-server.json"),
-            r#"{"pid":4194000,"port":1,"started_unix":0}"#,
+            r#"{"pid":4194000,"socket":"/nonexistent/mlx-worker.sock","started_unix":0}"#,
         )
         .unwrap();
         let status = server_status(home);
         assert!(!status.running);
-        assert_eq!(status.port, None);
+        assert_eq!(status.socket, None);
     }
 }

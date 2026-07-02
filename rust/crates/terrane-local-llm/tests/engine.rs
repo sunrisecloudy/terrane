@@ -80,7 +80,7 @@ fn resident_mlx_server_serves_warm_asks_and_stops() {
     assert!(cold.ok(), "stopped by {:?}", cold.stop);
     let status = server_status(home);
     assert!(status.running, "server should be resident after an ask");
-    assert!(status.port.is_some() && status.pid.is_some());
+    assert!(status.socket.is_some() && status.pid.is_some());
 
     // Warm: the resident server answers fast.
     let started = std::time::Instant::now();
