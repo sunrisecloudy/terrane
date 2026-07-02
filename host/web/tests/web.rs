@@ -1518,8 +1518,8 @@ fn live_version_changes_when_bundle_file_changes() {
 }
 
 /// Conformance: the running web host serves *every* HTTP route the contract
-/// (`terrane_api::host_contract`) declares. Premium runs the analogous black-box
-/// check against its server to prove it's a superset.
+/// (`terrane_api::host_contract`) declares. This is part of the conformance
+/// suite consumers (e.g. premium) run against a pinned checkout.
 #[test]
 fn web_host_serves_every_declared_route() {
     let dir = tempdir().unwrap();

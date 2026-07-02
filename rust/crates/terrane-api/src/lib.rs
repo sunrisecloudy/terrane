@@ -3,9 +3,9 @@
 //! The single source of the surface that terrane's edge hosts expose: the **web
 //! host** (HTTP) and the **MCP host** (stdio JSON-RPC). It is the OSS-side typed
 //! implementation of the contract that `terrane-premium` consumes as a pinned
-//! `public-contract.json` (premium is a *superset* — every route/tool here must
-//! exist there too). Kept dependency-light (just nanoserde) so it stays a clean,
-//! vendorable contract.
+//! `public-contract.json` (premium is a hosted *control plane*, not a host — it
+//! pins and verifies this contract but does not serve these routes/tools). Kept
+//! dependency-light (just nanoserde) so it stays a clean, vendorable contract.
 //!
 //! What lives here: the wire types (request/response JSON), the route table, the
 //! MCP tool descriptors, and [`host_contract`] — the serializable summary that
@@ -519,8 +519,8 @@ pub struct McpPromptEntry {
     pub description: String,
 }
 
-/// The host-API slice of `public-contract.json`: the routes and tools premium
-/// must implement as a superset. The `terrane contract export` step serializes
+/// The host-API slice of `public-contract.json`: the routes and tools terrane's
+/// hosts serve and premium pins. The `terrane contract export` step serializes
 /// this (alongside the capability surface from `terrane-core`).
 #[derive(Clone, Debug, PartialEq, Eq, SerJson, DeJson)]
 pub struct HostContract {
