@@ -2,12 +2,9 @@ use std::collections::BTreeMap;
 
 use terrane_cap_interface::AppId;
 
-/// The engines a spec may target today.
-pub const BACKENDS: [&str; 1] = ["llama_cpp"];
-
-/// Backends reserved for later phases; registering them is refused with a
-/// pointer to the roadmap instead of an "unknown backend" error.
-pub const RESERVED_BACKENDS: [&str; 1] = ["mlx"];
+/// The engines a spec may target: llama.cpp over GGUF weights, and the MLX
+/// runtime on Apple Silicon.
+pub const BACKENDS: [&str; 2] = ["llama_cpp", "mlx"];
 
 /// A registered local model: where its weights live and how to run it.
 ///
@@ -18,6 +15,8 @@ pub const RESERVED_BACKENDS: [&str; 1] = ["mlx"];
 pub struct LocalModelSpec {
     pub backend: String,
     pub format: String,
+    /// For `llama_cpp`: path to the GGUF weights file. For `mlx`: a local
+    /// model directory or a Hugging Face repo id the MLX runtime resolves.
     pub local_path: String,
     pub context_length: Option<u32>,
     pub chat_template: Option<String>,

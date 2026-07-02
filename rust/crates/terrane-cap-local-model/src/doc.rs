@@ -10,8 +10,8 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
         namespace: "local-model".to_string(),
         title: "Recorded Local Model Inference".to_string(),
         summary:
-            "Registered on-device LLMs (llama.cpp/GGUF) with recorded, replayable generations, \
-             optionally constrained to a JSON schema or GBNF grammar."
+            "Registered on-device LLMs (llama.cpp/GGUF and MLX on Apple Silicon) with recorded, \
+             replayable generations, optionally constrained to a JSON schema or GBNF grammar."
                 .to_string(),
         status: "alpha".to_string(),
         version: "0.1.0".to_string(),
@@ -67,16 +67,20 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
             "--schema (JSON object) and --grammar (GBNF) are mutually exclusive; both constrain \
              decoding at the edge."
                 .to_string(),
-            "Different backends for the same weights (e.g. gguf vs a future mlx build) are two \
-             engine targets, not interchangeable engines: quantization, tokenizer/template \
-             handling, and samplers all shift output."
+            "On llama_cpp a schema is token-mask enforced (llguidance); on mlx it is \
+             prompt-guided with extraction, validation, and one retry. --grammar is \
+             llama_cpp-only."
+                .to_string(),
+            "Different backends for the same weights (gguf vs mlx) are two engine targets, not \
+             interchangeable engines: quantization, tokenizer/template handling, and samplers \
+             all shift output."
                 .to_string(),
         ],
         limits: vec![
             limit(
                 "supportedBackends",
                 &BACKENDS.join(","),
-                "llama.cpp is the production baseline; mlx is reserved for the Apple-acceleration phase.",
+                "llama.cpp is the production baseline; mlx is the Apple-acceleration path (needs the mlx-lm runtime).",
             ),
             limit(
                 "pullSource",

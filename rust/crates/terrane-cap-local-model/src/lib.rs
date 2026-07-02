@@ -17,7 +17,7 @@ mod events;
 mod types;
 
 pub use events::{registered_event, removed_event, responded_event};
-pub use types::{LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS, RESERVED_BACKENDS};
+pub use types::{LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS};
 
 pub struct LocalModelCapability;
 

@@ -48,13 +48,17 @@ fn strings(args: &[&str]) -> Vec<String> {
 }
 
 fn store_with(model: Option<&str>) -> Store {
+    store_with_backend(model, "llama_cpp")
+}
+
+fn store_with_backend(model: Option<&str>, backend: &str) -> Store {
     let mut state = LocalModelState::default();
     if let Some(id) = model {
         state.specs.insert(
             id.to_string(),
             crate::LocalModelSpec {
-                backend: "llama_cpp".into(),
-                format: "gguf".into(),
+                backend: backend.into(),
+                format: if backend == "mlx" { "mlx" } else { "gguf" }.into(),
                 local_path: "/models/m.gguf".into(),
                 context_length: None,
                 chat_template: None,
@@ -66,6 +70,32 @@ fn store_with(model: Option<&str>) -> Store {
         );
     }
     Store { local_model: state }
+}
+
+#[test]
+fn ask_rejects_gbnf_grammars_on_the_mlx_backend() {
+    let store = store_with_backend(Some("qwen-mlx"), "mlx");
+    let bus = Bus {
+        apps: vec!["demo".into()],
+    };
+    let ctx = CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    let err = decide_ask(
+        ctx,
+        &strings(&["demo", "qwen-mlx", "--grammar", "root ::= \"x\"", "hi"]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("llama_cpp-only"), "{err}");
+
+    // A schema is fine on mlx — it lowers to prompt-guided typed output.
+    let ok = decide_ask(
+        ctx,
+        &strings(&["demo", "qwen-mlx", "--schema", r#"{"type":"object"}"#, "hi"]),
+    );
+    assert!(ok.is_ok(), "{ok:?}");
 }
 
 #[test]
@@ -135,9 +165,13 @@ fn register_validates_id_backend_and_path() {
         );
     }
 
-    // The reserved backend gets a roadmap message, not "unknown".
-    let err = decide_register(ctx(), &strings(&["m1", "mlx", "/m.mlx"])).unwrap_err();
-    assert!(err.to_string().contains("not supported yet"), "{err}");
+    // The mlx backend registers with a repo id or local dir as its path.
+    let ok = decide_register(
+        ctx(),
+        &strings(&["m2", "mlx", "mlx-community/Qwen3.5-0.8B-MLX-4bit"]),
+    )
+    .unwrap();
+    assert!(matches!(ok, Decision::Commit(records) if records.len() == 1));
 }
 
 #[test]

@@ -3,7 +3,7 @@ use terrane_cap_interface::{
 };
 
 use crate::events::{registered_event, removed_event};
-use crate::types::{LocalModelSpec, LocalModelState, BACKENDS, RESERVED_BACKENDS};
+use crate::types::{LocalModelSpec, LocalModelState, BACKENDS};
 
 /// The optional spec flags shared by `register` and `pull`.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -95,14 +95,15 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
     let app = arg(args, 0, "app")?;
     let model = arg(args, 1, "model id")?;
     ensure_app_exists(ctx.bus, &app)?;
-    if !state_ref::<LocalModelState>(ctx.state, "local-model")?
+    let backend = state_ref::<LocalModelState>(ctx.state, "local-model")?
         .specs
-        .contains_key(&model)
-    {
-        return Err(Error::InvalidInput(format!(
-            "unknown local model: {model}; register or pull it first"
-        )));
-    }
+        .get(&model)
+        .map(|spec| spec.backend.clone())
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "unknown local model: {model}; register or pull it first"
+            ))
+        })?;
 
     let mut schema = None;
     let mut grammar = None;
@@ -128,6 +129,11 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
         return Err(Error::InvalidInput(
             "--schema and --grammar are mutually exclusive".into(),
         ));
+    }
+    if grammar.is_some() && backend != "llama_cpp" {
+        return Err(Error::InvalidInput(format!(
+            "--grammar is llama_cpp-only; the {backend} backend supports --schema"
+        )));
     }
     let prompt = required_tail(args, i, "prompt")?;
 
@@ -160,11 +166,6 @@ fn supported_backend(raw: String) -> Result<String> {
     if BACKENDS.contains(&backend) {
         return Ok(backend.to_string());
     }
-    if RESERVED_BACKENDS.contains(&backend) {
-        return Err(Error::InvalidInput(format!(
-            "backend {backend} is not supported yet (planned Apple-acceleration phase); use llama_cpp"
-        )));
-    }
     Err(Error::InvalidInput(format!(
         "unknown backend {backend:?}; expected one of {BACKENDS:?}"
     )))
@@ -173,7 +174,8 @@ fn supported_backend(raw: String) -> Result<String> {
 fn backend_format(backend: &str) -> &'static str {
     match backend {
         "llama_cpp" => "gguf",
-        // Reserved backends are refused before this is reached.
+        "mlx" => "mlx",
+        // Unknown backends are refused before this is reached.
         _ => "unknown",
     }
 }

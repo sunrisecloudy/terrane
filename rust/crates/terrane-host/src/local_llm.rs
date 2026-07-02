@@ -27,7 +27,8 @@ pub(crate) fn call(
 
     use terrane_cap_local_model::responded_event;
     use terrane_local_llm::{
-        Constraint, GenerateRequest, GenerationConfig, LlamaCppBackend, LocalLlm, ModelFile,
+        Constraint, GenerateRequest, GenerationConfig, LlamaCppBackend, LocalLlm, MlxBackend,
+        ModelFile,
     };
 
     let spec = state
@@ -35,19 +36,25 @@ pub(crate) fn call(
         .specs
         .get(model)
         .ok_or_else(|| Error::InvalidInput(format!("unknown local model: {model}")))?;
-    if spec.backend != "llama_cpp" {
-        return Err(Error::Runtime(format!(
-            "local model backend {} has no edge engine yet",
-            spec.backend
-        )));
-    }
 
-    let mut backend = LlamaCppBackend::load(&ModelFile {
-        path: std::path::PathBuf::from(&spec.local_path),
-        context_length: spec.context_length,
-        chat_template_override: spec.chat_template.clone(),
-    })
-    .map_err(|e| Error::Runtime(e.to_string()))?;
+    let mut backend: Box<dyn LocalLlm> = match spec.backend.as_str() {
+        "llama_cpp" => Box::new(
+            LlamaCppBackend::load(&ModelFile {
+                path: std::path::PathBuf::from(&spec.local_path),
+                context_length: spec.context_length,
+                chat_template_override: spec.chat_template.clone(),
+            })
+            .map_err(|e| Error::Runtime(e.to_string()))?,
+        ),
+        "mlx" => {
+            Box::new(MlxBackend::load(&spec.local_path).map_err(|e| Error::Runtime(e.to_string()))?)
+        }
+        other => {
+            return Err(Error::Runtime(format!(
+                "local model backend {other} has no edge engine"
+            )))
+        }
+    };
 
     let constraint = match (schema, grammar) {
         (Some(schema), _) => Some(Constraint::JsonSchema(schema.to_string())),
