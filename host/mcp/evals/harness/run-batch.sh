@@ -20,13 +20,15 @@ while IFS=$'\t' read -r slug model label <&3; do
   "$harness_dir/run-one.sh" "$model" "$slug" "$label" "$ROOT"
 done 3< "$ROOT/models.tsv"
 
-# Resume phase: build exit 124 (timeout) AND no installed app. Exit 0 with no
-# app is a model result ("early stop"), not resumed — keep phases comparable.
+# Resume phase: any build that ended without an installed app gets one short
+# second session. Run-4 showed provider stalls also end with exit 0 and a few
+# hundred output tokens, so exit code alone cannot separate "model early
+# stop" from "provider died" — the taxonomy's one-retry rule covers both, and
+# report.tsv records resume_used so the phases stay distinguishable.
 while IFS=$'\t' read -r slug model label <&3; do
   [ -n "$slug" ] || continue
-  build_exit="$(awk -F'\t' -v s="$slug" '$1==s && $3=="build" {print $4}' "$ROOT/results.tsv" | tail -1)"
   home="$ROOT/home-$slug"
-  if [ "$build_exit" = "124" ] && [ -z "$(installed_app_id "$home")" ]; then
+  if [ -f "$ROOT/out-$slug.log" ] && [ -z "$(installed_app_id "$home")" ]; then
     "$harness_dir/resume-one.sh" "$model" "$slug" "$label" "$ROOT"
   fi
 done 3< "$ROOT/models.tsv"

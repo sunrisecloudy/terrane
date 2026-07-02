@@ -2407,6 +2407,7 @@ fn app_build_start_json(
             "tool": "app_build_put_file",
             "arguments": {"draftId": draft_id, "path": "main.js", "content": "complete file content"}
         },
+        "nextModelAction": "Reply with a tool call only: app_build_put_file carrying your complete main.js. Do not print the app as prose and do not read scaffold files back — the contract above is all you need.",
         "next": next,
         "stallRecovery": {
             "resume": "Call app_build_get with draftId to recover file summaries, then continue with app_build_put_file or app_build_validate.",
@@ -2567,7 +2568,8 @@ fn app_build_get_json(draft_id: &str, path: &str, include_content: bool) -> Resu
             "file": file_summary(file),
             "unmodifiedScaffold": pristine,
             "bundleHash": validation_token(&files),
-            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": path, "content": "complete file content"}}
+            "nextToolCall": {"tool": "app_build_put_file", "arguments": {"draftId": draft_id, "path": path, "content": "complete file content"}},
+            "nextModelAction": "Reply with a tool call only (app_build_put_file or app_build_validate). Do not print file contents or the app as prose."
         });
         if pristine {
             value["note"] = json!("This file is still the unmodified scaffold shell. You do not need its content — the contract from app_build_start summarizes it. Write your main.js with app_build_put_file first.");
@@ -2591,6 +2593,7 @@ fn app_build_get_json(draft_id: &str, path: &str, include_content: bool) -> Resu
         "bundleHash": validation_token(&files),
         "metadata": read_draft_metadata(draft_id).unwrap_or_else(|_| json!({})),
         "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": draft_id}},
+        "nextModelAction": "Reply with a tool call only (app_build_put_file or app_build_validate). Do not read files marked unmodifiedScaffold:true and do not print the app as prose.",
         "next": [
             "Do not read files marked unmodifiedScaffold:true — they are the working shell and the contract from app_build_start summarizes them. Write your main.js first.",
             "Use app_build_get with includeContent:true and a path only for files you already changed.",
@@ -2795,6 +2798,7 @@ fn app_build_list_json() -> Result<String, String> {
     Ok(json!({
         "drafts": drafts,
         "nextToolCall": {"tool": "app_build_validate", "arguments": {"draftId": newest}},
+        "nextModelAction": "Call app_build_validate with the newest draftId now; do not read files first. If it returns valid:true, call app_build_commit immediately.",
         "next": [
             "Drafts are newest-first. Resume by calling app_build_validate with your draftId; if it returns valid:true, commit immediately.",
             "Only read files that validation complains about (app_build_get); do not re-read unmodified scaffold files.",

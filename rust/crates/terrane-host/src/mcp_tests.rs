@@ -1031,6 +1031,10 @@ fn app_build_list_recovers_draft_ids() {
         list.contains("app_build_get"),
         "list should route back into the draft: {list}"
     );
+    assert!(
+        list.contains("do not read files first"),
+        "list should route resumed models to validate-first: {list}"
+    );
 }
 
 #[test]
@@ -1360,6 +1364,11 @@ fn app_build_get_flags_unmodified_scaffold_files() {
     assert!(
         get_all.contains("Do not read files marked unmodifiedScaffold"),
         "summary should steer away from scaffold reads: {get_all}"
+    );
+    assert!(
+        start.contains("Reply with a tool call only")
+            && get_all.contains("Reply with a tool call only"),
+        "start/get should carry the anti-prose nextModelAction: {start}"
     );
 
     let get_one = handle_json_rpc(
