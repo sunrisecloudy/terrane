@@ -32,8 +32,10 @@ Request ──▶ decide ──▶ [Event] ──▶ commit (log) ──▶ broa
        new commands in `public_authz.rs`; audit for bypass side-channels → [06-permissions-and-policy.md](06-permissions-and-policy.md)
 7. [ ] **Tests, four layers** — `src/tests.rs`, `tests/capability.rs`, engine
        tests with `replay_matches()`, binary e2e (`#[ignore]` if effectful) → [07-testing.md](07-testing.md)
-8. [ ] **Docs + done** — `doc()`/`describe()`, regenerate `APP_API.md`, sweep
-       the MCP docs, run the full gate, commit small and green → [08-docs-and-done.md](08-docs-and-done.md)
+8. [ ] **Public surface** — decide CLI/MCP/HTTP exposure, verify contract export,
+       smoke capability discovery, keep old logs replayable → [08-public-surface-and-release.md](08-public-surface-and-release.md)
+9. [ ] **Docs + done** — `doc()`/`describe()`, regenerate `APP_API.md`, sweep
+       the MCP docs, run the full gate, commit small and green → [09-docs-and-done.md](09-docs-and-done.md)
 
 ## Reference crates
 

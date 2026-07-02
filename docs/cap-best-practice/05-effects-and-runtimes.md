@@ -32,6 +32,13 @@ Rules:
   `Decision::Commit(vec![])` when an identity already exists, and its fold
   guards "first identity wins" so even a duplicated event can't re-mint. Use
   the same two-sided guard for any mint-once effect.
+- Bound the edge: every runner arm needs explicit timeouts, output limits, and
+  path handling. Reject symlink surprises and unscoped host paths the way
+  `app.import` does, and never record secrets or ambient environment values into
+  events.
+- Decide retry semantics before exposing the command. If retrying can duplicate
+  work, record a stable result event or require an idempotency key in the
+  command args.
 - Effectful e2e tests hit the real network/CLIs, so they are `#[ignore]`d with
   a reason ([07-testing.md](07-testing.md)).
 

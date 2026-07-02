@@ -46,6 +46,19 @@ your namespace to `grant_spec_inventory.rs` / `grant_verbs_match_specs.rs`
 ([06-permissions-and-policy.md](06-permissions-and-policy.md)), and expect the
 `docs/APP_API.md` drift test in `host.rs` to demand a regeneration.
 
+## Policy and client-surface tests
+
+Capabilities with commands or resources also need host-policy coverage:
+
+- `rust/crates/terrane-host/tests/public_authz.rs` — classify every registered
+  command/query; assert public commands either allow, grant-gate with a stable
+  app arg index, or refuse with a reason.
+- `rust/crates/terrane-host/src/mcp_tests.rs` — when MCP behavior changes, cover
+  `capability_command` help/dry-run/dispatch, `permission_required` shape, and
+  refusal text visible to agents.
+- `rust/crates/terrane-host/tests/contract.rs` — when exported surface changes,
+  verify the machine-readable contract still matches live declarations.
+
 ## Binary e2e tests
 
 Add `mod <ns>;` to `rust/crates/terrane-host/tests/cap/main.rs`. The helper
@@ -86,4 +99,4 @@ And validate the separate host workspace if you touched the CLI surface:
 cd host/cli && cargo test && cargo clippy --all-targets -- -D warnings
 ```
 
-Next: [08-docs-and-done.md](08-docs-and-done.md).
+Next: [08-public-surface-and-release.md](08-public-surface-and-release.md).

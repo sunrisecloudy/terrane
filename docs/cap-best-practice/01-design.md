@@ -4,10 +4,10 @@ Decide these before writing any code. Every later step follows from them.
 
 ## Is it a capability at all?
 
-**New commands are new capabilities.** If Terrane needs a new verb, it gets a
-crate under `rust/crates/terrane-cap-<name>/` implementing `Capability`. Never
-reintroduce a central command/event enum or a central decide/fold match — the
-registry is the only aggregation point.
+**New command domains are new capabilities.** If Terrane needs a new domain of
+verbs, it gets a crate under `rust/crates/terrane-cap-<name>/` implementing
+`Capability`. Never reintroduce a central command/event enum or a central
+decide/fold match — the registry is the only aggregation point.
 
 It is **not** a new capability when:
 

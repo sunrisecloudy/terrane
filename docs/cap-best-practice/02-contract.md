@@ -84,6 +84,22 @@ What this demands of you:
   applies the op to a fork and records the resulting *export bytes*; `fold`
   imports those exact bytes.
 
+## Compatibility: logged facts are forever
+
+Once a command/event reaches `main`, existing logs may contain it. Do not silently
+change how old records decode or fold.
+
+- Keep event kind strings stable. If the meaning changes, add a new kind such as
+  `ns.thing_configured.v2` or version the payload explicitly.
+- Prefer additive payload changes with defaults. If borsh decoding old bytes
+  would fail, keep a legacy decoder path and test replay of a fixture containing
+  the old record.
+- Version reserved-KV prefixes (`__terrane/<ns>/v1/...`) before changing stored
+  layout, and either fold both layouts or ship an explicit migration event.
+- Renaming a command is a compatibility change too: keep old docs/tests until
+  every caller path has moved or provide a deliberate alias with deprecation
+  notes.
+
 ## Errors
 
 Use the typed enum from `rust/crates/terrane-cap-interface/src/abi.rs` — never
