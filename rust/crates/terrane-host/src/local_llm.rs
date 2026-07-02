@@ -168,12 +168,15 @@ pub(crate) fn setup_mlx(home: &std::path::Path) -> Result<String> {
 #[cfg(feature = "local-llm")]
 pub(crate) fn mlx_server_status_json(home: &std::path::Path) -> String {
     let status = terrane_local_llm::server_status(home);
+    let runtime = terrane_local_llm::resolve_runtime(home);
     serde_json::json!({
         "running": status.running,
         "pid": status.pid,
         "port": status.port,
         "idleSecs": status.idle_secs,
         "models": status.models,
+        "runtimeAvailable": runtime.is_some(),
+        "runtimeSource": runtime.map(|r| r.source.describe()),
     })
     .to_string()
 }
@@ -197,7 +200,11 @@ pub(crate) fn setup_mlx(_home: &std::path::Path) -> Result<String> {
 
 #[cfg(not(feature = "local-llm"))]
 pub(crate) fn mlx_server_status_json(_home: &std::path::Path) -> String {
-    r#"{"running":false,"pid":null,"port":null,"idleSecs":null,"models":[]}"#.to_string()
+    concat!(
+        r#"{"running":false,"pid":null,"port":null,"idleSecs":null,"models":[],"#,
+        r#""runtimeAvailable":false,"runtimeSource":null}"#
+    )
+    .to_string()
 }
 
 #[cfg(not(feature = "local-llm"))]
