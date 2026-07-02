@@ -69,6 +69,7 @@ pub struct RouteConfig<'a> {
     pub token: Option<&'a str>,
     pub live_reload: bool,
     pub admin_base_url: &'a str,
+    pub dev_apps: &'a crate::dev_apps::DevApps,
 }
 
 pub fn route(
@@ -86,6 +87,7 @@ pub fn route(
         token,
         live_reload,
         admin_base_url,
+        dev_apps,
     } = config;
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
@@ -99,7 +101,7 @@ pub fn route(
         return json_error(403, "admin header required");
     }
     match (&method, segs.as_slice()) {
-        (Method::Get, []) => crate::home::page(),
+        (Method::Get, []) => crate::home::page(live_reload),
         (Method::Get, ["healthz"]) => json_ok(&HealthResponse {
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
@@ -182,24 +184,61 @@ pub fn route(
         }
         (Method::Delete, ["__terrane", "previews", id]) => destroy_preview(previews, id),
         (Method::Get | Method::Post, ["__terrane", "previews", ..]) => json_error(404, "not found"),
-        (Method::Get, ["apps"]) => json_ok(&terrane_host::list_apps(core)),
+        (Method::Get, ["apps"]) => json_ok(&merged_apps(core, dev_apps)),
         (Method::Post, ["mcp"]) => mcp(core, request),
         (Method::Get, ["mcp"]) => json_error(405, "method not allowed"),
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
-            crate::live_reload::response(core, id)
+            crate::live_reload::response(app_source(core, dev_apps, id), id)
         }
-        (Method::Get, ["apps", id, "__terrane", "frame"]) => serve_ui(core, id, "", live_reload),
+        (Method::Get, ["apps", id, "__terrane", "frame"]) => {
+            serve_ui(core, dev_apps, id, "", live_reload)
+        }
         (Method::Get, ["apps", id, "__terrane", "frame", rest @ ..]) => {
-            serve_ui(core, id, &rest.join("/"), live_reload)
+            serve_ui(core, dev_apps, id, &rest.join("/"), live_reload)
         }
         (Method::Get, ["apps", _id, "__terrane", ..]) => json_error(404, "not found"),
-        (Method::Post, ["apps", id, "invoke"]) => invoke(core, id, request, admin_base_url),
-        (Method::Get, ["apps", id]) => crate::shell::response(core, id),
+        (Method::Post, ["apps", id, "invoke"]) => {
+            invoke(core, dev_apps, id, request, admin_base_url)
+        }
+        (Method::Get, ["apps", id]) => {
+            let exists =
+                core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
+            crate::shell::response(exists, id, live_reload)
+        }
         (Method::Get, ["apps", id, rest @ ..]) => {
-            serve_bundle_asset(core, id, &rest.join("/"), live_reload)
+            serve_bundle_asset(core, dev_apps, id, &rest.join("/"), live_reload)
         }
         _ => json_error(404, "not found"),
     }
+}
+
+/// The catalog plus any dev-scanned apps not yet cataloged (`--apps <dir>`).
+fn merged_apps(
+    core: &terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
+) -> terrane_api::AppsResponse {
+    let mut response = terrane_host::list_apps(core);
+    for summary in dev_apps.summaries() {
+        if !response.apps.iter().any(|app| app.id == summary.id) {
+            response.apps.push(summary);
+        }
+    }
+    response.apps.sort_by(|a, b| a.id.cmp(&b.id));
+    response
+}
+
+/// An app's bundle source: the catalog entry, else the dev-apps scan.
+fn app_source(
+    core: &terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
+    id: &str,
+) -> Option<String> {
+    core.state()
+        .app
+        .apps
+        .get(id)
+        .and_then(|app| app.source.clone())
+        .or_else(|| dev_apps.find(id).map(|app| app.source))
 }
 
 fn admin_requests(
@@ -541,9 +580,12 @@ fn mcp(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
     }
 }
 
-/// `POST /apps/{id}/invoke` — run a verb on the app's backend, return its output.
+/// `POST /apps/{id}/invoke` — run a verb on the app's backend, return its
+/// output. A dev-scanned app is cataloged on its first invoke (the same lazy
+/// `app.add` the macOS host performs on selection).
 fn invoke(
     core: &mut terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
     id: &str,
     request: &mut Request,
     admin_base_url: &str,
@@ -556,6 +598,20 @@ fn invoke(
         Ok(req) => req,
         Err(e) => return json_error(400, &format!("bad invoke body: {e}")),
     };
+
+    if !core.state().app.apps.contains_key(id) {
+        if let Some(dev) = dev_apps.find(id) {
+            let args = vec![
+                dev.id.clone(),
+                dev.name.clone(),
+                "--source".to_string(),
+                dev.source.clone(),
+            ];
+            if let Err(e) = terrane_host::dispatch_on_core(core, "app.add", &args) {
+                return json_error(500, &format!("cannot catalog dev app {id}: {e}"));
+            }
+        }
+    }
 
     match terrane_host::invoke_app_checked_with_admin_base_and_source(
         core,
@@ -581,8 +637,14 @@ fn invoke(
 
 /// `GET /apps/{id}/…` — serve the app's UI (with the invoke shim injected) or a
 /// bundle asset. `rel` is the path under the bundle dir (empty = the UI entry).
-fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload: bool) -> Resp {
-    let Some(source) = core.state().app.apps.get(id).and_then(|a| a.source.clone()) else {
+fn serve_ui(
+    core: &mut terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
+    id: &str,
+    rel: &str,
+    live_reload: bool,
+) -> Resp {
+    let Some(source) = app_source(core, dev_apps, id) else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };
     let base = Path::new(&source);
@@ -605,11 +667,12 @@ fn serve_ui(core: &mut terrane_host::HostCore, id: &str, rel: &str, live_reload:
 /// while the iframe route resolves relative to `manifest.ui`'s directory.
 fn serve_bundle_asset(
     core: &mut terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
     id: &str,
     rel: &str,
     live_reload: bool,
 ) -> Resp {
-    let Some(source) = core.state().app.apps.get(id).and_then(|a| a.source.clone()) else {
+    let Some(source) = app_source(core, dev_apps, id) else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };
     let base = Path::new(&source);

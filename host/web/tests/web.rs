@@ -249,8 +249,28 @@ fn spawn_web(home: &std::path::Path) -> (Child, String) {
 }
 
 fn spawn_web_with(home: &std::path::Path, bind: &str, token: Option<&str>) -> (Child, String) {
+    spawn_web_full(home, bind, token, &[])
+}
+
+/// Spawn with `--apps <dir>` dev scanning enabled.
+fn spawn_web_dev(home: &std::path::Path, apps_dir: &std::path::Path) -> (Child, String) {
+    spawn_web_full(
+        home,
+        "127.0.0.1:0",
+        None,
+        &["--apps", apps_dir.to_str().unwrap()],
+    )
+}
+
+fn spawn_web_full(
+    home: &std::path::Path,
+    bind: &str,
+    token: Option<&str>,
+    extra_args: &[&str],
+) -> (Child, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_terrane-web"));
     cmd.args(["--addr", bind])
+        .args(extra_args)
         .env("TERRANE_HOME", home)
         .stderr(Stdio::piped())
         .stdout(Stdio::null());
@@ -541,6 +561,91 @@ fn builder_generate_route_rejects_invalid_request_before_harness() {
     let _ = child.wait();
 }
 
+fn write_dev_app(dir: &Path, id: &str, name: &str) -> PathBuf {
+    let app = dir.join(id);
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(
+        app.join("manifest.json"),
+        format!(
+            r#"{{ "id": "{id}", "name": "{name}", "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": [] }}"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("main.js"),
+        "function handle(input) { return \"pong:\" + input[0]; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("index.html"),
+        format!(
+            "<!doctype html><html><head><title>{name}</title></head><body data-dev-app=\"{id}\"></body></html>"
+        ),
+    )
+    .unwrap();
+    app
+}
+
+#[test]
+fn dev_apps_dir_scans_serves_and_lazily_catalogs() {
+    let dir = tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let apps_dir = dir.path().join("bundles");
+    std::fs::create_dir_all(&apps_dir).unwrap();
+    write_dev_app(&apps_dir, "devdemo", "Dev Demo");
+
+    let (mut child, addr) = spawn_web_dev(&home, &apps_dir);
+
+    // Scanned into the catalog listing without an `app add`.
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200, "apps: {body}");
+    assert!(
+        body.contains(r#""id":"devdemo""#)
+            && body.contains("Dev Demo")
+            && body.contains(r#""has_ui":true"#),
+        "dev app missing from catalog: {body}"
+    );
+
+    // Shell, frame, and live-version all resolve the dev bundle source.
+    let (status, body) = http(&addr, "GET", "/apps/devdemo/", None);
+    assert_eq!(status, 200, "dev shell: {body}");
+    let (status, body) = http(&addr, "GET", "/apps/devdemo/__terrane/frame/", None);
+    assert_eq!(status, 200, "dev frame: {body}");
+    assert!(
+        body.contains("data-dev-app=\"devdemo\""),
+        "dev frame body: {body}"
+    );
+    let (status, body) = http(&addr, "GET", "/apps/devdemo/__terrane/live-version", None);
+    assert_eq!(status, 200, "dev live-version: {body}");
+    assert!(body.contains("\"version\""), "dev live-version body: {body}");
+
+    // First invoke lazily catalogs the dev app, then runs its backend.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/devdemo/invoke",
+        Some(r#"{"verb":"ping","args":[]}"#),
+    );
+    assert_eq!(status, 200, "dev invoke: {body}");
+    assert!(body.contains("pong:ping"), "dev invoke output: {body}");
+
+    // A bundle dropped in AFTER startup appears on the next catalog fetch and
+    // is servable immediately — no restart, no install.
+    write_dev_app(&apps_dir, "late-arrival", "Late Arrival");
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200);
+    assert!(
+        body.contains(r#""id":"late-arrival""#),
+        "late dev app missing: {body}"
+    );
+    let (status, body) = http(&addr, "GET", "/apps/late-arrival/__terrane/frame/", None);
+    assert_eq!(status, 200, "late dev frame: {body}");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 #[test]
 fn serves_home_landing_page_at_root() {
     let dir = tempdir().unwrap();
@@ -572,6 +677,10 @@ fn serves_home_landing_page_at_root() {
     assert!(
         body.contains("fetch(String(config.catalogUrl)"),
         "catalog loader missing: {body}"
+    );
+    assert!(
+        body.contains(r#""catalogPollMs":3000"#),
+        "live-reload catalog polling missing from landing page: {body}"
     );
 
     // The root route stays exact: unknown top-level paths still 404.
@@ -768,6 +877,10 @@ fn serves_catalog_ui_and_invoke_over_http() {
     assert!(
         body.contains("terrane:document") && body.contains("/__terrane/admin/session"),
         "topbar wiring missing from shell script: {body}"
+    );
+    assert!(
+        body.contains("window.__terraneLiveReload = true"),
+        "shell should enable catalog polling under live reload: {body}"
     );
     assert!(
         body.contains("id=\"desktop-info-button\"")

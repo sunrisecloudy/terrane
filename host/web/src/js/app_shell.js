@@ -32,22 +32,67 @@
     return;
   }
 
+  var lastCatalogText = "";
+
   bindDesktopInfo();
   bindBridge();
   bindTopbar();
   frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
 
-  fetch("/apps", { cache: "no-store" })
-    .then(function (response) {
-      if (!response.ok) throw new Error("cannot load apps");
-      return response.json();
+  loadCatalog();
+  // Dev iteration: keep the sidebar in sync with the catalog (new dev apps
+  // appear, renames apply) and reload the frame when the app's bundle
+  // changes. The frame watches from the shell because the sandboxed iframe
+  // has an opaque origin and cannot fetch live-version itself.
+  if (window.__terraneLiveReload) {
+    setInterval(loadCatalog, 3000);
+    setInterval(watchAppVersion, 1000);
+  }
+
+  var appVersion = null;
+  function watchAppVersion() {
+    fetch("/apps/" + encodeURIComponent(currentId) + "/__terrane/live-version", {
+      cache: "no-store",
     })
-    .then(function (catalog) {
-      renderCatalog(Array.isArray(catalog.apps) ? catalog.apps : []);
-    })
-    .catch(function () {
-      showError("Cannot load apps");
-    });
+      .then(function (response) {
+        if (!response.ok) throw new Error("live-version");
+        return response.json();
+      })
+      .then(function (payload) {
+        if (!payload.version) return;
+        if (appVersion === null) {
+          appVersion = payload.version;
+          return;
+        }
+        if (appVersion !== payload.version) {
+          appVersion = payload.version;
+          frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
+        }
+      })
+      .catch(function () {});
+  }
+
+  function loadCatalog() {
+    fetch("/apps", { cache: "no-store" })
+      .then(function (response) {
+        if (!response.ok) throw new Error("cannot load apps");
+        return response.text();
+      })
+      .then(function (text) {
+        if (text === lastCatalogText) return;
+        lastCatalogText = text;
+        var catalog = {};
+        try {
+          catalog = JSON.parse(text) || {};
+        } catch (_) {
+          catalog = {};
+        }
+        renderCatalog(Array.isArray(catalog.apps) ? catalog.apps : []);
+      })
+      .catch(function () {
+        if (!lastCatalogText) showError("Cannot load apps");
+      });
+  }
 
   function currentAppId() {
     var match = window.location.pathname.match(/^\/apps\/([^/]+)/);

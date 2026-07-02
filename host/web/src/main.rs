@@ -14,6 +14,7 @@
 
 mod admin;
 mod args;
+mod dev_apps;
 mod home;
 mod http;
 mod live_reload;
@@ -52,8 +53,9 @@ fn main() {
         }
     };
     let admin_base_url = format!("http://{}", server.server_addr());
+    let dev_apps = dev_apps::DevApps::new(args.apps_dir.clone());
     eprintln!(
-        "terrane-web: serving {} on http://{} (auth: {}, live reload: {})",
+        "terrane-web: serving {} on http://{} (auth: {}, live reload: {}{})",
         terrane_host::log_path().display(),
         server.server_addr(),
         if require_auth {
@@ -61,7 +63,12 @@ fn main() {
         } else {
             "off (loopback)"
         },
-        if args.live_reload { "on" } else { "off" }
+        if args.live_reload { "on" } else { "off" },
+        if dev_apps.enabled() {
+            format!(", dev apps: {}", dev_apps.dir_display())
+        } else {
+            String::new()
+        }
     );
 
     let mut previews = terrane_host::PreviewStore::new();
@@ -79,6 +86,7 @@ fn main() {
                 token: token.as_deref(),
                 live_reload: args.live_reload,
                 admin_base_url: &admin_base_url,
+                dev_apps: &dev_apps,
             },
         );
         let _ = request.respond(response);

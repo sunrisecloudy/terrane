@@ -12,9 +12,10 @@ struct LiveVersionResponse {
 }
 
 /// `GET /apps/{id}/__terrane/live-version` — a dev helper used by the injected
-/// browser shim to notice source-bundle changes and reload the page.
-pub fn response(core: &mut terrane_host::HostCore, id: &str) -> Resp {
-    let Some(source) = core.state().app.apps.get(id).and_then(|a| a.source.clone()) else {
+/// browser shim to notice source-bundle changes and reload the page. `source`
+/// is resolved by the router (catalog entry or dev-apps scan).
+pub fn response(source: Option<String>, id: &str) -> Resp {
+    let Some(source) = source else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };
     match source_version(Path::new(&source)) {
