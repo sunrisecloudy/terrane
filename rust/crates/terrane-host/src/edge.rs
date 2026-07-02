@@ -83,6 +83,7 @@ impl EffectRunner for EdgeRunner {
             Effect::LocalModelPull {
                 id,
                 repo,
+                backend,
                 file,
                 context_length,
                 chat_template,
@@ -91,7 +92,8 @@ impl EffectRunner for EdgeRunner {
             } => crate::local_llm::pull(
                 id,
                 repo,
-                file,
+                backend,
+                file.as_deref(),
                 *context_length,
                 chat_template.clone(),
                 *max_tokens,

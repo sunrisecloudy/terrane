@@ -181,7 +181,9 @@ pub enum Effect {
     LocalModelPull {
         id: String,
         repo: String,
-        file: String,
+        backend: String,
+        /// The file inside the repo for gguf pulls; mlx pulls snapshot the repo.
+        file: Option<String>,
         context_length: Option<u32>,
         chat_template: Option<String>,
         max_tokens: Option<u32>,

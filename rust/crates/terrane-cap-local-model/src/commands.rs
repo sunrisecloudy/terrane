@@ -93,14 +93,11 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
                 RECOMMENDED_GGUF_REPO.to_string(),
                 Some(RECOMMENDED_GGUF_FILE.to_string()),
             ),
-            _ => {
-                // The mlx snapshot pull arrives in the next slice.
-                return Err(Error::InvalidInput(format!(
-                    "mlx pull is not wired yet; register the repo directly: \
-                     local-model register <id> mlx {}",
-                    crate::types::RECOMMENDED_MLX_REPO
-                )));
-            }
+            _ => (
+                crate::types::RECOMMENDED_MLX_MODEL_ID.to_string(),
+                crate::types::RECOMMENDED_MLX_REPO.to_string(),
+                None,
+            ),
         },
         [id, repo, rest @ ..] if rest.len() <= 1 => {
             let id = valid_model_id(id)?;
@@ -137,17 +134,31 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
             Ok(Decision::Effect(Effect::LocalModelPull {
                 id,
                 repo,
-                file,
+                backend: "gguf".to_string(),
+                file: Some(file),
                 context_length: options.context_length,
                 chat_template: options.chat_template,
                 max_tokens: options.max_tokens,
                 temperature_milli: options.temperature_milli,
             }))
         }
-        _ => Err(Error::InvalidInput(format!(
-            "mlx pull is not wired yet; register the repo directly: \
-             local-model register {id} mlx {repo}"
-        ))),
+        _ => {
+            if file.is_some() {
+                return Err(Error::InvalidInput(
+                    "mlx pull snapshots the whole repo; drop the file argument".into(),
+                ));
+            }
+            Ok(Decision::Effect(Effect::LocalModelPull {
+                id,
+                repo,
+                backend: "mlx".to_string(),
+                file: None,
+                context_length: options.context_length,
+                chat_template: options.chat_template,
+                max_tokens: options.max_tokens,
+                temperature_milli: options.temperature_milli,
+            }))
+        }
     }
 }
 

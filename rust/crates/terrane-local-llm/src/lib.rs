@@ -18,7 +18,8 @@ pub use llama::{LlamaCppBackend, ModelFile};
 pub use mlx::MlxBackend;
 pub use server::{server_status, stop_server, MlxServerStatus};
 pub use setup::{
-    resolve_runtime, setup_mlx, MlxRuntime, RuntimeSource, SetupReport, MLX_LM_VERSION,
+    resolve_runtime, setup_mlx, snapshot_mlx_repo, MlxRuntime, RuntimeSource, SetupReport,
+    MLX_LM_VERSION,
 };
 
 /// Errors from loading, generating, or downloading. Typed, no panics.

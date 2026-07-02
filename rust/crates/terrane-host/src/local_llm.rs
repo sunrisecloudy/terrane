@@ -110,14 +110,16 @@ pub(crate) fn call(
     })?])
 }
 
-/// Download weights from Hugging Face into `$TERRANE_HOME/models/` and record
-/// the registered spec pointing at the finished file.
+/// Download weights from Hugging Face and record the registered spec: gguf
+/// files land in `$TERRANE_HOME/models/`; mlx repos snapshot into the HF
+/// cache (pre-warming what the worker would otherwise fetch on first ask).
 #[cfg(feature = "local-llm")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pull(
     id: &str,
     repo: &str,
-    file: &str,
+    backend: &str,
+    file: Option<&str>,
     context_length: Option<u32>,
     chat_template: Option<String>,
     max_tokens: Option<u32>,
@@ -125,34 +127,59 @@ pub(crate) fn pull(
 ) -> Result<Vec<EventRecord>> {
     use terrane_cap_local_model::{registered_event, LocalModelSpec};
 
-    let dest_dir = crate::home_dir().join("models");
-    let mut last_reported = 0u64;
-    let (path, size_bytes) =
-        terrane_local_llm::download_model(repo, file, &dest_dir, &mut |written, total| {
-            if written >= last_reported + PROGRESS_STEP {
-                last_reported = written;
-                let written_mib = written / (1024 * 1024);
-                match total {
-                    Some(total) => eprintln!(
-                        "downloading {file}: {written_mib} / {} MiB",
-                        total / (1024 * 1024)
-                    ),
-                    None => eprintln!("downloading {file}: {written_mib} MiB"),
-                }
+    let spec = match backend {
+        "mlx" => {
+            let (_snapshot, size_bytes) =
+                terrane_local_llm::snapshot_mlx_repo(&crate::home_dir(), repo, &mut |line| {
+                    eprintln!("{line}");
+                })
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            LocalModelSpec {
+                backend: "mlx".to_string(),
+                format: "mlx".to_string(),
+                // The repo id stays the reference; the snapshot pre-warmed it.
+                local_path: repo.to_string(),
+                context_length,
+                chat_template,
+                max_tokens,
+                temperature_milli,
+                source: Some(format!("hf:{repo}")),
+                size_bytes: Some(size_bytes),
             }
-        })
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let spec = LocalModelSpec {
-        backend: "llama_cpp".to_string(),
-        format: "gguf".to_string(),
-        local_path: path.display().to_string(),
-        context_length,
-        chat_template,
-        max_tokens,
-        temperature_milli,
-        source: Some(format!("hf:{repo}/{file}")),
-        size_bytes: Some(size_bytes),
+        }
+        _ => {
+            let file = file.ok_or_else(|| {
+                Error::InvalidInput("gguf pull needs a file name inside the repo".into())
+            })?;
+            let dest_dir = crate::home_dir().join("models");
+            let mut last_reported = 0u64;
+            let (path, size_bytes) =
+                terrane_local_llm::download_model(repo, file, &dest_dir, &mut |written, total| {
+                    if written >= last_reported + PROGRESS_STEP {
+                        last_reported = written;
+                        let written_mib = written / (1024 * 1024);
+                        match total {
+                            Some(total) => eprintln!(
+                                "downloading {file}: {written_mib} / {} MiB",
+                                total / (1024 * 1024)
+                            ),
+                            None => eprintln!("downloading {file}: {written_mib} MiB"),
+                        }
+                    }
+                })
+                .map_err(|e| Error::Storage(e.to_string()))?;
+            LocalModelSpec {
+                backend: "llama_cpp".to_string(),
+                format: "gguf".to_string(),
+                local_path: path.display().to_string(),
+                context_length,
+                chat_template,
+                max_tokens,
+                temperature_milli,
+                source: Some(format!("hf:{repo}/{file}")),
+                size_bytes: Some(size_bytes),
+            }
+        }
     };
     Ok(vec![registered_event(id, &spec)?])
 }
@@ -256,7 +283,8 @@ pub(crate) fn call(
 pub(crate) fn pull(
     _id: &str,
     _repo: &str,
-    _file: &str,
+    _backend: &str,
+    _file: Option<&str>,
     _context_length: Option<u32>,
     _chat_template: Option<String>,
     _max_tokens: Option<u32>,

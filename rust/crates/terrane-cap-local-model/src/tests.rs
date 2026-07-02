@@ -213,11 +213,11 @@ fn pull_validates_repo_and_file_shape() {
         panic!("pull should be an effect");
     };
     assert_eq!(
-        (id.as_str(), repo.as_str(), file.as_str()),
+        (id.as_str(), repo.as_str(), file.as_deref()),
         (
             "qwen",
             "unsloth/Qwen3.5-0.8B-GGUF",
-            "Qwen3.5-0.8B-Q4_K_M.gguf"
+            Some("Qwen3.5-0.8B-Q4_K_M.gguf")
         )
     );
 
@@ -255,12 +255,31 @@ fn bare_pull_targets_the_recommended_model() {
     };
     assert_eq!(id, crate::RECOMMENDED_MODEL_ID);
     assert_eq!(repo, crate::RECOMMENDED_GGUF_REPO);
-    assert_eq!(file, crate::RECOMMENDED_GGUF_FILE);
+    assert_eq!(file.as_deref(), Some(crate::RECOMMENDED_GGUF_FILE));
 
-    // The mlx snapshot pull lands in a later slice; the error points at the
-    // register workaround meanwhile.
-    let err = decide_pull(ctx(), &strings(&["--backend", "mlx"])).unwrap_err();
-    assert!(err.to_string().contains("register"), "{err}");
+    // A bare mlx pull targets the recommended MLX snapshot.
+    let Decision::Effect(Effect::LocalModelPull {
+        id,
+        repo,
+        backend,
+        file,
+        ..
+    }) = decide_pull(ctx(), &strings(&["--backend", "mlx"])).unwrap()
+    else {
+        panic!("mlx pull should be an effect");
+    };
+    assert_eq!(id, crate::RECOMMENDED_MLX_MODEL_ID);
+    assert_eq!(repo, crate::RECOMMENDED_MLX_REPO);
+    assert_eq!(backend, "mlx");
+    assert_eq!(file, None);
+
+    // A file argument makes no sense for a repo snapshot.
+    let err = decide_pull(
+        ctx(),
+        &strings(&["m", "org/name", "x.gguf", "--backend", "mlx"]),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("drop the file"), "{err}");
 }
 
 #[test]

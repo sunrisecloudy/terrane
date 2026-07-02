@@ -219,6 +219,53 @@ pub fn setup_mlx(home: &Path, on_line: &mut dyn FnMut(&str)) -> Result<SetupRepo
     })
 }
 
+/// Snapshot a Hugging Face repo (an MLX model) into the local HF cache using
+/// the runtime's own python (`huggingface_hub` ships with mlx-lm). Returns
+/// the snapshot path and its size in bytes. Progress lines go to `on_line`.
+pub fn snapshot_mlx_repo(
+    home: &Path,
+    repo: &str,
+    on_line: &mut dyn FnMut(&str),
+) -> Result<(String, u64), LlmError> {
+    let runtime = resolve_runtime(home).ok_or_else(|| {
+        LlmError::Download("no MLX runtime found; run `terrane local-model setup mlx` first".into())
+    })?;
+    let python = crate::server::worker_python(&runtime);
+    on_line(&format!("snapshotting {repo} into the Hugging Face cache"));
+    let script = "\nimport os, sys\nfrom huggingface_hub import snapshot_download\npath = snapshot_download(sys.argv[1])\nsize = sum(\n    os.path.getsize(os.path.join(dirpath, name))\n    for dirpath, _, names in os.walk(path)\n    for name in names\n)\nprint(path)\nprint(size)\n";
+    let output = Command::new(&python)
+        .arg("-c")
+        .arg(script)
+        .arg(repo)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| LlmError::Download(format!("failed to run `{python}`: {e}")))?;
+    for line in String::from_utf8_lossy(&output.stderr).lines() {
+        if !line.trim().is_empty() {
+            on_line(line);
+        }
+    }
+    if !output.status.success() {
+        return Err(LlmError::Download(format!(
+            "snapshot of {repo} failed with {}",
+            output.status.code().unwrap_or(-1)
+        )));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut lines = stdout.lines().rev().filter(|l| !l.trim().is_empty());
+    let size = lines
+        .next()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let path = lines.next().unwrap_or_default().trim().to_string();
+    if path.is_empty() {
+        return Err(LlmError::Download(format!(
+            "snapshot of {repo} produced no path"
+        )));
+    }
+    Ok((path, size))
+}
+
 /// Find `uv`, or bootstrap the pinned static binary into `bin_dir`.
 fn ensure_uv(bin_dir: &Path, on_line: &mut dyn FnMut(&str)) -> Result<PathBuf, LlmError> {
     if spawnable("uv") {

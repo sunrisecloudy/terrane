@@ -167,7 +167,7 @@ pub(crate) fn ensure_worker(home: &Path, runtime: &MlxRuntime) -> Result<PathBuf
 
 /// The Python interpreter that can import `mlx_lm`: the one inside the
 /// runtime's own environment (override: `TERRANE_MLX_PYTHON`).
-fn worker_python(runtime: &MlxRuntime) -> String {
+pub(crate) fn worker_python(runtime: &MlxRuntime) -> String {
     if let Ok(python) = std::env::var("TERRANE_MLX_PYTHON") {
         if !python.trim().is_empty() {
             return python;
