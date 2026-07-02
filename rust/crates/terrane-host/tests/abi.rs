@@ -541,9 +541,7 @@ fn local_model_server_exports_report_and_stop_without_a_runtime() {
 
 #[test]
 fn checked_in_c_header_declares_the_exported_abi() {
-    let header =
-        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("include/terrane_host.h"))
-            .expect("header exists");
+    let header = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/include/terrane_host.h"));
     for needle in [
         "TerraneHandle *terrane_open(",
         "int terrane_host_run(",
