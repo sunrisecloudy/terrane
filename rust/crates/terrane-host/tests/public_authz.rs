@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        36,
+        48,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        14,
+        22,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 20, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 24, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -66,7 +66,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
         .collect();
     assert_eq!(
         grantable,
-        BTreeSet::from(["build", "crdt", "kv", "relational_db"])
+        BTreeSet::from(["build", "crdt", "kv", "native", "relational_db"])
     );
 
     let mut bad = Vec::new();
@@ -93,7 +93,10 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
 #[test]
 fn public_query_inventory_covers_every_registered_query() {
     let queries = terrane_core::query_names();
-    assert_eq!(queries, vec!["app.exists", "replica.peer"]);
+    assert_eq!(
+        queries,
+        vec!["app.exists", "native.supports", "replica.peer"]
+    );
     for query in queries {
         assert_eq!(
             classify_public_query_name(query),
@@ -165,6 +168,10 @@ fn dangerous_and_effect_commands_are_refused() {
         "app.import",
         "app.remove",
         "auth.grant",
+        "native.platform.observe",
+        "native.complete",
+        "native.fail",
+        "native.cancel",
     ] {
         assert!(
             matches!(
@@ -193,6 +200,10 @@ fn allowlisted_commands_and_queries_stay_available() {
     );
     assert_eq!(
         authorize_public_query("replica", "replica.peer").unwrap(),
+        PublicQueryAuthz::Allow
+    );
+    assert_eq!(
+        authorize_public_query("native", "supports").unwrap(),
         PublicQueryAuthz::Allow
     );
     assert!(matches!(

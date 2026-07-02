@@ -56,6 +56,7 @@ use terrane_cap_crdt::CrdtState;
 use terrane_cap_harness::HarnessState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_model::ModelState;
+use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
 use terrane_cap_replica::ReplicaState;
 
@@ -75,6 +76,7 @@ pub struct State {
     pub kv: KvState,
     pub net: NetState,
     pub model: ModelState,
+    pub native: NativeState,
     pub crdt: CrdtState,
     pub replica: ReplicaState,
 }
@@ -89,6 +91,7 @@ impl StateStore for State {
             "kv" => Some(&self.kv),
             "net" => Some(&self.net),
             "model" => Some(&self.model),
+            "native" => Some(&self.native),
             "crdt" => Some(&self.crdt),
             "replica" => Some(&self.replica),
             _ => None,
@@ -104,6 +107,7 @@ impl StateStore for State {
             "kv" => Some(&mut self.kv),
             "net" => Some(&mut self.net),
             "model" => Some(&mut self.model),
+            "native" => Some(&mut self.native),
             "crdt" => Some(&mut self.crdt),
             "replica" => Some(&mut self.replica),
             _ => None,
@@ -390,6 +394,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_replica::ReplicaCapability));
     registry.register(Box::new(terrane_cap_net::NetCapability));
     registry.register(Box::new(terrane_cap_model::ModelCapability));
+    registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
     registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
     registry

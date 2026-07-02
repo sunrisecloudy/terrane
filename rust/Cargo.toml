@@ -12,6 +12,7 @@ members = [
   "crates/terrane-cap-js-runtime",
   "crates/terrane-cap-relational-db",
   "crates/terrane-cap-model",
+  "crates/terrane-cap-native",
   "crates/terrane-cap-net",
   "crates/terrane-cap-replica",
   "crates/terrane-cap-wasm-runtime",
@@ -39,6 +40,7 @@ terrane-cap-kv = { path = "crates/terrane-cap-kv" }
 terrane-cap-js-runtime = { path = "crates/terrane-cap-js-runtime" }
 terrane-cap-relational-db = { path = "crates/terrane-cap-relational-db" }
 terrane-cap-model = { path = "crates/terrane-cap-model" }
+terrane-cap-native = { path = "crates/terrane-cap-native" }
 terrane-cap-net = { path = "crates/terrane-cap-net" }
 terrane-cap-replica = { path = "crates/terrane-cap-replica" }
 terrane-cap-wasm-runtime = { path = "crates/terrane-cap-wasm-runtime" }

@@ -57,6 +57,22 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 app_arg_index: 0,
             }
         }
+        "native.clipboard.write-text"
+        | "native.external.open-url"
+        | "native.notification.show"
+        | "native.dialog.open-file"
+        | "native.clipboardWriteText"
+        | "native.externalOpenUrl"
+        | "native.notificationShow"
+        | "native.dialogOpenFile" => PublicCommandDisposition::GrantGated {
+            namespace: "native",
+            app_arg_index: 0,
+        },
+        "native.platform.observe" | "native.complete" | "native.fail" | "native.cancel" => {
+            PublicCommandDisposition::Refuse {
+                reason: "native connector and terminal commands are trusted-host-only",
+            }
+        }
         "kv.storage.set" | "kv.storage.clear" => PublicCommandDisposition::Refuse {
             reason: "storage configuration is trusted-admin-only",
         },
@@ -144,7 +160,7 @@ pub fn authorize_public_command(
 
 pub fn classify_public_query_name(name: &str) -> PublicQueryDisposition {
     match name {
-        "app.exists" | "replica.peer" => PublicQueryDisposition::Allow,
+        "app.exists" | "native.supports" | "replica.peer" => PublicQueryDisposition::Allow,
         _ => PublicQueryDisposition::Unclassified,
     }
 }

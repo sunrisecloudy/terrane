@@ -2924,6 +2924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-native"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-net"
 version = "0.1.0"
 dependencies = [
@@ -2981,6 +2990,7 @@ dependencies = [
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-model",
+ "terrane-cap-native",
  "terrane-cap-net",
  "terrane-cap-relational-db",
  "terrane-cap-replica",
