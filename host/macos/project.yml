@@ -62,6 +62,7 @@ targets:
       - path: Tests
       - path: Sources/AppCatalog.swift
       - path: Sources/AppSchemeHandler.swift
+      - path: Sources/HomePage.swift
       - path: Sources/TerraneBridge.swift
       - path: Sources/PreviewSchemeHandler.swift
       - path: Sources/AppSidebarView.swift

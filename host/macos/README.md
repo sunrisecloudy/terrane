@@ -80,14 +80,21 @@ The app needs to find (a) the workspace log and (b) local app UI bundles:
 - `TERRANE_REPO` — repo root, so it can resolve `apps/<id>/<manifest.ui>`.
 
 ```sh
-# launch with a native sidebar switcher
+# launch on the landing page with a native sidebar switcher
 TERRANE_HOME=~/.terrane TERRANE_REPO="$PWD/../.." \
   build/Debug/TerraneHost.app/Contents/MacOS/TerraneHost
 
-# optionally select an initial app
+# optionally open an initial app directly
 TERRANE_HOME=~/.terrane TERRANE_REPO="$PWD/../.." \
   build/Debug/TerraneHost.app/Contents/MacOS/TerraneHost todo
 ```
+
+Without an app id argument the host opens the shared landing page (the same
+page `terrane-web` serves at `/`), rendered by `terrane_home_page` from the
+C ABI with the natively discovered catalog inlined. Card clicks navigate to
+`terrane-app://<id>/frame/`; the navigation delegate routes them through
+native selection so the bridge, sidebar, and source editor follow. The
+sidebar's Home entry returns to it.
 
 ## Verify
 

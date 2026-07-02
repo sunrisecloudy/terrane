@@ -2,6 +2,7 @@ import AppKit
 
 final class AppSidebarView: NSVisualEffectView {
   var onSelect: ((TerraneApp) -> Void)?
+  var onHome: (() -> Void)?
   var onToggleCollapse: (() -> Void)?
 
   private let collapseButton = NSButton()
@@ -9,6 +10,7 @@ final class AppSidebarView: NSVisualEffectView {
   private let title = NSTextField(labelWithString: "Terrane")
   private let caption = NSTextField(labelWithString: "Apps")
   private let stack = NSStackView()
+  private let homeButton = AppSidebarButton(title: "Home", appId: "", iconName: "house")
   let localModelPanel = LocalModelPanel()
   private var apps: [TerraneApp] = []
   private var selectedAppId: String?
@@ -31,6 +33,7 @@ final class AppSidebarView: NSVisualEffectView {
 
     buttons.forEach { $0.removeFromSuperview() }
     buttons = []
+    homeButton.isSelected = selectedAppId == nil
 
     for (index, app) in apps.enumerated() {
       let button = AppSidebarButton(
@@ -61,6 +64,7 @@ final class AppSidebarView: NSVisualEffectView {
     collapseButton.toolTip = collapsed ? "Expand apps" : "Collapse apps"
     collapseButton.state = collapsed ? .on : .off
     stack.spacing = collapsed ? 10 : 6
+    homeButton.setCollapsed(collapsed)
     for button in buttons {
       button.setCollapsed(collapsed)
     }
@@ -68,6 +72,7 @@ final class AppSidebarView: NSVisualEffectView {
 
   func select(appId: String?) {
     selectedAppId = appId
+    homeButton.isSelected = appId == nil
     for (index, button) in buttons.enumerated() {
       button.isSelected = apps.indices.contains(index) && apps[index].id == appId
     }
@@ -122,6 +127,11 @@ final class AppSidebarView: NSVisualEffectView {
     stack.spacing = 4
     stack.translatesAutoresizingMaskIntoConstraints = false
 
+    homeButton.target = self
+    homeButton.action = #selector(goHome)
+    homeButton.isSelected = true
+    stack.addArrangedSubview(homeButton)
+
     localModelPanel.translatesAutoresizingMaskIntoConstraints = false
 
     addSubview(brandIcon)
@@ -164,6 +174,10 @@ final class AppSidebarView: NSVisualEffectView {
 
   @objc private func selectApp(_ sender: NSButton) {
     selectApp(at: sender.tag)
+  }
+
+  @objc private func goHome(_ sender: NSButton) {
+    onHome?()
   }
 
   @objc private func toggleCollapse(_ sender: NSButton) {
