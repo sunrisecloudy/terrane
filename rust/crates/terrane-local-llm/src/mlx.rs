@@ -159,7 +159,13 @@ impl MlxBackend {
             }
             line.clear();
             match reader.read_line(&mut line) {
-                Ok(0) => break, // worker hung up without a done line
+                // The worker died mid-generation (crash or kill): a truncated
+                // transcript must not masquerade as a clean stop.
+                Ok(0) => {
+                    return Err(LlmError::Generate(
+                        "mlx worker disconnected mid-generation; the next ask restarts it".into(),
+                    ))
+                }
                 Ok(_) => {}
                 // A read timeout mid-stream is the deadline firing; dropping
                 // the connection makes the worker abandon the generation.

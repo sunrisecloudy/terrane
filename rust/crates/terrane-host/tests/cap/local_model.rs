@@ -305,3 +305,53 @@ fn local_model_pull_e2e_real() {
         "weights land under $TERRANE_HOME/models"
     );
 }
+
+#[test]
+#[ignore = "downloads the uv + python + mlx-lm toolchain (~400 MB); run with `cargo test -- --ignored`"]
+fn local_model_setup_mlx_bootstraps_on_a_scrubbed_path() {
+    use std::process::Command;
+
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    // A fresh machine: no uv, no mlx_lm on PATH, no env overrides — only the
+    // system basics the bootstrap itself needs (curl-free: setup downloads
+    // over ureq; tar comes from /usr/bin).
+    let output = Command::new(env!("CARGO_BIN_EXE_terrane"))
+        .args(["local-model", "setup", "mlx"])
+        .env_clear()
+        .env("TERRANE_HOME", home)
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .output()
+        .expect("spawn terrane");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "setup mlx failed\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // The pinned toolchain landed inside the home, and the manifest records
+    // an installed (not merely detected) runtime.
+    let manifest_path = home.join("engines/mlx.json");
+    assert!(manifest_path.is_file(), "engines/mlx.json missing");
+    let manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    assert_eq!(manifest["installed_by"], "uv", "manifest: {manifest}");
+
+    // The provisioned runtime resolves without PATH help.
+    let output = Command::new(env!("CARGO_BIN_EXE_terrane"))
+        .args(["local-model", "server", "status"])
+        .env_clear()
+        .env("TERRANE_HOME", home)
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", home)
+        .output()
+        .expect("spawn terrane");
+    let status = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        status.contains("\"runtimeAvailable\":true"),
+        "status: {status}"
+    );
+}

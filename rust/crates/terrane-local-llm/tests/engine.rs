@@ -240,3 +240,98 @@ fn schema_constrained_generation_returns_matching_json() {
     let parsed: Answer = parse_json(&response.text).unwrap();
     assert!(!parsed.answer.trim().is_empty());
 }
+
+#[test]
+#[ignore = "starts a real resident mlx server; needs the mlx-lm runtime; run with `cargo test -- --ignored`"]
+fn resident_worker_serializes_concurrency_and_recovers_from_kills() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+    if resolve_runtime(home).is_none() {
+        eprintln!("skipping: no mlx runtime (run `terrane local-model setup mlx`)");
+        return;
+    }
+    let request = |max_tokens: u32| GenerateRequest {
+        prompt: "Count from one to fifty in words.".into(),
+        system: None,
+        history: Vec::new(),
+        constraint: None,
+        config: GenerationConfig {
+            max_tokens,
+            temperature: 0.0,
+            timeout: Some(Duration::from_secs(180)),
+            ..GenerationConfig::default()
+        },
+    };
+
+    // Warm the worker (pays the spawn + model load once).
+    let mut backend = MlxBackend::load(home, "mlx-community/Qwen3.5-0.8B-MLX-4bit").unwrap();
+    assert!(backend.generate(&request(8), &mut |_| {}).unwrap().ok());
+
+    // The single-connection worker serializes concurrent asks; both succeed.
+    let homes: Vec<_> = (0..2)
+        .map(|_| home.to_path_buf())
+        .map(|home| {
+            std::thread::spawn(move || {
+                MlxBackend::load(&home, "mlx-community/Qwen3.5-0.8B-MLX-4bit")
+                    .unwrap()
+                    .generate(&request(32), &mut |_| {})
+            })
+        })
+        .collect();
+    for handle in homes {
+        let response = handle.join().unwrap().unwrap();
+        assert!(
+            response.ok(),
+            "concurrent ask stopped by {:?}",
+            response.stop
+        );
+        assert!(!response.text.trim().is_empty());
+    }
+
+    // The socket is private to this user.
+    let status = server_status(home);
+    let socket = status.socket.clone().expect("worker resident");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&socket).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "socket mode {mode:o}");
+    }
+
+    // Kill the worker mid-generation: the caller gets a typed error…
+    let pid = status.pid.expect("worker resident");
+    let killer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(600));
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .status();
+    });
+    let long_run = GenerateRequest {
+        prompt: "Write a very long, meandering story about the sea. Never stop early.".into(),
+        ..request(4096)
+    };
+    let result = backend.generate(&long_run, &mut |_| {});
+    killer.join().unwrap();
+    match result {
+        Err(LlmError::Generate(msg)) => {
+            assert!(!msg.trim().is_empty(), "error should explain: {msg}")
+        }
+        Err(other) => panic!("expected a Generate error, got {other:?}"),
+        // The race can also surface as a cleanly-truncated run; both are
+        // acceptable as long as the NEXT ask recovers below.
+        Ok(response) => eprintln!("kill landed between polls: {:?}", response.stop),
+    }
+
+    // …and the next ask lazy-restarts a fresh worker.
+    let response = backend.generate(&request(8), &mut |_| {}).unwrap();
+    assert!(
+        response.ok(),
+        "post-kill ask stopped by {:?}",
+        response.stop
+    );
+    let revived = server_status(home);
+    assert!(revived.running, "a fresh worker should be resident");
+    assert_ne!(revived.pid, Some(pid), "the dead pid must not be reused");
+
+    assert!(stop_server(home).unwrap());
+}

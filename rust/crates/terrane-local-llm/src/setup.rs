@@ -17,6 +17,8 @@ use crate::LlmError;
 
 /// The mlx-lm version this Terrane build was tested against.
 pub const MLX_LM_VERSION: &str = "0.31.3";
+/// The CPython the pinned toolchain runs on (uv downloads it when absent).
+const PYTHON_VERSION: &str = "3.12";
 /// The uv version bootstrapped when the machine has none.
 pub const UV_VERSION: &str = "0.11.21";
 /// Installed alongside mlx-lm so the worker can token-mask JSON schemas.
@@ -164,6 +166,10 @@ pub fn setup_mlx(home: &Path, on_line: &mut dyn FnMut(&str)) -> Result<SetupRepo
     let mut install = Command::new(&uv);
     install
         .args(["tool", "install", "--force"])
+        // Pin the interpreter: on a machine with no discoverable Python, uv
+        // would otherwise pick its oldest default (3.10), whose wheel tags
+        // don't match the published mlx wheels.
+        .args(["--python", PYTHON_VERSION])
         .arg(format!("mlx-lm=={MLX_LM_VERSION}"))
         .arg("--with")
         .arg(format!("llguidance=={LLGUIDANCE_VERSION}"))
