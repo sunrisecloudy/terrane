@@ -71,6 +71,11 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
              prompt-guided with extraction, validation, and one retry. --grammar is \
              llama_cpp-only."
                 .to_string(),
+            "The mlx backend keeps one resident mlx_lm.server per home (auto-start on ask, \
+             idle auto-exit, lazy restart); provision the runtime with `terrane local-model \
+             setup mlx` and inspect it with `terrane local-model server status|stop` — host \
+             verbs that record nothing."
+                .to_string(),
             "Different backends for the same weights (gguf vs mlx) are two engine targets, not \
              interchangeable engines: quantization, tokenizer/template handling, and samplers \
              all shift output."
