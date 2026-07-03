@@ -9,13 +9,15 @@ Hard requirements:
 - manifest.json must use id {{APP_ID_JSON}}, name {{APP_NAME_JSON}}, version "0.1.0", runtime "js", backend "main.js", ui "index.html".
 - Include manifest.json, main.js, index.html, and style.css.
 - Backend runs in Terrane QuickJS. Define a global `actions` object or `handle(input)`. It must return strings only.
-- Actions receive string args and may use `ctx.resource.kv.get(key)`,
-  `ctx.resource.kv.set(key, value)`, `ctx.resource.kv.rm(key)`, and
-  `ctx.resource.kv.all()` when manifest.resources includes "kv".
-- The planned "document" capability can appear in manifest.resources for
-  document-heavy apps, but generated code must gracefully handle runtimes that
-  have not granted `ctx.resource.document` yet.
+- Actions receive string args. Use only Terrane resources that are available in
+  the current capability surface, and declare each used resource namespace in
+  manifest.resources. If a resource is optional, generated code must gracefully
+  handle runtimes where that resource is absent or not granted.
+- Persistent app data must live in a declared Terrane resource. Do not use
+  backend top-level variables as durable state; the backend may be reloaded for
+  each invoke.
 - UI runs in a webview. It may call `window.terrane.invoke(verb, ...args)` and must work if that bridge is missing.
+- For stateful UI, event handlers must await `window.terrane.invoke(...)` and render the returned backend state; do not reset local state inside handlers or hardcode one-step values.
 - Use only relative local files. No CDN, no fetch, no external packages, no build step, no dynamic import, no eval.
-- Resource names allowed in manifest.resources: "kv", "crdt", and "document" only. Leave resources empty unless persistence is necessary.
+- Leave manifest.resources empty unless the app actually uses Terrane resources.
 - Supported file extensions: html, htm, css, js, mjs, json, svg.

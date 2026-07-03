@@ -42,6 +42,9 @@ fn prompts_fill_json_safe_app_values() {
     assert!(prompt.contains("make it"));
     assert!(prompt.contains(r#""app\"id""#));
     assert!(prompt.contains(r#""Name""#));
+    assert!(prompt.contains("Use only Terrane resources that are available"));
+    assert!(prompt.contains("backend top-level variables"));
+    assert!(prompt.contains("render the returned backend state"));
 
     let run_prompt = run_js_prompt("demo", "write js");
     assert!(run_prompt.contains("write js"));

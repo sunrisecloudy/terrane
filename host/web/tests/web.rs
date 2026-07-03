@@ -1023,6 +1023,12 @@ fn serves_catalog_ui_and_invoke_over_http() {
         body.contains("window.terraneAppIcon"),
         "shared app icons missing from shell: {body}"
     );
+    assert!(
+        body.contains("id=\"admin-console-link\"")
+            && body.contains("href=\"/__terrane/admin\"")
+            && body.contains("Admin console"),
+        "admin console sidebar link missing: {body}"
+    );
     // Top bar: breadcrumb (app / editable doc name), user menu with settings,
     // theme switcher, login/logout, and a settings panel beside the iframe.
     assert!(
@@ -1058,12 +1064,13 @@ fn serves_catalog_ui_and_invoke_over_http() {
         "shell should enable catalog polling under live reload: {body}"
     );
     // In-session permission prompts: a permission_required invoke opens a
-    // host-owned dialog that can approve/deny and retry the request.
+    // host-owned inline bar that can approve/deny and retry the request.
     assert!(
         body.contains("id=\"perm-dialog\"")
+            && body.contains("class=\"perm-bar\"")
             && body.contains("id=\"perm-approve\"")
             && body.contains("id=\"perm-deny\""),
-        "permission dialog missing from shell: {body}"
+        "permission bar missing from shell: {body}"
     );
     assert!(
         body.contains("permission_required") && body.contains("/__terrane/admin/requests/"),
