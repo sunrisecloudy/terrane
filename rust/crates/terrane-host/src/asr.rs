@@ -3,6 +3,9 @@
 //! feature; a build without it exposes only the shutdown no-op.
 
 #[cfg(feature = "asr-engine")]
+use std::sync::{Arc, Mutex, OnceLock};
+
+#[cfg(feature = "asr-engine")]
 use terrane_core::Result;
 
 #[cfg(feature = "asr-engine")]
@@ -10,7 +13,34 @@ use crate::stt_runner::{AsrEngine, AsrOutput};
 
 #[cfg(feature = "asr-engine")]
 pub(crate) fn shutdown() {
+    shared_whisper_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take();
     terrane_asr::clear_whisper_cache();
+}
+
+/// Process-global whisper engine for long-lived STT runners (web + native edge).
+#[cfg(feature = "asr-engine")]
+pub fn shared_whisper() -> Option<Arc<Mutex<HostWhisper>>> {
+    let mut store = shared_whisper_store()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if store.is_none() {
+        match HostWhisper::from_env() {
+            Ok(engine) => *store = Some(Arc::new(Mutex::new(engine))),
+            Err(error) => {
+                eprintln!("terrane-host: whisper unavailable ({error}), using stub ASR");
+            }
+        }
+    }
+    store.clone()
+}
+
+#[cfg(feature = "asr-engine")]
+fn shared_whisper_store() -> &'static Mutex<Option<Arc<Mutex<HostWhisper>>>> {
+    static STORE: OnceLock<Mutex<Option<Arc<Mutex<HostWhisper>>>>> = OnceLock::new();
+    STORE.get_or_init(|| Mutex::new(None))
 }
 
 #[cfg(not(feature = "asr-engine"))]

@@ -148,30 +148,16 @@ fn stub_transcribe(pcm: &[i16], _sample_rate_hz: u32) -> TerraneResult<AsrOutput
 
 fn make_engine() -> WebAsrEngine {
     #[cfg(feature = "asr-engine")]
-    if let Some(engine) = shared_whisper() {
+    if let Some(engine) = terrane_host::asr::shared_whisper() {
         return WebAsrEngine::Whisper(engine);
     }
     WebAsrEngine::Stub
 }
 
-#[cfg(feature = "asr-engine")]
-fn shared_whisper() -> Option<Arc<Mutex<terrane_host::asr::HostWhisper>>> {
-    static WHISPER: OnceLock<Option<Arc<Mutex<terrane_host::asr::HostWhisper>>>> = OnceLock::new();
-    WHISPER
-        .get_or_init(|| match terrane_host::asr::HostWhisper::from_env() {
-            Ok(engine) => Some(Arc::new(Mutex::new(engine))),
-            Err(error) => {
-                eprintln!("terrane-web: whisper unavailable ({error}), using stub ASR");
-                None
-            }
-        })
-        .clone()
-}
-
 fn asr_engine_label() -> &'static str {
     #[cfg(feature = "asr-engine")]
     {
-        if shared_whisper().is_some() {
+        if terrane_host::asr::shared_whisper().is_some() {
             return "whisper";
         }
     }

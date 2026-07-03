@@ -10,9 +10,10 @@ use std::thread;
 use std::time::Duration;
 
 use terrane_host::ffi::{
-    terrane_close, terrane_dispatch, terrane_open, terrane_stt_push_pcm,
-    terrane_stt_session_begin, terrane_stt_session_end, terrane_stt_shutdown, TERRANE_OK,
+    terrane_close, terrane_dispatch, terrane_local_model_shutdown, terrane_open,
+    terrane_stt_push_pcm, terrane_stt_session_begin, terrane_stt_session_end, TERRANE_OK,
 };
+use terrane_host::stt_runner::frame_samples;
 
 fn catalog_scribe(handle: *mut terrane_host::ffi::TerraneHandle) {
     let command = CString::new("app.add").unwrap();
@@ -52,14 +53,24 @@ fn model_from_env() -> Option<PathBuf> {
     }
 }
 
-fn wav_from_env() -> Option<PathBuf> {
-    match std::env::var("TERRANE_STT_WAV") {
-        Ok(path) if !path.trim().is_empty() => Some(PathBuf::from(path)),
-        _ => {
-            eprintln!("skipping: set TERRANE_STT_WAV to a 16 kHz mono WAV fixture");
-            None
+fn wav_fixture() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("TERRANE_STT_WAV") {
+        let path = path.trim();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
         }
     }
+    let default = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-16k-mono.wav");
+    if default.is_file() {
+        return Some(default);
+    }
+    eprintln!("skipping: set TERRANE_STT_WAV or add tests/fixtures/hello-16k-mono.wav");
+    None
+}
+
+fn close_silence(sample_rate_hz: u32) -> Vec<i16> {
+    let frame = frame_samples(sample_rate_hz, 30);
+    vec![0_i16; frame * 12]
 }
 
 #[test]
@@ -68,7 +79,7 @@ fn native_stt_edge_whisper_transcribes_wav_fixture() {
     let Some(_model) = model_from_env() else {
         return;
     };
-    let Some(wav_path) = wav_from_env() else {
+    let Some(wav_path) = wav_fixture() else {
         return;
     };
 
@@ -76,11 +87,12 @@ fn native_stt_edge_whisper_transcribes_wav_fixture() {
     let spec = reader.spec();
     assert_eq!(spec.channels, 1, "fixture must be mono");
     assert_eq!(spec.sample_rate, 16_000, "fixture must be 16 kHz");
-    let pcm: Vec<i16> = reader
+    let mut pcm: Vec<i16> = reader
         .into_samples::<i16>()
         .map(|sample| sample.expect("valid sample"))
         .collect();
     assert!(!pcm.is_empty(), "fixture must contain samples");
+    pcm.extend(close_silence(spec.sample_rate));
 
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path();
@@ -103,7 +115,7 @@ fn native_stt_edge_whisper_transcribes_wav_fixture() {
     assert_eq!(code, TERRANE_OK, "push pcm failed");
 
     // Whisper + VAD need time to drain the full utterance on the worker thread.
-    thread::sleep(Duration::from_secs(30));
+    thread::sleep(Duration::from_secs(15));
 
     let reason = CString::new("stopped").unwrap();
     let code = unsafe {
@@ -112,7 +124,7 @@ fn native_stt_edge_whisper_transcribes_wav_fixture() {
     assert_eq!(code, TERRANE_OK, "session end failed");
 
     unsafe {
-        terrane_stt_shutdown();
+        terrane_local_model_shutdown();
         terrane_close(handle);
     }
 

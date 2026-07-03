@@ -22,14 +22,20 @@ fn model_from_env() -> Option<PathBuf> {
 }
 
 #[cfg(feature = "whisper")]
-fn wav_from_env() -> Option<PathBuf> {
-    match std::env::var("TERRANE_STT_WAV") {
-        Ok(path) if !path.trim().is_empty() => Some(PathBuf::from(path)),
-        _ => {
-            eprintln!("skipping: set TERRANE_STT_WAV to a 16 kHz mono WAV fixture");
-            None
+fn wav_fixture() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("TERRANE_STT_WAV") {
+        let path = path.trim();
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
         }
     }
+    let default = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terrane-host/tests/fixtures/hello-16k-mono.wav");
+    if default.is_file() {
+        return Some(default);
+    }
+    eprintln!("skipping: set TERRANE_STT_WAV or add terrane-host/tests/fixtures/hello-16k-mono.wav");
+    None
 }
 
 #[test]
@@ -77,7 +83,7 @@ fn whisper_transcribes_short_wav() {
     let Some(model_path) = model_from_env() else {
         return;
     };
-    let Some(wav_path) = wav_from_env() else {
+    let Some(wav_path) = wav_fixture() else {
         return;
     };
 
@@ -100,4 +106,5 @@ fn whisper_transcribes_short_wav() {
         "expected non-empty transcript, got {:?}",
         out
     );
+    terrane_asr::clear_whisper_cache();
 }

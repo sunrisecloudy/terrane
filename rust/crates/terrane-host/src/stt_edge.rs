@@ -328,24 +328,10 @@ fn stub_transcribe(pcm: &[i16], _sample_rate_hz: u32) -> TerraneResult<AsrOutput
 
 fn make_engine() -> EdgeAsrEngine {
     #[cfg(feature = "asr-engine")]
-    if let Some(engine) = shared_whisper() {
+    if let Some(engine) = crate::asr::shared_whisper() {
         return EdgeAsrEngine::Whisper(engine);
     }
     EdgeAsrEngine::Stub
-}
-
-#[cfg(feature = "asr-engine")]
-fn shared_whisper() -> Option<Arc<Mutex<crate::asr::HostWhisper>>> {
-    static WHISPER: OnceLock<Option<Arc<Mutex<crate::asr::HostWhisper>>>> = OnceLock::new();
-    WHISPER
-        .get_or_init(|| match crate::asr::HostWhisper::from_env() {
-            Ok(engine) => Some(Arc::new(Mutex::new(engine))),
-            Err(error) => {
-                eprintln!("terrane-host: whisper unavailable ({error}), using stub ASR");
-                None
-            }
-        })
-        .clone()
 }
 
 fn ring_cap_samples(sample_rate_hz: u32) -> usize {
