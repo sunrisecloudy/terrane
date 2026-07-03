@@ -980,6 +980,7 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
     {
         let mut core = Core::open(home.join("log.bin")).unwrap();
         install_named(&mut core, "bmi-calculator", "BMI Calculator");
+        grant_resource(&mut core, "bmi-calculator", "kv");
     }
 
     let (mut child, addr) = spawn_web(home);
@@ -1091,6 +1092,30 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
     assert!(
         body.contains(r#"\"category\":\"Overweight\""#),
         "bmi category: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/bmi-calculator/invoke",
+        Some(r#"{"verb":"state","args":[]}"#),
+    );
+    assert_eq!(status, 200, "bmi state invoke: {body}");
+    assert!(body.contains(r#"\"height\":170"#), "bmi default height: {body}");
+    assert!(body.contains(r#"\"weight\":65"#), "bmi default weight: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/bmi-calculator/invoke",
+        Some(r#"{"verb":"set_height","args":["178"]}"#),
+    );
+    assert_eq!(status, 200, "bmi set height invoke: {body}");
+    assert!(body.contains(r#"\"height\":178"#), "bmi saved height: {body}");
+    assert!(body.contains(r#"\"weight\":65"#), "bmi kept weight: {body}");
+    assert!(
+        body.contains(r#"\"category\":\"Healthy\""#),
+        "bmi updated category: {body}"
     );
 
     let _ = child.kill();
