@@ -28,6 +28,9 @@ pub fn kv_doc(include_internal: bool) -> CapabilityDoc {
                 "kv.delete".to_string(),
                 "kv.storage.set".to_string(),
                 "kv.storage.clear".to_string(),
+                "kv.public.set".to_string(),
+                "kv.public.rm".to_string(),
+                "kv.public.import".to_string(),
             ],
             queries: Vec::new(),
             events: vec![
@@ -107,6 +110,10 @@ pub fn kv_doc(include_internal: bool) -> CapabilityDoc {
             "ctx.resource.kv.set and ctx.resource.kv.rm write deterministic kv.set and kv.deleted records through the runtime host."
                 .to_string(),
             "kv.storage.set and kv.storage.clear affect physical projection bindings only; the event log remains the source of truth."
+                .to_string(),
+            "kv.public.set/rm/import write the shared cross-app public bucket and are trusted-host only; app code reaches it through the read-only ctx.resource.kv.public* methods."
+                .to_string(),
+            "Public reads (public/publicScan/publicAll/publicKeys) are cross-app and read-only; they never reveal another app's private bucket and do not filter reserved-key prefixes."
                 .to_string(),
         ],
         limits: vec![
@@ -236,6 +243,45 @@ fn kv_commands() -> Vec<CommandDoc> {
         )
         .with_errors(&["missing app", "invalid scope"])
         .with_emits(&["kv.storage.cleared"]),
+        command_doc(
+            "kv.public.set",
+            &[
+                param("key", "Public bucket key (no app argument).", "kv_key"),
+                param(
+                    "value",
+                    "String value to record; CLI tails are joined.",
+                    "string",
+                ),
+            ],
+            "events",
+            "Record a cross-app read-only public value. Trusted host only.",
+        )
+        .with_errors(&["empty key", "requires trusted host authority"])
+        .with_emits(&["kv.set"]),
+        command_doc(
+            "kv.public.rm",
+            &[param("key", "Public bucket key to delete.", "kv_key")],
+            "events",
+            "Delete an existing cross-app public value. Trusted host only.",
+        )
+        .with_errors(&["missing key", "requires trusted host authority"])
+        .with_emits(&["kv.deleted"]),
+        command_doc(
+            "kv.public.import",
+            &[param(
+                "json",
+                "A flat {\"key\":\"value\"} object; emitted as a sorted batch.",
+                "string",
+            )],
+            "events",
+            "Import a flat string map into the public bucket deterministically. Trusted host only.",
+        )
+        .with_errors(&[
+            "invalid JSON object",
+            "non-string value",
+            "requires trusted host authority",
+        ])
+        .with_emits(&["kv.set"]),
     ]
 }
 
@@ -378,6 +424,52 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
                 "Return non-reserved keys matching prefix, ordered by key.",
                 "string[]",
                 vec!["reserved prefix".to_string(), "invalid limit".to_string()],
+            ),
+            "public" => method_doc(
+                "public",
+                method.kind(),
+                vec![param("key", "Public bucket key to read.", "kv_key")],
+                "Read one value from the shared cross-app public bucket.",
+                "string|null",
+                Vec::new(),
+            ),
+            "publicScan" => method_doc(
+                "publicScan",
+                method.kind(),
+                vec![
+                    param("prefix", "Inclusive key prefix.", "kv_key_prefix"),
+                    param(
+                        "limit",
+                        "Optional integer limit clamped to the scan limits.",
+                        "integer_string",
+                    ),
+                ],
+                "Return public bucket key/value pairs whose keys start with prefix.",
+                "object",
+                vec!["invalid limit".to_string()],
+            ),
+            "publicAll" => method_doc(
+                "publicAll",
+                method.kind(),
+                Vec::new(),
+                "Return every key/value pair in the shared public bucket.",
+                "object",
+                vec!["Absent bucket returns an empty object.".to_string()],
+            ),
+            "publicKeys" => method_doc(
+                "publicKeys",
+                method.kind(),
+                vec![
+                    param("prefix", "Inclusive key prefix.", "kv_key_prefix"),
+                    param(
+                        "limit",
+                        "Optional integer limit clamped to the scan limits.",
+                        "integer_string",
+                    ),
+                ],
+                "Return public bucket keys matching prefix, ordered by key.",
+                "string[]",
+                vec!["invalid limit".to_string()],
             ),
             other => unreachable!("unexpected kv resource method: {other}"),
         })

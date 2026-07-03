@@ -54,7 +54,11 @@ fn resource_manifest_exposes_expected_backend_methods() {
             ("write", "rm"),
             ("read", "scan"),
             ("read", "range"),
-            ("read", "keys")
+            ("read", "keys"),
+            ("read", "public"),
+            ("read", "publicScan"),
+            ("read", "publicAll"),
+            ("read", "publicKeys")
         ]
     );
 }
