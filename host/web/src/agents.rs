@@ -10,6 +10,7 @@ use nanoserde::{DeJson, SerJson};
 use terrane_cap_agent::{AgentDef, DEFAULT_HARNESS, DEFAULT_MODEL};
 use tiny_http::Request;
 
+use crate::agent_jobs::{AgentJobs, AssistPoll};
 use crate::http::{json_error, json_ok, Resp};
 
 #[derive(SerJson)]
@@ -141,6 +142,101 @@ fn push_upsert_flags(args: &mut Vec<String>, parsed: &AgentUpsertRequest) {
             args.push("--cap".to_string());
             args.push(cap.clone());
         }
+    }
+}
+
+#[derive(DeJson)]
+struct AssistRequest {
+    #[nserde(default)]
+    app: String,
+    #[nserde(default)]
+    message: String,
+}
+
+#[derive(DeJson)]
+struct AssistStatusRequest {
+    #[nserde(default)]
+    job: String,
+}
+
+#[derive(SerJson)]
+struct AssistStarted {
+    job: String,
+    status: String,
+}
+
+#[derive(SerJson)]
+struct AssistStatusResponse {
+    status: String,
+    #[nserde(default)]
+    transcript: String,
+    #[nserde(default)]
+    error: String,
+}
+
+/// `POST /__terrane/agents/{id}/assist` — start an agent run against the open
+/// app in the background and return a job id to poll. `base_url` is this host's
+/// own address so the harness's MCP tools loop back through the live Core.
+pub fn assist_start(
+    core: &mut terrane_host::HostCore,
+    jobs: &mut AgentJobs,
+    id: &str,
+    request: &mut Request,
+    base_url: &str,
+) -> Resp {
+    let body = match read_body(request) {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let parsed: AssistRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad assist body: {e}")),
+    };
+    if parsed.app.trim().is_empty() {
+        return json_error(400, "assist needs an app");
+    }
+    if parsed.message.trim().is_empty() {
+        return json_error(400, "assist needs a message");
+    }
+    let Some(agent) = core.state().agent.agents.get(id).cloned() else {
+        return json_error(404, &format!("no such agent: {id}"));
+    };
+    match jobs.start(&agent, parsed.app.trim(), parsed.message.trim(), base_url) {
+        Ok(job) => json_ok(&AssistStarted {
+            job,
+            status: "running".to_string(),
+        }),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+/// `POST /__terrane/agents/assist/status` `{job}` — poll a running assist.
+pub fn assist_status(jobs: &mut AgentJobs, request: &mut Request) -> Resp {
+    let body = match read_body(request) {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let parsed: AssistStatusRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad status body: {e}")),
+    };
+    match jobs.poll(parsed.job.trim()) {
+        AssistPoll::Running => json_ok(&AssistStatusResponse {
+            status: "running".to_string(),
+            transcript: String::new(),
+            error: String::new(),
+        }),
+        AssistPoll::Done(transcript) => json_ok(&AssistStatusResponse {
+            status: "done".to_string(),
+            transcript,
+            error: String::new(),
+        }),
+        AssistPoll::Failed(error) => json_ok(&AssistStatusResponse {
+            status: "failed".to_string(),
+            transcript: String::new(),
+            error,
+        }),
+        AssistPoll::Unknown => json_error(404, "no such assist job"),
     }
 }
 
