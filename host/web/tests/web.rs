@@ -1098,6 +1098,20 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
         &addr,
         "POST",
         "/apps/bmi-calculator/invoke",
+        Some(r#"{"verb":"__actions__","args":[]}"#),
+    );
+    assert_eq!(status, 200, "bmi actions invoke: {body}");
+    assert!(
+        body.contains(r#"\"verb\":\"state\""#)
+            && body.contains(r#"\"verb\":\"set_height\""#)
+            && body.contains(r#"\"verb\":\"set_weight\""#),
+        "bmi actions missing persisted-state verbs: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/bmi-calculator/invoke",
         Some(r#"{"verb":"state","args":[]}"#),
     );
     assert_eq!(status, 200, "bmi state invoke: {body}");
