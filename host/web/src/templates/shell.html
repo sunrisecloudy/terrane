@@ -158,6 +158,9 @@
       .premium-section {
         margin-top: 18px;
       }
+      .manage-section {
+        margin-top: 18px;
+      }
       .app-section-title {
         margin: 0 0 6px;
         padding: 0 10px;
@@ -171,7 +174,7 @@
         min-width: 0;
         min-height: 100vh;
         display: grid;
-        grid-template-rows: auto 0 minmax(0, 1fr);
+        grid-template-rows: auto auto minmax(0, 1fr);
       }
       .topbar {
         display: grid;
@@ -393,40 +396,40 @@
       .settings-close:hover {
         border-color: #0071e3;
       }
-      .perm-overlay {
-        position: fixed;
-        inset: 0;
-        z-index: 40;
-        display: grid;
-        place-items: center;
-        background: color-mix(in srgb, CanvasText 32%, transparent);
-      }
-      .perm-overlay[hidden] {
+      .perm-bar[hidden] {
         display: none;
       }
-      .perm-card {
-        width: min(440px, calc(100vw - 48px));
-        padding: 20px;
-        border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
-        border-radius: 12px;
-        background: Canvas;
-        box-shadow: 0 18px 44px color-mix(in srgb, CanvasText 30%, transparent);
+      .perm-bar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 14px;
+        padding: 10px 14px;
+        border-bottom: 1px solid color-mix(in srgb, #0071e3 34%, transparent);
+        background: color-mix(in srgb, #0071e3 10%, Canvas);
       }
-      .perm-card h2 {
-        margin: 0 0 10px;
-        font-size: 16px;
+      .perm-copy {
+        min-width: 0;
+      }
+      .perm-title {
+        margin: 0 0 2px;
+        font-size: 13px;
+        font-weight: 700;
       }
       .perm-text {
-        margin: 0 0 6px;
-        line-height: 1.5;
+        margin: 0;
+        color: color-mix(in srgb, CanvasText 68%, transparent);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .perm-note {
-        margin: 0 0 14px;
+        margin: 2px 0 0;
         font-size: 12px;
         color: color-mix(in srgb, CanvasText 60%, transparent);
       }
       .perm-error {
-        margin: 0 0 12px;
+        margin: 2px 0 0;
         color: #e0402f;
       }
       .perm-error[hidden] {
@@ -434,7 +437,8 @@
       }
       .perm-actions {
         display: flex;
-        justify-content: flex-end;
+        align-items: center;
+        flex: none;
         gap: 10px;
       }
       .perm-deny,
@@ -459,6 +463,15 @@
       .perm-approve:disabled {
         opacity: 0.6;
         cursor: default;
+      }
+      @media (max-width: 760px) {
+        .perm-bar {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+        .perm-actions {
+          justify-content: flex-end;
+        }
       }
       .title {
         width: 1px;
@@ -536,6 +549,28 @@
         </div>
         <div id="app-list" class="app-list" aria-live="polite">
           Loading apps...
+        </div>
+        <div class="manage-section" aria-label="Management">
+          <h2 class="app-section-title">Manage</h2>
+          <a id="admin-console-link" class="app-link" href="/__terrane/admin">
+            <span class="app-icon" aria-hidden="true">
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="M12 3l7 3v5c0 4.6-2.9 8.5-7 10-4.1-1.5-7-5.4-7-10V6l7-3z"></path>
+                <path d="M9.5 12.5l1.7 1.7 3.6-4.2"></path>
+              </svg>
+            </span>
+            <span class="app-link-text">
+              <span>Admin console</span>
+              <small>Local grants and requests</small>
+            </span>
+          </a>
         </div>
         <div id="premium-section" class="premium-section" hidden>
           <h2 class="app-section-title">Premium</h2>
@@ -616,6 +651,31 @@
             </div>
           </div>
         </header>
+        <section
+          id="perm-dialog"
+          class="perm-bar"
+          aria-labelledby="perm-title"
+          hidden
+        >
+          <div class="perm-copy">
+            <h2 id="perm-title" class="perm-title">Permission request</h2>
+            <p class="perm-text">
+              <strong id="perm-app">An app</strong> asks for access to
+              <strong id="perm-resources">a resource</strong>.
+            </p>
+            <p class="perm-note" id="perm-note">
+              Approving grants access for this session. Review grants in the
+              admin console.
+            </p>
+            <p class="perm-error" id="perm-error" hidden></p>
+          </div>
+          <div class="perm-actions">
+            <button id="perm-deny" class="perm-deny" type="button">Deny</button>
+            <button id="perm-approve" class="perm-approve" type="button">
+              Approve
+            </button>
+          </div>
+        </section>
         <h1 id="app-title" class="title">Terrane</h1>
         <div class="stage-content">
           <iframe
@@ -670,33 +730,6 @@
           </section>
         </div>
       </main>
-    </div>
-    <div
-      id="perm-dialog"
-      class="perm-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="perm-title"
-      hidden
-    >
-      <div class="perm-card">
-        <h2 id="perm-title">Permission request</h2>
-        <p class="perm-text">
-          <strong id="perm-app">An app</strong> asks for access to
-          <strong id="perm-resources">a resource</strong>.
-        </p>
-        <p class="perm-note" id="perm-note">
-          Approving grants access for this session. You can review grants in
-          the admin console.
-        </p>
-        <p class="perm-error" id="perm-error" hidden></p>
-        <div class="perm-actions">
-          <button id="perm-deny" class="perm-deny" type="button">Deny</button>
-          <button id="perm-approve" class="perm-approve" type="button">
-            Approve
-          </button>
-        </div>
-      </div>
     </div>
     <script>
       window.__terraneLiveReload = __LIVE_RELOAD__;

@@ -326,7 +326,7 @@
   }
 
   // ---- In-session permission prompts -------------------------------------
-  // A 403 permission_required from an invoke opens a host-owned dialog.
+  // A 403 permission_required from an invoke opens a host-owned bar.
   // Approve grants via the admin route and retries the original request;
   // deny answers the app with the original permission error.
 
