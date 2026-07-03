@@ -6,7 +6,13 @@
   var previewId = __PREVIEW_ID_JSON__;
   var bridgeSeq = 0;
   var bridgePending = {};
-  var bridgeTargetOrigin = window.location.protocol + "//" + window.location.host;
+  // App frames post to the shell — a real origin we can pin. Preview frames
+  // post to their embedding APP frame, whose sandboxed opaque origin never
+  // matches a concrete targetOrigin: the browser would silently drop the
+  // message, so they must post with "*" (the target window is still fixed).
+  var bridgeTargetOrigin = previewId
+    ? "*"
+    : window.location.protocol + "//" + window.location.host;
   var bridgeTimeoutsMs = { invoke: 30000, preview: 30000 };
   // Generation runs in the background on the host; the start request returns
   // immediately and the shim polls status until the draft is committed.
