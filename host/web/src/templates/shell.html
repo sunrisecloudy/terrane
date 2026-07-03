@@ -258,6 +258,15 @@
       .stt-mic-button[aria-pressed="true"] {
         color: #0071e3;
       }
+      .stt-listening-badge {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        color: #d70015;
+      }
+      .stt-listening-badge[hidden] {
+        display: none;
+      }
       .user-avatar {
         width: 32px;
         height: 32px;
@@ -786,6 +795,7 @@
             ></span>
           </nav>
           <div class="topbar-right">
+            <span id="stt-listening-badge" class="stt-listening-badge" hidden>LISTENING</span>
             <button
               id="stt-mic-button"
               class="stt-mic-button"

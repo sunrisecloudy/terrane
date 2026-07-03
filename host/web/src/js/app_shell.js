@@ -28,8 +28,11 @@
   var settingsPanel = document.getElementById("settings-panel");
   var settingsClose = document.getElementById("settings-close");
   var sttMicButton = document.getElementById("stt-mic-button");
+  var sttListeningBadge = document.getElementById("stt-listening-badge");
 
   var DOC_KEY = "terrane.doc." + (currentId || "admin");
+  var STT_CONSENT_KEY = "terrane.stt.consent";
+  var STT_NOTE_KEY = "terrane.stt.note." + (currentId || "app");
   var THEME_KEY = "terrane.theme";
   var SIGNED_OUT_KEY = "terrane.signedOut";
   // Optional Terrane Premium sign-in (Google). The host injects the control
@@ -303,6 +306,10 @@
         setDocName(message.name, true);
         return;
       }
+      if (message && message.type === "terrane:stt:deliver") {
+        deliverSttSink(message.sink, message.text);
+        return;
+      }
       if (!message || message.type !== "terrane:bridge:request") return;
 
       var body = message.body || {};
@@ -552,10 +559,67 @@
     });
   }
 
+  function ensureSttConsent() {
+    return new Promise(function (resolve, reject) {
+      try {
+        if (window.localStorage.getItem(STT_CONSENT_KEY) === "granted") {
+          resolve();
+          return;
+        }
+      } catch (_) {}
+      var ok = window.confirm(
+        "Terrane will use your microphone for on-device speech transcription. " +
+          "Only finalized text is recorded in the log — not raw audio. Allow listening?"
+      );
+      if (!ok) {
+        reject(new Error("stt consent denied"));
+        return;
+      }
+      try {
+        window.localStorage.setItem(STT_CONSENT_KEY, "granted");
+      } catch (_) {}
+      resolve();
+    });
+  }
+
+  function deliverSttSink(sink, text) {
+    var value = String(text == null ? "" : text);
+    if (!value) return;
+    var kind = String(sink || "").trim();
+    if (kind === "clipboard") {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(value).catch(function () {});
+      }
+      return;
+    }
+    if (kind === "field") {
+      sendToFrame({ type: "terrane:stt:field", text: value });
+      return;
+    }
+    if (kind.indexOf("app:") === 0) {
+      var targetId = kind.slice(4).trim();
+      if (!targetId) return;
+      postJson("/apps/" + encodeURIComponent(targetId) + "/invoke", {
+        verb: "sttDeliver",
+        args: [value],
+      }).catch(function () {});
+      return;
+    }
+    if (kind === "note") {
+      try {
+        window.localStorage.setItem(STT_NOTE_KEY, value);
+      } catch (_) {}
+      return;
+    }
+  }
+
   function startSttMic() {
     var sessionId = randomNonce();
     sttMicButton.disabled = true;
-    fetchSttConfig()
+    ensureSttConsent()
+      .then(function () {
+        return fetchSttConfig();
+      })
       .then(function (config) {
         return openSttSession(sessionId).then(function (open) {
           return {
@@ -574,6 +638,7 @@
         sttMicButton.disabled = false;
         sttMicButton.setAttribute("aria-pressed", "true");
         sttMicButton.title = "Disable microphone";
+        if (sttListeningBadge) sttListeningBadge.hidden = false;
         sendToFrame({ type: "terrane:stt", status: "open", sessionId: capture.sessionId });
       })
       .catch(function (error) {
@@ -652,6 +717,7 @@
       sttMicButton.setAttribute("aria-pressed", "false");
       sttMicButton.title = "Enable microphone";
     }
+    if (sttListeningBadge) sttListeningBadge.hidden = true;
     sendToFrame({ type: "terrane:stt", status: "closed", sessionId: capture.sessionId });
   }
 

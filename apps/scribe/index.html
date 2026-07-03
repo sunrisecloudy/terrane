@@ -283,6 +283,12 @@
         invoke("select", sttSessionId, String(fromSeq), String(toSeq), sink)
           .then(function (text) {
             log("→ " + sink + ": " + text);
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage(
+                { type: "terrane:stt:deliver", sink: sink, text: text },
+                "*"
+              );
+            }
             clearSelection();
             refresh();
           })
