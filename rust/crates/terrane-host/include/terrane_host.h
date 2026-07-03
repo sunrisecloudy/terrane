@@ -105,6 +105,32 @@ void terrane_local_model_shutdown(void);
 int terrane_local_model_server_stop(const char *home, char **out_output,
                                     char **out_error);
 
+/* Resolve an RFC 7231 Accept-Language header (or any comma-joined preference
+ * list) to the best supported Terrane language code, e.g. "fr-CH, en;q=0.8" ->
+ * "fr". Writes the canonical code (e.g. "zh-Hans") or "en" when nothing
+ * resolves. Pure: no handle required. */
+int terrane_i18n_negotiate(const char *header, char **out_output,
+                           char **out_error);
+
+/* The canonical supported language codes as a JSON array, e.g.
+ * ["en","es","zh-Hans",...] — one source of truth for native language pickers.
+ * Pure: no handle required. */
+int terrane_i18n_supported(char **out_output, char **out_error);
+
+/* Import checked-in i18n catalogs (the "i18n/system" and "apps/<id>/i18n" JSON
+ * files) under `path` into the workspace's public KV bucket via one
+ * trusted-host kv.public.import. Idempotent and replay-safe. Writes a human
+ * summary. */
+int terrane_i18n_import(TerraneHandle *h, const char *path, char **out_output,
+                        char **out_error);
+
+/* The localized message bundle for `code` as a JSON object, to push to a UI.
+ * `app_id` empty = the shell-chrome ("system") bundle; otherwise the app frame
+ * bundle ("system" + that app's domain). English is the fallback layer; keys
+ * are "<domain>.<key>" (e.g. "todo.add"). */
+int terrane_i18n_bundle(TerraneHandle *h, const char *code, const char *app_id,
+                        char **out_output, char **out_error);
+
 /* Free a string returned by this library. Null-safe; non-null pointers are
  * single-use and must be freed exactly once. */
 void terrane_string_free(char *s);

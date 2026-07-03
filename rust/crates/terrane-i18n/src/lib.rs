@@ -34,6 +34,26 @@ pub const SUPPORTED: &[&str] = &[
 /// first entry of [`SUPPORTED`].
 pub const DEFAULT: &str = "en";
 
+/// Supported codes that render right-to-left. Only Arabic in the initial set;
+/// callers use [`dir_for`]/[`is_rtl`] rather than hard-coding `"ar"`.
+pub const RTL: &[&str] = &["ar"];
+
+/// True if `code` is a right-to-left language (case-insensitive).
+pub fn is_rtl(code: &str) -> bool {
+    RTL.iter().any(|c| c.eq_ignore_ascii_case(code))
+}
+
+/// The writing direction for `code`: `"rtl"` for right-to-left languages, else
+/// `"ltr"`. Hosts set this on the document / push it to the app frame so a
+/// single source of truth drives layout mirroring.
+pub fn dir_for(code: &str) -> &'static str {
+    if is_rtl(code) {
+        "rtl"
+    } else {
+        "ltr"
+    }
+}
+
 /// True if `code` matches a supported code, compared case-insensitively.
 pub fn is_supported(code: &str) -> bool {
     SUPPORTED.iter().any(|c| c.eq_ignore_ascii_case(code))

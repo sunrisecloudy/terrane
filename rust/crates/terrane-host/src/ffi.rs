@@ -675,6 +675,52 @@ pub unsafe extern "C" fn terrane_i18n_import(
     finish(code, out_error)
 }
 
+/// Read the localized message bundle for `code` as a JSON object, for a native
+/// host to push to a UI. `app_id` empty = the shell-chrome (`system`) bundle;
+/// otherwise the app frame bundle (`system` + that app's domain). English is the
+/// fallback layer; keys are `<domain>.<key>` (e.g. `"todo.add"`). Unsupported or
+/// empty `code` falls back to the default language.
+///
+/// # Safety
+/// `code`/`app_id` must be valid C strings; `out_output`/`out_error` must be
+/// valid pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_i18n_bundle(
+    h: *mut TerraneHandle,
+    code: *const c_char,
+    app_id: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let rc = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let code = match read_str(code) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let app_id = match read_str(app_id) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let canonical = terrane_i18n::canonical(&code).unwrap_or(terrane_i18n::DEFAULT);
+        let map = if app_id.trim().is_empty() {
+            crate::i18n::system_bundle(&core, canonical)
+        } else {
+            crate::i18n::app_bundle(&core, canonical, app_id.trim())
+        };
+        let json = serde_json::to_string(&map).unwrap_or_else(|_| "{}".to_string());
+        write_out(out_output, json);
+        TERRANE_OK
+    }));
+    finish(rc, out_error)
+}
+
 /// Lock the core, dispatch, and write the output (backend string for runtime commands,
 /// else the committed event kinds) or the error.
 unsafe fn dispatch_request(

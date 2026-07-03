@@ -18,6 +18,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use terrane_cap_kv::PUBLIC_BUCKET_APP_ID;
+
 use crate::{dispatch_on_core, HostCore};
 
 /// A catalog entry discovered during a walk: its source path, the domain
@@ -184,4 +186,55 @@ fn collect_domain_dir(
 
 fn is_json_file(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("json") && path.is_file()
+}
+
+/// Build the message bundle a host pushes to a UI for locale `code` across the
+/// given `domains` (e.g. `["system"]` for shell chrome, `["system", "todo"]`
+/// for the todo frame). English is laid down first as the fallback, then `code`
+/// overlays it, so any key missing a `code` translation keeps its `en` value.
+/// Keys are `<domain>.<key>` — the public `i18n/<code>/` prefix stripped — so a
+/// UI looks up `t("todo.add")` / `t("system.action.add")`. Returns an empty map
+/// when the public bucket is unseeded.
+pub fn bundle(core: &HostCore, code: &str, domains: &[&str]) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(public) = core.state().kv.data.get(PUBLIC_BUCKET_APP_ID) else {
+        return out;
+    };
+    // `en` first (fallback), then the requested code so it wins on collisions.
+    for lang in dedup_langs(code) {
+        let prefix = format!("i18n/{lang}/");
+        for (key, value) in public {
+            let Some(short) = key.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some((domain, _)) = short.split_once('.') else {
+                continue;
+            };
+            if domains.contains(&domain) {
+                out.insert(short.to_string(), value.clone());
+            }
+        }
+    }
+    out
+}
+
+/// `en` then `code`, dropping the duplicate when `code` is already `en`.
+fn dedup_langs(code: &str) -> Vec<&str> {
+    if code == terrane_i18n::DEFAULT {
+        vec![terrane_i18n::DEFAULT]
+    } else {
+        vec![terrane_i18n::DEFAULT, code]
+    }
+}
+
+/// The shell-chrome bundle (the `system` domain) for `code`. Backs the web
+/// shell's own strings and the macOS native chrome.
+pub fn system_bundle(core: &HostCore, code: &str) -> BTreeMap<String, String> {
+    bundle(core, code, &["system"])
+}
+
+/// The bundle pushed to an app frame: the shared `system` domain (so apps can
+/// reuse common words) plus the app's own domain.
+pub fn app_bundle(core: &HostCore, code: &str, app_id: &str) -> BTreeMap<String, String> {
+    bundle(core, code, &["system", app_id])
 }
