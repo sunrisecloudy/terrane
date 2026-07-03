@@ -443,6 +443,124 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
 }
 
 #[test]
+fn agents_seed_list_create_and_update() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let (mut child, addr) = spawn_web(home);
+
+    // A fresh home seeds the starter roster with the opencode/kimi defaults.
+    let (status, body) = http(&addr, "GET", "/__terrane/agents", None);
+    assert_eq!(status, 200, "list agents: {body}");
+    assert!(body.contains("\"sara\""), "seeded sara missing: {body}");
+    assert!(body.contains("\"max\"") && body.contains("\"iris\""), "roster: {body}");
+    assert!(
+        body.contains("opencode-go/kimi-k2.7-code"),
+        "default model missing: {body}"
+    );
+
+    // Create a new agent, then confirm it lists.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/agents",
+        Some(r##"{"id":"nova","name":"Nova","personality":"bold and brief","color":"#123456"}"##),
+    );
+    assert_eq!(status, 200, "create agent: {body}");
+    assert!(body.contains("\"nova\""), "created agent missing: {body}");
+    // Unset fields fall back to the defaults.
+    assert!(
+        body.contains("opencode-go/kimi-k2.7-code"),
+        "new agent should default the model: {body}"
+    );
+
+    // A partial update changes only the model.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/agents/nova",
+        Some(r#"{"model":"opencode/big-pickle"}"#),
+    );
+    assert_eq!(status, 200, "update agent: {body}");
+    assert!(body.contains("opencode/big-pickle"), "updated model missing: {body}");
+    assert!(body.contains("\"Nova\""), "update dropped the name: {body}");
+
+    // Polling an unknown assist job is a clean 404, not a hang.
+    let (status, _body) = http(
+        &addr,
+        "POST",
+        "/__terrane/agents/assist/status",
+        Some(r#"{"job":"nope"}"#),
+    );
+    assert_eq!(status, 404, "unknown assist job should 404");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+#[ignore = "runs the real opencode harness + kimi over the network; minutes-long"]
+fn agent_assist_drives_pixel_paint() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let apps = app_source_path("pixel-paint");
+    let apps_dir = apps.parent().unwrap();
+    let (mut child, addr) = spawn_web_dev(home, apps_dir);
+
+    // Start with an empty canvas.
+    let (status, _body) = http(
+        &addr,
+        "POST",
+        "/apps/pixel-paint/invoke",
+        Some(r#"{"verb":"clear","args":[]}"#),
+    );
+    assert_eq!(status, 200, "clear canvas");
+
+    // Ask an agent to paint; poll until it finishes.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/agents/sara/assist",
+        Some(r#"{"app":"pixel-paint","message":"Paint a small red square near the top-left."}"#),
+    );
+    assert_eq!(status, 200, "start assist: {body}");
+    let job = json_string_field(&body, "job");
+
+    let mut done = false;
+    for _ in 0..80 {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let (_status, body) = http(
+            &addr,
+            "POST",
+            "/__terrane/agents/assist/status",
+            Some(&format!("{{\"job\":\"{job}\"}}")),
+        );
+        let state = json_string_field(&body, "status");
+        if state == "done" {
+            done = true;
+            break;
+        }
+        assert_ne!(state, "failed", "assist failed: {body}");
+    }
+    assert!(done, "assist did not finish in time");
+
+    // The agent drove the app's verbs, so the canvas now has pixels.
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/pixel-paint/invoke",
+        Some(r#"{"verb":"state","args":[]}"#),
+    );
+    assert_eq!(status, 200, "read canvas: {body}");
+    assert!(
+        !body.contains("\"pixels\":{}"),
+        "agent left the canvas empty: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn preview_with_resources_requires_admin_review_before_runtime_access() {
     let dir = tempdir().unwrap();
     let home = dir.path();
