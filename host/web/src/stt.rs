@@ -2,8 +2,8 @@
 #![allow(clippy::question_mark)] // nanoserde `DeJson` derive expands noisy closures
 //!
 //! Shell-owned mic capture pushes PCM over a loopback WebSocket; a background
-//! thread runs [`SttRunner`] with a stub ASR engine (real whisper swaps in
-//! when `asr-engine` is enabled on `terrane-host`). Finalized segments cross
+//! thread runs [`SttRunner`] with whisper when `asr-engine` is enabled and
+//! `TERRANE_STT_MODEL` resolves, else a deterministic stub. Finalized segments cross
 //! into the core through the trusted admin HTTP route so the single-threaded
 //! `Core` is never touched from the WS thread directly.
 
@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
 use nanoserde::{DeJson, SerJson};
 use terrane_host::stt_runner::{
@@ -29,6 +30,8 @@ const WORKLET_JS: &str = include_str!("js/stt_capture_worklet.js");
 const DEFAULT_MODEL: &str = "whisper-tiny";
 const DEFAULT_SAMPLE_RATE_HZ: u32 = 16_000;
 const HOST_ID: &str = "web-host";
+const DEFAULT_IDLE_MS: u64 = 120_000;
+const IDLE_POLL_SECS: u64 = 5;
 
 #[derive(DeJson)]
 pub struct SttOpenBody {
@@ -59,7 +62,7 @@ pub struct SttSegmentBody {
     pub text: String,
 }
 
-#[derive(DeJson)]
+#[derive(DeJson, SerJson)]
 pub struct SttCloseBody {
     pub app: String,
     #[nserde(rename = "sessionId")]
@@ -87,8 +90,9 @@ static STT: OnceLock<SttSessions> = OnceLock::new();
 pub fn init(http_addr: &str) -> Result<(), String> {
     let sessions = SttSessions::start(http_addr)?;
     eprintln!(
-        "terrane-web: stt pcm websocket on {}",
-        &sessions.ws_url
+        "terrane-web: stt pcm websocket on {} (asr: {})",
+        &sessions.ws_url,
+        asr_engine_label()
     );
     STT.set(sessions)
         .map_err(|_| "stt transport already initialized".to_string())
@@ -99,30 +103,79 @@ fn sessions() -> &'static SttSessions {
         .expect("stt transport not initialized; call stt::init from main")
 }
 
+type SessionRunner = SttRunner<WebAsrEngine, HttpSegmentSink>;
+
 /// Process-global STT session registry plus the loopback PCM WebSocket server.
 struct SttSessions {
     http_base: String,
     ws_url: String,
-    runners: Arc<Mutex<HashMap<String, SttRunner<StubEngine, HttpSegmentSink>>>>,
+    runners: Arc<Mutex<HashMap<String, SessionRunner>>>,
 }
 
-struct StubEngine;
+enum WebAsrEngine {
+    Stub,
+    #[cfg(feature = "asr-engine")]
+    Whisper(Arc<Mutex<terrane_host::asr::HostWhisper>>),
+}
 
-impl AsrEngine for StubEngine {
-    fn transcribe(&self, pcm: &[i16], _sample_rate_hz: u32) -> TerraneResult<AsrOutput> {
-        if pcm.is_empty() {
-            return Ok(AsrOutput {
-                text: String::new(),
-                confidence_milli: None,
-                lang: None,
-            });
+impl AsrEngine for WebAsrEngine {
+    fn transcribe(&self, pcm: &[i16], sample_rate_hz: u32) -> TerraneResult<AsrOutput> {
+        match self {
+            Self::Stub => stub_transcribe(pcm, sample_rate_hz),
+            #[cfg(feature = "asr-engine")]
+            Self::Whisper(engine) => engine
+                .lock()
+                .map_err(|_| terrane_core::Error::Runtime("whisper engine poisoned".into()))?
+                .transcribe(pcm, sample_rate_hz),
         }
-        Ok(AsrOutput {
-            text: format!("stub({})", pcm.len()),
-            confidence_milli: Some(500),
-            lang: Some("en".into()),
-        })
     }
+}
+
+fn stub_transcribe(pcm: &[i16], _sample_rate_hz: u32) -> TerraneResult<AsrOutput> {
+    if pcm.is_empty() {
+        return Ok(AsrOutput {
+            text: String::new(),
+            confidence_milli: None,
+            lang: None,
+        });
+    }
+    Ok(AsrOutput {
+        text: format!("stub({})", pcm.len()),
+        confidence_milli: Some(500),
+        lang: Some("en".into()),
+    })
+}
+
+fn make_engine() -> WebAsrEngine {
+    #[cfg(feature = "asr-engine")]
+    if let Some(engine) = shared_whisper() {
+        return WebAsrEngine::Whisper(engine);
+    }
+    WebAsrEngine::Stub
+}
+
+#[cfg(feature = "asr-engine")]
+fn shared_whisper() -> Option<Arc<Mutex<terrane_host::asr::HostWhisper>>> {
+    static WHISPER: OnceLock<Option<Arc<Mutex<terrane_host::asr::HostWhisper>>>> = OnceLock::new();
+    WHISPER
+        .get_or_init(|| match terrane_host::asr::HostWhisper::from_env() {
+            Ok(engine) => Some(Arc::new(Mutex::new(engine))),
+            Err(error) => {
+                eprintln!("terrane-web: whisper unavailable ({error}), using stub ASR");
+                None
+            }
+        })
+        .clone()
+}
+
+fn asr_engine_label() -> &'static str {
+    #[cfg(feature = "asr-engine")]
+    {
+        if shared_whisper().is_some() {
+            return "whisper";
+        }
+    }
+    "stub"
 }
 
 struct HttpSegmentSink {
@@ -170,6 +223,9 @@ impl SttSessions {
                 eprintln!("terrane-web: stt pcm websocket stopped: {e}");
             }
         });
+        let idle_runners = runners.clone();
+        let idle_http = http_base.clone();
+        thread::spawn(move || idle_watchdog_loop(idle_runners, idle_http));
         Ok(Self {
             http_base,
             ws_url,
@@ -216,7 +272,7 @@ impl SttSessions {
             http_base: self.http_base.clone(),
             app: app.to_string(),
         };
-        let runner = SttRunner::new(cfg, StubEngine, sink);
+        let runner = SttRunner::new(cfg, make_engine(), sink);
         self.runners
             .lock()
             .map_err(|_| "stt session registry poisoned".to_string())?
@@ -348,6 +404,69 @@ fn parse_body<T: DeJson>(request: &mut tiny_http::Request) -> Result<T, Resp> {
     T::deserialize_json(&body).map_err(|e| json_error(400, &format!("bad stt body: {e}")))
 }
 
+fn idle_watchdog_loop(
+    runners: Arc<Mutex<HashMap<String, SessionRunner>>>,
+    http_base: String,
+) {
+    let idle_ms = idle_threshold_ms();
+    loop {
+        thread::sleep(Duration::from_secs(IDLE_POLL_SECS));
+        let mut closes = Vec::new();
+        if let Ok(guard) = runners.lock() {
+            for (session_id, runner) in guard.iter() {
+                if runner.idle_ms() >= idle_ms {
+                    closes.push((
+                        runner.app_id().to_string(),
+                        session_id.clone(),
+                    ));
+                }
+            }
+        }
+        if closes.is_empty() {
+            continue;
+        }
+        if let Ok(mut guard) = runners.lock() {
+            for (app, session_id) in &closes {
+                guard.remove(session_id);
+                let body = SttCloseBody {
+                    app: app.clone(),
+                    session_id: session_id.clone(),
+                    reason: "idle".into(),
+                };
+                if let Err(error) = post_admin_close(&http_base, &body) {
+                    eprintln!("terrane-web: stt idle close failed: {error}");
+                }
+            }
+        }
+    }
+}
+
+fn idle_threshold_ms() -> u64 {
+    std::env::var("TERRANE_STT_IDLE_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .filter(|ms| *ms > 0)
+        .unwrap_or(DEFAULT_IDLE_MS)
+}
+
+fn post_admin_close(http_base: &str, body: &SttCloseBody) -> Result<(), String> {
+    let payload = body.serialize_json();
+    let url = format!("{http_base}/__terrane/admin/stt/close");
+    let agent = ureq::Agent::new();
+    let response = agent
+        .post(&url)
+        .set("Content-Type", "application/json")
+        .set(ADMIN_HEADER, ADMIN_HEADER_VALUE)
+        .send_string(&payload)
+        .map_err(|e| format!("close post failed: {e}"))?;
+    let status = response.status();
+    let message = response.into_string().unwrap_or_default();
+    if !(200..300).contains(&status) {
+        return Err(format!("close post returned {status}: {message}"));
+    }
+    Ok(())
+}
+
 fn post_admin_segment(http_base: &str, body: &SttSegmentBody) -> Result<(), String> {
     let payload = body.serialize_json();
     let url = format!("{http_base}/__terrane/admin/stt/segment");
@@ -368,7 +487,7 @@ fn post_admin_segment(http_base: &str, body: &SttSegmentBody) -> Result<(), Stri
 
 fn ws_server_loop(
     listener: TcpListener,
-    runners: Arc<Mutex<HashMap<String, SttRunner<StubEngine, HttpSegmentSink>>>>,
+    runners: Arc<Mutex<HashMap<String, SessionRunner>>>,
     http_base: String,
 ) -> Result<(), String> {
     for stream in listener.incoming().flatten() {
@@ -386,7 +505,7 @@ fn ws_server_loop(
 #[allow(clippy::result_large_err)]
 fn serve_pcm_socket(
     stream: TcpStream,
-    runners: Arc<Mutex<HashMap<String, SttRunner<StubEngine, HttpSegmentSink>>>>,
+    runners: Arc<Mutex<HashMap<String, SessionRunner>>>,
     _http_base: String,
 ) -> Result<(), String> {
     let mut handshake_uri = String::new();

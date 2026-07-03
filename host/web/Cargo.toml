@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 default = []
+asr-engine = ["terrane-host/asr-engine"]
 rocksdb-storage = ["terrane-host/rocksdb-storage"]
 
 [[bin]]
