@@ -1,11 +1,9 @@
 use nanoserde::{DeJson, SerJson};
 use terrane_host::LOCAL_OWNER_SUBJECT;
-use tiny_http::{Request, Response};
+use tiny_http::Request;
 
-use crate::http::{header, json_error, json_ok, Resp};
+use crate::http::{json_error, json_ok, Resp};
 
-const ADMIN_HTML: &str = include_str!("templates/admin.html");
-const ADMIN_JS: &str = include_str!("js/admin.js");
 type RequestDecisionFn =
     fn(
         &mut terrane_host::HostCore,
@@ -132,12 +130,6 @@ impl AdminSessionState {
     pub fn locked(&self) -> bool {
         self.locked
     }
-}
-
-pub fn page() -> Resp {
-    let body = ADMIN_HTML.replace("__ADMIN_JS__", ADMIN_JS);
-    Response::from_data(body.into_bytes())
-        .with_header(header("Content-Type", "text/html; charset=utf-8"))
 }
 
 pub fn session(state: &AdminSessionState) -> Resp {

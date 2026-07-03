@@ -1,8 +1,12 @@
 (function () {
+  var shellMode = window.__terraneShellMode || "app";
+  var isAdmin = shellMode === "admin";
   var currentId = currentAppId();
   var list = document.getElementById("app-list");
+  var adminLink = document.getElementById("admin-link");
   var title = document.getElementById("app-title");
   var frame = document.getElementById("app-frame");
+  var adminPanel = document.getElementById("admin-panel");
   var infoButton = document.getElementById("desktop-info-button");
   var infoPanel = document.getElementById("desktop-info-panel");
   var infoClose = document.getElementById("desktop-info-close");
@@ -22,7 +26,7 @@
   var settingsPanel = document.getElementById("settings-panel");
   var settingsClose = document.getElementById("settings-close");
 
-  var DOC_KEY = "terrane.doc." + currentId;
+  var DOC_KEY = "terrane.doc." + (currentId || "admin");
   var THEME_KEY = "terrane.theme";
   var SIGNED_OUT_KEY = "terrane.signedOut";
   // Optional Terrane Premium sign-in (Google). The host injects the control
@@ -44,7 +48,7 @@
   var currentTheme = "system";
   var identity = { name: "Local user", subject: "", source: "", locked: null };
 
-  if (!currentId) {
+  if (!currentId && !isAdmin) {
     showError("No app selected");
     return;
   }
@@ -55,7 +59,12 @@
   bindBridge();
   bindTopbar();
   bindPremium();
-  frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
+  setAdminMode(isAdmin);
+  if (isAdmin) {
+    setTitle("Admin Console");
+  } else {
+    frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
+  }
 
   loadCatalog();
   // Dev iteration: keep the sidebar in sync with the catalog (new dev apps
@@ -64,7 +73,7 @@
   // has an opaque origin and cannot fetch live-version itself.
   if (window.__terraneLiveReload) {
     setInterval(loadCatalog, 3000);
-    setInterval(watchAppVersion, 1000);
+    if (!isAdmin) setInterval(watchAppVersion, 1000);
   }
 
   var appVersion = null;
@@ -140,6 +149,10 @@
     renderPremiumCatalog();
 
     if (!current) {
+      if (isAdmin) {
+        setTitle("Admin Console");
+        return;
+      }
       showError("App not found");
       return;
     }
@@ -181,6 +194,21 @@
     return root;
   }
 
+  function setAdminMode(admin) {
+    if (adminLink) {
+      adminLink.classList.toggle("selected", admin);
+      if (admin) {
+        adminLink.setAttribute("aria-current", "page");
+      } else {
+        adminLink.removeAttribute("aria-current");
+      }
+    }
+    if (adminPanel) adminPanel.hidden = !admin;
+    if (frame) frame.hidden = admin;
+    if (crumbDoc) crumbDoc.hidden = admin;
+    if (crumbSep) crumbSep.hidden = admin;
+  }
+
   function setTitle(name) {
     var pageTitle = name + " - Terrane";
     document.title = pageTitle;
@@ -218,6 +246,7 @@
   }
 
   function bindBridge() {
+    if (isAdmin) return;
     window.addEventListener("message", function (event) {
       if (!frame || event.source !== frame.contentWindow) return;
       var message = event.data || {};
@@ -458,15 +487,16 @@
   //   app -> shell: {type: "terrane:document:set", name}  (rename the crumb)
   function bindTopbar() {
     if (!topbarApp || !crumbDoc || !userButton) return;
-    if (window.terraneAppIcon) topbarApp.appendChild(window.terraneAppIcon(currentId));
+    if (window.terraneAppIcon) topbarApp.appendChild(window.terraneAppIcon(isAdmin ? "admin" : currentId));
     crumbApp.textContent = appDisplayName;
-    crumbDoc.textContent = storedDocName();
-    bindDocEditing();
+    crumbDoc.textContent = isAdmin ? "" : storedDocName();
+    if (!isAdmin) bindDocEditing();
     bindUserMenu();
     bindSettings();
     initTheme();
     loadIdentity();
     updateAuthUi();
+    if (isAdmin) return;
     // The first applyTheme/setDocName run before the frame navigates; hand the
     // current state to the app once its document is actually loaded.
     frame.addEventListener("load", function () {
@@ -813,10 +843,11 @@
   function setSettingsOpen(open) {
     settingsOpen = open;
     settingsPanel.hidden = !open;
-    frame.hidden = open;
+    frame.hidden = open || isAdmin;
+    if (adminPanel) adminPanel.hidden = open || !isAdmin;
     crumbApp.textContent = open ? "Settings" : appDisplayName;
     crumbSep.hidden = open;
-    crumbDoc.hidden = open;
+    crumbDoc.hidden = open || isAdmin;
   }
 
   function initTheme() {

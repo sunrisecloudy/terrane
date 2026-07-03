@@ -121,7 +121,9 @@ pub fn route(
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
         }),
-        (Method::Get, ["__terrane", "admin"]) => crate::admin::page(),
+        (Method::Get, ["__terrane", "admin"]) => {
+            crate::shell::admin_response(live_reload, premium_url)
+        }
         (Method::Get, ["__terrane", "admin", "session"]) => crate::admin::session(admin_session),
         (Method::Post, ["__terrane", "admin", "local", "lock"]) => {
             crate::admin::lock(admin_session)
@@ -187,7 +189,9 @@ pub fn route(
         (Method::Delete, ["__terrane", "admin", "grants"]) => {
             crate::admin::revoke(core, admin_session, request)
         }
-        (Method::Get, ["__terrane", "admin", "requests", _request_id]) => crate::admin::page(),
+        (Method::Get, ["__terrane", "admin", "requests", _request_id]) => {
+            crate::shell::admin_response(live_reload, premium_url)
+        }
         (Method::Post, ["__terrane", "builder", "generate"]) => {
             builder_generate(core, builder_jobs, request)
         }
@@ -221,8 +225,7 @@ pub fn route(
             invoke(core, dev_apps, id, request, admin_base_url)
         }
         (Method::Get, ["apps", id]) => {
-            let exists =
-                core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
+            let exists = core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
             crate::shell::response(exists, id, live_reload, premium_url)
         }
         (Method::Get, ["apps", id, rest @ ..]) => {

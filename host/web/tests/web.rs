@@ -1591,6 +1591,13 @@ fn admin_can_grant_missing_app_resource() {
     let (status, body) = http(&addr, "GET", "/__terrane/admin", None);
     assert_eq!(status, 200, "admin page: {body}");
     assert!(body.contains("Terrane Admin"), "admin page: {body}");
+    assert!(
+        body.contains("id=\"app-list\"")
+            && body.contains("class=\"topbar\"")
+            && body.contains("id=\"admin-panel\"")
+            && body.contains("window.__terraneShellMode = \"admin\""),
+        "admin should render inside the host shell, not as a standalone page: {body}"
+    );
 
     let (status, body) = http_without_admin(&addr, "GET", "/__terrane/admin/session", None);
     assert_eq!(
