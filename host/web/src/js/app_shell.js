@@ -562,13 +562,17 @@
       .trim()
       .slice(0, 120);
     if (!name) name = "Untitled";
-    var changed = name !== storedDocName();
     crumbDoc.textContent = name;
-    if (!changed) return;
-    try {
-      window.localStorage.setItem(DOC_KEY, name);
-    } catch (_) {}
-    if (!fromApp) sendToFrame({ type: "terrane:document", name: name });
+    if (name !== storedDocName()) {
+      try {
+        window.localStorage.setItem(DOC_KEY, name);
+      } catch (_) {}
+    }
+    // Hand the canonical (sanitized) name back to the app — including when the
+    // app itself set it, whose optimistic getDocument() value may differ after
+    // sanitization — so getDocument()/onDocument converge with what we stored.
+    void fromApp;
+    sendToFrame({ type: "terrane:document", name: name });
   }
 
   function bindDocEditing() {
@@ -588,6 +592,13 @@
     });
   }
 
+  // Shell -> app pushes (theme/document). The frame's opaque sandbox origin
+  // can't be pinned, so these post with "*". The automatic on-load push was
+  // removed in favor of the nonce-checked hello, closing the drive-by leak;
+  // a residual remains: if the app navigates its own frame away and the user
+  // then changes theme or renames the document, that value (both low-
+  // sensitivity: user-chosen) reaches whatever now occupies the frame. The
+  // bridge (invoke/permission) and breadcrumb writes stay fully nonce-gated.
   function sendToFrame(message) {
     if (frame && frame.contentWindow) frame.contentWindow.postMessage(message, "*");
   }
