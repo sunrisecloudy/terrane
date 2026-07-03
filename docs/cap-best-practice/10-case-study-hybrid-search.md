@@ -37,9 +37,11 @@ and cosine similarity in Rust, then fuses by RRF. `fold` is empty; the "index"
 *is* the KV data, so it is trivially rebuildable and replay-safe — there is no
 derived artifact to keep in sync.
 
-This is the right v1 for desktop-scale corpora (hundreds to low thousands of
-docs): zero new dependencies, deterministic, easy to reason about. Its limits are
-exactly why the library table below exists:
+This is the right v1 for desktop-scale corpora: zero new dependencies,
+deterministic, easy to reason about. It holds up further than you'd expect —
+a hybrid query stays under ~8 ms over 10k docs (release; see
+`terrane-cap-search/tests/perf.rs`). Its limits are exactly why the library
+table below exists, and why you graduate rather than tune:
 
 - **O(N) per query** — every query loads and re-tokenizes every document.
 - **ASCII tokenizer** — alphanumeric word-splitting + lowercasing; no stemming,
