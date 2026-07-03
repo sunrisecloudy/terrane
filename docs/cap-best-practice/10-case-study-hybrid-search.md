@@ -27,10 +27,35 @@ embedding model id + dimension, tokenizer config) enter the log as events. The
 BM25 stats, the vectors, and the scores never do — they are recomputed from the
 logged text on rebuild.
 
-## What library
+## Shipped implementation (v1): in-memory recompute
 
-Judged against Terrane's constraints (embedded, no server, deterministic replay,
-Apple-Silicon-primary, "add a dep only when forced"):
+`terrane-cap-search` ships the *simplest* thing that satisfies the reframe: **no
+index library at all.** Documents, per-model embeddings, and config live under
+`__terrane/search/v1/` reserved KV keys; every query `scan`s that prefix and
+recomputes BM25 (Okapi, `k1=1.2`, `b=0.75`, corpus-average length normalization)
+and cosine similarity in Rust, then fuses by RRF. `fold` is empty; the "index"
+*is* the KV data, so it is trivially rebuildable and replay-safe — there is no
+derived artifact to keep in sync.
+
+This is the right v1 for desktop-scale corpora (hundreds to low thousands of
+docs): zero new dependencies, deterministic, easy to reason about. Its limits are
+exactly why the library table below exists:
+
+- **O(N) per query** — every query loads and re-tokenizes every document.
+- **ASCII tokenizer** — alphanumeric word-splitting + lowercasing; no stemming,
+  no CJK/accent handling, no phrase/fuzzy queries.
+- **Exact KNN only** — brute-force cosine over all embedded docs; no ANN.
+
+Graduate to the stack below when the corpus outgrows a full scan or needs real
+tokenization/ANN. The migration is contained: the KV projection (keys, events,
+resource surface) is unchanged — only the query engine behind `read_resource`
+swaps out.
+
+## What library — the scale-up path
+
+When you outgrow v1, judge the options against Terrane's constraints (embedded,
+no server, deterministic replay, Apple-Silicon-primary, "add a dep only when
+forced"):
 
 | Option | Embedded | BM25 | Vector/ANN | RRF | Reuses deps | Replay fit | Build cost |
 |---|---|---|---|---|---|---|---|
@@ -39,9 +64,9 @@ Apple-Silicon-primary, "add a dep only when forced"):
 | **LanceDB** | yes | yes (native) | yes (IVF/HNSW) | built-in RRF | **no** — pulls Arrow + DataFusion + object_store + candle + **mandatory Tokio** (~2.5M SLoC) | fights its own MVCC/versioning to stay a pure read-model | high (protoc/cmake, long compiles) |
 | **Server DBs — Qdrant / Weaviate / OpenSearch / Milvus** | **no** — external process | yes | yes | yes | no | **violates no-server / no-external-DB rule outright** | n/a — disqualified |
 
-**Primary: SQLite FTS5 + sqlite-vec.** `rusqlite = "0.40.1"` with `bundled` is
-*already* a dependency, and FTS5 ships in that amalgamation, so keyword search
-costs zero new deps. `sqlite-vec` is not a runtime extension here: the crate
+**Recommended scale-up: SQLite FTS5 + sqlite-vec.** `rusqlite = "0.40.1"` with
+`bundled` is *already* a dependency, and FTS5 ships in that amalgamation, so
+keyword search costs zero new deps. `sqlite-vec` is not a runtime extension here: the crate
 embeds its C source and static-links via `cc`, registered once with
 `register_auto_extension` before opening the connection — it links against the
 same bundled SQLite, single binary, no `.dylib`. Everything (vectors, BM25 stats,
