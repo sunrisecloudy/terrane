@@ -232,6 +232,31 @@ fn query_vec_is_read_from_camel_case_options() {
 }
 
 #[test]
+fn vector_search_accepts_options_after_the_query_vector() {
+    // The options JSON that follows the query vector must not be joined into it.
+    let mut state = TestState::default();
+    dispatch(
+        &mut state,
+        "search.upsert",
+        vec!["notes".into(), "doc-1".into(), "alpha".into()],
+    );
+    dispatch(
+        &mut state,
+        "search.setEmbedding",
+        vec!["notes".into(), "doc-1".into(), "[1.0,0.0]".into()],
+    );
+    let ReadValue::OptString(Some(raw)) = read(
+        &state,
+        "vectorSearch",
+        vec!["[1.0,0.0]".into(), r#"{"limit":5}"#.into()],
+    ) else {
+        panic!("expected vector hits");
+    };
+    let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(hits[0]["docId"], "doc-1");
+}
+
+#[test]
 fn remove_clears_embeddings_across_all_models() {
     let mut state = TestState::default();
     dispatch(

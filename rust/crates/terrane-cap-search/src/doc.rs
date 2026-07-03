@@ -13,7 +13,7 @@ pub fn search_doc(include_internal: bool) -> CapabilityDoc {
         summary:
             "Hybrid BM25 + dense-vector search as a rebuildable KV projection with RRF fusion."
                 .to_string(),
-        status: "stable".to_string(),
+        status: "alpha".to_string(),
         version: "0.1.0".to_string(),
         audience: vec![
             "app-author".to_string(),

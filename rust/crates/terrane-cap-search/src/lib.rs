@@ -102,7 +102,9 @@ impl Capability for SearchCapability {
                 )?)))
             }
             "vectorSearch" => {
-                let query_vec_json = joined_arg(args, 0, "queryVecJson")?;
+                // The query vector is a single compact-JSON argument; joining
+                // args[0..] here would swallow the options JSON that follows.
+                let query_vec_json = arg(args, 0, "queryVecJson")?;
                 let options_json = optional_joined_arg(args, 1);
                 let options = config::parse_query_options(&options_json)?;
                 Ok(ReadValue::OptString(Some(query::vector_query(
@@ -168,13 +170,6 @@ pub fn resource_methods() -> Vec<ResourceMethod> {
             params: &[],
         },
     ]
-}
-
-fn joined_arg(args: &[String], index: usize, name: &str) -> Result<String> {
-    match args.get(index..) {
-        Some(rest) if !rest.is_empty() => Ok(rest.join(" ")),
-        _ => Err(Error::InvalidInput(format!("missing argument: {name}"))),
-    }
 }
 
 fn optional_joined_arg(args: &[String], index: usize) -> String {
