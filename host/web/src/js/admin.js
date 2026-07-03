@@ -1,3 +1,6 @@
+(() => {
+if (window.__terraneShellMode && window.__terraneShellMode !== "admin") return;
+
 const state = {
   view: "apps",
   apps: [],
@@ -13,11 +16,16 @@ const title = document.getElementById("view-title");
 const authority = document.getElementById("authority");
 const lockButton = document.getElementById("lock-toggle");
 const adminHeaders = { "X-Terrane-Admin": "local-admin" };
+const adminRoot = document.getElementById("admin-panel") || document;
 
-document.querySelectorAll("nav button[data-view]").forEach((button) => {
+if (!content || !title || !authority || !lockButton || !document.getElementById("refresh")) {
+  throw new Error("admin console mount missing");
+}
+
+adminRoot.querySelectorAll("button[data-view]").forEach((button) => {
   button.addEventListener("click", () => {
     state.view = button.dataset.view;
-    document.querySelectorAll("nav button[data-view]").forEach((item) => {
+    adminRoot.querySelectorAll("button[data-view]").forEach((item) => {
       item.classList.toggle("active", item === button);
     });
     render();
@@ -409,3 +417,4 @@ function muted(text) {
 refresh().catch((error) => {
   content.replaceChildren(muted(error.message));
 });
+})();

@@ -158,6 +158,9 @@
       .premium-section {
         margin-top: 18px;
       }
+      .admin-sidebar-link {
+        margin-top: 18px;
+      }
       .app-section-title {
         margin: 0 0 6px;
         padding: 0 10px;
@@ -393,6 +396,157 @@
       .settings-close:hover {
         border-color: #0071e3;
       }
+      .admin-panel {
+        min-width: 0;
+        overflow: auto;
+        padding: 18px 22px 28px;
+        background: Canvas;
+      }
+      .admin-panel[hidden] {
+        display: none;
+      }
+      .admin-panel button {
+        font: inherit;
+        border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+        background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
+        color: CanvasText;
+        border-radius: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+      .admin-panel button.primary {
+        background: #0071e3;
+        border-color: #0071e3;
+        color: white;
+      }
+      .admin-panel button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .admin-panel input,
+      .admin-panel select {
+        font: inherit;
+        min-width: 0;
+        border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+        border-radius: 6px;
+        padding: 6px 8px;
+        background: Canvas;
+        color: CanvasText;
+      }
+      .admin-panel label {
+        display: grid;
+        gap: 4px;
+        font-size: 12px;
+        color: color-mix(in srgb, CanvasText 66%, transparent);
+      }
+      .admin-console {
+        display: grid;
+        grid-template-columns: 180px minmax(0, 1fr);
+        gap: 20px;
+        min-height: 100%;
+      }
+      .admin-nav {
+        border-right: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+        padding-right: 16px;
+      }
+      .admin-nav button {
+        width: 100%;
+        text-align: left;
+        margin-bottom: 8px;
+      }
+      .admin-nav button.active {
+        background: #0071e3;
+        border-color: #0071e3;
+        color: white;
+      }
+      .admin-main {
+        min-width: 0;
+      }
+      .admin-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 18px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+      }
+      .admin-authority {
+        font-size: 13px;
+        color: color-mix(in srgb, CanvasText 70%, transparent);
+      }
+      .admin-bar-actions {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .admin-panel h2 {
+        font-size: 20px;
+        margin: 0 0 14px;
+        letter-spacing: 0;
+      }
+      .admin-panel table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 14px;
+      }
+      .admin-panel th,
+      .admin-panel td {
+        text-align: left;
+        border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+        padding: 10px 8px;
+        vertical-align: top;
+      }
+      .admin-panel th {
+        font-size: 12px;
+        text-transform: uppercase;
+        color: color-mix(in srgb, CanvasText 62%, transparent);
+      }
+      .tokens {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .form-row {
+        display: grid;
+        grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr) minmax(120px, 160px) auto;
+        align-items: end;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .checks {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        font-size: 13px;
+      }
+      .checks label {
+        display: flex;
+        grid-template-columns: none;
+        align-items: center;
+        gap: 5px;
+      }
+      .token {
+        border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .token.missing {
+        border-color: #b44;
+        color: #b44;
+      }
+      .muted {
+        color: color-mix(in srgb, CanvasText 62%, transparent);
+      }
       .perm-overlay {
         position: fixed;
         inset: 0;
@@ -494,6 +648,25 @@
         .stage {
           min-height: calc(100vh - 112px);
         }
+        .admin-console {
+          grid-template-columns: 1fr;
+        }
+        .admin-nav {
+          border-right: 0;
+          border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+          padding: 0 0 12px;
+        }
+        .admin-nav button {
+          width: auto;
+          margin-right: 8px;
+        }
+        .admin-bar {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .form-row {
+          grid-template-columns: 1fr;
+        }
       }
     </style>
   </head>
@@ -540,6 +713,20 @@
         <div id="premium-section" class="premium-section" hidden>
           <h2 class="app-section-title">Premium</h2>
           <div id="premium-list" class="app-list"></div>
+        </div>
+        <div class="admin-sidebar-link">
+          <a id="admin-link" class="app-link" href="/__terrane/admin">
+            <span class="app-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"></path>
+                <path d="M9 12l2 2 4-4"></path>
+              </svg>
+            </span>
+            <span class="app-link-text">
+              <span>Admin Console</span>
+              <small>Control plane</small>
+            </span>
+          </a>
         </div>
       </nav>
       <main class="stage">
@@ -624,6 +811,35 @@
             sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
           ></iframe>
           <section
+            id="admin-panel"
+            class="admin-panel"
+            aria-label="Terrane Admin"
+            hidden
+          >
+            <div class="admin-console">
+              <nav class="admin-nav" aria-label="Admin views">
+                <button data-view="apps" class="active">Apps</button>
+                <button data-view="grants">Grants</button>
+                <button data-view="agents">Agents</button>
+                <button data-view="requests">Requests</button>
+                <button data-view="audit">Audit</button>
+              </nav>
+              <main class="admin-main">
+                <div class="admin-bar">
+                  <div>
+                    <h2 id="view-title">Apps</h2>
+                    <div id="authority" class="admin-authority">local / user:local-owner / local</div>
+                  </div>
+                  <div class="admin-bar-actions">
+                    <button id="refresh" type="button">Refresh</button>
+                    <button id="lock-toggle" type="button">Lock</button>
+                  </div>
+                </div>
+                <section id="content"></section>
+              </main>
+            </div>
+          </section>
+          <section
             id="settings-panel"
             class="settings-panel"
             aria-label="User settings"
@@ -701,8 +917,10 @@
     <script>
       window.__terraneLiveReload = __LIVE_RELOAD__;
       window.__terranePremiumUrl = __PREMIUM_URL__;
+      window.__terraneShellMode = __SHELL_MODE__;
       __APP_ICONS_JS__;
       __APP_SHELL_JS__;
+      __ADMIN_JS__;
     </script>
   </body>
 </html>
