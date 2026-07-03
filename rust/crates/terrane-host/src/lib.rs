@@ -25,6 +25,7 @@ pub mod ffi;
 pub mod home;
 mod local_llm;
 pub mod mcp;
+mod metrics;
 pub mod native;
 pub mod permission;
 pub mod preview;
