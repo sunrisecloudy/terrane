@@ -237,6 +237,23 @@ fn public_survives_app_removed_cascade() {
 }
 
 #[test]
+fn app_add_rejects_the_reserved_public_bucket_id() {
+    // R4: no real app can own the sentinel public-bucket id, so it can never be
+    // hijacked or cascade-removed by app.removed. validate_app_id rejects the
+    // reserved prefix AND the '/' outright.
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open(&log).unwrap();
+
+    assert!(
+        core.dispatch(req("app.add", &[PUBLIC_BUCKET_APP_ID, "Public"]))
+            .is_err(),
+        "app.add must reject the reserved public-bucket id"
+    );
+    assert!(core.state().app.apps.is_empty());
+}
+
+#[test]
 fn public_projected_to_default_sqlite_backend() {
     let dir = tempdir().unwrap();
     let home = dir.path();
