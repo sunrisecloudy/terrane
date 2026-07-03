@@ -366,3 +366,32 @@ fn ffi_i18n_import_seeds_public_bucket_via_handle() {
 
     unsafe { ffi::terrane_close(handle) };
 }
+
+#[test]
+fn repo_seed_catalogs_import_cleanly() {
+    // Imports the real checked-in catalogs under the repo root, proving the
+    // seed pipeline is valid and guarding them against drift.
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../");
+    let root = root.canonicalize().expect("repo root exists");
+
+    let home = tempdir().unwrap();
+    let mut core = open_at_home(home.path()).unwrap();
+    let outcome = import_i18n_dir(&mut core, &root).unwrap();
+
+    // Every checked-in code must be supported, and the bucket must carry the
+    // expected key shape for at least the en system + todo domains.
+    assert!(outcome.entries > 0, "repo catalogs should seed entries");
+    assert!(outcome.languages >= 2);
+
+    let bucket = &core.state().kv.data[PUBLIC_BUCKET_APP_ID];
+    assert_eq!(bucket["i18n/en/system.app.catalog.title"], "Apps");
+    assert_eq!(
+        bucket["i18n/zh-Hans/system.app.catalog.title"],
+        "应用"
+    );
+    assert_eq!(bucket["i18n/en/todo.added"], "added #{id} {text}");
+    assert_eq!(bucket["i18n/es/todo.added"], "añadido #{id} {text}");
+
+    assert!(core.replay_matches().unwrap());
+}

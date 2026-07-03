@@ -1,0 +1,9 @@
+{
+  "added": "añadido #{id} {text}",
+  "list.item": "#{id} {text}",
+  "list.empty": "(no hay tareas)",
+  "done": "hecho #{id}",
+  "notFound": "no existe la tarea #{id}",
+  "usage.add": "uso: add <texto>",
+  "usage.done": "uso: done <id>"
+}

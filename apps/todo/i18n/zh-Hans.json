@@ -1,0 +1,9 @@
+{
+  "added": "已添加 #{id} {text}",
+  "list.item": "#{id} {text}",
+  "list.empty": "(暂无任务)",
+  "done": "已完成 #{id}",
+  "notFound": "不存在任务 #{id}",
+  "usage.add": "用法：add <文本>",
+  "usage.done": "用法：done <id>"
+}

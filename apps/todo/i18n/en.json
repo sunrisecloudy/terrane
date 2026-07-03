@@ -1,0 +1,9 @@
+{
+  "added": "added #{id} {text}",
+  "list.item": "#{id} {text}",
+  "list.empty": "(no todos)",
+  "done": "done #{id}",
+  "notFound": "no todo #{id}",
+  "usage.add": "usage: add <text>",
+  "usage.done": "usage: done <id>"
+}
