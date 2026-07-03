@@ -21,6 +21,7 @@ members = [
   "rust/crates/terrane-host",
   "rust/crates/terrane-api",
   "rust/crates/terrane-app-build",
+  "rust/crates/terrane-i18n",
   "rust/crates/terrane-local-llm",
   "host/cli",
   "host/mcp",
@@ -53,6 +54,7 @@ terrane-cap-wasm-runtime = { path = "rust/crates/terrane-cap-wasm-runtime" }
 terrane-host = { path = "rust/crates/terrane-host" }
 terrane-api = { path = "rust/crates/terrane-api" }
 terrane-app-build = { path = "rust/crates/terrane-app-build" }
+terrane-i18n = { path = "rust/crates/terrane-i18n" }
 terrane-local-llm = { path = "rust/crates/terrane-local-llm" }
 borsh = { version = "1", features = ["derive"] }
 # Local inference edge engine only; never a dependency of the deterministic core.
