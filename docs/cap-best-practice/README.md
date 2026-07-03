@@ -36,7 +36,9 @@ Request ──▶ decide ──▶ [Event] ──▶ commit (log) ──▶ broa
 8. [ ] **Public surface** — decide CLI/MCP/HTTP exposure, verify contract export,
        smoke capability discovery, keep old logs replayable → [08-public-surface-and-release.md](08-public-surface-and-release.md)
 9. [ ] **Docs + done** — `doc()`/`describe()`, regenerate `APP_API.md`, sweep
-       the MCP docs, run the full gate, commit small and green → [09-docs-and-done.md](09-docs-and-done.md)
+       the MCP docs, put user-facing strings in public KV under
+       `i18n/<code>/<ns>.<key>` (not hard-coded English), run the full gate,
+       commit small and green → [09-docs-and-done.md](09-docs-and-done.md)
 
 ## Reference crates
 

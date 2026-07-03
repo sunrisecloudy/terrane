@@ -1,0 +1,23 @@
+{
+  "title": "픽셀 페인트",
+  "heading": "픽셀 페인트",
+  "canvasLabel": "64x64 픽셀 캔버스",
+  "tool": "도구",
+  "brush": "브러시",
+  "eraser": "지우개",
+  "color": "색상",
+  "swatches": "색상 견본",
+  "actions": "작업",
+  "clear": "지우기",
+  "download": "PNG 다운로드",
+  "loading": "불러오는 중...",
+  "saving": "저장하는 중...",
+  "savedOne": "{n}개 픽셀을 저장했습니다",
+  "savedMany": "{n}개 픽셀을 저장했습니다",
+  "saveFailed": "저장 실패: {error}",
+  "ready": "64 x 64 캔버스 준비 완료",
+  "loadFailed": "불러오기 실패: {error}",
+  "clearing": "지우는 중...",
+  "cleared": "캔버스를 지웠습니다",
+  "clearFailed": "지우기 실패: {error}"
+}

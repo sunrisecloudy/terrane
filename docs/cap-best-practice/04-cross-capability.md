@@ -45,6 +45,9 @@ let `kv` own persistence and replay.
 
 - Reserved keys start with `__terrane/` (`terrane_cap_kv::RESERVED_PREFIX`).
   The public resource surface rejects them, so apps can't read or forge yours.
+  (The mirror-image primitive is `kv`'s **public** bucket — host-written,
+  app-readable — which i18n uses for `i18n/<code>/<domain>.<key>` translations;
+  see [09-docs-and-done.md](09-docs-and-done.md).)
 - Namespace your own area and version it:
   `relational_db` uses `__terrane/rdb/v1/…` (`RDB_PREFIX`), `auth` projects
   under `__terrane/auth/v1` (`AUTH_PROJECTION_KEY_PREFIX`).

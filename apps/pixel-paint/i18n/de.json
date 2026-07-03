@@ -1,0 +1,23 @@
+{
+  "title": "Pixel Paint",
+  "heading": "Pixel Paint",
+  "canvasLabel": "64-mal-64-Pixel-Leinwand",
+  "tool": "Werkzeug",
+  "brush": "Pinsel",
+  "eraser": "Radierer",
+  "color": "Farbe",
+  "swatches": "Farbfelder",
+  "actions": "Aktionen",
+  "clear": "Löschen",
+  "download": "PNG herunterladen",
+  "loading": "Wird geladen...",
+  "saving": "Wird gespeichert...",
+  "savedOne": "{n} Pixel gespeichert",
+  "savedMany": "{n} Pixel gespeichert",
+  "saveFailed": "Speichern fehlgeschlagen: {error}",
+  "ready": "64-x-64-Leinwand bereit",
+  "loadFailed": "Laden fehlgeschlagen: {error}",
+  "clearing": "Wird gelöscht...",
+  "cleared": "Leinwand gelöscht",
+  "clearFailed": "Löschen fehlgeschlagen: {error}"
+}

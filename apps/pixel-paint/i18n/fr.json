@@ -1,0 +1,23 @@
+{
+  "title": "Pixel Paint",
+  "heading": "Pixel Paint",
+  "canvasLabel": "Toile de 64 sur 64 pixels",
+  "tool": "Outil",
+  "brush": "Pinceau",
+  "eraser": "Gomme",
+  "color": "Couleur",
+  "swatches": "Échantillons",
+  "actions": "Actions",
+  "clear": "Effacer",
+  "download": "Télécharger le PNG",
+  "loading": "Chargement...",
+  "saving": "Enregistrement...",
+  "savedOne": "{n} pixel enregistré",
+  "savedMany": "{n} pixels enregistrés",
+  "saveFailed": "Échec de l'enregistrement : {error}",
+  "ready": "Toile 64 x 64 prête",
+  "loadFailed": "Échec du chargement : {error}",
+  "clearing": "Effacement...",
+  "cleared": "Toile effacée",
+  "clearFailed": "Échec de l'effacement : {error}"
+}

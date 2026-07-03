@@ -1,0 +1,23 @@
+{
+  "title": "Pixel Paint",
+  "heading": "Pixel Paint",
+  "canvasLabel": "Tela de 64 por 64 pixels",
+  "tool": "Ferramenta",
+  "brush": "Pincel",
+  "eraser": "Borracha",
+  "color": "Cor",
+  "swatches": "Amostras",
+  "actions": "Ações",
+  "clear": "Limpar",
+  "download": "Baixar PNG",
+  "loading": "Carregando...",
+  "saving": "Salvando...",
+  "savedOne": "{n} pixel salvo",
+  "savedMany": "{n} pixels salvos",
+  "saveFailed": "Falha ao salvar: {error}",
+  "ready": "Tela de 64 x 64 pronta",
+  "loadFailed": "Falha ao carregar: {error}",
+  "clearing": "Limpando...",
+  "cleared": "Tela limpa",
+  "clearFailed": "Falha ao limpar: {error}"
+}

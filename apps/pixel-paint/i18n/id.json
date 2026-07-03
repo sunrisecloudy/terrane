@@ -1,0 +1,23 @@
+{
+  "title": "Pixel Paint",
+  "heading": "Pixel Paint",
+  "canvasLabel": "Kanvas 64 kali 64 piksel",
+  "tool": "Alat",
+  "brush": "Kuas",
+  "eraser": "Penghapus",
+  "color": "Warna",
+  "swatches": "Contoh Warna",
+  "actions": "Tindakan",
+  "clear": "Bersihkan",
+  "download": "Unduh PNG",
+  "loading": "Memuat...",
+  "saving": "Menyimpan...",
+  "savedOne": "{n} piksel disimpan",
+  "savedMany": "{n} piksel disimpan",
+  "saveFailed": "Gagal menyimpan: {error}",
+  "ready": "Kanvas 64 x 64 siap",
+  "loadFailed": "Gagal memuat: {error}",
+  "clearing": "Membersihkan...",
+  "cleared": "Kanvas dibersihkan",
+  "clearFailed": "Gagal membersihkan: {error}"
+}

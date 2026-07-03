@@ -10,22 +10,22 @@
     <main class="builder">
       <section class="hero">
         <div>
-          <h1>App Builder</h1>
+          <h1 data-i18n="app-builder.heading">App Builder</h1>
         </div>
-        <button id="generate" type="button">Build</button>
+        <button id="generate" type="button" data-i18n="app-builder.build">Build</button>
       </section>
 
-      <section class="panel form" aria-label="App details">
+      <section class="panel form" data-i18n-attr="aria-label:app-builder.formLabel" aria-label="App details">
         <label>
-          <span>App id</span>
+          <span data-i18n="app-builder.appId">App id</span>
           <input id="app-id" type="text" value="my-app" autocomplete="off">
         </label>
         <label>
-          <span>Name</span>
+          <span data-i18n="app-builder.name">Name</span>
           <input id="app-name" type="text" value="My App" autocomplete="off">
         </label>
         <label>
-          <span>Harness</span>
+          <span data-i18n="app-builder.harness">Harness</span>
           <select id="harness">
             <option value="codex" selected>Codex</option>
             <option value="claude-code">Claude Code</option>
@@ -33,7 +33,7 @@
           </select>
         </label>
         <label class="wide">
-          <span>Prompt</span>
+          <span data-i18n="app-builder.prompt">Prompt</span>
           <textarea id="prompt" rows="5"
           >A local-first notes app with a simple list, saved notes, and a clean keyboard-friendly interface.</textarea>
         </label>
@@ -42,18 +42,18 @@
       <section class="workspace">
         <section class="panel output-panel">
           <div class="output-head">
-            <h2>Generated files</h2>
-            <span id="status">Ready</span>
+            <h2 data-i18n="app-builder.generatedFiles">Generated files</h2>
+            <span id="status" data-i18n="app-builder.ready">Ready</span>
           </div>
           <div id="files" class="files"></div>
         </section>
 
         <section class="panel preview-panel">
           <div class="output-head">
-            <h2>Preview</h2>
-            <span id="preview-status">Waiting</span>
+            <h2 data-i18n="app-builder.preview">Preview</h2>
+            <span id="preview-status" data-i18n="app-builder.waiting">Waiting</span>
           </div>
-          <iframe id="preview-frame" title="Generated app preview"></iframe>
+          <iframe id="preview-frame" data-i18n-attr="title:app-builder.previewTitle" title="Generated app preview"></iframe>
         </section>
       </section>
     </main>

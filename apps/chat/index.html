@@ -120,22 +120,22 @@
   </head>
   <body>
     <header>
-      <h1>Chat</h1>
-      <select id="model" title="Model to chat with"></select>
-      <button id="pull-toggle" class="secondary" title="Download a model from Hugging Face">Add model…</button>
-      <button id="new" class="secondary" title="Start a fresh conversation">New chat</button>
+      <h1 data-i18n="chat.heading">Chat</h1>
+      <select id="model" data-i18n-attr="title:chat.modelTitle" title="Model to chat with"></select>
+      <button id="pull-toggle" class="secondary" data-i18n="chat.addModel" data-i18n-attr="title:chat.addModelTitle" title="Download a model from Hugging Face">Add model…</button>
+      <button id="new" class="secondary" data-i18n="chat.newChat" data-i18n-attr="title:chat.newChatTitle" title="Start a fresh conversation">New chat</button>
     </header>
     <div id="pull-row">
-      <input type="text" id="pull-repo" placeholder="Hugging Face repo (org/name)">
-      <input type="text" id="pull-file" placeholder=".gguf file (empty = MLX repo)">
-      <button id="pull">Download &amp; register</button>
-      <span>Blocks until the download finishes.</span>
+      <input type="text" id="pull-repo" data-i18n-attr="placeholder:chat.repoPlaceholder" placeholder="Hugging Face repo (org/name)">
+      <input type="text" id="pull-file" data-i18n-attr="placeholder:chat.filePlaceholder" placeholder=".gguf file (empty = MLX repo)">
+      <button id="pull" data-i18n="chat.download">Download &amp; register</button>
+      <span data-i18n="chat.downloadHint">Blocks until the download finishes.</span>
     </div>
-    <div id="log"><p id="empty">Pick a model and say something.</p></div>
+    <div id="log"><p id="empty" data-i18n="chat.empty">Pick a model and say something.</p></div>
     <div id="status"></div>
     <footer>
-      <input type="text" id="text" placeholder="Message the model…" autofocus>
-      <button id="send">Send</button>
+      <input type="text" id="text" data-i18n-attr="placeholder:chat.messagePlaceholder" placeholder="Message the model…" autofocus>
+      <button id="send" data-i18n="chat.send">Send</button>
     </footer>
     <script>
       var logEl = document.getElementById("log");
@@ -154,6 +154,41 @@
           return Promise.reject(new Error("Terrane bridge unavailable"));
         }
         return window.terrane.invoke.apply(window.terrane, arguments);
+      }
+
+      // Translate via the host bundle when present, else fall back to English.
+      // The ~15-line localize() block below is the pattern every app copies.
+      function tr(key, fallback, params) {
+        if (window.terrane && typeof window.terrane.t === "function") {
+          var opts = { default: fallback };
+          if (params) {
+            for (var k in params) {
+              if (Object.prototype.hasOwnProperty.call(params, k)) opts[k] = params[k];
+            }
+          }
+          return window.terrane.t(key, opts);
+        }
+        return fallback;
+      }
+
+      function localize() {
+        document.documentElement.dir =
+          (window.terrane && window.terrane.getDir && window.terrane.getDir()) || "ltr";
+        var nodes = document.querySelectorAll("[data-i18n]");
+        for (var i = 0; i < nodes.length; i++) {
+          nodes[i].textContent = tr(nodes[i].getAttribute("data-i18n"), nodes[i].textContent.trim());
+        }
+        var attrNodes = document.querySelectorAll("[data-i18n-attr]");
+        for (var j = 0; j < attrNodes.length; j++) {
+          attrNodes[j].getAttribute("data-i18n-attr").split(";").forEach(function (pair) {
+            var kv = pair.split(":");
+            if (kv.length === 2) {
+              var attr = kv[0].trim();
+              attrNodes[j].setAttribute(attr, tr(kv[1].trim(), attrNodes[j].getAttribute(attr)));
+            }
+          });
+        }
+        document.title = tr("chat.title", "Chat");
       }
 
       function status(text, isError) {
@@ -177,8 +212,10 @@
         def.value = "";
         var defaultModel = models.filter(function (m) { return m.default; })[0];
         def.textContent = defaultModel
-          ? "Default (" + defaultModel.id + ")"
-          : (models.length ? "Default" : "No models — add one");
+          ? tr("chat.defaultModel", "Default ({id})", { id: defaultModel.id })
+          : (models.length
+              ? tr("chat.defaultPlain", "Default")
+              : tr("chat.noModels", "No models — add one"));
         modelEl.appendChild(def);
         models.forEach(function (m) {
           var opt = document.createElement("option");
@@ -223,7 +260,7 @@
         var text = textEl.value.trim();
         if (!text) return;
         textEl.value = "";
-        busy(true, "Thinking…");
+        busy(true, tr("chat.thinking", "Thinking…"));
         invoke("send", text).then(function (json) {
           var out = JSON.parse(json);
           if (!out.ok) throw new Error(out.error || "send failed");
@@ -249,24 +286,33 @@
 
       pullEl.addEventListener("click", function () {
         var repo = pullRepoEl.value.trim();
-        if (!repo) { showError("enter a Hugging Face repo (org/name)"); return; }
+        if (!repo) { showError(tr("chat.enterRepo", "enter a Hugging Face repo (org/name)")); return; }
         var file = pullFileEl.value.trim();
-        busy(true, "Downloading " + repo + "… (may take minutes)");
+        busy(true, tr("chat.downloading", "Downloading {repo}… (may take minutes)", { repo: repo }));
         (file ? invoke("pull", repo, file) : invoke("pull", repo)).then(function (json) {
           var out = JSON.parse(json);
           if (!out.ok) throw new Error(out.error || "pull failed");
           pullRowEl.classList.remove("open");
           pullRepoEl.value = "";
           pullFileEl.value = "";
-          status("Registered " + out.model);
+          status(tr("chat.registered", "Registered {model}", { model: out.model }));
         }).then(refresh).catch(showError).then(function () { busy(false); });
       });
 
       document.getElementById("new").addEventListener("click", function () {
-        busy(true, "Starting a new conversation…");
+        busy(true, tr("chat.startingNew", "Starting a new conversation…"));
         invoke("new").then(refresh).catch(showError).then(function () { busy(false); });
       });
 
+      localize();
+      // The host pushes the locale bundle shortly after load; re-localize then,
+      // and on any later language change, re-rendering the live list too.
+      if (window.terrane && typeof window.terrane.onMessages === "function") {
+        window.terrane.onMessages(function () {
+          localize();
+          refresh();
+        });
+      }
       refresh();
     </script>
   </body>

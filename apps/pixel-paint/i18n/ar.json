@@ -1,0 +1,23 @@
+{
+  "title": "رسم البكسل",
+  "heading": "رسم البكسل",
+  "canvasLabel": "لوحة رسم 64 × 64 بكسل",
+  "tool": "الأداة",
+  "brush": "فرشاة",
+  "eraser": "ممحاة",
+  "color": "اللون",
+  "swatches": "عينات الألوان",
+  "actions": "الإجراءات",
+  "clear": "مسح",
+  "download": "تنزيل PNG",
+  "loading": "جارٍ التحميل...",
+  "saving": "جارٍ الحفظ...",
+  "savedOne": "تم حفظ {n} بكسل",
+  "savedMany": "تم حفظ {n} بكسل",
+  "saveFailed": "فشل الحفظ: {error}",
+  "ready": "لوحة الرسم 64 × 64 جاهزة",
+  "loadFailed": "فشل التحميل: {error}",
+  "clearing": "جارٍ المسح...",
+  "cleared": "تم مسح لوحة الرسم",
+  "clearFailed": "فشل المسح: {error}"
+}
