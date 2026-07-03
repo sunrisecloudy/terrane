@@ -13,6 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var appSidebar: AppSidebarView!
   private var appSidebarWidthConstraint: NSLayoutConstraint!
   private var codeButton: NSButton!
+  private var appIconView: NSImageView!
+  private var appNameLabel: NSTextField!
+  private var crumbSeparator: NSTextField!
+  private var docField: NSTextField!
   private var bridge: TerraneBridge?
   private var appSchemeHandler: AppSchemeHandler?
   private var previewSchemeHandler: PreviewSchemeHandler?
@@ -29,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       fatalError("terrane-host: cannot open Terrane home at \(home.path)")
     }
     self.bridge = bridge
+    bridge.onDocumentSet = { [weak self] name in
+      DispatchQueue.main.async { self?.applyDocumentFromApp(name) }
+    }
     bridge.install(into: config.userContentController)
     let appSchemeHandler = AppSchemeHandler { [weak self] in self?.apps ?? [] }
     self.appSchemeHandler = appSchemeHandler
@@ -106,6 +113,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     download.delegate = self
   }
 
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    // The shim exists once the document loads; hand it the current document
+    // name + theme so terrane.onDocument / terrane.onTheme fire (parity with
+    // the web host's nonce-checked hello sync).
+    pushShellState()
+  }
+
   func webView(
     _ webView: WKWebView,
     navigationResponse: WKNavigationResponse,
@@ -177,6 +191,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     codeButton.bezelStyle = .rounded
     codeButton.translatesAutoresizingMaskIntoConstraints = false
 
+    appIconView = NSImageView()
+    appIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
+    appIconView.contentTintColor = .secondaryLabelColor
+    appIconView.translatesAutoresizingMaskIntoConstraints = false
+
+    appNameLabel = NSTextField(labelWithString: "Terrane")
+    appNameLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+    appNameLabel.textColor = .labelColor
+    appNameLabel.lineBreakMode = .byTruncatingTail
+    appNameLabel.translatesAutoresizingMaskIntoConstraints = false
+    appNameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+    crumbSeparator = NSTextField(labelWithString: "/")
+    crumbSeparator.font = .systemFont(ofSize: 13)
+    crumbSeparator.textColor = .tertiaryLabelColor
+    crumbSeparator.isHidden = true
+    crumbSeparator.translatesAutoresizingMaskIntoConstraints = false
+
+    // The document name is editable in place — an app renames it via
+    // terrane.setDocument, and typing here fires terrane.onDocument.
+    docField = NSTextField()
+    docField.isBordered = false
+    docField.drawsBackground = false
+    docField.font = .systemFont(ofSize: 13)
+    docField.textColor = .secondaryLabelColor
+    docField.placeholderString = "Untitled"
+    docField.lineBreakMode = .byTruncatingTail
+    docField.focusRingType = .none
+    docField.isHidden = true
+    docField.target = self
+    docField.action = #selector(docFieldCommitted(_:))
+    docField.translatesAutoresizingMaskIntoConstraints = false
+    docField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
     sourceEditor = SourceEditorPanel()
     sourceEditor.isHidden = true
     sourceEditor.translatesAutoresizingMaskIntoConstraints = false
@@ -185,6 +233,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         ?? SourceEditorSaveResult(message: "Saved.")
     }
 
+    bar.addSubview(appIconView)
+    bar.addSubview(appNameLabel)
+    bar.addSubview(crumbSeparator)
+    bar.addSubview(docField)
     bar.addSubview(codeButton)
     content.addSubview(appSidebar)
     content.addSubview(bar)
@@ -207,6 +259,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
       codeButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -16),
       codeButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+
+      appIconView.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
+      appIconView.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+      appIconView.widthAnchor.constraint(equalToConstant: 18),
+      appIconView.heightAnchor.constraint(equalToConstant: 18),
+
+      appNameLabel.leadingAnchor.constraint(equalTo: appIconView.trailingAnchor, constant: 8),
+      appNameLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+
+      crumbSeparator.leadingAnchor.constraint(equalTo: appNameLabel.trailingAnchor, constant: 6),
+      crumbSeparator.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+
+      docField.leadingAnchor.constraint(equalTo: crumbSeparator.trailingAnchor, constant: 6),
+      docField.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+      docField.trailingAnchor.constraint(
+        lessThanOrEqualTo: codeButton.leadingAnchor, constant: -12),
 
       webView.leadingAnchor.constraint(equalTo: appSidebar.trailingAnchor),
       webView.trailingAnchor.constraint(equalTo: sourceEditor.leadingAnchor),
@@ -246,6 +314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     window.title = "\(app.name) - Terrane"
 
     appSidebar.select(appId: app.id)
+    updateBreadcrumb(for: app)
 
     sourceEditor.setApp(app, preferredPath: preferredSourcePath)
     webView.load(
@@ -253,6 +322,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         url: AppSchemeHandler.frameURL(for: app),
         cachePolicy: .reloadIgnoringLocalAndRemoteCacheData
       ))
+  }
+
+  private func updateBreadcrumb(for app: TerraneApp) {
+    appNameLabel.stringValue = app.name
+    appIconView.image = NSImage(
+      systemSymbolName: AppSidebarView.iconName(for: app), accessibilityDescription: nil)
+    appIconView.isHidden = false
+    crumbSeparator.isHidden = false
+    docField.isHidden = false
+    docField.stringValue = Self.storedDocName(appId: app.id)
+  }
+
+  private func hideBreadcrumb() {
+    appNameLabel.stringValue = "Terrane"
+    appIconView.isHidden = true
+    crumbSeparator.isHidden = true
+    docField.isHidden = true
+    docField.stringValue = ""
   }
 
   /// The shared landing page: also the empty state when nothing is installed.
@@ -265,6 +352,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     bridge?.clearSelection()
     window.title = "Terrane"
     appSidebar.select(appId: nil)
+    hideBreadcrumb()
     sourceEditor?.setApp(nil)
     webView.loadHTMLString(HomePage.render(apps: apps) ?? Self.emptyStateHTML, baseURL: nil)
   }
@@ -299,6 +387,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     sourceEditor.isHidden = !visible
     sourceEditorWidthConstraint.constant = visible ? 390 : 0
     window.contentView?.layoutSubtreeIfNeeded()
+  }
+
+  // ---- Top-bar document / theme -------------------------------------------
+
+  /// User edited the breadcrumb document name (Enter / focus change).
+  @objc private func docFieldCommitted(_ sender: NSTextField) {
+    guard let app = selectedApp else { return }
+    let name = TerraneBridge.sanitizeDocName(sender.stringValue)
+    Self.setStoredDocName(name, appId: app.id)
+    sender.stringValue = name
+    pushShellState()
+  }
+
+  /// A page renamed its own document via terrane.setDocument.
+  private func applyDocumentFromApp(_ raw: String) {
+    guard let app = selectedApp else { return }
+    let name = TerraneBridge.sanitizeDocName(raw)
+    Self.setStoredDocName(name, appId: app.id)
+    docField.stringValue = name
+    // Echo the canonical (sanitized) name back so the app's getDocument()/
+    // onDocument converge with what we stored (its optimistic value may differ
+    // after sanitization) — parity with the web host.
+    pushShellState()
+  }
+
+  /// Push the current document name + theme into the loaded page. The macOS
+  /// host has no in-app theme override — it always follows the OS — so the
+  /// theme is "system" (parity with the web host's value vocabulary). Apps
+  /// resolve the concrete appearance via CSS `color-scheme` / matchMedia,
+  /// which WebKit already drives from the system appearance.
+  private func pushShellState() {
+    guard let app = selectedApp else { return }
+    let js = TerraneBridge.applyStateJS(
+      document: Self.storedDocName(appId: app.id),
+      theme: "system"
+    )
+    webView.evaluateJavaScript(js)
+  }
+
+  private static func docKey(_ appId: String) -> String { "terrane.doc.\(appId)" }
+
+  static func storedDocName(appId: String) -> String {
+    let value = UserDefaults.standard.string(forKey: docKey(appId)) ?? ""
+    return value.isEmpty ? "Untitled" : value
+  }
+
+  static func setStoredDocName(_ name: String, appId: String) {
+    UserDefaults.standard.set(name, forKey: docKey(appId))
   }
 
   private func toggleSidebar() {

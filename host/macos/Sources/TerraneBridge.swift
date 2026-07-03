@@ -15,6 +15,10 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   private let handle: OpaquePointer  // TerraneHandle*
   private let worker = DispatchQueue(label: "com.terrane.host.bridge", qos: .userInitiated)
 
+  /// Called when a page renames its document via `terrane.setDocument(...)`.
+  /// The host owns the top bar, so it updates the breadcrumb (and persists).
+  var onDocumentSet: ((String) -> Void)?
+
   init?(home: URL) {
     guard let handle = home.path.withCString({ terrane_open($0) }) else {
       return nil
@@ -100,9 +104,75 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
           self.replyObject(result, replyHandler)
         }
       }
+    case "document:set":
+      // Only the main app frame owns the breadcrumb; the shim is injected into
+      // all frames, so ignore renames from nested frames (e.g. an App Builder
+      // preview) that must not drive the host chrome.
+      if message.frameInfo.isMainFrame {
+        onDocumentSet?((body["name"] as? String) ?? "")
+      }
+      replyHandler("ok", nil)
     default:
       replyHandler(nil, "terrane: unknown bridge message")
     }
+  }
+
+  /// The JS a host calls (via `evaluateJavaScript`) to push the current
+  /// document name / theme down to the page, firing `terrane.onDocument` /
+  /// `terrane.onTheme`. Values are JSON-encoded so they cannot break out.
+  static func applyStateJS(document: String?, theme: String?) -> String {
+    var parts: [String] = []
+    if let document {
+      parts.append("document:\(jsonStringLiteral(document))")
+    }
+    if let theme {
+      parts.append("theme:\(jsonStringLiteral(theme))")
+    }
+    return "window.__terrane_apply && window.__terrane_apply({\(parts.joined(separator: ","))});"
+  }
+
+  /// Strip control/format characters, collapse whitespace, cap length — parity
+  /// with the web shell's setDocName so a page-supplied name cannot spoof the
+  /// trusted breadcrumb chrome.
+  static func sanitizeDocName(_ raw: String) -> String {
+    let stripped = raw.unicodeScalars.filter { scalar in
+      !(scalar.value < 0x20 || (scalar.value >= 0x7f && scalar.value <= 0x9f)
+        || (scalar.value >= 0x200b && scalar.value <= 0x200f)
+        || (scalar.value >= 0x2028 && scalar.value <= 0x202e)
+        || (scalar.value >= 0x2066 && scalar.value <= 0x2069)
+        || scalar.value == 0xfeff)
+    }
+    let collapsed = String(String.UnicodeScalarView(stripped))
+      .components(separatedBy: .whitespacesAndNewlines)
+      .filter { !$0.isEmpty }
+      .joined(separator: " ")
+    let capped = String(collapsed.prefix(120))
+    return capped.isEmpty ? "Untitled" : capped
+  }
+
+  /// Minimal JSON string literal (also escapes `<` and line separators) so a
+  /// document name can be embedded in evaluated JS without breaking it.
+  static func jsonStringLiteral(_ value: String) -> String {
+    var out = "\""
+    for scalar in value.unicodeScalars {
+      switch scalar {
+      case "\"": out += "\\\""
+      case "\\": out += "\\\\"
+      case "<": out += "\\u003c"
+      case "\n": out += "\\n"
+      case "\r": out += "\\r"
+      case "\u{2028}": out += "\\u2028"
+      case "\u{2029}": out += "\\u2029"
+      default:
+        if scalar.value < 0x20 {
+          out += String(format: "\\u%04x", scalar.value)
+        } else {
+          out.unicodeScalars.append(scalar)
+        }
+      }
+    }
+    out += "\""
+    return out
   }
 
   func previewAsset(previewId: String, relPath: String) -> PreviewAssetResult {
@@ -382,6 +452,39 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
           return raw;
         }
       }
+
+      // Top-bar document/theme state, kept in sync with the native host.
+      var docState = "";
+      var themeState = "system";
+      var docSubs = [];
+      var themeSubs = [];
+      function notify(subs, value) {
+        for (var i = 0; i < subs.length; i++) {
+          try { subs[i](value); } catch (_) {}
+        }
+      }
+      function unsubscriber(list, cb) {
+        return function () {
+          for (var i = list.length - 1; i >= 0; i--) {
+            if (list[i] === cb) list.splice(i, 1);
+          }
+        };
+      }
+      // The native host calls this (via evaluateJavaScript) to push the
+      // current document name / theme down; it is intentionally not on the
+      // frozen `terrane` object.
+      window.__terrane_apply = function (state) {
+        if (!state) return;
+        if (typeof state.document === "string") {
+          docState = state.document;
+          notify(docSubs, docState);
+        }
+        if (typeof state.theme === "string") {
+          themeState = state.theme;
+          notify(themeSubs, themeState);
+        }
+      };
+
       var api = Object.freeze({
         invoke: function (verb) {
           var args = Array.prototype.slice.call(arguments, 1).map(String);
@@ -410,6 +513,30 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
               harness: String(request.harness || request.agent || "codex")
             }
           });
+        },
+        // --- Top-bar document/theme (host chrome) — parity with the web host ---
+        getDocument: function () {
+          return docState;
+        },
+        setDocument: function (name) {
+          var clean = String(name == null ? "" : name);
+          docState = clean;
+          post({ kind: "document:set", name: clean });
+        },
+        onDocument: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          docSubs.push(cb);
+          if (docState) { try { cb(docState); } catch (_) {} }
+          return unsubscriber(docSubs, cb);
+        },
+        getTheme: function () {
+          return themeState;
+        },
+        onTheme: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          themeSubs.push(cb);
+          try { cb(themeState); } catch (_) {}
+          return unsubscriber(themeSubs, cb);
         }
       });
       Object.defineProperty(window, "terrane", {
