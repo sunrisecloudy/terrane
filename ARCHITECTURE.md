@@ -115,6 +115,12 @@ the host and core mediate, sandbox, and (where needed) record them:
   special case is **agent CLIs** (e.g. Claude, Codex): terrane-core can drive
   them as a supervisor, letting AI agents talk **to each other** and — the main
   point of the whole project — **to the user**.
+- **Public KV & localization** — a shared, host-written key/value bucket apps
+  read read-only (regular KV is per-app). Its first consumer is **i18n**:
+  translations keyed `i18n/<code>/<domain>.<key>` that the host negotiates
+  (`Accept-Language` / system language) and delivers to UIs through the
+  `window.terrane` locale surface (`getLocale`/`getDir`/`t`), so one catalog is
+  reused across every app and platform.
 
 ## North star
 

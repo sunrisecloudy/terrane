@@ -103,6 +103,28 @@ bridge `String()`s each argument, so an array reaches the backend as one
 comma-joined string. `app_build_validate` warns when UI code passes an array to
 `invoke()`.
 
+**Localization (optional but preferred for user-facing UIs).** The host detects
+the user's language and pushes a message bundle to the frame through the same
+`window.terrane` object:
+
+- `window.terrane.t(key, { default: "English" })` — translate + interpolate
+  `{name}` placeholders; returns `default` (or the key) when unset. Assign with
+  `textContent`, never `innerHTML`.
+- `window.terrane.getDir()` → `"ltr" | "rtl"`; set
+  `document.documentElement.dir = window.terrane.getDir()`.
+- `window.terrane.onMessages(cb)` — re-localize when the bundle arrives/changes.
+
+Ship translations as flat JSON catalogs beside the app, one per language, keyed
+bare: `apps/<id>/i18n/en.json` (the complete fallback + key inventory) plus
+`es.json`, `zh-Hans.json`, `ar.json`, … . The host seeds them into shared public
+KV under `i18n/<code>/<id>.<key>` and delivers your app's bundle to the frame, so
+the UI references keys as `t("<id>.<key>", …)`. Supported codes: `en, es,
+zh-Hans, ar, pt-BR, fr, de, ja, id, th-TH, ko, vi`. Everything is best-effort:
+with no host, `t()` returns the `default` and the app works headless. Backend
+return strings are not auto-localized in v1 — localize the UI, which is what the
+user sees. Full reference: `docs/APP_API.md` → "Localization". A frontend build
+(`frontend` in the manifest) rebuilds with `terrane app build <dir>`.
+
 ## Choosing A Flow
 
 Start with `workflows_list` when the user describes an outcome rather than a

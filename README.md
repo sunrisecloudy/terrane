@@ -43,7 +43,20 @@ host/
   cli/                      # CLI adapter package
   mcp/                      # MCP adapter package
   web/                      # web adapter package
+apps/                       # JS app bundles (todo, chat, …), each with i18n/<code>.json
+i18n/system/                # host/shell chrome translation catalogs, per language
 ```
+
+## Localization
+
+Terrane detects the user's language (web `Accept-Language` / an in-shell picker;
+macOS system language) and localizes the host chrome and apps. Translations are
+stored once in a shared **public KV** bucket (`i18n/<code>/<domain>.<key>`) and
+reused across every app and platform; apps read the active locale + a message
+bundle through `window.terrane` (`getLocale`/`getDir`/`t`). Ship catalogs as
+`i18n/system/<code>.json` and `apps/<id>/i18n/<code>.json`; hosts seed them on
+startup (or `terrane i18n import <dir>`). Details: [docs/APP_API.md](docs/APP_API.md).
+Supported: `en, es, zh-Hans, ar, pt-BR, fr, de, ja, id, th-TH, ko, vi`.
 
 ## Build
 

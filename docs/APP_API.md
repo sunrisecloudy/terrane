@@ -513,12 +513,15 @@ apps/<id>/i18n/en.json        # { "add": "Add", "empty": "Nothing to do", … }
 apps/<id>/i18n/es.json        # { "add": "Añadir", … }
 ```
 
-`terrane i18n import <path>` (or `terrane_i18n_import` over the C ABI) walks
-`i18n/system` and `apps/*/i18n`, keys every entry as `i18n/<code>/<domain>.<key>`,
-and commits them into public KV via a trusted-host `kv.public.import`. A backend
-that needs the raw strings can read them with `ctx.resource.kv.public(key)` (a
-read-only, cross-app view); the UI never needs to — the host pushes your app's
-merged bundle (its own domain plus the shared `system` domain) to the frame.
+Hosts **seed catalogs automatically on startup** (idempotent), so apps localize
+out of the box; `terrane i18n import <path>` (or `terrane_i18n_import` over the C
+ABI) does the same on demand. Either walks `i18n/system` and `apps/*/i18n`, keys
+every entry as `i18n/<code>/<domain>.<key>`, and commits them into public KV via
+a trusted-host `kv.public.import`. A backend that needs the raw strings can read
+them with `ctx.resource.kv.public(key)` (a read-only, cross-app view); the UI
+never needs to — the host pushes your app's merged bundle (its own domain plus
+the shared `system` domain) to the frame. Apps with a `frontend` build step
+rebuild their `dist/` with `terrane app build <dir>` after editing source.
 
 Keep `en` **complete** — it is both the fallback and the key inventory. The
 supported set is `en, es, zh-Hans, ar, pt-BR, fr, de, ja, id, th-TH, ko, vi`.
