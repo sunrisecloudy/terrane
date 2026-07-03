@@ -29,8 +29,8 @@ pub use manifest::{
     NAMESPACE_SELECTOR_SCHEMA_ID, NAMESPACE_SELECTOR_SCHEMA_JSON,
 };
 pub use runtime::{
-    CapBus, CommandCtx, QueryCtx, QueryValue, ReadValue, ResourceReadCtx, RuntimeCtx, RuntimeHost,
-    RuntimeHostHandle,
+    CapBus, CommandCtx, LiveHost, QueryCtx, QueryValue, ReadValue, ResourceReadCtx, RuntimeCtx,
+    RuntimeHost, RuntimeHostHandle,
 };
 pub use state::{state_mut, state_ref, StateStore};
 

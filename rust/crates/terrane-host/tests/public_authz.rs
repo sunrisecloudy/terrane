@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        60,
+        66,
         "registered commands changed: {commands:?}"
     );
 
@@ -55,7 +55,7 @@ fn public_command_inventory_covers_every_registered_command() {
         25,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 33, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 39, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -69,11 +69,14 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
         BTreeSet::from([
             "build",
             "crdt",
+            "crypto",
             "kv",
             "local-model",
             "native",
+            "net",
             "relational_db",
-            "stt"
+            "stt",
+            "sysinfo"
         ])
     );
 
@@ -167,6 +170,9 @@ fn dangerous_and_effect_commands_are_refused() {
     for command in [
         "kv.storage.set",
         "kv.storage.clear",
+        "kv.public.set",
+        "kv.public.rm",
+        "kv.public.import",
         "js-runtime.run",
         "wasm-runtime.run",
         "net.fetch",

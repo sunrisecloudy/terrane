@@ -27,10 +27,13 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         }
         ["app", "install", path] => run_install(path),
         ["app", "install-kv", path, rest @ ..] => run_install_kv(path, rest),
+        ["app", "build", dir] => run_app_build(dir),
         ["contract", "export"] => run_contract_export(),
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
+        ["i18n", "import", path] => run_i18n_import(path),
+        ["i18n", "negotiate", header] => run_i18n_negotiate(header),
         // Host verbs for the local-model edge (runtime + resident server) —
         // machine plumbing, not capability commands: nothing is recorded.
         ["local-model", "setup", "mlx"] => run_local_model_setup_mlx(),
@@ -61,9 +64,58 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane sync <app> (--from <home> | --peer <addr>)".into())
         }
+        // Run an app backend. `--ask` prompts (hidden) for the first verb
+        // argument — the password manager's `auth` — so a master password never
+        // lands on argv.
+        ["run", app, verb, rest @ ..] => run_app_backend(app, verb, rest),
+        ["run", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane run <app> <verb> [args… | --ask]".into())
+        }
         [ns, verb, rest @ ..] => run_command(ns, verb, rest),
         [other] => Err(format!("unknown command {other:?} (try `terrane help`)")),
     }
+}
+
+/// Run an app backend via `js-runtime.run`. A bare `--ask` anywhere in the verb
+/// arguments is dropped and replaced by a value read (without echo) from the
+/// terminal, spliced in as the FIRST verb argument (the vault app's `auth`). This
+/// keeps a master password out of argv, shell history, and the process table.
+pub fn run_app_backend(app: &str, verb: &str, rest: &[&str]) -> Result<(), String> {
+    let ask = rest.contains(&"--ask");
+    let mut args: Vec<String> = Vec::with_capacity(rest.len() + 2);
+    args.push(app.to_string());
+    args.push(verb.to_string());
+    if ask {
+        args.push(prompt_secret("Master password: ")?);
+    }
+    for arg in rest {
+        if *arg != "--ask" {
+            args.push((*arg).to_string());
+        }
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    dispatch("js-runtime.run", &refs)
+}
+
+/// Read one secret line. On an interactive terminal it prompts on stderr and
+/// reads with echo disabled; when stdin is piped (scripts, tests) it reads the
+/// line plainly with no prompt — so the same flag works both ways. rpassword
+/// reads the controlling terminal directly, which errors when there is none,
+/// hence the explicit `is_terminal()` branch.
+pub fn prompt_secret(label: &str) -> Result<String, String> {
+    use std::io::{BufRead as _, IsTerminal as _, Write as _};
+    if std::io::stdin().is_terminal() {
+        eprint!("{label}");
+        let _ = std::io::stderr().flush();
+        return rpassword::read_password().map_err(|e| format!("could not read secret: {e}"));
+    }
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| format!("could not read secret: {e}"))?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
 /// Generic write path: `<ns> <verb> [args…]` -> `dispatch("<ns>.<verb>", args)`.
@@ -339,6 +391,38 @@ pub fn run_kv_storage_status() -> Result<(), String> {
     Ok(())
 }
 
+/// `terrane i18n import <path>`: seed the public KV bucket from checked-in
+/// catalog files. Idempotent and replay-safe.
+pub fn run_i18n_import(path: &str) -> Result<(), String> {
+    let root = std::path::Path::new(path);
+    let mut core = crate::open()?;
+    let outcome = crate::import_i18n_dir(&mut core, root)?;
+    println!("{}", outcome.message());
+    Ok(())
+}
+
+/// `terrane i18n negotiate <header>`: resolve an `Accept-Language` header to
+/// the best supported code. Hosts and debug.
+pub fn run_i18n_negotiate(header: &str) -> Result<(), String> {
+    println!("{}", terrane_i18n::from_accept_language(header));
+    Ok(())
+}
+
+/// `terrane app build <dir>`: build an app's frontend (terrane-app-build) into
+/// its `dist/`. Terminal parity with the `terrane_build_app` C ABI.
+pub fn run_app_build(dir: &str) -> Result<(), String> {
+    let result = terrane_app_build::build_app(terrane_app_build::BuildOptions {
+        app_dir: std::path::PathBuf::from(dir),
+        check_only: false,
+    })?;
+    println!(
+        "built {} files -> {}",
+        result.files.len(),
+        result.dist.display()
+    );
+    Ok(())
+}
+
 pub fn run_native_observe_default() -> Result<(), String> {
     let mut core = crate::open()?;
     let connector = crate::native::default_connector();
@@ -508,6 +592,7 @@ pub fn print_help() {
          \x20 terrane app install <path>                       copy a bundle into the home & catalog it\n\
          \x20 terrane app install-kv <path> [--storage <backend>] [--path <path>]\n\
          \x20                                                  store a JS bundle in reserved cap-kv keys\n\
+         \x20 terrane app build <dir>                          build an app frontend (terrane-app-build) into dist/\n\
          \x20 terrane app add <id> <name…> [--source <path>]   catalog an app by path (dev)\n\
          \x20 terrane app remove <id>                          remove an app\n\
          \x20 terrane kv set <app> <key> <value…>              store a value\n\
@@ -516,6 +601,8 @@ pub fn print_help() {
          \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
          \x20 terrane kv storage clear (--default | --app <app>)\n\
          \x20 terrane kv storage status\n\
+         \x20 terrane i18n import <path>                    seed the public KV bucket from i18n/system & apps/*/i18n catalogs\n\
+         \x20 terrane i18n negotiate <accept-language>       resolve a header to the best supported code\n\
          \x20 terrane native observe-default                    record default host native support\n\
          \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
@@ -529,6 +616,7 @@ pub fn print_help() {
          \x20 terrane local-model server status|stop   inspect or stop the resident mlx server\n\
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
          \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
+         \x20 terrane run <app> <verb> [--ask] [args…]         run an app backend; --ask prompts (hidden) for the first arg\n\
          \x20 terrane js-runtime run <app> [input…]            run an app's JS backend\n\
          \x20 terrane wasm-runtime run <app> [input…]          run an app's WASM backend\n\n\
          Multi-user:\n\

@@ -230,47 +230,47 @@
     <div class="shell">
       <main>
         <header>
-          <h1>Photobooth</h1>
-          <div id="status" class="status">Ready</div>
+          <h1 data-i18n="photobooth.heading">Photobooth</h1>
+          <div id="status" class="status" data-i18n="photobooth.statusReady">Ready</div>
         </header>
 
-        <section class="stage" aria-label="camera preview">
+        <section class="stage" data-i18n-attr="aria-label:photobooth.previewAria" aria-label="camera preview">
           <video id="video" autoplay playsinline muted></video>
           <canvas id="canvas"></canvas>
-          <img id="photo" class="photo" alt="Captured photo">
-          <div id="empty" class="empty">Camera preview</div>
+          <img id="photo" class="photo" data-i18n-attr="alt:photobooth.photoAlt" alt="Captured photo">
+          <div id="empty" class="empty" data-i18n="photobooth.cameraPreview">Camera preview</div>
         </section>
       </main>
 
       <aside>
         <section class="panel">
-          <span class="label">Camera</span>
+          <span class="label" data-i18n="photobooth.cameraLabel">Camera</span>
           <div class="controls">
-            <button id="start" class="primary" type="button">Start</button>
-            <button id="capture" class="primary capture" type="button" disabled>Take Photo</button>
-            <button id="retake" class="warm" type="button" disabled>Retake</button>
+            <button id="start" class="primary" type="button" data-i18n="photobooth.start">Start</button>
+            <button id="capture" class="primary capture" type="button" disabled data-i18n="photobooth.takePhoto">Take Photo</button>
+            <button id="retake" class="warm" type="button" disabled data-i18n="photobooth.retake">Retake</button>
           </div>
         </section>
 
         <section class="panel">
-          <span class="label">Photo</span>
+          <span class="label" data-i18n="photobooth.photoLabel">Photo</span>
           <div class="download-row">
-            <a id="download" class="download" href="#" download="photobooth.png" aria-disabled="true">Download PNG</a>
+            <a id="download" class="download" href="#" download="photobooth.png" aria-disabled="true" data-i18n="photobooth.downloadPng">Download PNG</a>
           </div>
         </section>
 
         <section class="panel">
-          <span class="label">Session</span>
+          <span class="label" data-i18n="photobooth.sessionLabel">Session</span>
           <div class="metric">
-            <span>Camera</span>
-            <strong id="camera-state">Off</strong>
+            <span data-i18n="photobooth.cameraMetric">Camera</span>
+            <strong id="camera-state" data-i18n="photobooth.cameraOff">Off</strong>
           </div>
           <div class="metric">
-            <span>Photo</span>
-            <strong id="photo-state">None</strong>
+            <span data-i18n="photobooth.photoMetric">Photo</span>
+            <strong id="photo-state" data-i18n="photobooth.photoNone">None</strong>
           </div>
           <div class="metric">
-            <span>Size</span>
+            <span data-i18n="photobooth.sizeMetric">Size</span>
             <strong id="size-state">-</strong>
           </div>
         </section>
@@ -293,6 +293,48 @@
       var cameraState = document.getElementById("camera-state");
       var photoState = document.getElementById("photo-state");
       var sizeState = document.getElementById("size-state");
+
+      // Translate via the host bundle when present, else fall back to English.
+      // The ~15-line localize() block below is the pattern every app copies.
+      function tr(key, fallback, params) {
+        if (window.terrane && typeof window.terrane.t === "function") {
+          var opts = { default: fallback };
+          if (params) {
+            for (var k in params) {
+              if (Object.prototype.hasOwnProperty.call(params, k)) opts[k] = params[k];
+            }
+          }
+          return window.terrane.t(key, opts);
+        }
+        return fallback;
+      }
+
+      function localize() {
+        document.documentElement.dir =
+          (window.terrane && window.terrane.getDir && window.terrane.getDir()) || "ltr";
+        var nodes = document.querySelectorAll("[data-i18n]");
+        for (var i = 0; i < nodes.length; i++) {
+          nodes[i].textContent = tr(nodes[i].getAttribute("data-i18n"), nodes[i].textContent.trim());
+        }
+        var attrNodes = document.querySelectorAll("[data-i18n-attr]");
+        for (var j = 0; j < attrNodes.length; j++) {
+          attrNodes[j].getAttribute("data-i18n-attr").split(";").forEach(function (pair) {
+            var kv = pair.split(":");
+            if (kv.length === 2) {
+              var attr = kv[0].trim();
+              attrNodes[j].setAttribute(attr, tr(kv[1].trim(), attrNodes[j].getAttribute(attr)));
+            }
+          });
+        }
+        document.title = tr("photobooth.title", "Photobooth");
+        // Re-render the live JS-driven strings for the current camera/photo state.
+        setCameraReady(!captureButton.disabled);
+        if (downloadLink.getAttribute("aria-disabled") === "false") {
+          photoState.textContent = tr("photobooth.captured", "Captured");
+        } else {
+          photoState.textContent = tr("photobooth.photoNone", "None");
+        }
+      }
 
       function setStatus(text) {
         statusEl.textContent = text;
@@ -327,7 +369,7 @@
         downloadLink.href = photoBlobUrl;
         downloadLink.setAttribute("aria-disabled", "false");
         retakeButton.disabled = false;
-        photoState.textContent = "Captured";
+        photoState.textContent = tr("photobooth.captured", "Captured");
         sizeState.textContent = width + " x " + height;
       }
 
@@ -336,7 +378,7 @@
         photo.removeAttribute("src");
         downloadLink.href = "#";
         downloadLink.setAttribute("aria-disabled", "true");
-        photoState.textContent = "None";
+        photoState.textContent = tr("photobooth.photoNone", "None");
         sizeState.textContent = "-";
       }
 
@@ -355,8 +397,12 @@
 
       function setCameraReady(ready) {
         captureButton.disabled = !ready;
-        cameraState.textContent = ready ? "On" : "Off";
-        startButton.textContent = ready ? "Reset" : "Start";
+        cameraState.textContent = ready
+          ? tr("photobooth.cameraOn", "On")
+          : tr("photobooth.cameraOff", "Off");
+        startButton.textContent = ready
+          ? tr("photobooth.reset", "Reset")
+          : tr("photobooth.start", "Start");
         startButton.disabled = false;
       }
 
@@ -376,18 +422,18 @@
 
       function startCamera() {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          setStatus("Camera API unavailable in this host");
+          setStatus(tr("photobooth.cameraUnavailable", "Camera API unavailable in this host"));
           return;
         }
         if (hasLiveStream()) {
           clearPhoto();
           setCameraReady(true);
           showPreview();
-          setStatus("Camera ready");
+          setStatus(tr("photobooth.cameraReady", "Camera ready"));
           return;
         }
         var attempt = ++startAttempt;
-        setStatus("Opening camera...");
+        setStatus(tr("photobooth.openingCamera", "Opening camera..."));
         stopStream();
         startButton.disabled = true;
         captureButton.disabled = true;
@@ -400,7 +446,7 @@
             startAttempt++;
             setCameraReady(false);
             showPreview();
-            setStatus("Camera request timed out. Try Start again.");
+            setStatus(tr("photobooth.cameraTimeout", "Camera request timed out. Try Start again."));
           }, 12000);
 
           navigator.mediaDevices.getUserMedia({
@@ -429,7 +475,7 @@
             }
             setCameraReady(true);
             showPreview();
-            setStatus("Camera ready");
+            setStatus(tr("photobooth.cameraReady", "Camera ready"));
           }).catch(function (error) {
             clearTimeout(timeoutId);
             if (attempt !== startAttempt) return;
@@ -454,7 +500,7 @@
         ctx.restore();
         var dataUrl = canvas.toDataURL("image/png");
         setPhoto(dataUrl, width, height);
-        setStatus("Photo captured");
+        setStatus(tr("photobooth.photoCaptured", "Photo captured"));
       }
 
       startButton.addEventListener("click", startCamera);
@@ -462,7 +508,9 @@
       retakeButton.addEventListener("click", function () {
         clearPhoto();
         showPreview();
-        setStatus(stream ? "Camera ready" : "Ready");
+        setStatus(stream
+          ? tr("photobooth.cameraReady", "Camera ready")
+          : tr("photobooth.statusReady", "Ready"));
       });
       downloadLink.addEventListener("click", function (event) {
         if (downloadLink.getAttribute("aria-disabled") === "true") {
@@ -471,6 +519,13 @@
       });
       window.addEventListener("pagehide", stopStream);
       window.addEventListener("pagehide", revokePhotoBlob);
+
+      localize();
+      // The host pushes the locale bundle shortly after load; re-localize when
+      // it arrives and on any later language change.
+      if (window.terrane && typeof window.terrane.onMessages === "function") {
+        window.terrane.onMessages(localize);
+      }
     </script>
   </body>
 </html>

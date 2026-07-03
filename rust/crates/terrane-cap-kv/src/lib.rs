@@ -21,6 +21,16 @@ pub const LOG_VALUE_PREVIEW_CHARS: usize = 50;
 pub(crate) const DEFAULT_SCAN_LIMIT: usize = 100;
 pub(crate) const MAX_SCAN_LIMIT: usize = 500;
 
+/// The sentinel app-id bucket inside `KvState.data` that holds cross-app,
+/// read-only public data (the i18n catalog is its first consumer).
+///
+/// Writes here happen only through the trusted-host commands `kv.public.*`,
+/// admitted by core's `admit_command`. App-scoped reads target this bucket
+/// explicitly via the `public*` resource methods and never see other apps'
+/// private buckets. Because it lives under [`RESERVED_PREFIX`], no real app
+/// can own or cascade-remove it (see `validate_app_id`).
+pub const PUBLIC_BUCKET_APP_ID: &str = "__terrane/public";
+
 pub use events::{delete_event, set_event, storage_configured_event};
 pub use storage::{sync_full_storage, sync_logical_store, sync_storage_after_commit};
 pub(crate) use types::bounded_limit;
@@ -49,6 +59,15 @@ impl Capability for KvCapability {
                 },
                 CommandSpec {
                     name: "kv.storage.clear",
+                },
+                CommandSpec {
+                    name: "kv.public.set",
+                },
+                CommandSpec {
+                    name: "kv.public.rm",
+                },
+                CommandSpec {
+                    name: "kv.public.import",
                 },
             ],
             events: vec![
@@ -84,6 +103,9 @@ impl Capability for KvCapability {
             "kv.rm" | "kv.delete" => commands::decide_delete(ctx, args),
             "kv.storage.set" => commands::decide_storage_set(ctx, args),
             "kv.storage.clear" => commands::decide_storage_clear(ctx, args),
+            "kv.public.set" => commands::decide_public_set(ctx, args),
+            "kv.public.rm" => commands::decide_public_rm(ctx, args),
+            "kv.public.import" => commands::decide_public_import(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }

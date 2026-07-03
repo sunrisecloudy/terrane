@@ -1,0 +1,20 @@
+{
+  "title": "Kalkulator BMI",
+  "eyebrow": "BMI Metrik",
+  "lede": "Sesuaikan tinggi dan berat badan untuk menghitung indeks massa tubuh.",
+  "bmi": "BMI",
+  "enterValues": "Masukkan nilai",
+  "height": "Tinggi badan",
+  "weight": "Berat badan",
+  "aria.summary": "Ringkasan BMI",
+  "aria.measurements": "Pengukuran tubuh",
+  "aria.ranges": "Rentang BMI",
+  "cat.underweight": "Berat badan kurang",
+  "cat.healthy": "Berat badan sehat",
+  "cat.overweight": "Berat badan berlebih",
+  "cat.obesity": "Obesitas",
+  "status.waiting": "Menunggu Terrane",
+  "status.noBridge": "Bridge Terrane tidak tersedia",
+  "status.synced": "Tersinkronisasi dengan Terrane",
+  "status.failed": "Pemanggilan Terrane gagal"
+}

@@ -14,11 +14,13 @@ rocksdb-storage = ["terrane-cap-kv/rocksdb-storage"]
 
 [dependencies]
 terrane-cap-interface.workspace = true
+terrane-cap-agent.workspace = true
 terrane-cap-app.workspace = true
 terrane-cap-auth.workspace = true
 terrane-cap-build.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true
+terrane-cap-crypto.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-js-runtime.workspace = true
@@ -29,6 +31,7 @@ terrane-cap-native.workspace = true
 terrane-cap-stt.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
+terrane-cap-sysinfo.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 borsh.workspace = true
 

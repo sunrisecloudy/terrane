@@ -1,0 +1,20 @@
+{
+  "title": "حاسبة مؤشر كتلة الجسم",
+  "eyebrow": "مؤشر كتلة الجسم بالنظام المتري",
+  "lede": "اضبط الطول والوزن لحساب مؤشر كتلة الجسم.",
+  "bmi": "مؤشر كتلة الجسم",
+  "enterValues": "أدخل القيم",
+  "height": "الطول",
+  "weight": "الوزن",
+  "aria.summary": "ملخص مؤشر كتلة الجسم",
+  "aria.measurements": "قياسات الجسم",
+  "aria.ranges": "نطاقات مؤشر كتلة الجسم",
+  "cat.underweight": "نقص الوزن",
+  "cat.healthy": "وزن صحي",
+  "cat.overweight": "زيادة الوزن",
+  "cat.obesity": "السمنة",
+  "status.waiting": "في انتظار Terrane",
+  "status.noBridge": "جسر Terrane غير متاح",
+  "status.synced": "تمت المزامنة مع Terrane",
+  "status.failed": "فشل استدعاء Terrane"
+}

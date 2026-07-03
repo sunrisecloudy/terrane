@@ -32,22 +32,58 @@ pub struct HomePageOptions<'a> {
     /// Re-fetch `catalog_url` every N ms so newly added apps appear without a
     /// reload (dev hosts). `None` fetches once.
     pub catalog_poll_ms: Option<u32>,
+    /// The negotiated locale for `<html lang>` and chrome localization; empty
+    /// (the `Default`) means English.
+    pub locale: &'a str,
+    /// The `system`-domain message bundle for localizing the page's chrome;
+    /// `None` (the `Default`) leaves the English fallback text in place.
+    pub messages: Option<&'a std::collections::BTreeMap<String, String>>,
+}
+
+impl<'a> Default for HomePageOptions<'a> {
+    fn default() -> Self {
+        HomePageOptions {
+            app_href_template: "/apps/{id}/",
+            catalog_url: None,
+            catalog_json: None,
+            admin_href: None,
+            catalog_poll_ms: None,
+            locale: "",
+            messages: None,
+        }
+    }
 }
 
 /// Render the landing page HTML for a host's [`HomePageOptions`].
 pub fn home_page(options: &HomePageOptions) -> String {
+    let locale = if options.locale.is_empty() {
+        "en"
+    } else {
+        options.locale
+    };
+    let dir = terrane_i18n::dir_for(locale);
     // JS first: the config carries host/user-controlled text, so substituting
     // it last keeps a literal `__HOME_JS__` inside it from being re-expanded.
     HOME_HTML
         .replace("__HOME_JS__", &format!("{ICONS_JS}\n{HOME_JS}"))
-        .replace("__HOME_CONFIG__", &config_json(options))
+        .replace("__HOME_CONFIG__", &config_json(options, locale, dir))
+        .replace("__HOME_LANG__", &attr_safe(locale))
+        .replace("__HOME_DIR__", dir)
+}
+
+/// A locale code is validated (ASCII alnum + hyphen), but keep only that safe
+/// subset before dropping it into an HTML attribute.
+fn attr_safe(code: &str) -> String {
+    code.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .collect()
 }
 
 /// The page config, embedded in a `<script type="application/json">` block.
 /// All values pass through [`json_string`], which escapes `<` so host- and
 /// user-controlled strings (app names in the inline catalog) can never close
 /// the surrounding script element.
-fn config_json(options: &HomePageOptions) -> String {
+fn config_json(options: &HomePageOptions, locale: &str, dir: &str) -> String {
     let mut config = String::from("{");
     config.push_str("\"appHref\":");
     config.push_str(&json_string(options.app_href_template));
@@ -67,8 +103,32 @@ fn config_json(options: &HomePageOptions) -> String {
         config.push_str(",\"catalogPollMs\":");
         config.push_str(&ms.to_string());
     }
+    config.push_str(",\"locale\":");
+    config.push_str(&json_string(locale));
+    config.push_str(",\"dir\":");
+    config.push_str(&json_string(dir));
+    if let Some(messages) = options.messages {
+        config.push_str(",\"messages\":");
+        config.push_str(&json_object(messages));
+    }
     config.push('}');
     config
+}
+
+/// A JSON object literal with every key and value escaped via [`json_string`],
+/// so a bundle string cannot close the surrounding `<script>` block.
+fn json_object(map: &std::collections::BTreeMap<String, String>) -> String {
+    let mut out = String::from("{");
+    for (i, (key, value)) in map.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_string(key));
+        out.push(':');
+        out.push_str(&json_string(value));
+    }
+    out.push('}');
+    out
 }
 
 fn json_string(value: &str) -> String {

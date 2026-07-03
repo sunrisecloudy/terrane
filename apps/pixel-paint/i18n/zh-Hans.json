@@ -1,0 +1,23 @@
+{
+  "title": "像素画",
+  "heading": "像素画",
+  "canvasLabel": "64 乘 64 像素画布",
+  "tool": "工具",
+  "brush": "画笔",
+  "eraser": "橡皮擦",
+  "color": "颜色",
+  "swatches": "色板",
+  "actions": "操作",
+  "clear": "清空",
+  "download": "下载 PNG",
+  "loading": "加载中...",
+  "saving": "保存中...",
+  "savedOne": "已保存 {n} 个像素",
+  "savedMany": "已保存 {n} 个像素",
+  "saveFailed": "保存失败：{error}",
+  "ready": "64 x 64 画布已就绪",
+  "loadFailed": "加载失败：{error}",
+  "clearing": "清空中...",
+  "cleared": "画布已清空",
+  "clearFailed": "清空失败：{error}"
+}

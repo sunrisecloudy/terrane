@@ -58,6 +58,54 @@
   // loads without it, so it cannot drive the bridge or the breadcrumb.
   var frameNonce = "";
 
+  // Localization: the server injects the negotiated locale, its direction, the
+  // shell-chrome bundle, and the app frame's bundle. shellT() localizes chrome;
+  // the app frame's bundle is pushed to it over the same channel as the theme.
+  var shellLocale =
+    typeof window.__terraneLocale === "string" ? window.__terraneLocale : "en";
+  var shellDir = window.__terraneDir === "rtl" ? "rtl" : "ltr";
+  var shellMessages =
+    window.__terraneMessages && typeof window.__terraneMessages === "object"
+      ? window.__terraneMessages
+      : {};
+  var appMessages =
+    window.__terraneAppMessages && typeof window.__terraneAppMessages === "object"
+      ? window.__terraneAppMessages
+      : {};
+  // Endonyms for the language picker; codes must match terrane-i18n::SUPPORTED.
+  var LANGUAGES = [
+    ["en", "English"],
+    ["es", "Español"],
+    ["zh-Hans", "简体中文"],
+    ["ar", "العربية"],
+    ["pt-BR", "Português (Brasil)"],
+    ["fr", "Français"],
+    ["de", "Deutsch"],
+    ["ja", "日本語"],
+    ["id", "Bahasa Indonesia"],
+    ["th-TH", "ไทย"],
+    ["ko", "한국어"],
+    ["vi", "Tiếng Việt"],
+  ];
+
+  function shellT(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(shellMessages, key)
+      ? shellMessages[key]
+      : fallback == null
+        ? key
+        : fallback;
+  }
+
+  // One-pass sweep: every [data-i18n] node's text becomes its localized string.
+  // The English text stays in the HTML as the pre-bundle fallback.
+  function localizeChrome() {
+    var nodes = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < nodes.length; i++) {
+      var key = nodes[i].getAttribute("data-i18n");
+      nodes[i].textContent = shellT(key, nodes[i].textContent.trim());
+    }
+  }
+
   if (!currentId && !isAdmin) {
     showError("No app selected");
     return;
@@ -65,14 +113,17 @@
 
   var lastCatalogText = "";
 
+  localizeChrome();
   bindDesktopInfo();
   bindBridge();
   bindTopbar();
   bindSttMic();
+  bindAgents();
   bindPremium();
+  bindLanguagePicker();
   setAdminMode(isAdmin);
   if (isAdmin) {
-    setTitle("Admin Console");
+    setTitle(shellT("system.sidebar.admin", "Admin Console"));
   } else {
     loadFrame();
   }
@@ -174,7 +225,7 @@
     if (!apps.length) {
       var empty = document.createElement("div");
       empty.className = "app-empty";
-      empty.textContent = "No apps installed";
+      empty.textContent = shellT("system.sidebar.empty", "No apps installed");
       list.appendChild(empty);
     }
 
@@ -184,7 +235,7 @@
 
     if (!current) {
       if (isAdmin) {
-        setTitle("Admin Console");
+        setTitle(shellT("system.sidebar.admin", "Admin Console"));
         return;
       }
       showError("App not found");
@@ -291,6 +342,7 @@
         if (message.nonce !== frameNonce) return;
         sendToFrame({ type: "terrane:theme", theme: currentTheme });
         sendToFrame({ type: "terrane:document", name: storedDocName() });
+        sendFrameLocale();
         return;
       }
       // App-driven messages must carry the per-load nonce.
@@ -759,12 +811,340 @@
     // once it loads (see bindBridge); that is what performs the initial sync.
   }
 
+  // ---- Agents ------------------------------------------------------------
+  // A stack of assistant avatars in the top bar. Left-click opens an assist
+  // panel that runs the agent against the current app; right-click opens the
+  // agent's setup; "+" creates a new agent. Definitions come from the host's
+  // `agent` capability via /__terrane/agents.
+  function bindAgents() {
+    var widget = document.getElementById("agents-widget");
+    var stack = document.getElementById("agent-stack");
+    var addButton = document.getElementById("agent-add");
+    var assistPanel = document.getElementById("agent-assist");
+    var setupPanel = document.getElementById("agent-setup");
+    if (!widget || !stack || !assistPanel || !setupPanel) return;
+
+    var assistAvatar = document.getElementById("assist-avatar");
+    var assistName = document.getElementById("assist-name");
+    var assistPersonality = document.getElementById("assist-personality");
+    var assistModel = document.getElementById("assist-model");
+    var assistInput = document.getElementById("assist-input");
+    var assistRun = document.getElementById("assist-run");
+    var assistStatus = document.getElementById("assist-status");
+    var assistSetup = document.getElementById("assist-setup");
+
+    var setupTitle = document.getElementById("setup-title");
+    var setupIdField = document.getElementById("setup-id-field");
+    var setupId = document.getElementById("setup-id");
+    var setupName = document.getElementById("setup-name");
+    var setupPersonality = document.getElementById("setup-personality");
+    var setupModel = document.getElementById("setup-model");
+    var setupColor = document.getElementById("setup-color");
+    var setupError = document.getElementById("setup-error");
+    var setupSave = document.getElementById("setup-save");
+
+    var agents = [];
+    var defaults = { model: "", harness: "opencode" };
+    var activeId = null; // agent whose assist panel is open
+    var editingId = null; // agent being edited (null = creating)
+    var assisting = false;
+
+    loadAgents();
+
+    function loadAgents() {
+      fetch("/__terrane/agents", { cache: "no-store" })
+        .then(function (r) {
+          return r.ok ? r.json() : null;
+        })
+        .then(function (data) {
+          if (!data) return;
+          agents = data.agents || [];
+          defaults.model = data.default_model || "";
+          defaults.harness = data.default_harness || "opencode";
+          renderStack();
+        })
+        .catch(function () {});
+    }
+
+    function initials(name) {
+      var parts = String(name || "?").trim().split(/\s+/);
+      var text = parts[0] ? parts[0].charAt(0) : "?";
+      if (parts.length > 1) text += parts[parts.length - 1].charAt(0);
+      return text.slice(0, 2);
+    }
+
+    function findAgent(id) {
+      for (var i = 0; i < agents.length; i++) {
+        if (agents[i].id === id) return agents[i];
+      }
+      return null;
+    }
+
+    function renderStack() {
+      widget.hidden = false;
+      stack.textContent = "";
+      agents.forEach(function (agent) {
+        var el = document.createElement("button");
+        el.type = "button";
+        el.className = "agent-avatar";
+        el.style.background = agent.color || "#6b7bff";
+        el.textContent = initials(agent.name);
+        el.title = agent.name;
+        el.setAttribute("aria-label", "Agent " + agent.name);
+        if (agent.id === activeId) el.classList.add("selected");
+        el.addEventListener("click", function (event) {
+          event.stopPropagation();
+          openAssist(agent.id);
+        });
+        el.addEventListener("contextmenu", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          openSetup(agent.id);
+        });
+        stack.appendChild(el);
+      });
+    }
+
+    function closePanels() {
+      assistPanel.hidden = true;
+      setupPanel.hidden = true;
+      activeId = null;
+      renderStackSelection();
+    }
+
+    function renderStackSelection() {
+      var chips = stack.querySelectorAll(".agent-avatar");
+      for (var i = 0; i < chips.length; i++) {
+        var agent = agents[i];
+        if (agent && agent.id === activeId) {
+          chips[i].classList.add("selected");
+        } else {
+          chips[i].classList.remove("selected");
+        }
+      }
+    }
+
+    function openAssist(id) {
+      var agent = findAgent(id);
+      if (!agent) return;
+      setupPanel.hidden = true;
+      activeId = id;
+      renderStackSelection();
+      assistAvatar.style.background = agent.color || "#6b7bff";
+      assistAvatar.textContent = initials(agent.name);
+      assistName.textContent = agent.name;
+      assistPersonality.textContent = agent.personality || "";
+      assistModel.textContent = agent.model || defaults.model;
+      assistInput.value = "";
+      setAssistStatus("", false);
+      assistPanel.hidden = false;
+      assistInput.focus();
+    }
+
+    function setAssistStatus(text, isError) {
+      assistStatus.textContent = text || "";
+      assistStatus.hidden = !text;
+      if (isError) {
+        assistStatus.classList.add("error");
+      } else {
+        assistStatus.classList.remove("error");
+      }
+    }
+
+    function openSetup(id) {
+      assistPanel.hidden = true;
+      editingId = id || null;
+      setupError.textContent = "";
+      if (editingId) {
+        var agent = findAgent(editingId);
+        if (!agent) return;
+        setupTitle.textContent = "Edit " + agent.name;
+        setupIdField.hidden = true;
+        setupId.value = agent.id;
+        setupName.value = agent.name;
+        setupPersonality.value = agent.personality || "";
+        setupModel.value = agent.model || "";
+        setupColor.value = agent.color || "";
+        setupSave.textContent = "Save";
+      } else {
+        setupTitle.textContent = "New agent";
+        setupIdField.hidden = false;
+        setupId.value = "";
+        setupName.value = "";
+        setupPersonality.value = "";
+        setupModel.value = defaults.model;
+        setupColor.value = "#6b7bff";
+        setupSave.textContent = "Create";
+      }
+      setupPanel.hidden = false;
+      (editingId ? setupName : setupId).focus();
+    }
+
+    function saveSetup() {
+      var body = {
+        name: setupName.value.trim(),
+        personality: setupPersonality.value.trim(),
+        model: setupModel.value.trim(),
+        color: setupColor.value.trim(),
+      };
+      var url = "/__terrane/agents";
+      if (editingId) {
+        url = "/__terrane/agents/" + encodeURIComponent(editingId);
+      } else {
+        body.id = setupId.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+        if (!body.id) {
+          setupError.textContent = "id is required";
+          return;
+        }
+      }
+      setupSave.disabled = true;
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (res) {
+          setupSave.disabled = false;
+          if (!res.ok) {
+            setupError.textContent = (res.data && res.data.error) || "could not save";
+            return;
+          }
+          agents = res.data.agents || agents;
+          renderStack();
+          setupPanel.hidden = true;
+        })
+        .catch(function () {
+          setupSave.disabled = false;
+          setupError.textContent = "could not save";
+        });
+    }
+
+    function runAssist() {
+      if (assisting || !activeId) return;
+      var message = assistInput.value.trim();
+      if (!message) {
+        assistInput.focus();
+        return;
+      }
+      assisting = true;
+      assistRun.disabled = true;
+      assistRun.textContent = "Working…";
+      setAssistStatus("Starting " + assistName.textContent + "…", false);
+      fetch("/__terrane/agents/" + encodeURIComponent(activeId) + "/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app: currentId, message: message }),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (res) {
+          if (!res.ok || !res.data || !res.data.job) {
+            throw new Error((res.data && res.data.error) || "could not start agent");
+          }
+          pollAssist(res.data.job);
+        })
+        .catch(function (err) {
+          finishAssist(err.message || "agent failed", true);
+        });
+    }
+
+    function pollAssist(job) {
+      fetch("/__terrane/agents/assist/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job: job }),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (res) {
+          var data = res.data || {};
+          if (data.status === "running") {
+            setAssistStatus("Working… " + (data.note || ""), false);
+            setTimeout(function () {
+              pollAssist(job);
+            }, 1500);
+            return;
+          }
+          if (data.status === "done") {
+            finishAssist(data.transcript || "Done.", false);
+            reloadFrame();
+            return;
+          }
+          finishAssist((data && data.error) || "agent failed", true);
+        })
+        .catch(function () {
+          finishAssist("lost contact with the agent", true);
+        });
+    }
+
+    function finishAssist(text, isError) {
+      assisting = false;
+      assistRun.disabled = false;
+      assistRun.textContent = "Ask";
+      setAssistStatus(text, isError);
+    }
+
+    function reloadFrame() {
+      // The agent drove the app's backend through the host's own tools; the
+      // sandboxed frame reads its state on load, so reload it (with a fresh
+      // per-load nonce, like the initial load) to show the work.
+      if (frame && currentId) loadFrame();
+    }
+
+    // Wiring.
+    if (addButton) {
+      addButton.addEventListener("click", function (event) {
+        event.stopPropagation();
+        openSetup(null);
+      });
+    }
+    assistRun.addEventListener("click", runAssist);
+    assistInput.addEventListener("keydown", function (event) {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        runAssist();
+      }
+    });
+    assistSetup.addEventListener("click", function () {
+      openSetup(activeId);
+    });
+    setupSave.addEventListener("click", saveSetup);
+
+    document.addEventListener("click", function (event) {
+      if (assistPanel.hidden && setupPanel.hidden) return;
+      if (widget.contains(event.target)) return;
+      closePanels();
+      setupPanel.hidden = true;
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && (!assistPanel.hidden || !setupPanel.hidden)) {
+        closePanels();
+        setupPanel.hidden = true;
+      }
+    });
+    window.addEventListener("blur", function () {
+      // Focus moving into the app frame should not dismiss an in-flight run.
+      if (!assisting && !setupPanel.hidden) setupPanel.hidden = true;
+    });
+  }
+
   function storedDocName() {
     var stored = "";
     try {
       stored = window.localStorage.getItem(DOC_KEY) || "";
     } catch (_) {}
-    return stored || "Untitled";
+    return stored || shellT("system.doc.untitled", "Untitled");
   }
 
   function setDocName(raw, fromApp) {
@@ -775,7 +1155,7 @@
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 120);
-    if (!name) name = "Untitled";
+    if (!name) name = shellT("system.doc.untitled", "Untitled");
     crumbDoc.textContent = name;
     if (name !== storedDocName()) {
       try {
@@ -815,6 +1195,40 @@
   // bridge (invoke/permission) and breadcrumb writes stay fully nonce-gated.
   function sendToFrame(message) {
     if (frame && frame.contentWindow) frame.contentWindow.postMessage(message, "*");
+  }
+
+  // Push the negotiated locale + the app's merged bundle to the frame, over the
+  // same channel as theme/document. Sent on the nonce-checked hello.
+  function sendFrameLocale() {
+    sendToFrame({
+      type: "terrane:locale",
+      locale: shellLocale,
+      dir: shellDir,
+      messages: appMessages,
+    });
+  }
+
+  // The in-app language picker: choosing a language stores a cookie the server
+  // reads on the next render (overriding Accept-Language) and reloads so the
+  // whole shell + frame come back in the chosen language.
+  function bindLanguagePicker() {
+    var select = document.getElementById("menu-language");
+    if (!select) return;
+    select.replaceChildren();
+    for (var i = 0; i < LANGUAGES.length; i++) {
+      var opt = document.createElement("option");
+      opt.value = LANGUAGES[i][0];
+      opt.textContent = LANGUAGES[i][1];
+      if (LANGUAGES[i][0] === shellLocale) opt.selected = true;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", function () {
+      document.cookie =
+        "terrane_lang=" +
+        encodeURIComponent(select.value) +
+        "; path=/; max-age=31536000; samesite=lax";
+      window.location.reload();
+    });
   }
 
   function bindUserMenu() {
@@ -872,10 +1286,17 @@
     var out = isSignedOut();
     userButton.textContent = out ? "?" : (identity.name || "L").charAt(0);
     userButton.dataset.signedOut = out ? "true" : "false";
-    menuAuth.textContent = out ? "Log in" : "Log out";
-    userName.textContent = out ? "Signed out" : identity.name;
-    userSubject.textContent = out ? "Local session only" : identity.subject;
-    setSettingsField("settings-user", out ? "Signed out" : identity.name);
+    menuAuth.textContent = out
+      ? shellT("system.menu.login", "Log in")
+      : shellT("system.menu.logout", "Log out");
+    userName.textContent = out ? shellT("system.auth.signedOut", "Signed out") : identity.name;
+    userSubject.textContent = out
+      ? shellT("system.auth.localOnly", "Local session only")
+      : identity.subject;
+    setSettingsField(
+      "settings-user",
+      out ? shellT("system.auth.signedOut", "Signed out") : identity.name
+    );
     setSettingsField("settings-subject", out ? "-" : identity.subject || "-");
     setSettingsField("settings-source", out ? "-" : identity.source || "-");
     setSettingsField(
@@ -1110,7 +1531,7 @@
     settingsPanel.hidden = !open;
     frame.hidden = open || isAdmin;
     if (adminPanel) adminPanel.hidden = open || !isAdmin;
-    crumbApp.textContent = open ? "Settings" : appDisplayName;
+    crumbApp.textContent = open ? shellT("system.menu.settings", "Settings") : appDisplayName;
     crumbSep.hidden = open;
     crumbDoc.hidden = open || isAdmin;
   }

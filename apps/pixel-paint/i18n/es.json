@@ -1,0 +1,23 @@
+{
+  "title": "Pixel Paint",
+  "heading": "Pixel Paint",
+  "canvasLabel": "Lienzo de 64 por 64 píxeles",
+  "tool": "Herramienta",
+  "brush": "Pincel",
+  "eraser": "Borrador",
+  "color": "Color",
+  "swatches": "Muestras",
+  "actions": "Acciones",
+  "clear": "Borrar",
+  "download": "Descargar PNG",
+  "loading": "Cargando...",
+  "saving": "Guardando...",
+  "savedOne": "{n} píxel guardado",
+  "savedMany": "{n} píxeles guardados",
+  "saveFailed": "Error al guardar: {error}",
+  "ready": "Lienzo de 64 x 64 listo",
+  "loadFailed": "Error al cargar: {error}",
+  "clearing": "Borrando...",
+  "cleared": "Lienzo borrado",
+  "clearFailed": "Error al borrar: {error}"
+}

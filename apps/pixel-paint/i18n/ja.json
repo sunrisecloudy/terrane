@@ -1,0 +1,23 @@
+{
+  "title": "ピクセルペイント",
+  "heading": "ピクセルペイント",
+  "canvasLabel": "64×64ピクセルのキャンバス",
+  "tool": "ツール",
+  "brush": "ブラシ",
+  "eraser": "消しゴム",
+  "color": "色",
+  "swatches": "スウォッチ",
+  "actions": "操作",
+  "clear": "クリア",
+  "download": "PNGをダウンロード",
+  "loading": "読み込み中...",
+  "saving": "保存中...",
+  "savedOne": "{n}ピクセルを保存しました",
+  "savedMany": "{n}ピクセルを保存しました",
+  "saveFailed": "保存に失敗しました: {error}",
+  "ready": "64×64キャンバスの準備ができました",
+  "loadFailed": "読み込みに失敗しました: {error}",
+  "clearing": "クリア中...",
+  "cleared": "キャンバスをクリアしました",
+  "clearFailed": "クリアに失敗しました: {error}"
+}

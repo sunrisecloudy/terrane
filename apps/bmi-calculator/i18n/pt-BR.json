@@ -1,0 +1,20 @@
+{
+  "title": "Calculadora de IMC",
+  "eyebrow": "IMC métrico",
+  "lede": "Ajuste a altura e o peso para calcular o índice de massa corporal.",
+  "bmi": "IMC",
+  "enterValues": "Insira os valores",
+  "height": "Altura",
+  "weight": "Peso",
+  "aria.summary": "Resumo do IMC",
+  "aria.measurements": "Medidas corporais",
+  "aria.ranges": "Faixas de IMC",
+  "cat.underweight": "Abaixo do peso",
+  "cat.healthy": "Peso saudável",
+  "cat.overweight": "Sobrepeso",
+  "cat.obesity": "Obesidade",
+  "status.waiting": "Aguardando o Terrane",
+  "status.noBridge": "Ponte do Terrane indisponível",
+  "status.synced": "Sincronizado com o Terrane",
+  "status.failed": "Falha ao invocar o Terrane"
+}

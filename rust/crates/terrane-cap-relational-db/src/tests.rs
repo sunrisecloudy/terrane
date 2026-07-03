@@ -78,6 +78,7 @@ fn read(state: &TestState, method: &str, args: Vec<String>) -> ReadValue {
         state,
         bus: &bus,
         app: "app",
+        host: None,
     };
     RelationalDbCapability
         .read_resource(ctx, method, &args)

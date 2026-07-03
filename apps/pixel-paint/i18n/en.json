@@ -1,0 +1,23 @@
+{
+  "title": "Pixel Paint",
+  "heading": "Pixel Paint",
+  "canvasLabel": "64 by 64 pixel canvas",
+  "tool": "Tool",
+  "brush": "Brush",
+  "eraser": "Eraser",
+  "color": "Color",
+  "swatches": "Swatches",
+  "actions": "Actions",
+  "clear": "Clear",
+  "download": "Download PNG",
+  "loading": "Loading...",
+  "saving": "Saving...",
+  "savedOne": "Saved {n} pixel",
+  "savedMany": "Saved {n} pixels",
+  "saveFailed": "Save failed: {error}",
+  "ready": "64 x 64 canvas ready",
+  "loadFailed": "Load failed: {error}",
+  "clearing": "Clearing...",
+  "cleared": "Canvas cleared",
+  "clearFailed": "Clear failed: {error}"
+}

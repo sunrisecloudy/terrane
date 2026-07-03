@@ -39,6 +39,7 @@ fn build_capability_compiles_typescript_resource_reads() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
 
     let ReadValue::OptString(Some(json)) = cap
@@ -83,6 +84,7 @@ fn build_capability_has_no_commands_and_reports_unknown_resources() {
                 state: &store,
                 bus: &bus,
                 app: "demo",
+                host: None,
             },
             "missing",
             &[],

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="__TERRANE_LANG__" dir="__TERRANE_DIR__">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -24,7 +24,7 @@
         min-height: 100vh;
       }
       .sidebar {
-        border-right: 1px solid
+        border-inline-end: 1px solid
           color-mix(in srgb, CanvasText 14%, transparent);
         background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
         padding: 14px;
@@ -237,6 +237,189 @@
         align-items: center;
         gap: 8px;
         position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .agents-widget {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      .agents-widget[hidden] {
+        display: none;
+      }
+      .agent-stack {
+        display: inline-flex;
+        align-items: center;
+      }
+      .agent-avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 999px;
+        border: 2px solid Canvas;
+        display: inline-grid;
+        place-items: center;
+        font-weight: 700;
+        font-size: 12px;
+        color: #fff;
+        cursor: pointer;
+        text-transform: uppercase;
+        margin-left: -8px;
+        transition: transform 0.12s ease;
+        position: relative;
+        user-select: none;
+      }
+      .agent-stack .agent-avatar:first-child {
+        margin-left: 0;
+      }
+      .agent-avatar:hover {
+        transform: translateY(-2px);
+        z-index: 2;
+      }
+      .agent-avatar.selected {
+        box-shadow: 0 0 0 2px Canvas, 0 0 0 4px #0071e3;
+        z-index: 3;
+      }
+      .agent-avatar-lg {
+        width: 36px;
+        height: 36px;
+        font-size: 15px;
+        margin-left: 0;
+        cursor: default;
+      }
+      .agent-add {
+        width: 26px;
+        height: 26px;
+        border-radius: 999px;
+        margin-left: 8px;
+        border: 1px dashed color-mix(in srgb, CanvasText 30%, transparent);
+        background: none;
+        color: color-mix(in srgb, CanvasText 60%, transparent);
+        cursor: pointer;
+        font-size: 17px;
+        line-height: 1;
+        display: inline-grid;
+        place-items: center;
+      }
+      .agent-add:hover {
+        border-color: #0071e3;
+        color: #0071e3;
+      }
+      .agent-panel {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 10px);
+        z-index: 40;
+        width: 300px;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+        border-radius: 12px;
+        background: Canvas;
+        box-shadow: 0 12px 30px color-mix(in srgb, CanvasText 24%, transparent);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .agent-panel[hidden] {
+        display: none;
+      }
+      .agent-panel-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .agent-panel-id {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        flex: 1;
+      }
+      .agent-panel-id small {
+        color: color-mix(in srgb, CanvasText 55%, transparent);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+      .agent-linkbtn {
+        border: 0;
+        background: none;
+        color: #0071e3;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .agent-input,
+      .agent-field input,
+      .agent-field textarea {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        font-size: 13px;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        background: color-mix(in srgb, CanvasText 4%, Canvas);
+        color: inherit;
+        resize: vertical;
+      }
+      .agent-panel-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .agent-model {
+        color: color-mix(in srgb, CanvasText 50%, transparent);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .agent-run {
+        padding: 7px 16px;
+        border-radius: 8px;
+        border: 0;
+        cursor: pointer;
+        background: #0071e3;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .agent-run:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .agent-status {
+        font-size: 12px;
+        color: color-mix(in srgb, CanvasText 65%, transparent);
+        white-space: pre-wrap;
+        max-height: 170px;
+        overflow: auto;
+      }
+      .agent-status.error {
+        color: #d64545;
+      }
+      .agent-field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+      }
+      .agent-field[hidden] {
+        display: none;
+      }
+      .agent-field > span {
+        color: color-mix(in srgb, CanvasText 60%, transparent);
+      }
+      .agent-error {
+        color: #d64545;
+        font-size: 12px;
       }
       .stt-mic-button {
         width: 32px;
@@ -292,7 +475,7 @@
       }
       .user-dropdown {
         position: absolute;
-        right: 0;
+        inset-inline-end: 0;
         top: calc(100% + 8px);
         z-index: 30;
         min-width: 230px;
@@ -327,7 +510,7 @@
       .menu-item {
         display: block;
         width: 100%;
-        text-align: left;
+        text-align: start;
         padding: 8px 10px;
         border: 0;
         border-radius: 7px;
@@ -335,6 +518,17 @@
         color: inherit;
         font: inherit;
         cursor: pointer;
+      }
+      .menu-language {
+        font: inherit;
+        font-size: 12px;
+        padding: 3px 6px;
+        border-radius: 6px;
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        background: Canvas;
+        color: inherit;
+        cursor: pointer;
+        max-width: 150px;
       }
       .menu-item:hover {
         background: color-mix(in srgb, CanvasText 8%, transparent);
@@ -478,12 +672,12 @@
         min-height: 100%;
       }
       .admin-nav {
-        border-right: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
-        padding-right: 16px;
+        border-inline-end: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+        padding-inline-end: 16px;
       }
       .admin-nav button {
         width: 100%;
-        text-align: left;
+        text-align: start;
         margin-bottom: 8px;
       }
       .admin-nav button.active {
@@ -525,7 +719,7 @@
       }
       .admin-panel th,
       .admin-panel td {
-        text-align: left;
+        text-align: start;
         border-bottom: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
         padding: 10px 8px;
         vertical-align: top;
@@ -736,8 +930,8 @@
           aria-labelledby="desktop-info-title"
           hidden
         >
-          <h2 id="desktop-info-title">Desktop editing</h2>
-          <p>
+          <h2 id="desktop-info-title" data-i18n="system.info.title">Desktop editing</h2>
+          <p data-i18n="system.info.body">
             Live code editing uses the Terrane desktop app, where source files
             stay local and rebuild on save. This web host runs installed apps.
           </p>
@@ -745,15 +939,16 @@
             id="desktop-info-close"
             class="desktop-info-close"
             type="button"
+            data-i18n="system.action.close"
           >
             Close
           </button>
         </div>
-        <div id="app-list" class="app-list" aria-live="polite">
+        <div id="app-list" class="app-list" aria-live="polite" data-i18n="system.sidebar.loading">
           Loading apps...
         </div>
         <div class="manage-section" aria-label="Management">
-          <h2 class="app-section-title">Manage</h2>
+          <h2 class="app-section-title" data-i18n="system.sidebar.manage">Manage</h2>
           <a id="admin-console-link" class="app-link" href="/__terrane/admin">
             <span class="app-icon" aria-hidden="true">
               <svg
@@ -769,13 +964,13 @@
               </svg>
             </span>
             <span class="app-link-text">
-              <span>Admin console</span>
-              <small>Local grants and requests</small>
+              <span data-i18n="system.sidebar.admin">Admin console</span>
+              <small data-i18n="system.sidebar.adminSub">Local grants and requests</small>
             </span>
           </a>
         </div>
         <div id="premium-section" class="premium-section" hidden>
-          <h2 class="app-section-title">Premium</h2>
+          <h2 class="app-section-title" data-i18n="system.sidebar.premium">Premium</h2>
           <div id="premium-list" class="app-list"></div>
         </div>
       </nav>
@@ -807,6 +1002,94 @@
             >
               🎙
             </button>
+            <div id="agents-widget" class="agents-widget" hidden>
+              <div
+                id="agent-stack"
+                class="agent-stack"
+                role="group"
+                aria-label="Agents"
+              ></div>
+              <button
+                id="agent-add"
+                class="agent-add"
+                type="button"
+                title="New agent"
+                aria-label="New agent"
+              >
+                +
+              </button>
+
+              <div
+                id="agent-assist"
+                class="agent-panel"
+                role="dialog"
+                aria-label="Agent assist"
+                hidden
+              >
+                <div class="agent-panel-head">
+                  <span id="assist-avatar" class="agent-avatar agent-avatar-lg"></span>
+                  <div class="agent-panel-id">
+                    <strong id="assist-name">Agent</strong>
+                    <small id="assist-personality"></small>
+                  </div>
+                  <button
+                    id="assist-setup"
+                    class="agent-linkbtn"
+                    type="button"
+                    title="Agent settings"
+                  >
+                    Settings
+                  </button>
+                </div>
+                <textarea
+                  id="assist-input"
+                  class="agent-input"
+                  rows="2"
+                  placeholder="Ask this agent to help with the app…"
+                ></textarea>
+                <div class="agent-panel-actions">
+                  <span id="assist-model" class="agent-model"></span>
+                  <button id="assist-run" class="agent-run" type="button">Ask</button>
+                </div>
+                <div id="assist-status" class="agent-status" hidden></div>
+              </div>
+
+              <div
+                id="agent-setup"
+                class="agent-panel"
+                role="dialog"
+                aria-label="Agent setup"
+                hidden
+              >
+                <div class="agent-panel-head">
+                  <strong id="setup-title">Agent settings</strong>
+                </div>
+                <label class="agent-field agent-field-id" id="setup-id-field" hidden>
+                  <span>Id</span>
+                  <input id="setup-id" type="text" spellcheck="false" />
+                </label>
+                <label class="agent-field">
+                  <span>Name</span>
+                  <input id="setup-name" type="text" />
+                </label>
+                <label class="agent-field">
+                  <span>Personality</span>
+                  <textarea id="setup-personality" rows="3"></textarea>
+                </label>
+                <label class="agent-field">
+                  <span>Model</span>
+                  <input id="setup-model" type="text" spellcheck="false" />
+                </label>
+                <label class="agent-field">
+                  <span>Colour</span>
+                  <input id="setup-color" type="text" spellcheck="false" />
+                </label>
+                <div class="agent-panel-actions">
+                  <span id="setup-error" class="agent-error"></span>
+                  <button id="setup-save" class="agent-run" type="button">Save</button>
+                </div>
+              </div>
+            </div>
             <button
               id="user-button"
               class="user-avatar"
@@ -828,22 +1111,27 @@
                 class="menu-item"
                 type="button"
                 role="menuitem"
+                data-i18n="system.menu.settings"
               >
                 Settings
               </button>
               <div class="menu-theme">
-                <span>Theme</span>
+                <span data-i18n="system.menu.theme">Theme</span>
                 <span class="theme-options" role="group" aria-label="Theme">
-                  <button class="theme-option" type="button" data-theme="system">
+                  <button class="theme-option" type="button" data-theme="system" data-i18n="system.theme.auto">
                     Auto
                   </button>
-                  <button class="theme-option" type="button" data-theme="light">
+                  <button class="theme-option" type="button" data-theme="light" data-i18n="system.theme.light">
                     Light
                   </button>
-                  <button class="theme-option" type="button" data-theme="dark">
+                  <button class="theme-option" type="button" data-theme="dark" data-i18n="system.theme.dark">
                     Dark
                   </button>
                 </span>
+              </div>
+              <div class="menu-theme">
+                <span data-i18n="system.menu.language">Language</span>
+                <select id="menu-language" class="menu-language" aria-label="Language"></select>
               </div>
               <button
                 id="menu-premium"
@@ -851,6 +1139,7 @@
                 type="button"
                 role="menuitem"
                 hidden
+                data-i18n="system.menu.premiumSignin"
               >
                 Sign in with Google
               </button>
@@ -859,6 +1148,7 @@
                 class="menu-item"
                 type="button"
                 role="menuitem"
+                data-i18n="system.menu.logout"
               >
                 Log out
               </button>
@@ -872,20 +1162,20 @@
           hidden
         >
           <div class="perm-copy">
-            <h2 id="perm-title" class="perm-title">Permission request</h2>
+            <h2 id="perm-title" class="perm-title" data-i18n="system.perm.title">Permission request</h2>
             <p class="perm-text">
               <strong id="perm-app">An app</strong> asks for access to
               <strong id="perm-resources">a resource</strong>.
             </p>
-            <p class="perm-note" id="perm-note">
+            <p class="perm-note" id="perm-note" data-i18n="system.perm.note">
               Approving grants access for this session. Review grants in the
               admin console.
             </p>
             <p class="perm-error" id="perm-error" hidden></p>
           </div>
           <div class="perm-actions">
-            <button id="perm-deny" class="perm-deny" type="button">Deny</button>
-            <button id="perm-approve" class="perm-approve" type="button">
+            <button id="perm-deny" class="perm-deny" type="button" data-i18n="system.action.deny">Deny</button>
+            <button id="perm-approve" class="perm-approve" type="button" data-i18n="system.action.approve">
               Approve
             </button>
           </div>
@@ -933,40 +1223,40 @@
             hidden
           >
             <div class="settings-card">
-              <h2>User settings</h2>
+              <h2 data-i18n="system.settings.title">User settings</h2>
               <dl class="settings-rows">
-                <dt>User</dt>
+                <dt data-i18n="system.settings.user">User</dt>
                 <dd id="settings-user">Local user</dd>
-                <dt>Subject</dt>
+                <dt data-i18n="system.settings.subject">Subject</dt>
                 <dd id="settings-subject">-</dd>
-                <dt>Source</dt>
+                <dt data-i18n="system.settings.source">Source</dt>
                 <dd id="settings-source">-</dd>
-                <dt>Local admin</dt>
+                <dt data-i18n="system.settings.admin">Local admin</dt>
                 <dd id="settings-session">-</dd>
-                <dt>Premium account</dt>
-                <dd id="settings-premium">Not signed in</dd>
+                <dt data-i18n="system.settings.premium">Premium account</dt>
+                <dd id="settings-premium" data-i18n="system.settings.notSignedIn">Not signed in</dd>
               </dl>
               <div class="settings-theme">
-                <span>Theme</span>
+                <span data-i18n="system.menu.theme">Theme</span>
                 <span class="theme-options" role="group" aria-label="Theme">
-                  <button class="theme-option" type="button" data-theme="system">
+                  <button class="theme-option" type="button" data-theme="system" data-i18n="system.theme.auto">
                     Auto
                   </button>
-                  <button class="theme-option" type="button" data-theme="light">
+                  <button class="theme-option" type="button" data-theme="light" data-i18n="system.theme.light">
                     Light
                   </button>
-                  <button class="theme-option" type="button" data-theme="dark">
+                  <button class="theme-option" type="button" data-theme="dark" data-i18n="system.theme.dark">
                     Dark
                   </button>
                 </span>
               </div>
-              <p class="settings-note">
+              <p class="settings-note" data-i18n="system.settings.note">
                 The identity shown here is this Terrane home's local owner.
                 Signing in with Google connects this browser to the configured
                 Terrane Premium control plane — optional; local execution
                 never requires it.
               </p>
-              <button id="settings-close" class="settings-close" type="button">
+              <button id="settings-close" class="settings-close" type="button" data-i18n="system.action.back">
                 Back to app
               </button>
             </div>
@@ -978,6 +1268,10 @@
       window.__terraneLiveReload = __LIVE_RELOAD__;
       window.__terranePremiumUrl = __PREMIUM_URL__;
       window.__terraneShellMode = __SHELL_MODE__;
+      window.__terraneLocale = __TERRANE_LOCALE_JSON__;
+      window.__terraneDir = "__TERRANE_DIR__";
+      window.__terraneMessages = __TERRANE_MESSAGES_JSON__;
+      window.__terraneAppMessages = __TERRANE_APP_MESSAGES_JSON__;
       __APP_ICONS_JS__;
       __APP_SHELL_JS__;
       __ADMIN_JS__;

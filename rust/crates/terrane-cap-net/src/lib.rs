@@ -9,7 +9,7 @@ use terrane_cap_interface::Capability;
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, AppId,
     CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern, EventRecord,
-    EventSpec, Result, StateStore,
+    EventSpec, GrantResourceSpec, ReadValue, ResourceMethod, Result, StateStore,
 };
 
 mod doc;
@@ -64,8 +64,15 @@ impl Capability for NetCapability {
                 kind: "net.fetched",
             }],
             queries: Vec::new(),
-            resources: Vec::new(),
-            grant_resources: Vec::new(),
+            resources: vec![ResourceMethod::Call {
+                name: "get",
+                params: &["url"],
+            }],
+            grant_resources: vec![GrantResourceSpec::namespace_v1(
+                "net",
+                &["call"],
+                "Live HTTP GET for transient queries — the response is returned but never recorded or replayed (not replay-stable).",
+            )],
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
             }],
@@ -88,7 +95,40 @@ impl Capability for NetCapability {
                 }
                 Ok(Decision::Effect(Effect::HttpGet { app, url }))
             }
+            // The app-callable resource: a live GET whose result is returned to
+            // the backend but never recorded. Same edge effect, but wrapped in
+            // TransientEffect so the core does not persist net.fetched.
+            "net.get" => {
+                let app = arg(args, 0, "app")?;
+                let url = arg(args, 1, "url")?;
+                ensure_app_exists(ctx.bus, &app)?;
+                if url.trim().is_empty() {
+                    return Err(Error::InvalidInput("url must not be empty".into()));
+                }
+                Ok(Decision::TransientEffect(Effect::HttpGet { app, url }))
+            }
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
+        }
+    }
+
+    fn resource_call_output(
+        &self,
+        _state: &dyn StateStore,
+        _app: &str,
+        method: &str,
+        records: &[EventRecord],
+    ) -> Result<ReadValue> {
+        match method {
+            "get" => {
+                let record = records
+                    .first()
+                    .ok_or_else(|| Error::Runtime("net.get produced no response".into()))?;
+                let fetched: Fetched = decode_event(record)?;
+                Ok(ReadValue::OptString(Some(fetched.body)))
+            }
+            other => Err(Error::InvalidInput(format!(
+                "net.{other} is not a callable resource"
+            ))),
         }
     }
 

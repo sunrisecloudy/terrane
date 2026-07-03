@@ -54,7 +54,11 @@ fn resource_manifest_exposes_expected_backend_methods() {
             ("write", "rm"),
             ("read", "scan"),
             ("read", "range"),
-            ("read", "keys")
+            ("read", "keys"),
+            ("read", "public"),
+            ("read", "publicScan"),
+            ("read", "publicAll"),
+            ("read", "publicKeys")
         ]
     );
 }
@@ -71,6 +75,7 @@ fn resource_reads_return_values_for_current_app() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
 
     assert_eq!(
@@ -210,6 +215,7 @@ fn public_reads_hide_reserved_keys_and_scan_is_bounded() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
 
     assert_eq!(

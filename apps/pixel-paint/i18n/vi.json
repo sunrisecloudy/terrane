@@ -1,0 +1,23 @@
+{
+  "title": "Pixel Paint",
+  "heading": "Pixel Paint",
+  "canvasLabel": "Khung vẽ 64 nhân 64 pixel",
+  "tool": "Công cụ",
+  "brush": "Cọ vẽ",
+  "eraser": "Tẩy",
+  "color": "Màu sắc",
+  "swatches": "Bảng màu",
+  "actions": "Hành động",
+  "clear": "Xóa",
+  "download": "Tải PNG",
+  "loading": "Đang tải...",
+  "saving": "Đang lưu...",
+  "savedOne": "Đã lưu {n} pixel",
+  "savedMany": "Đã lưu {n} pixel",
+  "saveFailed": "Lưu thất bại: {error}",
+  "ready": "Khung vẽ 64 x 64 đã sẵn sàng",
+  "loadFailed": "Tải thất bại: {error}",
+  "clearing": "Đang xóa...",
+  "cleared": "Đã xóa khung vẽ",
+  "clearFailed": "Xóa thất bại: {error}"
+}

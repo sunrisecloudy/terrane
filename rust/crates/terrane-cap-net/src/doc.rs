@@ -1,7 +1,18 @@
 use terrane_cap_interface::{
-    command_doc, event_doc, limit, param, CapabilityDoc, CapabilityManifestDoc, CommandDoc,
-    EventDoc, ExampleDoc, InternalNote, ResourceDoc, SchemaDoc,
+    command_doc, event_doc, limit, param, resource_method, CapabilityDoc, CapabilityManifestDoc,
+    CommandDoc, EventDoc, ExampleDoc, InternalNote, ResourceDoc, ResourceMethodDoc, SchemaDoc,
 };
+
+fn net_resource_methods() -> Vec<ResourceMethodDoc> {
+    let mut get = resource_method(
+        "get",
+        "call",
+        &[param("url", "Absolute URL to fetch with a live HTTP GET.", "url")],
+        "Live HTTP GET for a transient query; returns the response body and records nothing.",
+    );
+    get.returns = "the response body as a string".to_string();
+    vec![get]
+}
 
 pub fn net_doc(include_internal: bool) -> CapabilityDoc {
     CapabilityDoc {
@@ -21,12 +32,17 @@ pub fn net_doc(include_internal: bool) -> CapabilityDoc {
             queries: Vec::new(),
             events: vec!["net.fetched".to_string()],
             subscriptions: vec!["app.removed".to_string()],
-            resource_methods: Vec::new(),
+            resource_methods: net_resource_methods(),
         },
         commands: net_commands(),
         queries: Vec::new(),
         events: net_events(),
-        resources: Vec::<ResourceDoc>::new(),
+        resources: vec![ResourceDoc {
+            namespace: "net".to_string(),
+            summary: "Live, unrecorded HTTP GET for transient queries (e.g. a breach check)."
+                .to_string(),
+            methods: net_resource_methods(),
+        }],
         schemas: Vec::<SchemaDoc>::new(),
         examples: vec![ExampleDoc {
             title: "Fetch and record a URL".to_string(),

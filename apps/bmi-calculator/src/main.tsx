@@ -3,6 +3,7 @@ import {
   type CSSProperties,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
@@ -23,6 +24,12 @@ type BmiResult = {
 type BackendResult = {
   bmi: number | string;
   category?: string;
+};
+
+type BackendState = {
+  height: number | string;
+  weight: number | string;
+  result?: BackendResult | null;
 };
 
 type RangeStyle = CSSProperties & {
@@ -63,16 +70,29 @@ function rangeStyle(fillPercent: number): RangeStyle {
   return { "--fill": `${fillPercent}%` };
 }
 
+function toBmiResult(result: BackendResult | null | undefined): BmiResult | null {
+  if (!result) return null;
+  const bmi = Number(result.bmi);
+  if (!Number.isFinite(bmi)) return null;
+  const category = classify(bmi);
+  return {
+    bmi,
+    category: result.category || category.label,
+    key: category.key,
+  };
+}
+
 function BmiCalculator() {
   const [height, setHeight] = useState(defaults.height);
   const [weight, setWeight] = useState(defaults.weight);
   const [result, setResult] = useState<BmiResult | null>(null);
   const [status, setStatus] = useState("Waiting for Terrane");
+  const syncSeq = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function calculate() {
+    async function loadState() {
       if (!window.terrane || typeof window.terrane.invoke !== "function") {
         setResult(null);
         setStatus("Terrane bridge unavailable");
@@ -80,15 +100,9 @@ function BmiCalculator() {
       }
 
       try {
-        const json = await window.terrane.invoke("calculate", height, weight);
+        const json = await window.terrane.invoke("state");
         if (cancelled) return;
-        const next = JSON.parse(json) as BackendResult;
-        const category = classify(Number(next.bmi));
-        setResult({
-          bmi: Number(next.bmi),
-          category: next.category || category.label,
-          key: category.key,
-        });
+        applyBackendState(JSON.parse(json) as BackendState);
         setStatus("Synced with Terrane");
       } catch (_error) {
         if (cancelled) return;
@@ -97,19 +111,53 @@ function BmiCalculator() {
       }
     }
 
-    calculate();
+    loadState();
     return () => {
       cancelled = true;
     };
-  }, [height, weight]);
+  }, []);
+
+  function applyBackendState(next: BackendState) {
+    const nextHeight = Number(next.height);
+    const nextWeight = Number(next.weight);
+    if (Number.isFinite(nextHeight)) setHeight(nextHeight);
+    if (Number.isFinite(nextWeight)) setWeight(nextWeight);
+    setResult(toBmiResult(next.result));
+  }
+
+  async function persistMeasurement(verb: "set_height" | "set_weight", value: number) {
+    if (!window.terrane || typeof window.terrane.invoke !== "function") {
+      setStatus("Terrane bridge unavailable");
+      return;
+    }
+
+    const seq = syncSeq.current + 1;
+    syncSeq.current = seq;
+    setStatus("Saving to Terrane");
+    try {
+      const json = await window.terrane.invoke(verb, value);
+      if (syncSeq.current !== seq) return;
+      applyBackendState(JSON.parse(json) as BackendState);
+      setStatus("Synced with Terrane");
+    } catch (_error) {
+      if (syncSeq.current !== seq) return;
+      setStatus("Terrane invoke failed");
+    }
+  }
 
   const heightFill = useMemo(() => fill(height, 120, 220), [height]);
   const weightFill = useMemo(() => fill(weight, 35, 180), [weight]);
   const categoryKey = result ? result.key : "";
-  const updateHeight = (event: ChangeEvent<HTMLInputElement>) =>
-    setHeight(Number(event.target.value));
-  const updateWeight = (event: ChangeEvent<HTMLInputElement>) =>
-    setWeight(Number(event.target.value));
+  const updateHeight = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextHeight = Number(event.target.value);
+    setHeight(nextHeight);
+    void persistMeasurement("set_height", nextHeight);
+  };
+  const updateWeight = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextWeight = Number(event.target.value);
+    setWeight(nextWeight);
+    void persistMeasurement("set_weight", nextWeight);
+  };
 
   return (
     <main className="bmi-app" data-bmi-app>

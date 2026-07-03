@@ -76,6 +76,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "kv.storage.set" | "kv.storage.clear" => PublicCommandDisposition::Refuse {
             reason: "storage configuration is trusted-admin-only",
         },
+        "kv.public.set" | "kv.public.rm" | "kv.public.import" => PublicCommandDisposition::Refuse {
+            reason: "public KV is trusted-host-only; app backends read it via ctx.resource.kv.public*",
+        },
         "js-runtime.run" | "wasm-runtime.run" => PublicCommandDisposition::Refuse {
             reason: "run apps through the invoke tool",
         },
@@ -121,6 +124,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         },
         _ if name.starts_with("auth.") => PublicCommandDisposition::Refuse {
             reason: "auth commands are trusted-admin-only",
+        },
+        _ if name.starts_with("agent.") => PublicCommandDisposition::Refuse {
+            reason: "agent commands manage assistant definitions and are trusted-admin-only",
         },
         _ => PublicCommandDisposition::Unclassified,
     }

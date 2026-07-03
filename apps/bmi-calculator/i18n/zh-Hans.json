@@ -1,0 +1,20 @@
+{
+  "title": "BMI 计算器",
+  "eyebrow": "公制 BMI",
+  "lede": "调整身高和体重以计算身体质量指数。",
+  "bmi": "BMI",
+  "enterValues": "输入数值",
+  "height": "身高",
+  "weight": "体重",
+  "aria.summary": "BMI 摘要",
+  "aria.measurements": "身体测量",
+  "aria.ranges": "BMI 范围",
+  "cat.underweight": "体重过轻",
+  "cat.healthy": "健康体重",
+  "cat.overweight": "超重",
+  "cat.obesity": "肥胖",
+  "status.waiting": "正在等待 Terrane",
+  "status.noBridge": "Terrane 桥接不可用",
+  "status.synced": "已与 Terrane 同步",
+  "status.failed": "Terrane 调用失败"
+}

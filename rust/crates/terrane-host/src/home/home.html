@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="__HOME_LANG__" dir="__HOME_DIR__">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -138,20 +138,20 @@
     <div class="page">
       <header class="hero">
         <h1>Terrane</h1>
-        <p>
+        <p data-i18n="system.home.tagline">
           Your local apps, served from your own home. Pick an app below to
           open it.
         </p>
       </header>
       <main>
-        <h2 class="section-title">Apps</h2>
+        <h2 class="section-title" data-i18n="system.home.apps">Apps</h2>
         <div id="home-app-list" class="app-grid" aria-live="polite">
-          <div class="app-empty">Loading apps...</div>
+          <div class="app-empty" data-i18n="system.sidebar.loading">Loading apps...</div>
         </div>
       </main>
       <footer class="footer">
         <span>Terrane</span>
-        <a id="home-admin-link" href="#" hidden>Admin console</a>
+        <a id="home-admin-link" href="#" hidden data-i18n="system.sidebar.admin">Admin console</a>
       </footer>
     </div>
     <script type="application/json" id="home-config">__HOME_CONFIG__</script>

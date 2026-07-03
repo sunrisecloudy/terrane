@@ -1,0 +1,20 @@
+{
+  "title": "เครื่องคำนวณ BMI",
+  "eyebrow": "BMI ระบบเมตริก",
+  "lede": "ปรับส่วนสูงและน้ำหนักเพื่อคำนวณดัชนีมวลกาย",
+  "bmi": "BMI",
+  "enterValues": "กรอกค่า",
+  "height": "ส่วนสูง",
+  "weight": "น้ำหนัก",
+  "aria.summary": "สรุป BMI",
+  "aria.measurements": "การวัดร่างกาย",
+  "aria.ranges": "ช่วงค่า BMI",
+  "cat.underweight": "น้ำหนักต่ำกว่าเกณฑ์",
+  "cat.healthy": "น้ำหนักปกติ",
+  "cat.overweight": "น้ำหนักเกิน",
+  "cat.obesity": "โรคอ้วน",
+  "status.waiting": "กำลังรอ Terrane",
+  "status.noBridge": "ไม่สามารถใช้บริดจ์ของ Terrane ได้",
+  "status.synced": "ซิงค์กับ Terrane แล้ว",
+  "status.failed": "เรียกใช้ Terrane ไม่สำเร็จ"
+}

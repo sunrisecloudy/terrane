@@ -34,6 +34,24 @@ states the old behaviour, in the same commit series.**
 Grep the docs for your command names and event kinds before calling a policy
 change done.
 
+## User-facing strings live in public KV, not in code
+
+If your capability surfaces text an end user reads, that text is translatable
+data, not a code constant. It belongs in the shared **public KV** i18n bucket
+under `i18n/<code>/<ns>.<key>`, keyed to your capability's domain (`<ns>`), with
+`en` complete (it is the fallback). Ship those strings as a checked-in catalog
+(`apps/<id>/i18n/<code>.json` or `i18n/system/<code>.json`) and seed it with
+`terrane i18n import <path>` — don't hard-code user-visible English where you
+emit text to end users. The app-facing read/translate API (`getLocale`, `getDir`,
+`getMessages`, `t()`, and the `i18n/<code>/<domain>.<key>` convention) is
+described once in the [`APP_API.md` Localization section](../APP_API.md) — link
+there rather than restating it.
+
+**v1 caveat.** Only the UI is localized. Backend and capability output — error
+messages, `doc()`/`describe()` summaries, CLI/MCP text — is not auto-localized
+yet; it stays in the language you write it. This is about the strings you hand
+to end users, not internal diagnostics.
+
 ## Definition of done
 
 A capability lands when all of this holds:
@@ -54,6 +72,8 @@ A capability lands when all of this holds:
 - [ ] Existing logs still replay. Any event/payload/reserved-KV layout change is
       versioned or has a replay fixture for the old shape.
 - [ ] `doc()` and `describe()` implemented; affected markdown docs updated.
+- [ ] Any end-user-facing strings live in public KV under `i18n/<code>/<ns>.<key>`
+      (checked-in catalog, `en` complete), not hard-coded English — see above.
 - [ ] Capability discovery smokes work: `terrane cap info <ns>`, MCP
       `capabilities_list`, MCP `capability_info(<ns>)`, and
       `capability_command` with `help: true` for each public command.
