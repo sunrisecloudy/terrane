@@ -584,6 +584,97 @@ pub unsafe extern "C" fn terrane_local_model_server_stop(
 
 // ---- internals ----
 
+/// Resolve an RFC 7231 `Accept-Language` header to the best supported Terrane
+/// language code (e.g. `"fr-CH, en;q=0.8"` -> `"fr"`). Pure: no handle or home
+/// required. Writes the canonical code to `out_output` (e.g. `"zh-Hans"`).
+///
+/// # Safety
+/// `header` must be a valid C string. `out_output`/`out_error` must be valid
+/// pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_i18n_negotiate(
+    header: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let header = match read_str(header) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let code = terrane_i18n::from_accept_language(&header);
+        write_out(out_output, code.to_string());
+        TERRANE_OK
+    }));
+    finish(code, out_error)
+}
+
+/// The canonical supported language codes as a JSON array, e.g.
+/// `["en","es","zh-Hans",...]`. Lets native UIs populate language pickers from
+/// one source of truth. Pure: no handle required.
+///
+/// # Safety
+/// `out_output`/`out_error` must be valid pointers to write a `char*` into (or
+/// null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_i18n_supported(
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let json = serde_json::to_string(terrane_i18n::SUPPORTED)
+            .unwrap_or_else(|_| "[]".to_string());
+        write_out(out_output, json);
+        TERRANE_OK
+    }));
+    finish(code, out_error)
+}
+
+/// Import checked-in i18n catalogs (`i18n/system/*.json` and
+/// `apps/*/i18n/*.json`) at `path` into the workspace's public KV bucket via
+/// one trusted-host `kv.public.import`. Idempotent and replay-safe. Writes a
+/// human summary to `out_output`.
+///
+/// # Safety
+/// `path` must be a valid C string; `out_output`/`out_error` must be valid
+/// pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_i18n_import(
+    h: *mut TerraneHandle,
+    path: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let path = match read_str(path) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::import_i18n_dir(&mut core, std::path::Path::new(&path)) {
+            Ok(outcome) => {
+                write_out(out_output, outcome.message());
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
 /// Lock the core, dispatch, and write the output (backend string for runtime commands,
 /// else the committed event kinds) or the error.
 unsafe fn dispatch_request(

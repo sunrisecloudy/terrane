@@ -274,3 +274,95 @@ fn i18n_import_cli_seeds_public_bucket() {
         Some("File".into())
     );
 }
+
+// ---- C ABI (FFI) ------------------------------------------------------------
+
+use std::ffi::{CStr, CString};
+use std::ptr;
+use terrane_host::ffi;
+
+/// Take a `char*` produced by the FFI back to a Rust `String`, then free it.
+unsafe fn take_string(p: *mut std::os::raw::c_char) -> String {
+    let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+    ffi::terrane_string_free(p);
+    s
+}
+
+#[test]
+fn ffi_i18n_negotiate_resolves_header() {
+    let header = CString::new("fr-CH, en;q=0.8").unwrap();
+    let mut out = ptr::null_mut();
+    let mut err = ptr::null_mut();
+    let code = unsafe { ffi::terrane_i18n_negotiate(header.as_ptr(), &mut out, &mut err) };
+    assert_eq!(code, ffi::TERRANE_OK, "stderr: {}", unsafe {
+        take_string(err)
+    });
+    assert_eq!(unsafe { take_string(out) }, "fr");
+}
+
+#[test]
+fn ffi_i18n_negotiate_canonicalizes_casing() {
+    let header = CString::new("zh-cn").unwrap();
+    let mut out = ptr::null_mut();
+    let mut err = ptr::null_mut();
+    let code = unsafe { ffi::terrane_i18n_negotiate(header.as_ptr(), &mut out, &mut err) };
+    assert_eq!(code, ffi::TERRANE_OK);
+    assert_eq!(unsafe { take_string(out) }, "zh-Hans");
+}
+
+#[test]
+fn ffi_i18n_supported_returns_json_array() {
+    let mut out = ptr::null_mut();
+    let mut err = ptr::null_mut();
+    let code = unsafe { ffi::terrane_i18n_supported(&mut out, &mut err) };
+    assert_eq!(code, ffi::TERRANE_OK, "stderr: {}", unsafe {
+        take_string(err)
+    });
+    let json = unsafe { take_string(out) };
+    let arr: Vec<String> = serde_json::from_str(&json).unwrap();
+    assert!(arr.contains(&"en".to_string()));
+    assert!(arr.contains(&"zh-Hans".to_string()));
+    assert!(arr.contains(&"pt-BR".to_string()));
+}
+
+#[test]
+fn ffi_i18n_import_seeds_public_bucket_via_handle() {
+    let home = tempdir().unwrap();
+    let root = tempdir().unwrap();
+    write_catalog(
+        &root.path().join("i18n/system/en.json"),
+        &[("menu.file", "File")],
+    );
+    write_catalog(
+        &root.path().join("apps/todo/i18n/en.json"),
+        &[("added", "added")],
+    );
+
+    let home_c = CString::new(home.path().to_str().unwrap()).unwrap();
+    let handle = unsafe { ffi::terrane_open(home_c.as_ptr()) };
+    assert!(!handle.is_null(), "terrane_open should succeed");
+
+    let path_c = CString::new(root.path().to_str().unwrap()).unwrap();
+    let mut out = ptr::null_mut();
+    let mut err = ptr::null_mut();
+    let code =
+        unsafe { ffi::terrane_i18n_import(handle, path_c.as_ptr(), &mut out, &mut err) };
+    assert_eq!(code, ffi::TERRANE_OK, "stderr: {}", unsafe {
+        take_string(err)
+    });
+    let message = unsafe { take_string(out) };
+    assert!(message.contains("imported"), "out: {message}");
+
+    // The seeded strings are readable through the workspace, proving the import
+    // went through the real core commit path.
+    assert_eq!(
+        public_value(home.path(), "i18n/en/system.menu.file"),
+        Some("File".into())
+    );
+    assert_eq!(
+        public_value(home.path(), "i18n/en/todo.added"),
+        Some("added".into())
+    );
+
+    unsafe { ffi::terrane_close(handle) };
+}
