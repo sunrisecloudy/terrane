@@ -151,3 +151,74 @@ fn runaway_backend_is_interrupted() {
         "runaway backend should be interrupted and error, not succeed/hang"
     );
 }
+
+/// Drive the real `apps/scribe` bundle through the CLI: the host edge (simulated
+/// via trusted `stt open/append`) opens a session and records finalized
+/// segments; the scribe backend reads the folded transcript and records a
+/// selection. Option A: the log holds only stt.* events — no audio, no ASR, no
+/// host.* record — and replay rebuilds identically.
+#[test]
+fn scribe_app_reads_transcript_and_records_selection() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let src = app_source("scribe");
+
+    let (ok, _, err) = terrane(
+        home,
+        &["app", "add", "scribe", "Scribe", "--source", &src],
+    );
+    assert!(ok, "app add failed: {err}");
+    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "scribe", "stt"]);
+    assert!(ok, "auth grant failed: {err}");
+
+    // Host edge: open a session, append two finalized segments.
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "stt", "open", "scribe", "s1", "host1", "host1", "whisper-tiny", "16000",
+        ],
+    );
+    assert!(ok, "stt open failed: {err}");
+    assert!(out.contains("stt.session.opened"), "open out: {out}");
+    let (ok, _, err) = terrane(
+        home,
+        &["stt", "append", "scribe", "s1", "1", "0", "500", "hello"],
+    );
+    assert!(ok, "stt append 1 failed: {err}");
+    let (ok, _, err) = terrane(
+        home,
+        &[
+            "stt", "append", "scribe", "s1", "2", "500", "900", "world",
+        ],
+    );
+    assert!(ok, "stt append 2 failed: {err}");
+
+    // Scribe backend reads the folded transcript (no audio, no ASR at replay).
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "scribe", "transcript", "s1"]);
+    assert!(ok, "transcript failed: {err}");
+    assert_eq!(out.trim(), "hello world", "transcript out: {out}");
+
+    // select() records the slice and returns the re-derived text to the host.
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "js-runtime", "run", "scribe", "select", "s1", "1", "2", "clipboard",
+        ],
+    );
+    assert!(ok, "select failed: {err}");
+    assert_eq!(out.trim(), "hello world", "select out: {out}");
+
+    // The log holds only recorded events (Option A): stt.* and the kv.* from
+    // app.add/grant — never any audio or host.* artifact.
+    let (ok, log, err) = terrane(home, &["log"]);
+    assert!(ok, "log failed: {err}");
+    assert!(log.contains("stt.session.opened"), "log: {log}");
+    assert!(log.contains("stt.segment.appended"), "log: {log}");
+    assert!(log.contains("stt.selection.made"), "log: {log}");
+    assert!(!log.contains("host."), "no host.* in log: {log}");
+
+    // Replay folds stt.* only; QuickJS and the edge are never re-entered.
+    let (ok, out, err) = terrane(home, &["replay"]);
+    assert!(ok, "replay failed: {err}");
+    assert!(out.contains("replay ok"), "replay out: {out}");
+}

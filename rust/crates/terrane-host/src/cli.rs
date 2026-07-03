@@ -42,6 +42,16 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         }
         ["native", "observe-default"] => run_native_observe_default(),
         ["native", "drain-once"] => run_native_drain_once(),
+        // Host-edge verbs for ambient speech-to-text. Capture/ASR run at the
+        // edge; these dispatch the trusted `stt.*` commands that record facts.
+        ["stt", "open", rest @ ..] => run_stt_dispatch("stt.session.open", rest),
+        ["stt", "append", rest @ ..] => run_stt_dispatch("stt.segment.append", rest),
+        ["stt", "close", rest @ ..] => run_stt_dispatch("stt.session.close-host", rest),
+        ["stt", "trim", rest @ ..] => run_stt_dispatch("stt.retention.trim", rest),
+        ["stt", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane stt (open | append | close | trim) …".into())
+        }
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
@@ -311,6 +321,14 @@ pub fn run_kv_storage_set(rest: &[&str]) -> Result<(), String> {
 pub fn run_kv_storage_clear(rest: &[&str]) -> Result<(), String> {
     let args = parse_kv_storage_clear(rest)?;
     print_command_outcome(crate::dispatch("kv.storage.clear", &args)?);
+    Ok(())
+}
+
+/// Dispatch a trusted `stt.*` host-edge command (open/append/close/trim) with
+/// args passed through verbatim. The command name owns the validation.
+pub fn run_stt_dispatch(command: &str, rest: &[&str]) -> Result<(), String> {
+    let args: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
+    print_command_outcome(crate::dispatch(command, &args)?);
     Ok(())
 }
 
