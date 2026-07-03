@@ -70,6 +70,15 @@ cargo clippy --all-targets -- -D warnings
 cargo run -p terrane-host --bin terrane -- help
 ```
 
+This repo uses a shared Cargo/sccache build cache across worktrees. Claude Code
+project hooks rewrite Rust build/test Bash calls to source
+`scripts/cargo-cache-env.sh` automatically. For manual commands, prefer:
+
+```sh
+scripts/with-cargo-cache.sh cargo test
+scripts/with-cargo-cache.sh cargo clippy --all-targets -- -D warnings
+```
+
 Each capability has a file under `tests/cap/` (`tests/cap/main.rs` is the entry
 that includes them + shared `helpers`). The engine logic tests live in
 `rust/crates/terrane-core/tests/cap/`; the real binary-level e2e tests in

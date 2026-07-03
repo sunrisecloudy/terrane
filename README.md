@@ -47,3 +47,24 @@ cd rust
 cargo test
 cargo run -p terrane-host --bin terrane -- help
 ```
+
+For linked worktrees, use the shared Cargo/sccache environment so Rust build
+artifacts are reused across checkouts:
+
+```sh
+source scripts/cargo-cache-env.sh
+cd rust
+cargo test
+```
+
+Or run a single command through the wrapper:
+
+```sh
+scripts/with-cargo-cache.sh cargo test --workspace --locked
+```
+
+Codex, Claude Code, and opencode have project hooks/plugins that apply this same
+cache convention to agent-run shell commands.
+
+See [docs/CARGO_CACHE.md](docs/CARGO_CACHE.md) for the full setup and
+troubleshooting runbook.
