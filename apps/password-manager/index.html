@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Password Manager</title>
+    <style>
+      :root { color-scheme: light dark; }
+      * { box-sizing: border-box; }
+      body {
+        font: 14px -apple-system, system-ui, sans-serif;
+        margin: 0;
+        padding: 0;
+        background: Canvas;
+        color: CanvasText;
+      }
+      button {
+        font: inherit;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+        background: #8882;
+        color: CanvasText;
+      }
+      button.primary { background: #0071e3; color: #fff; }
+      button.danger { background: #d7373722; color: #d73737; }
+      button.link { background: none; color: #0a84ff; padding: 4px; }
+      input, select, textarea {
+        font: inherit;
+        padding: 8px 10px;
+        border: 1px solid #8884;
+        border-radius: 8px;
+        background: Field;
+        color: FieldText;
+        width: 100%;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 20px;
+        border-bottom: 1px solid #8883;
+        position: sticky;
+        top: 0;
+        background: Canvas;
+      }
+      header h1 { font-size: 17px; margin: 0; flex-shrink: 0; }
+      header .spacer { flex: 1; }
+      main { padding: 20px; max-width: 900px; margin: 0 auto; }
+      .hidden { display: none !important; }
+      .center { max-width: 360px; margin: 8vh auto; text-align: center; }
+      .center input { margin: 8px 0; text-align: center; }
+      .field { margin: 10px 0; }
+      .field label { display: block; color: #8889; margin-bottom: 4px; font-size: 12px; }
+      .rowline { display: flex; gap: 8px; align-items: center; }
+      .toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+      .toolbar input { flex: 1; min-width: 160px; }
+      ul { list-style: none; margin: 0; padding: 0; }
+      li.item {
+        display: flex; align-items: center; gap: 12px;
+        padding: 12px 14px; background: #8881; border-radius: 10px; margin-bottom: 6px;
+        cursor: pointer;
+      }
+      li.item:hover { background: #8882; }
+      li.item .name { font-weight: 500; }
+      li.item .sub { color: #8889; font-size: 12px; }
+      li.item .grow { flex: 1; min-width: 0; }
+      .badge { font-size: 11px; color: #8889; border: 1px solid #8884; border-radius: 20px; padding: 1px 8px; }
+      .muted { color: #8889; }
+      .card { background: #8881; border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+      .secret { font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+      .backdrop {
+        position: fixed; inset: 0; background: #0007;
+        display: flex; align-items: center; justify-content: center; padding: 20px;
+      }
+      .modal { background: Canvas; border-radius: 14px; padding: 20px; width: 100%; max-width: 460px; max-height: 86vh; overflow: auto; }
+      .modal h2 { margin: 0 0 12px; font-size: 16px; }
+      .stat { display: inline-block; margin: 4px 12px 4px 0; }
+      .stat b { font-size: 20px; }
+      #toast {
+        position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+        background: #000d; color: #fff; padding: 10px 16px; border-radius: 10px; opacity: 0;
+        transition: opacity .2s; pointer-events: none;
+      }
+      #toast.show { opacity: 1; }
+      .err { color: #d73737; }
+    </style>
+  </head>
+  <body>
+    <header class="hidden" id="topbar">
+      <h1>🔐 Vault</h1>
+      <input id="search" type="text" placeholder="Search…" style="max-width:220px" />
+      <div class="spacer"></div>
+      <button id="btn-add" class="primary">+ Add</button>
+      <button id="btn-generate">Generate</button>
+      <button id="btn-health">Health</button>
+      <button id="btn-lock">Lock</button>
+    </header>
+
+    <main>
+      <!-- Lock / create screen -->
+      <div id="lock" class="center">
+        <h1 style="font-size:22px">🔐 Password Manager</h1>
+        <p id="lock-hint" class="muted">Loading…</p>
+        <input id="master" type="password" placeholder="Master password" autocomplete="off" />
+        <input id="master2" type="password" placeholder="Confirm master password" class="hidden" autocomplete="off" />
+        <button id="lock-btn" class="primary" style="width:100%; margin-top:8px">Unlock</button>
+        <p id="lock-err" class="err"></p>
+      </div>
+
+      <!-- Vault -->
+      <div id="vault" class="hidden">
+        <ul id="items"></ul>
+        <p id="empty" class="muted hidden">No items yet. Click “+ Add” to create one.</p>
+      </div>
+    </main>
+
+    <div id="modal-root"></div>
+    <div id="toast"></div>
+
+    <script>
+      var SESSION = null; // in-memory only; never persisted. Cleared on lock/reload.
+      var el = function (id) { return document.getElementById(id); };
+      var modalRoot = el("modal-root");
+
+      function bridge() {
+        if (!window.terrane || typeof window.terrane.invoke !== "function") {
+          return Promise.reject(new Error("Terrane bridge unavailable"));
+        }
+        return window.terrane.invoke.apply(window.terrane, arguments);
+      }
+
+      // Invoke a verb and parse the JSON envelope; reject on { ok:false }.
+      function inv() {
+        return bridge.apply(null, arguments).then(function (raw) {
+          var res;
+          try { res = JSON.parse(raw); } catch (e) { throw new Error("bad response"); }
+          if (res && res.ok === false) throw new Error(res.error || "error");
+          return res;
+        });
+      }
+
+      function toast(msg) {
+        var t = el("toast");
+        t.textContent = msg;
+        t.classList.add("show");
+        clearTimeout(toast._t);
+        toast._t = setTimeout(function () { t.classList.remove("show"); }, 1800);
+      }
+
+      function copy(text, label) {
+        var done = function () { toast((label || "Copied") + " — clears in 20s"); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(done).catch(function () { toast("Copy failed"); });
+          setTimeout(function () {
+            navigator.clipboard.writeText("").catch(function () {});
+          }, 20000);
+        } else {
+          toast("Clipboard unavailable");
+        }
+      }
+
+      function closeModal() { modalRoot.textContent = ""; }
+      function openModal(node) {
+        closeModal();
+        var back = document.createElement("div");
+        back.className = "backdrop";
+        back.addEventListener("click", function (e) { if (e.target === back) closeModal(); });
+        var m = document.createElement("div");
+        m.className = "modal";
+        m.appendChild(node);
+        back.appendChild(m);
+        modalRoot.appendChild(back);
+      }
+
+      // ---- boot: decide lock vs create vs vault ----
+      function boot() {
+        inv("status").then(function (res) {
+          var hint = el("lock-hint");
+          if (!res.exists) {
+            el("master2").classList.remove("hidden");
+            el("lock-btn").textContent = "Create vault";
+            hint.textContent = "Choose a master password to create your vault.";
+            el("lock").dataset.mode = "create";
+          } else {
+            el("master2").classList.add("hidden");
+            el("lock-btn").textContent = "Unlock";
+            hint.textContent = "Enter your master password to unlock.";
+            el("lock").dataset.mode = "unlock";
+          }
+        }).catch(function (e) { el("lock-hint").textContent = e.message; });
+      }
+
+      function doUnlock() {
+        var mode = el("lock").dataset.mode;
+        var master = el("master").value;
+        var errEl = el("lock-err");
+        errEl.textContent = "";
+        if (!master) { errEl.textContent = "Enter a master password."; return; }
+        if (mode === "create" && master !== el("master2").value) {
+          errEl.textContent = "Passwords do not match.";
+          return;
+        }
+        var verb = mode === "create" ? "init" : "unlock";
+        inv(verb, master).then(function (res) {
+          SESSION = res.session;
+          el("master").value = "";
+          el("master2").value = "";
+          showVault();
+        }).catch(function (e) {
+          errEl.textContent = e.message === "bad_password" ? "Wrong master password." : e.message;
+        });
+      }
+
+      function showVault() {
+        el("lock").classList.add("hidden");
+        el("vault").classList.remove("hidden");
+        el("topbar").classList.remove("hidden");
+        loadItems("");
+      }
+
+      function lock() {
+        if (SESSION) inv("lock", SESSION).catch(function () {});
+        SESSION = null;
+        el("vault").classList.add("hidden");
+        el("topbar").classList.add("hidden");
+        el("lock").classList.remove("hidden");
+        el("items").textContent = "";
+        boot();
+      }
+
+      // ---- items ----
+      function loadItems(query) {
+        var call = query
+          ? inv("search", SESSION, query)
+          : inv("list", SESSION);
+        call.then(function (res) {
+          renderItems(res.items || []);
+        }).catch(handleAuthErr);
+      }
+
+      function handleAuthErr(e) {
+        if (e.message === "bad_password" || e.message === "no_auth") { lock(); return; }
+        toast(e.message);
+      }
+
+      function renderItems(items) {
+        var ul = el("items");
+        ul.textContent = "";
+        el("empty").classList.toggle("hidden", items.length > 0);
+        items.forEach(function (it) {
+          var li = document.createElement("li");
+          li.className = "item";
+          var grow = document.createElement("div");
+          grow.className = "grow";
+          var name = document.createElement("div");
+          name.className = "name";
+          name.textContent = it.name || "(unnamed)";
+          var sub = document.createElement("div");
+          sub.className = "sub";
+          sub.textContent = [it.username, (it.uris || [])[0]].filter(Boolean).join("  ·  ");
+          grow.appendChild(name);
+          grow.appendChild(sub);
+          li.appendChild(grow);
+          if (it.hasTotp) { var b = document.createElement("span"); b.className = "badge"; b.textContent = "2FA"; li.appendChild(b); }
+          var t = document.createElement("span");
+          t.className = "badge";
+          t.textContent = it.type || "login";
+          li.appendChild(t);
+          li.addEventListener("click", function () { showItem(it.id); });
+          ul.appendChild(li);
+        });
+      }
+
+      function showItem(id) {
+        inv("get", SESSION, String(id)).then(function (res) {
+          renderDetail(res.item);
+        }).catch(handleAuthErr);
+      }
+
+      function fieldRow(label, value, opts) {
+        opts = opts || {};
+        var wrap = document.createElement("div");
+        wrap.className = "field";
+        var l = document.createElement("label");
+        l.textContent = label;
+        wrap.appendChild(l);
+        var row = document.createElement("div");
+        row.className = "rowline";
+        var val = document.createElement("div");
+        val.className = "grow" + (opts.secret ? " secret" : "");
+        val.style.flex = "1";
+        var shown = opts.secret ? "••••••••••" : value;
+        val.textContent = shown;
+        row.appendChild(val);
+        if (opts.secret) {
+          var eye = document.createElement("button");
+          eye.className = "link";
+          eye.textContent = "Reveal";
+          eye.addEventListener("click", function () {
+            if (val.textContent === value) { val.textContent = "••••••••••"; eye.textContent = "Reveal"; }
+            else { val.textContent = value; eye.textContent = "Hide"; }
+          });
+          row.appendChild(eye);
+        }
+        if (opts.copy) {
+          var c = document.createElement("button");
+          c.className = "link";
+          c.textContent = "Copy";
+          c.addEventListener("click", function () { copy(value, label); });
+          row.appendChild(c);
+        }
+        wrap.appendChild(row);
+        return wrap;
+      }
+
+      function renderDetail(item) {
+        var node = document.createElement("div");
+        var h = document.createElement("h2");
+        h.textContent = item.name || "(unnamed)";
+        node.appendChild(h);
+        if (item.username) node.appendChild(fieldRow("Username", item.username, { copy: true }));
+        if (item.password) node.appendChild(fieldRow("Password", item.password, { secret: true, copy: true }));
+        (item.uris || []).forEach(function (u) { node.appendChild(fieldRow("URL", u, { copy: true })); });
+        if (item.notes) node.appendChild(fieldRow("Notes", item.notes, {}));
+
+        if (item.totp) {
+          var totpWrap = document.createElement("div");
+          totpWrap.className = "field";
+          var tl = document.createElement("label");
+          tl.textContent = "2FA code";
+          totpWrap.appendChild(tl);
+          var trow = document.createElement("div");
+          trow.className = "rowline";
+          var code = document.createElement("div");
+          code.className = "secret grow";
+          code.textContent = "……";
+          trow.appendChild(code);
+          var cc = document.createElement("button");
+          cc.className = "link";
+          cc.textContent = "Copy";
+          trow.appendChild(cc);
+          totpWrap.appendChild(trow);
+          node.appendChild(totpWrap);
+          var refreshTotp = function () {
+            inv("totp", SESSION, String(item.id)).then(function (r) {
+              code.textContent = r.code + "   (" + r.remaining + "s)";
+              cc.onclick = function () { copy(r.code, "2FA code"); };
+            }).catch(function () { code.textContent = "unavailable"; });
+          };
+          refreshTotp();
+          var iv = setInterval(refreshTotp, 5000);
+          node._cleanup = function () { clearInterval(iv); };
+        }
+
+        var actions = document.createElement("div");
+        actions.className = "rowline";
+        actions.style.marginTop = "16px";
+        var editBtn = document.createElement("button");
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", function () { openEdit(item); });
+        var delBtn = document.createElement("button");
+        delBtn.className = "danger";
+        delBtn.textContent = "Delete";
+        delBtn.addEventListener("click", function () {
+          inv("rm", SESSION, String(item.id)).then(function () {
+            if (node._cleanup) node._cleanup();
+            closeModal();
+            toast("Moved to trash");
+            loadItems(el("search").value.trim());
+          }).catch(handleAuthErr);
+        });
+        var closeBtn = document.createElement("button");
+        closeBtn.className = "link";
+        closeBtn.textContent = "Close";
+        closeBtn.addEventListener("click", function () { if (node._cleanup) node._cleanup(); closeModal(); });
+        actions.appendChild(editBtn);
+        actions.appendChild(delBtn);
+        var sp = document.createElement("div"); sp.style.flex = "1"; actions.appendChild(sp);
+        actions.appendChild(closeBtn);
+        node.appendChild(actions);
+        openModal(node);
+      }
+
+      // ---- add / edit form ----
+      function textField(label, name, value, type) {
+        var f = document.createElement("div");
+        f.className = "field";
+        var l = document.createElement("label");
+        l.textContent = label;
+        var i = document.createElement("input");
+        i.type = type || "text";
+        i.name = name;
+        i.value = value || "";
+        f.appendChild(l);
+        f.appendChild(i);
+        f._input = i;
+        return f;
+      }
+
+      function openEdit(item) {
+        item = item || {};
+        var isNew = !item.id;
+        var node = document.createElement("div");
+        var h = document.createElement("h2");
+        h.textContent = isNew ? "Add item" : "Edit item";
+        node.appendChild(h);
+
+        var fName = textField("Name", "name", item.name);
+        var fUser = textField("Username", "username", item.username);
+        var pwField = document.createElement("div");
+        pwField.className = "field";
+        var pwl = document.createElement("label"); pwl.textContent = "Password"; pwField.appendChild(pwl);
+        var pwrow = document.createElement("div"); pwrow.className = "rowline";
+        var pwInput = document.createElement("input"); pwInput.type = "text"; pwInput.value = item.password || "";
+        var genBtn = document.createElement("button"); genBtn.className = "link"; genBtn.textContent = "Generate";
+        genBtn.addEventListener("click", function () {
+          inv("generate", '{"length":20}').then(function (r) { pwInput.value = r.password; }).catch(function () {});
+        });
+        pwrow.appendChild(pwInput); pwrow.appendChild(genBtn);
+        pwField.appendChild(pwrow);
+        var fUri = textField("URL", "uri", (item.uris || [])[0]);
+        var fTotp = textField("2FA secret (base32 or otpauth://)", "totp", item.totp);
+        var fNotes = textField("Notes", "notes", item.notes);
+
+        node.appendChild(fName);
+        node.appendChild(fUser);
+        node.appendChild(pwField);
+        node.appendChild(fUri);
+        node.appendChild(fTotp);
+        node.appendChild(fNotes);
+
+        var errP = document.createElement("p"); errP.className = "err"; node.appendChild(errP);
+
+        var actions = document.createElement("div");
+        actions.className = "rowline"; actions.style.marginTop = "12px";
+        var save = document.createElement("button");
+        save.className = "primary";
+        save.textContent = isNew ? "Create" : "Save";
+        save.addEventListener("click", function () {
+          var payload = {
+            type: "login",
+            name: fName._input.value.trim() || "(unnamed)",
+            username: fUser._input.value,
+            password: pwInput.value,
+            uris: fUri._input.value ? [fUri._input.value] : [],
+            totp: fTotp._input.value,
+            notes: fNotes._input.value,
+          };
+          var call = isNew
+            ? inv("add", SESSION, JSON.stringify(payload))
+            : inv("edit", SESSION, String(item.id), JSON.stringify(payload));
+          call.then(function () {
+            closeModal();
+            toast(isNew ? "Item added" : "Saved");
+            loadItems(el("search").value.trim());
+          }).catch(function (e) { errP.textContent = e.message; });
+        });
+        var cancel = document.createElement("button");
+        cancel.className = "link"; cancel.textContent = "Cancel";
+        cancel.addEventListener("click", closeModal);
+        actions.appendChild(save);
+        var sp = document.createElement("div"); sp.style.flex = "1"; actions.appendChild(sp);
+        actions.appendChild(cancel);
+        node.appendChild(actions);
+        openModal(node);
+      }
+
+      // ---- generator ----
+      function openGenerator() {
+        var node = document.createElement("div");
+        node.innerHTML =
+          '<h2>Generator</h2>' +
+          '<div class="rowline" style="margin-bottom:10px">' +
+          '<button id="g-pw" class="primary">Password</button>' +
+          '<button id="g-pp">Passphrase</button></div>' +
+          '<div class="field secret" id="g-out" style="min-height:24px"></div>';
+        var out = node.querySelector("#g-out");
+        var showOut = function (val) {
+          out.textContent = val;
+          var c = document.createElement("button");
+          c.className = "link"; c.textContent = "Copy";
+          c.addEventListener("click", function () { copy(val, "Password"); });
+          out.appendChild(document.createTextNode("  "));
+          out.appendChild(c);
+        };
+        node.querySelector("#g-pw").addEventListener("click", function () {
+          inv("generate", '{"length":20}').then(function (r) { showOut(r.password); }).catch(function (e) { out.textContent = e.message; });
+        });
+        node.querySelector("#g-pp").addEventListener("click", function () {
+          inv("passphrase", '{"words":5}').then(function (r) { showOut(r.passphrase); }).catch(function (e) { out.textContent = e.message; });
+        });
+        openModal(node);
+      }
+
+      // ---- health ----
+      function openHealth() {
+        inv("health", SESSION).then(function (r) {
+          var node = document.createElement("div");
+          node.innerHTML = "<h2>Vault health</h2>";
+          var card = document.createElement("div");
+          card.className = "card";
+          function stat(label, arr) {
+            var s = document.createElement("div");
+            s.className = "stat";
+            s.innerHTML = "<b>" + (arr.length) + "</b><br><span class='muted'>" + label + "</span>";
+            return s;
+          }
+          card.appendChild(stat("weak", r.weak));
+          card.appendChild(stat("reused", r.reused));
+          card.appendChild(stat("old", r.old));
+          card.appendChild(stat("no 2FA", r.missing2fa));
+          node.appendChild(card);
+          var p = document.createElement("p");
+          p.className = "muted";
+          p.textContent = r.total + " items total.";
+          node.appendChild(p);
+          var close = document.createElement("button");
+          close.className = "link"; close.textContent = "Close";
+          close.addEventListener("click", closeModal);
+          node.appendChild(close);
+          openModal(node);
+        }).catch(handleAuthErr);
+      }
+
+      // ---- wiring ----
+      el("lock-btn").addEventListener("click", doUnlock);
+      el("master").addEventListener("keydown", function (e) { if (e.key === "Enter") doUnlock(); });
+      el("master2").addEventListener("keydown", function (e) { if (e.key === "Enter") doUnlock(); });
+      el("btn-add").addEventListener("click", function () { openEdit(null); });
+      el("btn-generate").addEventListener("click", openGenerator);
+      el("btn-health").addEventListener("click", openHealth);
+      el("btn-lock").addEventListener("click", lock);
+      el("search").addEventListener("input", function () {
+        clearTimeout(el("search")._t);
+        el("search")._t = setTimeout(function () { loadItems(el("search").value.trim()); }, 200);
+      });
+
+      boot();
+    </script>
+  </body>
+</html>
