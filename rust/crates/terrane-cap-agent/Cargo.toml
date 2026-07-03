@@ -1,0 +1,13 @@
+[package]
+name = "terrane-cap-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_agent"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-interface.workspace = true
+borsh.workspace = true

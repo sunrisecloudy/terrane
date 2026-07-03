@@ -3199,6 +3199,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-agent"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-app"
 version = "0.1.0"
 dependencies = [
@@ -3354,6 +3362,7 @@ dependencies = [
  "rusqlite",
  "serde_json",
  "tempfile",
+ "terrane-cap-agent",
  "terrane-cap-app",
  "terrane-cap-auth",
  "terrane-cap-build",

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
   "rust/crates/terrane-cap-interface",
+  "rust/crates/terrane-cap-agent",
   "rust/crates/terrane-cap-app",
   "rust/crates/terrane-cap-auth",
   "rust/crates/terrane-cap-build",
@@ -35,6 +36,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 terrane-core = { path = "rust/crates/terrane-core" }
 terrane-cap-interface = { path = "rust/crates/terrane-cap-interface" }
+terrane-cap-agent = { path = "rust/crates/terrane-cap-agent" }
 terrane-cap-app = { path = "rust/crates/terrane-cap-app" }
 terrane-cap-auth = { path = "rust/crates/terrane-cap-auth" }
 terrane-cap-build = { path = "rust/crates/terrane-cap-build" }

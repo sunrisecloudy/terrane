@@ -49,6 +49,7 @@ pub use terrane_cap_interface::{
     NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
+use terrane_cap_agent::AgentState;
 use terrane_cap_app::AppState;
 use terrane_cap_auth::AuthState;
 use terrane_cap_builder::BuilderState;
@@ -70,6 +71,7 @@ use terrane_cap_replica::ReplicaState;
 /// check and `assert_eq!`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
+    pub agent: AgentState,
     pub app: AppState,
     pub auth: AuthState,
     pub builder: BuilderState,
@@ -86,6 +88,7 @@ pub struct State {
 impl StateStore for State {
     fn get(&self, namespace: &str) -> Option<&dyn Any> {
         match namespace {
+            "agent" => Some(&self.agent),
             "app" => Some(&self.app),
             "auth" => Some(&self.auth),
             "builder" => Some(&self.builder),
@@ -103,6 +106,7 @@ impl StateStore for State {
 
     fn get_mut(&mut self, namespace: &str) -> Option<&mut dyn Any> {
         match namespace {
+            "agent" => Some(&mut self.agent),
             "app" => Some(&mut self.app),
             "auth" => Some(&mut self.auth),
             "builder" => Some(&mut self.builder),
@@ -387,6 +391,7 @@ impl CapBus for RegistryBus<'_> {
 /// The registry every core opens with: the built-in capabilities.
 pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
+    registry.register(Box::new(terrane_cap_agent::AgentCapability));
     registry.register(Box::new(terrane_cap_app::AppCapability));
     registry.register(Box::new(terrane_cap_auth::AuthCapability));
     registry.register(Box::new(terrane_cap_build::BuildCapability));
