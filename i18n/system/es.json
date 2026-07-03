@@ -37,5 +37,7 @@
   "home.apps": "Aplicaciones",
   "home.loadError": "No se pueden cargar las apps",
   "home.unnamed": "App sin nombre",
-  "home.noUi": "sin interfaz"
+  "home.noUi": "sin interfaz",
+  "action.code": "Código",
+  "home.emptyNative": "No se encontraron interfaces de apps en HTML plano."
 }

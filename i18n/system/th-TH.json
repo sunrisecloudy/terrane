@@ -37,5 +37,7 @@
   "home.apps": "แอป",
   "home.loadError": "โหลดแอปไม่สำเร็จ",
   "home.unnamed": "แอปไม่มีชื่อ",
-  "home.noUi": "ไม่มีส่วนติดต่อผู้ใช้"
+  "home.noUi": "ไม่มีส่วนติดต่อผู้ใช้",
+  "action.code": "โค้ด",
+  "home.emptyNative": "ไม่พบส่วนติดต่อผู้ใช้ของแอป HTML ธรรมดา"
 }

@@ -37,5 +37,7 @@
   "home.apps": "Apps",
   "home.loadError": "Cannot load apps",
   "home.unnamed": "Unnamed app",
-  "home.noUi": "no UI"
+  "home.noUi": "no UI",
+  "action.code": "Code",
+  "home.emptyNative": "No plain HTML app UIs found."
 }

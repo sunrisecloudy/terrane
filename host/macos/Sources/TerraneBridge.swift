@@ -182,6 +182,22 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return "en"
   }
 
+  /// Seed the public i18n bucket from checked-in catalogs under `path`
+  /// (idempotent). Best-effort: errors are logged, not fatal, so a missing
+  /// catalog just leaves apps on the English fallback.
+  func i18nImport(path: String) {
+    var out: UnsafeMutablePointer<CChar>?
+    var err: UnsafeMutablePointer<CChar>?
+    let rc = path.withCString { terrane_i18n_import(handle, $0, &out, &err) }
+    defer {
+      if let out { terrane_string_free(out) }
+      if let err { terrane_string_free(err) }
+    }
+    if rc != 0, let err {
+      NSLog("terrane-host: i18n seed skipped: \(String(cString: err))")
+    }
+  }
+
   /// The localized message bundle for `code` as `[key: value]`. `appId` empty =
   /// the shell-chrome ("system") bundle; otherwise the app frame bundle
   /// (system + that app's domain). English is the fallback layer.

@@ -37,5 +37,7 @@
   "home.apps": "应用",
   "home.loadError": "无法加载应用",
   "home.unnamed": "未命名应用",
-  "home.noUi": "无界面"
+  "home.noUi": "无界面",
+  "action.code": "代码",
+  "home.emptyNative": "未找到纯 HTML 应用界面。"
 }

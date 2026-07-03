@@ -37,5 +37,7 @@
   "home.apps": "التطبيقات",
   "home.loadError": "تعذّر تحميل التطبيقات",
   "home.unnamed": "تطبيق بلا اسم",
-  "home.noUi": "بدون واجهة"
+  "home.noUi": "بدون واجهة",
+  "action.code": "الكود",
+  "home.emptyNative": "لم يتم العثور على أي واجهات تطبيقات HTML عادية."
 }

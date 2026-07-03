@@ -37,5 +37,7 @@
   "home.apps": "Aplikasi",
   "home.loadError": "Tidak dapat memuat aplikasi",
   "home.unnamed": "Aplikasi tanpa nama",
-  "home.noUi": "tanpa antarmuka"
+  "home.noUi": "tanpa antarmuka",
+  "action.code": "Kode",
+  "home.emptyNative": "Tidak ada antarmuka aplikasi HTML biasa yang ditemukan."
 }

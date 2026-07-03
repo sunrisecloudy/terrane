@@ -37,5 +37,7 @@
   "home.apps": "アプリ",
   "home.loadError": "アプリを読み込めません",
   "home.unnamed": "名称未設定のアプリ",
-  "home.noUi": "UIなし"
+  "home.noUi": "UIなし",
+  "action.code": "コード",
+  "home.emptyNative": "プレーンな HTML アプリの UI が見つかりません。"
 }

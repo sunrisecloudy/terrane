@@ -36,6 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       fatalError("terrane-host: cannot open Terrane home at \(home.path)")
     }
     self.bridge = bridge
+    // Seed the shared i18n catalog if a catalog dir is configured (parity with
+    // the web host's startup seed); idempotent and best-effort. Any host or the
+    // CLI seeding this home also suffices.
+    if let i18nDir = ProcessInfo.processInfo.environment["TERRANE_I18N_DIR"], !i18nDir.isEmpty {
+      bridge.i18nImport(path: i18nDir)
+    }
     // Detect the locale from the system language once (parity with the web
     // host's Accept-Language negotiation) and load the native-chrome bundle.
     currentLocale = TerraneBridge.negotiateLocale(Locale.preferredLanguages)
@@ -193,7 +199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false
 
-    codeButton = NSButton(title: "Code", target: self, action: #selector(codeButtonChanged(_:)))
+    codeButton = NSButton(
+      title: nativeT("system.action.code", "Code"), target: self,
+      action: #selector(codeButtonChanged(_:)))
     codeButton.setButtonType(.toggle)
     codeButton.bezelStyle = .rounded
     codeButton.translatesAutoresizingMaskIntoConstraints = false
@@ -361,7 +369,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     appSidebar.select(appId: nil)
     hideBreadcrumb()
     sourceEditor?.setApp(nil)
-    webView.loadHTMLString(HomePage.render(apps: apps) ?? Self.emptyStateHTML, baseURL: nil)
+    let emptyMessage = nativeT("system.home.emptyNative", "No plain HTML app UIs found.")
+    webView.loadHTMLString(
+      HomePage.render(apps: apps) ?? Self.emptyStateHTML(emptyMessage), baseURL: nil)
   }
 
   private func saveSource(app: TerraneApp, file: SourceFile, text: String) throws
@@ -494,25 +504,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     return name.components(separatedBy: invalid).joined(separator: "-")
   }
 
-  private static let emptyStateHTML = """
-    <!doctype html>
-    <html>
-    <head>
-    <meta charset="utf-8">
-    <style>
-    :root { color-scheme: light dark; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: Canvas;
-      color: color-mix(in srgb, CanvasText 68%, transparent);
-    }
-    </style>
-    </head>
-    <body>No plain HTML app UIs found.</body>
-    </html>
-    """
+  /// The empty state shown when no HTML app UIs are installed, with a localized
+  /// `message` (HTML-escaped since it is dropped into the body).
+  private static func emptyStateHTML(_ message: String) -> String {
+    let safe = message
+      .replacingOccurrences(of: "&", with: "&amp;")
+      .replacingOccurrences(of: "<", with: "&lt;")
+      .replacingOccurrences(of: ">", with: "&gt;")
+    return """
+      <!doctype html>
+      <html>
+      <head>
+      <meta charset="utf-8">
+      <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: Canvas;
+        color: color-mix(in srgb, CanvasText 68%, transparent);
+      }
+      </style>
+      </head>
+      <body>\(safe)</body>
+      </html>
+      """
+  }
 }

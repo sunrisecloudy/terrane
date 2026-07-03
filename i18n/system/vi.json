@@ -37,5 +37,7 @@
   "home.apps": "Ứng dụng",
   "home.loadError": "Không thể tải ứng dụng",
   "home.unnamed": "Ứng dụng không tên",
-  "home.noUi": "không có giao diện"
+  "home.noUi": "không có giao diện",
+  "action.code": "Mã",
+  "home.emptyNative": "Không tìm thấy giao diện ứng dụng HTML thuần."
 }
