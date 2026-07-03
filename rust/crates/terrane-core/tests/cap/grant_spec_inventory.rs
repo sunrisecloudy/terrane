@@ -9,7 +9,7 @@ use terrane_core::grant_resource_specs;
 #[test]
 fn every_runtime_resource_capability_declares_namespace_v1() {
     let specs = grant_resource_specs();
-    for namespace in ["build", "crdt", "kv", "native", "relational_db"] {
+    for namespace in ["build", "crdt", "kv", "native", "relational_db", "stt"] {
         let spec = specs
             .iter()
             .find(|s| s.namespace == namespace && s.selector_schema_id == "namespace.v1")

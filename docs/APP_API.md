@@ -211,6 +211,16 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.relational_db.query(table, index, queryJson)` | read |
 | `ctx.resource.relational_db.tables()` | read |
 | `ctx.resource.relational_db.spec(table)` | read |
+
+#### `ctx.resource.stt`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.stt.select(sessionId, fromSeq, toSeq, sink)` | call |
+| `ctx.resource.stt.stop(sessionId)` | call |
+| `ctx.resource.stt.sessions()` | read |
+| `ctx.resource.stt.segments(sessionId)` | read |
+| `ctx.resource.stt.selections(sessionId)` | read |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as

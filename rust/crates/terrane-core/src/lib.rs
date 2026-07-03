@@ -60,6 +60,7 @@ use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
 use terrane_cap_replica::ReplicaState;
+use terrane_cap_stt::SttState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -79,6 +80,7 @@ pub struct State {
     pub model: ModelState,
     pub local_model: LocalModelState,
     pub native: NativeState,
+    pub stt: SttState,
     pub crdt: CrdtState,
     pub replica: ReplicaState,
 }
@@ -95,6 +97,7 @@ impl StateStore for State {
             "model" => Some(&self.model),
             "local-model" => Some(&self.local_model),
             "native" => Some(&self.native),
+            "stt" => Some(&self.stt),
             "crdt" => Some(&self.crdt),
             "replica" => Some(&self.replica),
             _ => None,
@@ -112,6 +115,7 @@ impl StateStore for State {
             "model" => Some(&mut self.model),
             "local-model" => Some(&mut self.local_model),
             "native" => Some(&mut self.native),
+            "stt" => Some(&mut self.stt),
             "crdt" => Some(&mut self.crdt),
             "replica" => Some(&mut self.replica),
             _ => None,
@@ -400,6 +404,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_model::ModelCapability));
     registry.register(Box::new(terrane_cap_local_model::LocalModelCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
+    registry.register(Box::new(terrane_cap_stt::SttCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
     registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
     registry
@@ -1136,7 +1141,15 @@ impl<R: EffectRunner + 'static> Core<R> {
 }
 
 fn admit_command(request: &Request) -> Result<()> {
-    if request.name.starts_with("auth.") && !request.authority.is_trusted_host() {
+    // Trusted-host only: `auth.*` plus the host-owned edge of `stt` (session
+    // lifecycle, segment append, retention). Apps may call only `stt.select`
+    // and `stt.session.close`, so those are deliberately not gated here.
+    let trusted_only = request.name.starts_with("auth.")
+        || request.name == "stt.session.open"
+        || request.name == "stt.segment.append"
+        || request.name == "stt.session.close-host"
+        || request.name == "stt.retention.trim";
+    if trusted_only && !request.authority.is_trusted_host() {
         return Err(Error::InvalidInput(format!(
             "{} requires trusted host authority",
             request.name
