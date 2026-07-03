@@ -236,6 +236,19 @@
 
       postJson(route, body)
         .then(function (result) {
+          if (isPermissionRequired(result)) {
+            // Host-owned elicitation: hold the app's promise, ask the user,
+            // and on approval retry the same request so the app just gets
+            // its output. Progress tells the waiting frame to extend its
+            // bridge timeout — a human decision doesn't fit inside 30s.
+            sendBridgeProgress(message.id);
+            return promptForPermission(result, function () {
+              return postJson(route, body);
+            });
+          }
+          return result;
+        })
+        .then(function (result) {
           sendBridgeResponse(message.id, result.ok, result.body);
         })
         .catch(function (error) {
@@ -287,8 +300,142 @@
     );
   }
 
+  function sendBridgeProgress(id) {
+    if (!id || !frame || !frame.contentWindow) return;
+    frame.contentWindow.postMessage(
+      { type: "terrane:bridge:progress", id: id },
+      "*"
+    );
+  }
+
   function errorMessage(error) {
     return error && error.message ? error.message : String(error || "request failed");
+  }
+
+  // ---- In-session permission prompts -------------------------------------
+  // A 403 permission_required from an invoke opens a host-owned dialog.
+  // Approve grants via the admin route and retries the original request;
+  // deny answers the app with the original permission error.
+
+  var permDialog = document.getElementById("perm-dialog");
+  var permApp = document.getElementById("perm-app");
+  var permResources = document.getElementById("perm-resources");
+  var permError = document.getElementById("perm-error");
+  var permApprove = document.getElementById("perm-approve");
+  var permDeny = document.getElementById("perm-deny");
+  var permQueue = [];
+  var permActive = null;
+
+  function isPermissionRequired(result) {
+    return (
+      !result.ok &&
+      result.body &&
+      result.body.type === "permission_required" &&
+      typeof result.body.requestId === "string" &&
+      result.body.requestId !== ""
+    );
+  }
+
+  function promptForPermission(result, retry) {
+    return new Promise(function (resolve) {
+      var entry = { required: result.body, original: result, retry: retry, resolve: resolve };
+      var same =
+        permActive && permActive.required.requestId === entry.required.requestId
+          ? permActive
+          : null;
+      for (var i = 0; !same && i < permQueue.length; i++) {
+        if (permQueue[i].required.requestId === entry.required.requestId) same = permQueue[i];
+      }
+      if (same) {
+        same.followers.push(entry);
+        return;
+      }
+      entry.followers = [];
+      permQueue.push(entry);
+      pumpPermissionQueue();
+    });
+  }
+
+  function pumpPermissionQueue() {
+    if (permActive || !permQueue.length || !permDialog) return;
+    permActive = permQueue.shift();
+    var required = permActive.required;
+    permApp.textContent = required.appName || required.app || "This app";
+    permResources.textContent = (required.missingResources || []).join(", ") || "a resource";
+    permError.hidden = true;
+    permError.textContent = "";
+    setPermBusy(false);
+    permDialog.hidden = false;
+    permApprove.focus();
+  }
+
+  function setPermBusy(busy) {
+    permApprove.disabled = busy;
+    permDeny.disabled = busy;
+  }
+
+  function settlePermission(makeResult) {
+    var entry = permActive;
+    permActive = null;
+    permDialog.hidden = true;
+    var all = [entry].concat(entry.followers);
+    all.forEach(function (follower) {
+      makeResult(follower).then(follower.resolve);
+    });
+    pumpPermissionQueue();
+  }
+
+  function decideActivePermission(action) {
+    if (!permActive) return;
+    setPermBusy(true);
+    var requestId = permActive.required.requestId;
+    fetch("/__terrane/admin/requests/" + encodeURIComponent(requestId) + "/" + action, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Terrane-Admin": "local-admin",
+      },
+      body: "{}",
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          return response.text().then(function (text) {
+            var detail = "";
+            try {
+              detail = (JSON.parse(text) || {}).error || "";
+            } catch (_) {}
+            throw new Error(detail || "HTTP " + response.status);
+          });
+        }
+        if (action === "approve") {
+          settlePermission(function (follower) {
+            return follower.retry();
+          });
+        } else {
+          settlePermission(function (follower) {
+            return Promise.resolve(follower.original);
+          });
+        }
+      })
+      .catch(function (error) {
+        setPermBusy(false);
+        permError.textContent = "Cannot " + action + ": " + errorMessage(error);
+        permError.hidden = false;
+      });
+  }
+
+  if (permDialog) {
+    permApprove.addEventListener("click", function () {
+      decideActivePermission("approve");
+    });
+    permDeny.addEventListener("click", function () {
+      decideActivePermission("deny");
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !permDialog.hidden && !permApprove.disabled) {
+        decideActivePermission("deny");
+      }
+    });
   }
 
   // Top bar <-> app protocol (postMessage, best-effort):

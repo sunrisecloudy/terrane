@@ -1057,6 +1057,18 @@ fn serves_catalog_ui_and_invoke_over_http() {
         body.contains("window.__terraneLiveReload = true"),
         "shell should enable catalog polling under live reload: {body}"
     );
+    // In-session permission prompts: a permission_required invoke opens a
+    // host-owned dialog that can approve/deny and retry the request.
+    assert!(
+        body.contains("id=\"perm-dialog\"")
+            && body.contains("id=\"perm-approve\"")
+            && body.contains("id=\"perm-deny\""),
+        "permission dialog missing from shell: {body}"
+    );
+    assert!(
+        body.contains("permission_required") && body.contains("/__terrane/admin/requests/"),
+        "permission prompt wiring missing from shell script: {body}"
+    );
     assert!(
         body.contains("id=\"desktop-info-button\"")
             && body.contains("setInfoPanelOpen")

@@ -19,9 +19,30 @@
   var BUILDER_POLL_MS = 2000;
   var BUILDER_DEADLINE_MS = 900000;
 
+  // The host asks the user in person for some requests (permission prompts);
+  // give those a human-scale deadline once the host signals progress.
+  var ELICITATION_TIMEOUT_MS = 600000;
+
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
     var message = event.data || {};
+    if (message && message.type === "terrane:bridge:progress") {
+      var waiting = bridgePending[message.id];
+      if (!waiting) return;
+      if (waiting.relayTo) {
+        waiting.relayTo.postMessage(
+          { type: "terrane:bridge:progress", id: waiting.relayId },
+          "*"
+        );
+        return;
+      }
+      clearTimeout(waiting.timeout);
+      waiting.timeout = setTimeout(function () {
+        delete bridgePending[message.id];
+        waiting.reject(new Error("Terrane host bridge timed out waiting for approval"));
+      }, ELICITATION_TIMEOUT_MS);
+      return;
+    }
     if (!message || message.type !== "terrane:bridge:response") return;
     var pending = bridgePending[message.id];
     if (!pending) return;

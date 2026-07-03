@@ -381,6 +381,73 @@
       .settings-close:hover {
         border-color: #0071e3;
       }
+      .perm-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 40;
+        display: grid;
+        place-items: center;
+        background: color-mix(in srgb, CanvasText 32%, transparent);
+      }
+      .perm-overlay[hidden] {
+        display: none;
+      }
+      .perm-card {
+        width: min(440px, calc(100vw - 48px));
+        padding: 20px;
+        border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+        border-radius: 12px;
+        background: Canvas;
+        box-shadow: 0 18px 44px color-mix(in srgb, CanvasText 30%, transparent);
+      }
+      .perm-card h2 {
+        margin: 0 0 10px;
+        font-size: 16px;
+      }
+      .perm-text {
+        margin: 0 0 6px;
+        line-height: 1.5;
+      }
+      .perm-note {
+        margin: 0 0 14px;
+        font-size: 12px;
+        color: color-mix(in srgb, CanvasText 60%, transparent);
+      }
+      .perm-error {
+        margin: 0 0 12px;
+        color: #e0402f;
+      }
+      .perm-error[hidden] {
+        display: none;
+      }
+      .perm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+      .perm-deny,
+      .perm-approve {
+        padding: 7px 14px;
+        border-radius: 8px;
+        font: inherit;
+        cursor: pointer;
+      }
+      .perm-deny {
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+        color: inherit;
+      }
+      .perm-approve {
+        border: 1px solid #0071e3;
+        background: #0071e3;
+        color: #fff;
+        font-weight: 600;
+      }
+      .perm-deny:disabled,
+      .perm-approve:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
       .title {
         width: 1px;
         height: 1px;
@@ -587,6 +654,33 @@
           </section>
         </div>
       </main>
+    </div>
+    <div
+      id="perm-dialog"
+      class="perm-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="perm-title"
+      hidden
+    >
+      <div class="perm-card">
+        <h2 id="perm-title">Permission request</h2>
+        <p class="perm-text">
+          <strong id="perm-app">An app</strong> asks for access to
+          <strong id="perm-resources">a resource</strong>.
+        </p>
+        <p class="perm-note" id="perm-note">
+          Approving grants access for this session. You can review grants in
+          the admin console.
+        </p>
+        <p class="perm-error" id="perm-error" hidden></p>
+        <div class="perm-actions">
+          <button id="perm-deny" class="perm-deny" type="button">Deny</button>
+          <button id="perm-approve" class="perm-approve" type="button">
+            Approve
+          </button>
+        </div>
+      </div>
     </div>
     <script>
       window.__terraneLiveReload = __LIVE_RELOAD__;
