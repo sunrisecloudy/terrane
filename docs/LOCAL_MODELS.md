@@ -37,8 +37,9 @@ clears it.
 
 - `local-model pull [<id> <hf-repo> [<file>]] [--backend gguf|mlx] [options]`
   — download weights and register the spec. Bare `pull` fetches the
-  recommended model for the backend. GGUF files land in
-  `$TERRANE_HOME/models/`; MLX pulls snapshot the repo into the HF cache.
+  recommended model for the backend. GGUF pulls reuse the standard Hugging Face
+  hub cache when the file already exists there and otherwise download into that
+  cache; MLX pulls snapshot the repo into the same HF cache.
 - `local-model register <id> <backend> <path> [options]` — record a spec for
   weights already on disk (checked at inference time, not at decide time).
 - `local-model rm <id>` — unregister (weights on disk untouched).
@@ -86,6 +87,13 @@ The call runs the effect once and records `local-model.responded`; Option-A
 replay never re-runs the JS or the inference. Over MCP, `local-model.ask` is
 grant-gated like `kv`/`crdt` writes; `register`/`pull`/`rm`/`default` stay
 trusted-admin-only (they configure machine-local weights).
+
+For GGUF specs pulled from Hugging Face, inference resolves the recorded
+`hf:<repo>/<file>` source through the standard Hugging Face cache
+(`HF_HUB_CACHE` / `HUGGINGFACE_HUB_CACHE`, `HF_HOME`, or
+`~/.cache/huggingface/hub`) if the originally recorded path is no longer
+present. This lets Terrane share model files with other local tools instead of
+requiring a private copy per `TERRANE_HOME`.
 
 ## Resident MLX worker
 

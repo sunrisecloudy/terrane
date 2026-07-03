@@ -60,6 +60,12 @@ argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──
   green: `cargo test` and `cargo clippy --all-targets -- -D warnings`.
 - Commit often: small, green, granular. Branch off `main`. Stage your own files
   explicitly — never `git add -A`. Preserve unrelated dirty/untracked work.
+- When creating or entering a new agent worktree (Codex, Claude Code, or
+  OpenCode), copy the canonical Terrane home into that checkout before running
+  hosts or app-builder flows:
+  `scripts/copy-terrane-home.sh --to "$PWD/.terrane"`. The script defaults to
+  `/Users/vehasuwat/Project/terrane/.terrane` when available and skips live
+  locks/sockets.
 
 ## Validation
 

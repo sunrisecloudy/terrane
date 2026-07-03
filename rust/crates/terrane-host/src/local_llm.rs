@@ -72,7 +72,7 @@ pub(crate) fn call(
         "llama_cpp" => {
             // Cached process-globally: long-lived hosts pay the GGUF load once.
             let engine = cached_llama(&ModelFile {
-                path: std::path::PathBuf::from(&spec.local_path),
+                path: resolve_gguf_path(&spec.local_path, spec.source.as_deref()),
                 context_length: spec.context_length,
                 chat_template_override: spec.chat_template.clone(),
             })
@@ -113,9 +113,32 @@ pub(crate) fn call(
     })?])
 }
 
+#[cfg(feature = "local-llm")]
+fn resolve_gguf_path(local_path: &str, source: Option<&str>) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(local_path);
+    if path.is_file() {
+        return path;
+    }
+    hf_source_parts(local_path)
+        .or_else(|| source.and_then(hf_source_parts))
+        .and_then(|(repo, file)| terrane_local_llm::cached_hf_model_file(repo, file))
+        .unwrap_or(path)
+}
+
+#[cfg(feature = "local-llm")]
+fn hf_source_parts(source: &str) -> Option<(&str, &str)> {
+    let source = source.strip_prefix("hf:")?;
+    let (repo, file) = source.rsplit_once('/')?;
+    if repo.is_empty() || file.is_empty() {
+        return None;
+    }
+    Some((repo, file))
+}
+
 /// Download weights from Hugging Face and record the registered spec: gguf
-/// files land in `$TERRANE_HOME/models/`; mlx repos snapshot into the HF
-/// cache (pre-warming what the worker would otherwise fetch on first ask).
+/// files reuse the normal HF hub cache when present and otherwise download
+/// there; mlx repos snapshot into the HF cache (pre-warming what the worker
+/// would otherwise fetch on first ask).
 #[cfg(feature = "local-llm")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pull(

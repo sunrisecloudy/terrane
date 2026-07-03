@@ -91,6 +91,10 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
             "register/rm validate purely; the weights file is checked at inference time, at the \
              edge."
                 .to_string(),
+            "Hugging Face pulls reuse the standard HF hub cache when possible; pulled GGUF \
+             specs record an hf:<repo>/<file> source so hosts can resolve the common cache if \
+             the originally recorded path moves."
+                .to_string(),
             "--schema (JSON object) and --grammar (GBNF) are mutually exclusive; both constrain \
              decoding at the edge."
                 .to_string(),
