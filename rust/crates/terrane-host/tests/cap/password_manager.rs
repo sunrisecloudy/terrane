@@ -126,6 +126,16 @@ fn password_manager_vault_lifecycle_and_no_plaintext_in_log() {
         "plaintext secret leaked into the log: {log}"
     );
 
+    // Stronger than `terrane log` (which truncates values for display): scan the
+    // RAW on-disk event log. Neither the password, the username, NOR the item
+    // NAME may appear — names are sensitive metadata and must be sealed, not
+    // leaked through the plaintext audit trail.
+    let raw = std::fs::read(home.join("log.bin")).unwrap();
+    let leaks = |needle: &str| raw.windows(needle.len()).any(|w| w == needle.as_bytes());
+    assert!(!leaks(SECRET), "raw log leaked the password");
+    assert!(!leaks("octocat"), "raw log leaked the username");
+    assert!(!leaks("GitHub"), "raw log leaked the item name (audit detail?)");
+
     // Replay rebuilds the vault from the kv ciphertext events alone.
     let (ok, out, err) = terrane(home, &["replay"]);
     assert!(ok, "replay failed: {err}");

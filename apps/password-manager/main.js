@@ -15,7 +15,8 @@
 //   item:<id>     -> sealed ciphertext blob of the full item JSON
 //   folder:<id>   -> sealed ciphertext blob of { name }
 //   trash:<id>    -> sealed ciphertext blob of { item, deletedAt }
-//   audit:<id>    -> plaintext { ts, action, item, detail } — reviewable trail
+//   audit:<id>    -> plaintext { ts, action, item, detail } — reviewable trail;
+//                    detail is non-secret only (id/count/null), never a name
 //   settings      -> plaintext settings JSON
 //
 // AUTH
@@ -101,6 +102,11 @@ function idsWithPrefix(prefix) {
   return ids;
 }
 
+// Append a non-secret audit entry. The trail is stored as PLAINTEXT kv (it must
+// be reviewable without unlocking), so `detail` must never carry secret or
+// sensitive data — no passwords and no item/folder NAMES (a name like
+// "Chase Bank" is itself sensitive). Pass only an item id, a count, or null; the
+// UI can join ids back to names after unlocking.
 function audit(action, item, detail) {
   var id = nextId("aseq");
   kv.set(
@@ -328,7 +334,7 @@ var actions = {
         item.updated = now();
         item.history = item.history || [];
         if (!saveItem(session, item)) return err("seal_failed");
-        audit("item.add", id, item.name);
+        audit("item.add", id, null);
         return ok({ id: id, name: item.name });
       });
     },
@@ -361,7 +367,7 @@ var actions = {
         item.updated = now();
         item.history = [];
         if (!saveItem(session, item)) return err("seal_failed");
-        audit("item.add", id, item.name);
+        audit("item.add", id, null);
         return ok({ id: id, name: item.name });
       });
     },
@@ -376,7 +382,7 @@ var actions = {
       return withSession(args[0], function (session) {
         var item = findItem(session, args[1]);
         if (!item) return err("not_found");
-        audit("item.reveal", item.id, item.name);
+        audit("item.reveal", item.id, null);
         return ok({ item: item });
       });
     },
@@ -391,7 +397,7 @@ var actions = {
       return withSession(args[0], function (session) {
         var item = findItem(session, args[1]);
         if (!item) return err("not_found");
-        audit("item.reveal-password", item.id, item.name);
+        audit("item.reveal-password", item.id, null);
         return ok({ password: item.password || "" });
       });
     },
@@ -476,7 +482,7 @@ var actions = {
         item.id = id;
         item.updated = now();
         if (!saveItem(session, item)) return err("seal_failed");
-        audit("item.edit", id, item.name);
+        audit("item.edit", id, null);
         return ok({ id: id });
       });
     },
@@ -497,7 +503,7 @@ var actions = {
         if (blob == null) return err("seal_failed");
         kv.set(TRASH_PREFIX + id, blob);
         kv.rm(ITEM_PREFIX + id);
-        audit("item.delete", id, item.name);
+        audit("item.delete", id, null);
         return ok({});
       });
     },
@@ -538,7 +544,7 @@ var actions = {
         if (!rec || !rec.item) return err("not_found");
         if (!saveItem(session, rec.item)) return err("seal_failed");
         kv.rm(TRASH_PREFIX + id);
-        audit("item.restore", id, rec.item.name);
+        audit("item.restore", id, null);
         return ok({ id: id });
       });
     },
@@ -571,7 +577,7 @@ var actions = {
         var blob = sealItem(session, { id: id, name: name });
         if (blob == null) return err("seal_failed");
         kv.set(FOLDER_PREFIX + id, blob);
-        audit("folder.add", id, name);
+        audit("folder.add", id, null);
         return ok({ id: id, name: name });
       });
     },
@@ -659,7 +665,7 @@ var actions = {
         if (!params) return err("no_totp");
         var r = cr("totp", JSON.stringify(params));
         if (!r.ok) return err(r.reason || "totp_failed");
-        audit("item.totp", item.id, item.name);
+        audit("item.totp", item.id, null);
         return ok({ code: r.code, remaining: r.remaining, period: r.period });
       });
     },
