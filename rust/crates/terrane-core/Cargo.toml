@@ -25,6 +25,7 @@ terrane-cap-kv.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-local-model.workspace = true
 terrane-cap-relational-db.workspace = true
+terrane-cap-search.workspace = true
 terrane-cap-model.workspace = true
 terrane-cap-native.workspace = true
 terrane-cap-net.workspace = true

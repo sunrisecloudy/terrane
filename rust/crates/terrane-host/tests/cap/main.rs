@@ -15,4 +15,5 @@ mod local_model;
 mod model;
 mod native;
 mod net;
+mod search;
 mod sysinfo;

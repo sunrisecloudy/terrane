@@ -57,6 +57,14 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 app_arg_index: 0,
             }
         }
+        "search.upsert"
+        | "search.upsertJson"
+        | "search.remove"
+        | "search.configure"
+        | "search.setEmbedding" => PublicCommandDisposition::GrantGated {
+            namespace: "search",
+            app_arg_index: 0,
+        },
         "native.clipboard.write-text"
         | "native.external.open-url"
         | "native.notification.show"

@@ -171,6 +171,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "local-model",
             "native",
             "relational_db",
+            "search",
             "sysinfo"
         ]
     );
