@@ -65,6 +65,7 @@ fn read(state: &TestState, method: &str, args: Vec<String>) -> String {
         state,
         bus: &bus,
         app: "notes",
+        host: None,
     };
     let ReadValue::OptString(Some(raw)) = SearchCapability
         .read_resource(ctx, method, &args)

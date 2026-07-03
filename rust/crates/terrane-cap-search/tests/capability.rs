@@ -70,6 +70,7 @@ fn read_resource_status_reports_document_count() {
         state: core.state(),
         bus: &bus,
         app: "notes",
+        host: None,
     };
     let ReadValue::OptString(Some(raw)) = SearchCapability
         .read_resource(ctx, "status", &[])

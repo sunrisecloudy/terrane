@@ -215,6 +215,20 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.relational_db.tables()` | read |
 | `ctx.resource.relational_db.spec(table)` | read |
 
+#### `ctx.resource.search`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.search.upsert(docId, text)` | write |
+| `ctx.resource.search.upsertJson(docId, docJson)` | write |
+| `ctx.resource.search.remove(docId)` | write |
+| `ctx.resource.search.configure(configJson)` | write |
+| `ctx.resource.search.setEmbedding(docId, embeddingJson)` | write |
+| `ctx.resource.search.query(text, optionsJson)` | read |
+| `ctx.resource.search.bm25(text, optionsJson)` | read |
+| `ctx.resource.search.vectorSearch(queryVecJson, optionsJson)` | read |
+| `ctx.resource.search.status()` | read |
+
 #### `ctx.resource.sysinfo`
 
 | Method | Kind |

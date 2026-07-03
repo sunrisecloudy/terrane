@@ -49,6 +49,7 @@ fn search_dispatches_to_kv_events_and_replays() {
         state: core.state(),
         bus: &bus,
         app: "notes",
+        host: None,
     };
     let ReadValue::OptString(Some(raw)) = terrane_cap_search::SearchCapability
         .read_resource(

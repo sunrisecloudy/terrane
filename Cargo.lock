@@ -3371,6 +3371,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-search"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "terrane-cap-app",
+ "terrane-cap-interface",
+ "terrane-cap-kv",
+ "terrane-core",
+]
+
+[[package]]
 name = "terrane-cap-sysinfo"
 version = "0.1.0"
 dependencies = [
@@ -3414,6 +3427,7 @@ dependencies = [
  "terrane-cap-net",
  "terrane-cap-relational-db",
  "terrane-cap-replica",
+ "terrane-cap-search",
  "terrane-cap-sysinfo",
  "terrane-cap-wasm-runtime",
  "wat",
