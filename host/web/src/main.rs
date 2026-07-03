@@ -47,6 +47,26 @@ fn main() {
         }
     };
 
+    // Seed the shared i18n catalog into the public KV bucket so apps localize
+    // out of the box. The catalog root holds `i18n/system` and `apps/<id>/i18n`
+    // — prefer $TERRANE_I18N_DIR, else the dev-apps dir's parent, else the CWD.
+    // Idempotent (diff-based) and best-effort: a missing catalog is a silent
+    // skip and apps just fall back to English.
+    let i18n_root = std::env::var_os("TERRANE_I18N_DIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            args.apps_dir
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .map(std::path::Path::to_path_buf)
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    match terrane_host::seed_public_i18n(&mut core, &i18n_root) {
+        Ok(outcome) if outcome.entries > 0 => eprintln!("terrane-web: {}", outcome.message()),
+        Ok(_) => {}
+        Err(e) => eprintln!("terrane-web: i18n seed skipped: {e}"),
+    }
+
     let server = match Server::http(&args.addr) {
         Ok(server) => server,
         Err(e) => {

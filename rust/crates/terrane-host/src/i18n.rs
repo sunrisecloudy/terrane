@@ -67,8 +67,6 @@ pub fn import_i18n_dir(core: &mut HostCore, root: &Path) -> Result<I18nImportOut
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let mut merged: BTreeMap<String, String> = BTreeMap::new();
-    let mut languages = std::collections::BTreeSet::new();
-    let mut domains = std::collections::BTreeSet::new();
 
     for file in &files {
         let text = std::fs::read_to_string(&file.path)
@@ -88,9 +86,6 @@ pub fn import_i18n_dir(core: &mut HostCore, root: &Path) -> Result<I18nImportOut
             )
         })?;
 
-        domains.insert(file.domain.clone());
-        languages.insert(code);
-
         for (key, val) in obj {
             let value = val.as_str().ok_or_else(|| {
                 format!(
@@ -105,16 +100,59 @@ pub fn import_i18n_dir(core: &mut HostCore, root: &Path) -> Result<I18nImportOut
         }
     }
 
-    let payload = serde_json::to_string(&merged)
-        .map_err(|e| format!("encode i18n payload: {e}"))?;
+    // Diff against the current public bucket so re-importing unchanged catalogs
+    // is a no-op (no duplicate events, no log growth) — this makes the importer
+    // safe to run on every host startup, not just as a one-off seed step.
+    let current = core
+        .state()
+        .kv
+        .data
+        .get(PUBLIC_BUCKET_APP_ID)
+        .cloned()
+        .unwrap_or_default();
+    let changed: BTreeMap<String, String> = merged
+        .into_iter()
+        .filter(|(key, value)| current.get(key) != Some(value))
+        .collect();
 
-    dispatch_on_core(core, "kv.public.import", &[payload])?;
+    let mut languages = std::collections::BTreeSet::new();
+    let mut domains = std::collections::BTreeSet::new();
+    for key in changed.keys() {
+        if let Some((code, tail)) = key.strip_prefix("i18n/").and_then(|r| r.split_once('/')) {
+            languages.insert(code.to_string());
+            if let Some((domain, _)) = tail.split_once('.') {
+                domains.insert(domain.to_string());
+            }
+        }
+    }
+
+    if !changed.is_empty() {
+        let payload =
+            serde_json::to_string(&changed).map_err(|e| format!("encode i18n payload: {e}"))?;
+        dispatch_on_core(core, "kv.public.import", &[payload])?;
+    }
 
     Ok(I18nImportOutcome {
-        entries: merged.len(),
+        entries: changed.len(),
         languages: languages.len(),
         domains: domains.len(),
     })
+}
+
+/// Best-effort startup seed: import catalogs from `root` into the public bucket
+/// if they are present, treating a missing-catalog root as a silent skip (the
+/// host still runs, apps just fall back to English). Idempotent — safe to call
+/// on every launch.
+pub fn seed_public_i18n(core: &mut HostCore, root: &Path) -> Result<I18nImportOutcome, String> {
+    match import_i18n_dir(core, root) {
+        Ok(outcome) => Ok(outcome),
+        Err(e) if e.starts_with("no i18n catalogs found") => Ok(I18nImportOutcome {
+            entries: 0,
+            languages: 0,
+            domains: 0,
+        }),
+        Err(e) => Err(e),
+    }
 }
 
 /// Discover every catalog file under `root` for the two known layouts. Missing
