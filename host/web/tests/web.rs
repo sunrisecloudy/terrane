@@ -1983,6 +1983,10 @@ fn shell_injects_premium_url_when_configured() {
         body.contains("id=\"settings-premium\""),
         "premium settings row missing: {body}"
     );
+    assert!(
+        body.contains("id=\"premium-section\"") && body.contains("id=\"premium-list\""),
+        "premium apps sidebar section missing: {body}"
+    );
     let _ = child.kill();
     let _ = child.wait();
 
