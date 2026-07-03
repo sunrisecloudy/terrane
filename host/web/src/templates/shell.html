@@ -234,6 +234,189 @@
       .topbar-right {
         justify-self: end;
         position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .agents-widget {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+      .agents-widget[hidden] {
+        display: none;
+      }
+      .agent-stack {
+        display: inline-flex;
+        align-items: center;
+      }
+      .agent-avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 999px;
+        border: 2px solid Canvas;
+        display: inline-grid;
+        place-items: center;
+        font-weight: 700;
+        font-size: 12px;
+        color: #fff;
+        cursor: pointer;
+        text-transform: uppercase;
+        margin-left: -8px;
+        transition: transform 0.12s ease;
+        position: relative;
+        user-select: none;
+      }
+      .agent-stack .agent-avatar:first-child {
+        margin-left: 0;
+      }
+      .agent-avatar:hover {
+        transform: translateY(-2px);
+        z-index: 2;
+      }
+      .agent-avatar.selected {
+        box-shadow: 0 0 0 2px Canvas, 0 0 0 4px #0071e3;
+        z-index: 3;
+      }
+      .agent-avatar-lg {
+        width: 36px;
+        height: 36px;
+        font-size: 15px;
+        margin-left: 0;
+        cursor: default;
+      }
+      .agent-add {
+        width: 26px;
+        height: 26px;
+        border-radius: 999px;
+        margin-left: 8px;
+        border: 1px dashed color-mix(in srgb, CanvasText 30%, transparent);
+        background: none;
+        color: color-mix(in srgb, CanvasText 60%, transparent);
+        cursor: pointer;
+        font-size: 17px;
+        line-height: 1;
+        display: inline-grid;
+        place-items: center;
+      }
+      .agent-add:hover {
+        border-color: #0071e3;
+        color: #0071e3;
+      }
+      .agent-panel {
+        position: absolute;
+        right: 0;
+        top: calc(100% + 10px);
+        z-index: 40;
+        width: 300px;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+        border-radius: 12px;
+        background: Canvas;
+        box-shadow: 0 12px 30px color-mix(in srgb, CanvasText 24%, transparent);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .agent-panel[hidden] {
+        display: none;
+      }
+      .agent-panel-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .agent-panel-id {
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        flex: 1;
+      }
+      .agent-panel-id small {
+        color: color-mix(in srgb, CanvasText 55%, transparent);
+        font-size: 12px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+      }
+      .agent-linkbtn {
+        border: 0;
+        background: none;
+        color: #0071e3;
+        cursor: pointer;
+        font: inherit;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      .agent-input,
+      .agent-field input,
+      .agent-field textarea {
+        width: 100%;
+        box-sizing: border-box;
+        font: inherit;
+        font-size: 13px;
+        padding: 8px;
+        border-radius: 8px;
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        background: color-mix(in srgb, CanvasText 4%, Canvas);
+        color: inherit;
+        resize: vertical;
+      }
+      .agent-panel-actions {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .agent-model {
+        color: color-mix(in srgb, CanvasText 50%, transparent);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .agent-run {
+        padding: 7px 16px;
+        border-radius: 8px;
+        border: 0;
+        cursor: pointer;
+        background: #0071e3;
+        color: #fff;
+        font: inherit;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+      .agent-run:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .agent-status {
+        font-size: 12px;
+        color: color-mix(in srgb, CanvasText 65%, transparent);
+        white-space: pre-wrap;
+        max-height: 170px;
+        overflow: auto;
+      }
+      .agent-status.error {
+        color: #d64545;
+      }
+      .agent-field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+      }
+      .agent-field[hidden] {
+        display: none;
+      }
+      .agent-field > span {
+        color: color-mix(in srgb, CanvasText 60%, transparent);
+      }
+      .agent-error {
+        color: #d64545;
+        font-size: 12px;
       }
       .user-avatar {
         width: 32px;
@@ -775,6 +958,94 @@
             ></span>
           </nav>
           <div class="topbar-right">
+            <div id="agents-widget" class="agents-widget" hidden>
+              <div
+                id="agent-stack"
+                class="agent-stack"
+                role="group"
+                aria-label="Agents"
+              ></div>
+              <button
+                id="agent-add"
+                class="agent-add"
+                type="button"
+                title="New agent"
+                aria-label="New agent"
+              >
+                +
+              </button>
+
+              <div
+                id="agent-assist"
+                class="agent-panel"
+                role="dialog"
+                aria-label="Agent assist"
+                hidden
+              >
+                <div class="agent-panel-head">
+                  <span id="assist-avatar" class="agent-avatar agent-avatar-lg"></span>
+                  <div class="agent-panel-id">
+                    <strong id="assist-name">Agent</strong>
+                    <small id="assist-personality"></small>
+                  </div>
+                  <button
+                    id="assist-setup"
+                    class="agent-linkbtn"
+                    type="button"
+                    title="Agent settings"
+                  >
+                    Settings
+                  </button>
+                </div>
+                <textarea
+                  id="assist-input"
+                  class="agent-input"
+                  rows="2"
+                  placeholder="Ask this agent to help with the app…"
+                ></textarea>
+                <div class="agent-panel-actions">
+                  <span id="assist-model" class="agent-model"></span>
+                  <button id="assist-run" class="agent-run" type="button">Ask</button>
+                </div>
+                <div id="assist-status" class="agent-status" hidden></div>
+              </div>
+
+              <div
+                id="agent-setup"
+                class="agent-panel"
+                role="dialog"
+                aria-label="Agent setup"
+                hidden
+              >
+                <div class="agent-panel-head">
+                  <strong id="setup-title">Agent settings</strong>
+                </div>
+                <label class="agent-field agent-field-id" id="setup-id-field" hidden>
+                  <span>Id</span>
+                  <input id="setup-id" type="text" spellcheck="false" />
+                </label>
+                <label class="agent-field">
+                  <span>Name</span>
+                  <input id="setup-name" type="text" />
+                </label>
+                <label class="agent-field">
+                  <span>Personality</span>
+                  <textarea id="setup-personality" rows="3"></textarea>
+                </label>
+                <label class="agent-field">
+                  <span>Model</span>
+                  <input id="setup-model" type="text" spellcheck="false" />
+                </label>
+                <label class="agent-field">
+                  <span>Colour</span>
+                  <input id="setup-color" type="text" spellcheck="false" />
+                </label>
+                <div class="agent-panel-actions">
+                  <span id="setup-error" class="agent-error"></span>
+                  <button id="setup-save" class="agent-run" type="button">Save</button>
+                </div>
+              </div>
+            </div>
             <button
               id="user-button"
               class="user-avatar"

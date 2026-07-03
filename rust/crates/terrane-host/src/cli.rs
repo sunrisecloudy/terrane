@@ -53,9 +53,58 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane sync <app> (--from <home> | --peer <addr>)".into())
         }
+        // Run an app backend. `--ask` prompts (hidden) for the first verb
+        // argument — the password manager's `auth` — so a master password never
+        // lands on argv.
+        ["run", app, verb, rest @ ..] => run_app_backend(app, verb, rest),
+        ["run", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane run <app> <verb> [args… | --ask]".into())
+        }
         [ns, verb, rest @ ..] => run_command(ns, verb, rest),
         [other] => Err(format!("unknown command {other:?} (try `terrane help`)")),
     }
+}
+
+/// Run an app backend via `js-runtime.run`. A bare `--ask` anywhere in the verb
+/// arguments is dropped and replaced by a value read (without echo) from the
+/// terminal, spliced in as the FIRST verb argument (the vault app's `auth`). This
+/// keeps a master password out of argv, shell history, and the process table.
+pub fn run_app_backend(app: &str, verb: &str, rest: &[&str]) -> Result<(), String> {
+    let ask = rest.contains(&"--ask");
+    let mut args: Vec<String> = Vec::with_capacity(rest.len() + 2);
+    args.push(app.to_string());
+    args.push(verb.to_string());
+    if ask {
+        args.push(prompt_secret("Master password: ")?);
+    }
+    for arg in rest {
+        if *arg != "--ask" {
+            args.push((*arg).to_string());
+        }
+    }
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    dispatch("js-runtime.run", &refs)
+}
+
+/// Read one secret line. On an interactive terminal it prompts on stderr and
+/// reads with echo disabled; when stdin is piped (scripts, tests) it reads the
+/// line plainly with no prompt — so the same flag works both ways. rpassword
+/// reads the controlling terminal directly, which errors when there is none,
+/// hence the explicit `is_terminal()` branch.
+pub fn prompt_secret(label: &str) -> Result<String, String> {
+    use std::io::{BufRead as _, IsTerminal as _, Write as _};
+    if std::io::stdin().is_terminal() {
+        eprint!("{label}");
+        let _ = std::io::stderr().flush();
+        return rpassword::read_password().map_err(|e| format!("could not read secret: {e}"));
+    }
+    let mut line = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| format!("could not read secret: {e}"))?;
+    Ok(line.trim_end_matches(['\n', '\r']).to_string())
 }
 
 /// Generic write path: `<ns> <verb> [args…]` -> `dispatch("<ns>.<verb>", args)`.
@@ -548,6 +597,7 @@ pub fn print_help() {
          \x20 terrane local-model server status|stop   inspect or stop the resident mlx server\n\
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
          \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
+         \x20 terrane run <app> <verb> [--ask] [args…]         run an app backend; --ask prompts (hidden) for the first arg\n\
          \x20 terrane js-runtime run <app> [input…]            run an app's JS backend\n\
          \x20 terrane wasm-runtime run <app> [input…]          run an app's WASM backend\n\n\
          Multi-user:\n\

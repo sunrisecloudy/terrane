@@ -75,6 +75,7 @@ fn resource_reads_return_values_for_current_app() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
 
     assert_eq!(
@@ -214,6 +215,7 @@ fn public_reads_hide_reserved_keys_and_scan_is_bounded() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
 
     assert_eq!(

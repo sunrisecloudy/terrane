@@ -3,14 +3,21 @@ import {
   type CSSProperties,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
 
 type CategoryKey = "underweight" | "healthy" | "overweight" | "obesity";
 
+type Category = {
+  key: CategoryKey;
+  label: string;
+};
+
 type BmiResult = {
   bmi: number;
+  category: string;
   key: CategoryKey;
 };
 
@@ -19,15 +26,18 @@ type BackendResult = {
   category?: string;
 };
 
+type BackendState = {
+  height: number | string;
+  weight: number | string;
+  result?: BackendResult | null;
+};
+
 type RangeStyle = CSSProperties & {
   "--fill": string;
 };
 
 type TerraneApi = {
   invoke?: (verb: string, ...args: Array<number | string>) => Promise<string>;
-  t?: (key: string, params?: Record<string, unknown>) => string;
-  getDir?: () => string;
-  onMessages?: (cb: (messages: Record<string, string>) => void) => () => void;
 };
 
 declare global {
@@ -41,40 +51,11 @@ const defaults = {
   weight: 65,
 } as const;
 
-// Translate through the host bundle when present, else the English fallback.
-function tr(key: string, fallback: string): string {
-  const api = window.terrane;
-  if (api && typeof api.t === "function") {
-    return api.t(key, { default: fallback });
-  }
-  return fallback;
-}
-
-const CATEGORY_LABELS: Record<CategoryKey, string> = {
-  underweight: "Underweight",
-  healthy: "Healthy",
-  overweight: "Overweight",
-  obesity: "Obesity",
-};
-
-const STATUS_LABELS = {
-  waiting: "Waiting for Terrane",
-  noBridge: "Terrane bridge unavailable",
-  synced: "Synced with Terrane",
-  failed: "Terrane invoke failed",
-} as const;
-
-type StatusKey = keyof typeof STATUS_LABELS;
-
-function classify(bmi: number): CategoryKey {
-  if (bmi < 18.5) return "underweight";
-  if (bmi < 25) return "healthy";
-  if (bmi < 30) return "overweight";
-  return "obesity";
-}
-
-function categoryLabel(key: CategoryKey): string {
-  return tr(`bmi-calculator.cat.${key}`, CATEGORY_LABELS[key]);
+function classify(bmi: number): Category {
+  if (bmi < 18.5) return { key: "underweight", label: "Underweight" };
+  if (bmi < 25) return { key: "healthy", label: "Healthy" };
+  if (bmi < 30) return { key: "overweight", label: "Overweight" };
+  return { key: "obesity", label: "Obesity" };
 }
 
 function formatSliderValue(value: number): string {
@@ -89,72 +70,103 @@ function rangeStyle(fillPercent: number): RangeStyle {
   return { "--fill": `${fillPercent}%` };
 }
 
+function toBmiResult(result: BackendResult | null | undefined): BmiResult | null {
+  if (!result) return null;
+  const bmi = Number(result.bmi);
+  if (!Number.isFinite(bmi)) return null;
+  const category = classify(bmi);
+  return {
+    bmi,
+    category: result.category || category.label,
+    key: category.key,
+  };
+}
+
 function BmiCalculator() {
   const [height, setHeight] = useState(defaults.height);
   const [weight, setWeight] = useState(defaults.weight);
   const [result, setResult] = useState<BmiResult | null>(null);
-  const [statusKey, setStatusKey] = useState<StatusKey>("waiting");
-  // Bumped when the host pushes/updates the message bundle so the (memoized)
-  // labels re-translate on a language change.
-  const [, setI18nTick] = useState(0);
-
-  useEffect(() => {
-    const api = window.terrane;
-    document.documentElement.dir = (api && api.getDir && api.getDir()) || "ltr";
-    if (api && typeof api.onMessages === "function") {
-      return api.onMessages(() => {
-        document.documentElement.dir = (api.getDir && api.getDir()) || "ltr";
-        setI18nTick((tick) => tick + 1);
-      });
-    }
-    return undefined;
-  }, []);
+  const [status, setStatus] = useState("Waiting for Terrane");
+  const syncSeq = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function calculate() {
+    async function loadState() {
       if (!window.terrane || typeof window.terrane.invoke !== "function") {
         setResult(null);
-        setStatusKey("noBridge");
+        setStatus("Terrane bridge unavailable");
         return;
       }
 
       try {
-        const json = await window.terrane.invoke("calculate", height, weight);
+        const json = await window.terrane.invoke("state");
         if (cancelled) return;
-        const next = JSON.parse(json) as BackendResult;
-        setResult({ bmi: Number(next.bmi), key: classify(Number(next.bmi)) });
-        setStatusKey("synced");
+        applyBackendState(JSON.parse(json) as BackendState);
+        setStatus("Synced with Terrane");
       } catch (_error) {
         if (cancelled) return;
         setResult(null);
-        setStatusKey("failed");
+        setStatus("Terrane invoke failed");
       }
     }
 
-    calculate();
+    loadState();
     return () => {
       cancelled = true;
     };
-  }, [height, weight]);
+  }, []);
+
+  function applyBackendState(next: BackendState) {
+    const nextHeight = Number(next.height);
+    const nextWeight = Number(next.weight);
+    if (Number.isFinite(nextHeight)) setHeight(nextHeight);
+    if (Number.isFinite(nextWeight)) setWeight(nextWeight);
+    setResult(toBmiResult(next.result));
+  }
+
+  async function persistMeasurement(verb: "set_height" | "set_weight", value: number) {
+    if (!window.terrane || typeof window.terrane.invoke !== "function") {
+      setStatus("Terrane bridge unavailable");
+      return;
+    }
+
+    const seq = syncSeq.current + 1;
+    syncSeq.current = seq;
+    setStatus("Saving to Terrane");
+    try {
+      const json = await window.terrane.invoke(verb, value);
+      if (syncSeq.current !== seq) return;
+      applyBackendState(JSON.parse(json) as BackendState);
+      setStatus("Synced with Terrane");
+    } catch (_error) {
+      if (syncSeq.current !== seq) return;
+      setStatus("Terrane invoke failed");
+    }
+  }
 
   const heightFill = useMemo(() => fill(height, 120, 220), [height]);
   const weightFill = useMemo(() => fill(weight, 35, 180), [weight]);
   const categoryKey = result ? result.key : "";
-  const updateHeight = (event: ChangeEvent<HTMLInputElement>) =>
-    setHeight(Number(event.target.value));
-  const updateWeight = (event: ChangeEvent<HTMLInputElement>) =>
-    setWeight(Number(event.target.value));
+  const updateHeight = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextHeight = Number(event.target.value);
+    setHeight(nextHeight);
+    void persistMeasurement("set_height", nextHeight);
+  };
+  const updateWeight = (event: ChangeEvent<HTMLInputElement>) => {
+    const nextWeight = Number(event.target.value);
+    setWeight(nextWeight);
+    void persistMeasurement("set_weight", nextWeight);
+  };
 
   return (
     <main className="bmi-app" data-bmi-app>
-      <section className="summary" aria-label={tr("bmi-calculator.aria.summary", "BMI summary")}>
+      <section className="summary" aria-label="BMI summary">
         <div className="intro">
-          <p className="eyebrow">{tr("bmi-calculator.eyebrow", "Metric BMI")}</p>
-          <h1>{tr("bmi-calculator.title", "BMI Calculator")}</h1>
+          <p className="eyebrow">Metric BMI</p>
+          <h1>BMI Calculator</h1>
           <p className="lede">
-            {tr("bmi-calculator.lede", "Adjust height and weight to calculate body mass index.")}
+            Adjust height and weight to calculate body mass index.
           </p>
         </div>
         <output
@@ -163,7 +175,7 @@ function BmiCalculator() {
           htmlFor="height weight"
           aria-live="polite"
         >
-          <span className="result-label">{tr("bmi-calculator.bmi", "BMI")}</span>
+          <span className="result-label">BMI</span>
           <strong id="bmi-value">
             {result ? result.bmi.toFixed(1) : "--"}
           </strong>
@@ -172,15 +184,15 @@ function BmiCalculator() {
             id="bmi-category"
             data-category={categoryKey || undefined}
           >
-            {result ? categoryLabel(result.key) : tr("bmi-calculator.enterValues", "Enter values")}
+            {result ? result.category : "Enter values"}
           </span>
         </output>
       </section>
 
-      <section className="controls" aria-label={tr("bmi-calculator.aria.measurements", "Body measurements")}>
+      <section className="controls" aria-label="Body measurements">
         <label className="control" htmlFor="height">
           <span className="control-head">
-            <span>{tr("bmi-calculator.height", "Height")}</span>
+            <span>Height</span>
             <strong>
               <span id="height-value">{formatSliderValue(height)}</span>
               {" cm"}
@@ -205,7 +217,7 @@ function BmiCalculator() {
 
         <label className="control" htmlFor="weight">
           <span className="control-head">
-            <span>{tr("bmi-calculator.weight", "Weight")}</span>
+            <span>Weight</span>
             <strong>
               <span id="weight-value">{formatSliderValue(weight)}</span>
               {" kg"}
@@ -229,40 +241,38 @@ function BmiCalculator() {
         </label>
       </section>
 
-      <section className="scale" aria-label={tr("bmi-calculator.aria.ranges", "BMI ranges")}>
+      <section className="scale" aria-label="BMI ranges">
         <div
           data-range="underweight"
           aria-current={categoryKey === "underweight" ? "true" : undefined}
         >
-          <span>{categoryLabel("underweight")}</span>
+          <span>Underweight</span>
           <strong>{"< 18.5"}</strong>
         </div>
         <div
           data-range="healthy"
           aria-current={categoryKey === "healthy" ? "true" : undefined}
         >
-          <span>{categoryLabel("healthy")}</span>
+          <span>Healthy</span>
           <strong>18.5-24.9</strong>
         </div>
         <div
           data-range="overweight"
           aria-current={categoryKey === "overweight" ? "true" : undefined}
         >
-          <span>{categoryLabel("overweight")}</span>
+          <span>Overweight</span>
           <strong>25-29.9</strong>
         </div>
         <div
           data-range="obesity"
           aria-current={categoryKey === "obesity" ? "true" : undefined}
         >
-          <span>{categoryLabel("obesity")}</span>
+          <span>Obesity</span>
           <strong>30+</strong>
         </div>
       </section>
 
-      <p className="status" id="bridge-status" aria-live="polite">
-        {tr(`bmi-calculator.status.${statusKey}`, STATUS_LABELS[statusKey])}
-      </p>
+      <p className="status" id="bridge-status" aria-live="polite">{status}</p>
     </main>
   );
 }

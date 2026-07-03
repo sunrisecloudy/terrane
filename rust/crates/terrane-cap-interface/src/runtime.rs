@@ -41,12 +41,27 @@ pub struct QueryCtx<'a> {
     pub bus: &'a dyn CapBus,
 }
 
+/// Live host-environment access for reads that observe the outside world (system
+/// metrics, sensors) rather than folded state. Distinct from
+/// [`Effect`](crate::abi::Effect): a live read is performed at the edge but
+/// records **nothing**, so it never enters the log and replay-identity is
+/// preserved (the app sees a fresh sample each call and only what it *persists*
+/// via ordinary writes is ever replayed). Implemented by the host's edge runner;
+/// absent (`None`) in pure cores, where such reads simply fail.
+pub trait LiveHost {
+    /// Sample a named `domain` (e.g. `"cpu"`, `"memory"`, `"snapshot"`) with the
+    /// read's positional `args`, returning a JSON document for the app backend.
+    fn sample(&self, domain: &str, args: &[String]) -> Result<String>;
+}
+
 /// Context handed to backend resource reads.
 #[derive(Clone, Copy)]
 pub struct ResourceReadCtx<'a> {
     pub state: &'a dyn crate::StateStore,
     pub bus: &'a dyn CapBus,
     pub app: &'a str,
+    /// Edge access for live (non-recorded) reads, when the host provides one.
+    pub host: Option<&'a dyn LiveHost>,
 }
 
 /// A value a resource read hands back to backend JS/WASM.

@@ -167,10 +167,13 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
         vec![
             "build",
             "crdt",
+            "crypto",
             "kv",
             "local-model",
             "native",
-            "relational_db"
+            "net",
+            "relational_db",
+            "sysinfo"
         ]
     );
 }

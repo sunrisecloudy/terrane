@@ -113,6 +113,7 @@
   bindDesktopInfo();
   bindBridge();
   bindTopbar();
+  bindAgents();
   bindPremium();
   bindLanguagePicker();
   setAdminMode(isAdmin);
@@ -596,6 +597,334 @@
     updateAuthUi();
     // The app requests the current theme + document via a nonce-checked hello
     // once it loads (see bindBridge); that is what performs the initial sync.
+  }
+
+  // ---- Agents ------------------------------------------------------------
+  // A stack of assistant avatars in the top bar. Left-click opens an assist
+  // panel that runs the agent against the current app; right-click opens the
+  // agent's setup; "+" creates a new agent. Definitions come from the host's
+  // `agent` capability via /__terrane/agents.
+  function bindAgents() {
+    var widget = document.getElementById("agents-widget");
+    var stack = document.getElementById("agent-stack");
+    var addButton = document.getElementById("agent-add");
+    var assistPanel = document.getElementById("agent-assist");
+    var setupPanel = document.getElementById("agent-setup");
+    if (!widget || !stack || !assistPanel || !setupPanel) return;
+
+    var assistAvatar = document.getElementById("assist-avatar");
+    var assistName = document.getElementById("assist-name");
+    var assistPersonality = document.getElementById("assist-personality");
+    var assistModel = document.getElementById("assist-model");
+    var assistInput = document.getElementById("assist-input");
+    var assistRun = document.getElementById("assist-run");
+    var assistStatus = document.getElementById("assist-status");
+    var assistSetup = document.getElementById("assist-setup");
+
+    var setupTitle = document.getElementById("setup-title");
+    var setupIdField = document.getElementById("setup-id-field");
+    var setupId = document.getElementById("setup-id");
+    var setupName = document.getElementById("setup-name");
+    var setupPersonality = document.getElementById("setup-personality");
+    var setupModel = document.getElementById("setup-model");
+    var setupColor = document.getElementById("setup-color");
+    var setupError = document.getElementById("setup-error");
+    var setupSave = document.getElementById("setup-save");
+
+    var agents = [];
+    var defaults = { model: "", harness: "opencode" };
+    var activeId = null; // agent whose assist panel is open
+    var editingId = null; // agent being edited (null = creating)
+    var assisting = false;
+
+    loadAgents();
+
+    function loadAgents() {
+      fetch("/__terrane/agents", { cache: "no-store" })
+        .then(function (r) {
+          return r.ok ? r.json() : null;
+        })
+        .then(function (data) {
+          if (!data) return;
+          agents = data.agents || [];
+          defaults.model = data.default_model || "";
+          defaults.harness = data.default_harness || "opencode";
+          renderStack();
+        })
+        .catch(function () {});
+    }
+
+    function initials(name) {
+      var parts = String(name || "?").trim().split(/\s+/);
+      var text = parts[0] ? parts[0].charAt(0) : "?";
+      if (parts.length > 1) text += parts[parts.length - 1].charAt(0);
+      return text.slice(0, 2);
+    }
+
+    function findAgent(id) {
+      for (var i = 0; i < agents.length; i++) {
+        if (agents[i].id === id) return agents[i];
+      }
+      return null;
+    }
+
+    function renderStack() {
+      widget.hidden = false;
+      stack.textContent = "";
+      agents.forEach(function (agent) {
+        var el = document.createElement("button");
+        el.type = "button";
+        el.className = "agent-avatar";
+        el.style.background = agent.color || "#6b7bff";
+        el.textContent = initials(agent.name);
+        el.title = agent.name;
+        el.setAttribute("aria-label", "Agent " + agent.name);
+        if (agent.id === activeId) el.classList.add("selected");
+        el.addEventListener("click", function (event) {
+          event.stopPropagation();
+          openAssist(agent.id);
+        });
+        el.addEventListener("contextmenu", function (event) {
+          event.preventDefault();
+          event.stopPropagation();
+          openSetup(agent.id);
+        });
+        stack.appendChild(el);
+      });
+    }
+
+    function closePanels() {
+      assistPanel.hidden = true;
+      setupPanel.hidden = true;
+      activeId = null;
+      renderStackSelection();
+    }
+
+    function renderStackSelection() {
+      var chips = stack.querySelectorAll(".agent-avatar");
+      for (var i = 0; i < chips.length; i++) {
+        var agent = agents[i];
+        if (agent && agent.id === activeId) {
+          chips[i].classList.add("selected");
+        } else {
+          chips[i].classList.remove("selected");
+        }
+      }
+    }
+
+    function openAssist(id) {
+      var agent = findAgent(id);
+      if (!agent) return;
+      setupPanel.hidden = true;
+      activeId = id;
+      renderStackSelection();
+      assistAvatar.style.background = agent.color || "#6b7bff";
+      assistAvatar.textContent = initials(agent.name);
+      assistName.textContent = agent.name;
+      assistPersonality.textContent = agent.personality || "";
+      assistModel.textContent = agent.model || defaults.model;
+      assistInput.value = "";
+      setAssistStatus("", false);
+      assistPanel.hidden = false;
+      assistInput.focus();
+    }
+
+    function setAssistStatus(text, isError) {
+      assistStatus.textContent = text || "";
+      assistStatus.hidden = !text;
+      if (isError) {
+        assistStatus.classList.add("error");
+      } else {
+        assistStatus.classList.remove("error");
+      }
+    }
+
+    function openSetup(id) {
+      assistPanel.hidden = true;
+      editingId = id || null;
+      setupError.textContent = "";
+      if (editingId) {
+        var agent = findAgent(editingId);
+        if (!agent) return;
+        setupTitle.textContent = "Edit " + agent.name;
+        setupIdField.hidden = true;
+        setupId.value = agent.id;
+        setupName.value = agent.name;
+        setupPersonality.value = agent.personality || "";
+        setupModel.value = agent.model || "";
+        setupColor.value = agent.color || "";
+        setupSave.textContent = "Save";
+      } else {
+        setupTitle.textContent = "New agent";
+        setupIdField.hidden = false;
+        setupId.value = "";
+        setupName.value = "";
+        setupPersonality.value = "";
+        setupModel.value = defaults.model;
+        setupColor.value = "#6b7bff";
+        setupSave.textContent = "Create";
+      }
+      setupPanel.hidden = false;
+      (editingId ? setupName : setupId).focus();
+    }
+
+    function saveSetup() {
+      var body = {
+        name: setupName.value.trim(),
+        personality: setupPersonality.value.trim(),
+        model: setupModel.value.trim(),
+        color: setupColor.value.trim(),
+      };
+      var url = "/__terrane/agents";
+      if (editingId) {
+        url = "/__terrane/agents/" + encodeURIComponent(editingId);
+      } else {
+        body.id = setupId.value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+        if (!body.id) {
+          setupError.textContent = "id is required";
+          return;
+        }
+      }
+      setupSave.disabled = true;
+      fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (res) {
+          setupSave.disabled = false;
+          if (!res.ok) {
+            setupError.textContent = (res.data && res.data.error) || "could not save";
+            return;
+          }
+          agents = res.data.agents || agents;
+          renderStack();
+          setupPanel.hidden = true;
+        })
+        .catch(function () {
+          setupSave.disabled = false;
+          setupError.textContent = "could not save";
+        });
+    }
+
+    function runAssist() {
+      if (assisting || !activeId) return;
+      var message = assistInput.value.trim();
+      if (!message) {
+        assistInput.focus();
+        return;
+      }
+      assisting = true;
+      assistRun.disabled = true;
+      assistRun.textContent = "Working…";
+      setAssistStatus("Starting " + assistName.textContent + "…", false);
+      fetch("/__terrane/agents/" + encodeURIComponent(activeId) + "/assist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ app: currentId, message: message }),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (res) {
+          if (!res.ok || !res.data || !res.data.job) {
+            throw new Error((res.data && res.data.error) || "could not start agent");
+          }
+          pollAssist(res.data.job);
+        })
+        .catch(function (err) {
+          finishAssist(err.message || "agent failed", true);
+        });
+    }
+
+    function pollAssist(job) {
+      fetch("/__terrane/agents/assist/status", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job: job }),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { ok: r.ok, data: data };
+          });
+        })
+        .then(function (res) {
+          var data = res.data || {};
+          if (data.status === "running") {
+            setAssistStatus("Working… " + (data.note || ""), false);
+            setTimeout(function () {
+              pollAssist(job);
+            }, 1500);
+            return;
+          }
+          if (data.status === "done") {
+            finishAssist(data.transcript || "Done.", false);
+            reloadFrame();
+            return;
+          }
+          finishAssist((data && data.error) || "agent failed", true);
+        })
+        .catch(function () {
+          finishAssist("lost contact with the agent", true);
+        });
+    }
+
+    function finishAssist(text, isError) {
+      assisting = false;
+      assistRun.disabled = false;
+      assistRun.textContent = "Ask";
+      setAssistStatus(text, isError);
+    }
+
+    function reloadFrame() {
+      // The agent drove the app's backend through the host's own tools; the
+      // sandboxed frame reads its state on load, so reload it (with a fresh
+      // per-load nonce, like the initial load) to show the work.
+      if (frame && currentId) loadFrame();
+    }
+
+    // Wiring.
+    if (addButton) {
+      addButton.addEventListener("click", function (event) {
+        event.stopPropagation();
+        openSetup(null);
+      });
+    }
+    assistRun.addEventListener("click", runAssist);
+    assistInput.addEventListener("keydown", function (event) {
+      if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+        event.preventDefault();
+        runAssist();
+      }
+    });
+    assistSetup.addEventListener("click", function () {
+      openSetup(activeId);
+    });
+    setupSave.addEventListener("click", saveSetup);
+
+    document.addEventListener("click", function (event) {
+      if (assistPanel.hidden && setupPanel.hidden) return;
+      if (widget.contains(event.target)) return;
+      closePanels();
+      setupPanel.hidden = true;
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && (!assistPanel.hidden || !setupPanel.hidden)) {
+        closePanels();
+        setupPanel.hidden = true;
+      }
+    });
+    window.addEventListener("blur", function () {
+      // Focus moving into the app frame should not dismiss an in-flight run.
+      if (!assisting && !setupPanel.hidden) setupPanel.hidden = true;
+    });
   }
 
   function storedDocName() {

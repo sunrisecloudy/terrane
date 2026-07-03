@@ -85,6 +85,7 @@ fn kv_capability_sets_reads_deletes_and_drops_removed_app_data() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
     assert_eq!(
         cap.read_resource(ctx, "get", &["greeting".into()]).unwrap(),
@@ -320,6 +321,7 @@ fn read_public(cap: &KvCapability, store: &Store, bus: &AppBus, method: &str, ar
             state: store,
             bus,
             app: "any-app",
+            host: None,
         },
         method,
         &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
@@ -581,6 +583,7 @@ fn app_scoped_reads_target_ctx_app_not_public_bucket() {
                 state: &store,
                 bus: &bus,
                 app: "todo",
+                host: None,
             },
             "all",
             &[],

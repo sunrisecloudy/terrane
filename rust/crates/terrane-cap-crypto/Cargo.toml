@@ -1,0 +1,27 @@
+[package]
+name = "terrane-cap-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_crypto"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-interface.workspace = true
+nanoserde.workspace = true
+# Client-side vault crypto. These are edge/read-path primitives: their outputs
+# are never folded into replayed State, so no determinism constraint applies.
+argon2 = "0.5"
+chacha20poly1305 = "0.10"
+hmac = "0.12"
+sha1 = "0.10"
+sha2 = "0.10"
+base64 = "0.22"
+subtle = "2"
+zeroize = { version = "1", features = ["derive"] }
+getrandom = "0.4.3"
+
+[dev-dependencies]
+nanoserde.workspace = true

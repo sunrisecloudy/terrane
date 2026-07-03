@@ -73,6 +73,7 @@ pub struct RouteState<'a> {
     pub previews: &'a mut PreviewStore,
     pub admin_session: &'a mut crate::admin::AdminSessionState,
     pub builder_jobs: &'a mut crate::builder_jobs::BuilderJobs,
+    pub agent_jobs: &'a mut crate::agent_jobs::AgentJobs,
 }
 
 #[derive(Clone, Copy)]
@@ -95,6 +96,7 @@ pub fn route(
         previews,
         admin_session,
         builder_jobs,
+        agent_jobs,
     } = state;
     let RouteConfig {
         require_auth,
@@ -218,6 +220,15 @@ pub fn route(
                 },
             )
         }
+        (Method::Get, ["__terrane", "agents"]) => crate::agents::list(core),
+        (Method::Post, ["__terrane", "agents"]) => crate::agents::create(core, request),
+        (Method::Post, ["__terrane", "agents", "assist", "status"]) => {
+            crate::agents::assist_status(agent_jobs, request)
+        }
+        (Method::Post, ["__terrane", "agents", id, "assist"]) => {
+            crate::agents::assist_start(core, agent_jobs, id, request, admin_base_url)
+        }
+        (Method::Post, ["__terrane", "agents", id]) => crate::agents::update(core, id, request),
         (Method::Post, ["__terrane", "builder", "generate"]) => {
             builder_generate(core, builder_jobs, request)
         }

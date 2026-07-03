@@ -51,6 +51,7 @@ fn resource_read_exposes_compile_ts() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
 
     assert!(BuildCapability

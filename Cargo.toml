@@ -2,11 +2,13 @@
 resolver = "2"
 members = [
   "rust/crates/terrane-cap-interface",
+  "rust/crates/terrane-cap-agent",
   "rust/crates/terrane-cap-app",
   "rust/crates/terrane-cap-auth",
   "rust/crates/terrane-cap-build",
   "rust/crates/terrane-cap-builder",
   "rust/crates/terrane-cap-crdt",
+  "rust/crates/terrane-cap-crypto",
   "rust/crates/terrane-cap-harness",
   "rust/crates/terrane-cap-kv",
   "rust/crates/terrane-cap-js-runtime",
@@ -16,6 +18,7 @@ members = [
   "rust/crates/terrane-cap-native",
   "rust/crates/terrane-cap-net",
   "rust/crates/terrane-cap-replica",
+  "rust/crates/terrane-cap-sysinfo",
   "rust/crates/terrane-cap-wasm-runtime",
   "rust/crates/terrane-core",
   "rust/crates/terrane-host",
@@ -36,11 +39,13 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 terrane-core = { path = "rust/crates/terrane-core" }
 terrane-cap-interface = { path = "rust/crates/terrane-cap-interface" }
+terrane-cap-agent = { path = "rust/crates/terrane-cap-agent" }
 terrane-cap-app = { path = "rust/crates/terrane-cap-app" }
 terrane-cap-auth = { path = "rust/crates/terrane-cap-auth" }
 terrane-cap-build = { path = "rust/crates/terrane-cap-build" }
 terrane-cap-builder = { path = "rust/crates/terrane-cap-builder" }
 terrane-cap-crdt = { path = "rust/crates/terrane-cap-crdt" }
+terrane-cap-crypto = { path = "rust/crates/terrane-cap-crypto" }
 terrane-cap-harness = { path = "rust/crates/terrane-cap-harness" }
 terrane-cap-kv = { path = "rust/crates/terrane-cap-kv" }
 terrane-cap-js-runtime = { path = "rust/crates/terrane-cap-js-runtime" }
@@ -50,6 +55,7 @@ terrane-cap-model = { path = "rust/crates/terrane-cap-model" }
 terrane-cap-native = { path = "rust/crates/terrane-cap-native" }
 terrane-cap-net = { path = "rust/crates/terrane-cap-net" }
 terrane-cap-replica = { path = "rust/crates/terrane-cap-replica" }
+terrane-cap-sysinfo = { path = "rust/crates/terrane-cap-sysinfo" }
 terrane-cap-wasm-runtime = { path = "rust/crates/terrane-cap-wasm-runtime" }
 terrane-host = { path = "rust/crates/terrane-host" }
 terrane-api = { path = "rust/crates/terrane-api" }
