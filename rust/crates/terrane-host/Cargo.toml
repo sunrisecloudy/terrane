@@ -12,6 +12,7 @@ crate-type = ["rlib", "staticlib", "cdylib"]
 [features]
 default = ["local-llm"]
 local-llm = ["dep:terrane-local-llm"]
+asr-engine = ["dep:terrane-asr", "terrane-asr/whisper", "local-llm"]
 rocksdb-storage = [
   "terrane-core/rocksdb-storage",
   "terrane-cap-kv/rocksdb-storage",
@@ -43,11 +44,13 @@ terrane-cap-replica.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 terrane-core.workspace = true
 terrane-local-llm = { workspace = true, optional = true }
+terrane-asr = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 rocksdb = { workspace = true, optional = true }
 
 [dev-dependencies]
+hound.workspace = true
 rusqlite.workspace = true
 tempfile.workspace = true

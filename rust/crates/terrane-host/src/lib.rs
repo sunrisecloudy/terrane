@@ -23,6 +23,7 @@ pub mod cli;
 pub mod edge;
 pub mod ffi;
 pub mod home;
+pub mod asr;
 mod local_llm;
 pub mod mcp;
 pub mod native;
@@ -40,6 +41,7 @@ pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 /// before a normal exit; safe to call when nothing is cached.
 pub fn local_llm_shutdown() {
     local_llm::shutdown();
+    asr::shutdown();
 }
 pub use sync::{serve_conn, sync_conn};
 pub use terrane_cap_auth::agent_subject;

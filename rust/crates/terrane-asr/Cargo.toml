@@ -1,0 +1,23 @@
+[package]
+name = "terrane-asr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_asr"
+path = "src/lib.rs"
+
+[features]
+default = []
+whisper = ["dep:whisper-rs"]
+
+[dependencies]
+whisper-rs = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+whisper-rs = { workspace = true, optional = true, features = ["metal"] }
+
+[dev-dependencies]
+hound.workspace = true
+tempfile.workspace = true

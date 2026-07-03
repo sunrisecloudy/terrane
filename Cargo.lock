@@ -931,6 +931,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs_extra"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
+
+[[package]]
 name = "futures"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1197,6 +1203,12 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+
+[[package]]
+name = "hound"
+version = "3.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62adaabb884c94955b19907d60019f4e145d091c75345379e70d1ee696f7854f"
 
 [[package]]
 name = "hstr"
@@ -3199,6 +3211,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-asr"
+version = "0.1.0"
+dependencies = [
+ "hound",
+ "tempfile",
+ "whisper-rs",
+]
+
+[[package]]
 name = "terrane-cap-app"
 version = "0.1.0"
 dependencies = [
@@ -3388,6 +3409,7 @@ name = "terrane-host"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
+ "hound",
  "libc",
  "nanoserde",
  "rocksdb",
@@ -3396,6 +3418,7 @@ dependencies = [
  "tempfile",
  "terrane-api",
  "terrane-app-build",
+ "terrane-asr",
  "terrane-cap-app",
  "terrane-cap-auth",
  "terrane-cap-builder",
@@ -4107,6 +4130,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf85cb06032201fa7c6f829d7db5a7e5aa45bcc0655327713065f6f0576731bf"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "whisper-rs"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2088172d00f936c348d6a72f488dc2660ab3f507263a195df308a3c2383229f6"
+dependencies = [
+ "whisper-rs-sys",
+]
+
+[[package]]
+name = "whisper-rs-sys"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6986c0fe081241d391f09b9a071fbcbb59720c3563628c3c829057cf69f2a56f"
+dependencies = [
+ "bindgen",
+ "cfg-if",
+ "cmake",
+ "fs_extra",
+ "semver",
 ]
 
 [[package]]

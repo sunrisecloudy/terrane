@@ -23,6 +23,7 @@ members = [
   "rust/crates/terrane-api",
   "rust/crates/terrane-app-build",
   "rust/crates/terrane-local-llm",
+  "rust/crates/terrane-asr",
   "host/cli",
   "host/mcp",
   "host/web",
@@ -56,6 +57,9 @@ terrane-host = { path = "rust/crates/terrane-host" }
 terrane-api = { path = "rust/crates/terrane-api" }
 terrane-app-build = { path = "rust/crates/terrane-app-build" }
 terrane-local-llm = { path = "rust/crates/terrane-local-llm" }
+terrane-asr = { path = "rust/crates/terrane-asr" }
+whisper-rs = "0.16"
+hound = "3.5"
 borsh = { version = "1", features = ["derive"] }
 # Local inference edge engine only; never a dependency of the deterministic core.
 llama-cpp-2 = "0.1"
