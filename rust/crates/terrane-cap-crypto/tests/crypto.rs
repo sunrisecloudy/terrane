@@ -2,8 +2,8 @@
 //! generators, and RFC 6238 TOTP vectors.
 
 use terrane_cap_crypto::{
-    base32_decode, derive_key, hotp, new_vault, open, passphrase, password, seal, sha1_hex,
-    strength, totp, unlock, verifier, verify_key, Algorithm, KdfParams, PassphraseOptions,
+    base32_decode, derive_key, hotp, new_vault, open, passphrase, password, random_id, seal,
+    sha1_hex, strength, totp, unlock, verifier, verify_key, Algorithm, KdfParams, PassphraseOptions,
     PasswordOptions, VaultMeta,
 };
 
@@ -114,6 +114,15 @@ fn strength_increases_with_complexity() {
     let (strong, _) = strength("A9#kQ2!vBz7$Lm4@Rp1&");
     assert!(weak < strong);
     assert_eq!(strength("").0, 0);
+}
+
+#[test]
+fn random_id_is_unique_128_bit_hex() {
+    let a = random_id().unwrap();
+    let b = random_id().unwrap();
+    assert_eq!(a.len(), 32);
+    assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(a, b, "two ids must differ");
 }
 
 #[test]

@@ -25,8 +25,8 @@ mod vault;
 
 pub use generate::{password, passphrase, strength, PassphraseOptions, PasswordOptions};
 pub use primitives::{
-    b64, derive_key, new_salt, open, seal, sha1_hex, unb64, verifier, verify_key, CryptoError,
-    KdfParams, VaultKey, BLOB_VERSION, KEY_LEN, SALT_LEN, XNONCE_LEN,
+    b64, derive_key, new_salt, open, random_id, seal, sha1_hex, unb64, verifier, verify_key,
+    CryptoError, KdfParams, VaultKey, BLOB_VERSION, KEY_LEN, SALT_LEN, XNONCE_LEN,
 };
 pub use totp::{base32_decode, hotp, totp, Algorithm, TotpCode};
 pub use vault::{new_vault, unlock, VaultMeta};

@@ -2,22 +2,37 @@
 //
 // SECURITY MODEL
 // --------------
-// Terrane's event log is plaintext, so this app never stores a secret through a
-// bare kv.set. Every item is encrypted first via ctx.resource.crypto (Argon2id
+// Terrane's event log is plaintext, so this app never stores a secret in the
+// clear. Every item is encrypted first via ctx.resource.crypto (Argon2id
 // master-password key + XChaCha20-Poly1305). Only ciphertext and non-secret
-// metadata reach kv, so replaying the log rebuilds the vault without ever
+// metadata are stored, so replaying the log rebuilds the vault without ever
 // exposing plaintext or the master password. crypto's methods are reads, so they
 // record nothing themselves.
 //
-// kv keyspace (all values are strings):
-//   meta          -> vault meta JSON (salt, KDF params, verifier) — NOT secret
-//   seq/fseq/aseq -> id counters (decimal) for items/folders/audit
-//   item:<id>     -> sealed ciphertext blob of the full item JSON
-//   folder:<id>   -> sealed ciphertext blob of { name }
-//   trash:<id>    -> sealed ciphertext blob of { item, deletedAt }
-//   audit:<id>    -> plaintext { ts, action, item, detail } — reviewable trail;
-//                    detail is non-secret only (id/count/null), never a name
-//   settings      -> plaintext settings JSON
+// STORAGE — where multi-device sync comes from
+// --------------------------------------------
+// The synced vault lives in ONE CRDT document ("vault", a map), because Terrane
+// sync is CRDT-based (conflict-free, offline-friendly merge). The values are
+// ciphertext, so sync only ever moves ciphertext between devices. Local-only
+// data (the audit trail, settings) stays in kv and is never synced.
+//
+//   crdt "vault" map:
+//     meta          -> vault meta JSON (salt, KDF params, verifier) — NOT secret
+//     item:<id>     -> sealed ciphertext blob of the full item JSON
+//     folder:<id>   -> sealed ciphertext blob of { name }
+//     trash:<id>    -> sealed ciphertext blob of { item, deletedAt }
+//   kv (local, not synced):
+//     aseq          -> audit id counter (decimal)
+//     audit:<id>    -> plaintext { ts, action, item, detail } — reviewable trail;
+//                      detail is non-secret only (id/count/null), never a name
+//     settings      -> plaintext settings JSON
+//
+// Item/folder ids are random 128-bit hex (crypto.randomId), NOT a shared counter:
+// two devices editing offline must never allocate the same id, or a CRDT merge
+// would collide and lose an item. Create the vault on ONE device and sync it to
+// the others; each device unlocks with the same master password (deriving the
+// same key from the synced salt). Independently `init`-ing on two devices makes
+// two incompatible keys.
 //
 // AUTH
 // ----
@@ -29,11 +44,13 @@
 
 var kv = ctx.resource.kv;
 var crypto = ctx.resource.crypto;
+var crdt = ctx.resource.crdt;
 // Optional: only present when `net` is granted. Used solely for the opt-in HIBP
 // breach check, which sends only a 5-char SHA-1 prefix (k-anonymity) and records
 // nothing (net.get is a transient, unrecorded read).
 var net = ctx.resource.net;
 
+var VAULT = "vault"; // the CRDT document holding the (encrypted) synced vault
 var META_KEY = "meta";
 var ITEM_PREFIX = "item:";
 var FOLDER_PREFIX = "folder:";
@@ -73,6 +90,40 @@ function cr(method) {
   }
 }
 
+// ---- vault storage (CRDT, synced) ------------------------------------------
+
+function vget(key) {
+  return crdt.mapGet(VAULT, key);
+}
+function vset(key, value) {
+  crdt.mapSet(VAULT, key, value);
+}
+function vdel(key) {
+  crdt.mapDel(VAULT, key);
+}
+// The id strings of every vault entry under a prefix (e.g. "item:").
+function vaultIds(prefix) {
+  var all = crdt.mapAll(VAULT);
+  var ids = [];
+  for (var key in all) {
+    if (!Object.prototype.hasOwnProperty.call(all, key)) continue;
+    if (key.indexOf(prefix) === 0) ids.push(key.slice(prefix.length));
+  }
+  ids.sort();
+  return ids;
+}
+// A fresh collision-free id.
+function newId() {
+  var r = cr("randomId");
+  return r.ok ? r.id : null;
+}
+
+function hasVault() {
+  return vget(META_KEY) != null;
+}
+
+// ---- local (kv) helpers: audit + settings ----------------------------------
+
 function readCounter(key) {
   var raw = kv.get(key);
   if (raw == null) return 0;
@@ -80,18 +131,14 @@ function readCounter(key) {
   return isNaN(n) || n < 0 ? 0 : n;
 }
 
-function nextId(key) {
+function nextCounter(key) {
   var n = readCounter(key) + 1;
   kv.set(key, String(n));
   return n;
 }
 
-function hasVault() {
-  return kv.get(META_KEY) != null;
-}
-
-// Numeric ids of every stored key under a prefix.
-function idsWithPrefix(prefix) {
+// Numeric ids under a kv prefix (used only for the local audit trail).
+function kvIds(prefix) {
   var all = kv.all();
   var ids = [];
   for (var key in all) {
@@ -106,13 +153,12 @@ function idsWithPrefix(prefix) {
   return ids;
 }
 
-// Append a non-secret audit entry. The trail is stored as PLAINTEXT kv (it must
-// be reviewable without unlocking), so `detail` must never carry secret or
-// sensitive data — no passwords and no item/folder NAMES (a name like
+// Append a non-secret audit entry (LOCAL, kv). `detail` must never carry secret
+// or sensitive data — no passwords and no item/folder NAMES (a name like
 // "Chase Bank" is itself sensitive). Pass only an item id, a count, or null; the
 // UI can join ids back to names after unlocking.
 function audit(action, item, detail) {
-  var id = nextId("aseq");
+  var id = nextCounter("aseq");
   kv.set(
     AUDIT_PREFIX + id,
     JSON.stringify({
@@ -132,7 +178,7 @@ function resolveAuth(auth) {
   if (auth == null || auth === "") return { error: "no_auth" };
   var st = cr("status", auth);
   if (st.ok && st.unlocked) return { session: auth, temp: false };
-  var meta = kv.get(META_KEY);
+  var meta = vget(META_KEY);
   if (meta == null) return { error: "no_vault" };
   var u = cr("unlock", auth, meta);
   if (!u.ok) return { error: u.reason || "bad_password" };
@@ -171,13 +217,13 @@ function openBlob(session, blob) {
 }
 
 function loadItem(session, id) {
-  return openBlob(session, kv.get(ITEM_PREFIX + id));
+  return openBlob(session, vget(ITEM_PREFIX + id));
 }
 
 function saveItem(session, item) {
   var blob = sealItem(session, item);
   if (blob == null) return false;
-  kv.set(ITEM_PREFIX + item.id, blob);
+  vset(ITEM_PREFIX + item.id, blob);
   return true;
 }
 
@@ -197,19 +243,13 @@ function itemMeta(item) {
   };
 }
 
-// Resolve an item reference that may be a numeric id or a (case-insensitive)
-// name. Returns the item object or null.
+// Resolve an item reference that is an exact id or a (case-insensitive) name.
 function findItem(session, ref) {
-  var byId = parseInt(ref, 10);
-  var ids = idsWithPrefix(ITEM_PREFIX);
-  var i;
-  if (!isNaN(byId)) {
-    for (i = 0; i < ids.length; i++) {
-      if (ids[i] === byId) return loadItem(session, byId);
-    }
-  }
+  var direct = loadItem(session, ref);
+  if (direct) return direct;
   var needle = String(ref).toLowerCase();
-  for (i = 0; i < ids.length; i++) {
+  var ids = vaultIds(ITEM_PREFIX);
+  for (var i = 0; i < ids.length; i++) {
     var it = loadItem(session, ids[i]);
     if (it && String(it.name || "").toLowerCase() === needle) return it;
   }
@@ -244,9 +284,9 @@ function totpParams(value) {
 
 var description =
   "A secure, Bitwarden-style password manager. Items are encrypted with a " +
-  "master-password-derived key; only ciphertext is stored. Works from the UI, " +
-  "the CLI, and MCP. Secret operations take `auth` = an unlocked session id " +
-  "(from `unlock`) or the master password itself.";
+  "master-password-derived key; only ciphertext is stored (in a CRDT doc, so it " +
+  "syncs across devices). Works from the UI, the CLI, and MCP. Secret operations " +
+  "take `auth` = an unlocked session id (from `unlock`) or the master password.";
 
 var AUTH_ARG = {
   name: "auth",
@@ -279,7 +319,7 @@ var actions = {
       if (hasVault()) return err("vault_exists");
       var v = cr("newVault", master);
       if (!v.ok) return err(v.reason || "init_failed");
-      kv.set(META_KEY, v.meta);
+      vset(META_KEY, v.meta);
       audit("vault.init", null, null);
       return ok({ session: v.session });
     },
@@ -292,7 +332,7 @@ var actions = {
     run: function (args, usage) {
       var master = args[0];
       if (!master) return usage();
-      var meta = kv.get(META_KEY);
+      var meta = vget(META_KEY);
       if (meta == null) return err("no_vault");
       var u = cr("unlock", master, meta);
       if (!u.ok) return err(u.reason || "bad_password");
@@ -329,7 +369,8 @@ var actions = {
         return err("bad_json");
       }
       return withSession(auth, function (session) {
-        var id = nextId("seq");
+        var id = newId();
+        if (!id) return err("rng_unavailable");
         var item = input || {};
         item.id = id;
         item.type = item.type || "login";
@@ -365,7 +406,8 @@ var actions = {
         uris: args[4] ? [args[4]] : [],
       };
       return withSession(auth, function (session) {
-        var id = nextId("seq");
+        var id = newId();
+        if (!id) return err("rng_unavailable");
         item.id = id;
         item.created = now();
         item.updated = now();
@@ -413,16 +455,19 @@ var actions = {
     returns: "{ ok, items: [ { id, name, type, username, folder, favorite, hasTotp } ] }",
     run: function (args, usage) {
       if (args.length < 1) return usage();
-      var folder = args[1] != null && args[1] !== "" ? parseInt(args[1], 10) : null;
+      var folder = args[1] != null && args[1] !== "" ? String(args[1]) : null;
       return withSession(args[0], function (session) {
-        var ids = idsWithPrefix(ITEM_PREFIX);
+        var ids = vaultIds(ITEM_PREFIX);
         var out = [];
         for (var i = 0; i < ids.length; i++) {
           var it = loadItem(session, ids[i]);
           if (!it) continue;
-          if (folder != null && it.folder !== folder) continue;
+          if (folder != null && String(it.folder) !== folder) continue;
           out.push(itemMeta(it));
         }
+        out.sort(function (a, b) {
+          return String(a.name).toLowerCase() < String(b.name).toLowerCase() ? -1 : 1;
+        });
         return ok({ items: out });
       });
     },
@@ -436,7 +481,7 @@ var actions = {
       if (args.length < 2) return usage();
       var q = args.slice(1).join(" ").toLowerCase();
       return withSession(args[0], function (session) {
-        var ids = idsWithPrefix(ITEM_PREFIX);
+        var ids = vaultIds(ITEM_PREFIX);
         var out = [];
         for (var i = 0; i < ids.length; i++) {
           var it = loadItem(session, ids[i]);
@@ -461,8 +506,8 @@ var actions = {
     returns: "{ ok, id }",
     run: function (args, usage) {
       if (args.length < 3) return usage();
-      var id = parseInt(args[1], 10);
-      if (isNaN(id)) return usage();
+      var id = args[1];
+      if (!id) return usage();
       var patch;
       try {
         patch = JSON.parse(args.slice(2).join(" "));
@@ -498,15 +543,15 @@ var actions = {
     returns: "{ ok }",
     run: function (args, usage) {
       if (args.length < 2) return usage();
-      var id = parseInt(args[1], 10);
-      if (isNaN(id)) return usage();
+      var id = args[1];
+      if (!id) return usage();
       return withSession(args[0], function (session) {
         var item = loadItem(session, id);
         if (!item) return err("not_found");
         var blob = sealItem(session, { item: item, deletedAt: now() });
         if (blob == null) return err("seal_failed");
-        kv.set(TRASH_PREFIX + id, blob);
-        kv.rm(ITEM_PREFIX + id);
+        vset(TRASH_PREFIX + id, blob);
+        vdel(ITEM_PREFIX + id);
         audit("item.delete", id, null);
         return ok({});
       });
@@ -520,10 +565,10 @@ var actions = {
     run: function (args, usage) {
       if (args.length < 1) return usage();
       return withSession(args[0], function (session) {
-        var ids = idsWithPrefix(TRASH_PREFIX);
+        var ids = vaultIds(TRASH_PREFIX);
         var out = [];
         for (var i = 0; i < ids.length; i++) {
-          var rec = openBlob(session, kv.get(TRASH_PREFIX + ids[i]));
+          var rec = openBlob(session, vget(TRASH_PREFIX + ids[i]));
           if (rec && rec.item) {
             var m = itemMeta(rec.item);
             m.deletedAt = rec.deletedAt || 0;
@@ -541,13 +586,13 @@ var actions = {
     returns: "{ ok, id }",
     run: function (args, usage) {
       if (args.length < 2) return usage();
-      var id = parseInt(args[1], 10);
-      if (isNaN(id)) return usage();
+      var id = args[1];
+      if (!id) return usage();
       return withSession(args[0], function (session) {
-        var rec = openBlob(session, kv.get(TRASH_PREFIX + id));
+        var rec = openBlob(session, vget(TRASH_PREFIX + id));
         if (!rec || !rec.item) return err("not_found");
         if (!saveItem(session, rec.item)) return err("seal_failed");
-        kv.rm(TRASH_PREFIX + id);
+        vdel(TRASH_PREFIX + id);
         audit("item.restore", id, null);
         return ok({ id: id });
       });
@@ -560,10 +605,10 @@ var actions = {
     returns: "{ ok }",
     run: function (args, usage) {
       if (args.length < 2) return usage();
-      var id = parseInt(args[1], 10);
-      if (isNaN(id)) return usage();
-      if (kv.get(TRASH_PREFIX + id) == null) return err("not_found");
-      kv.rm(TRASH_PREFIX + id);
+      var id = args[1];
+      if (!id) return usage();
+      if (vget(TRASH_PREFIX + id) == null) return err("not_found");
+      vdel(TRASH_PREFIX + id);
       audit("item.purge", id, null);
       return ok({});
     },
@@ -577,10 +622,11 @@ var actions = {
       if (args.length < 2) return usage();
       var name = args.slice(1).join(" ");
       return withSession(args[0], function (session) {
-        var id = nextId("fseq");
+        var id = newId();
+        if (!id) return err("rng_unavailable");
         var blob = sealItem(session, { id: id, name: name });
         if (blob == null) return err("seal_failed");
-        kv.set(FOLDER_PREFIX + id, blob);
+        vset(FOLDER_PREFIX + id, blob);
         audit("folder.add", id, null);
         return ok({ id: id, name: name });
       });
@@ -594,10 +640,10 @@ var actions = {
     run: function (args, usage) {
       if (args.length < 1) return usage();
       return withSession(args[0], function (session) {
-        var ids = idsWithPrefix(FOLDER_PREFIX);
+        var ids = vaultIds(FOLDER_PREFIX);
         var out = [];
         for (var i = 0; i < ids.length; i++) {
-          var f = openBlob(session, kv.get(FOLDER_PREFIX + ids[i]));
+          var f = openBlob(session, vget(FOLDER_PREFIX + ids[i]));
           if (f) out.push({ id: ids[i], name: f.name || "" });
         }
         return ok({ folders: out });
@@ -611,10 +657,10 @@ var actions = {
     returns: "{ ok }",
     run: function (args, usage) {
       if (args.length < 2) return usage();
-      var id = parseInt(args[1], 10);
-      if (isNaN(id)) return usage();
-      if (kv.get(FOLDER_PREFIX + id) == null) return err("not_found");
-      kv.rm(FOLDER_PREFIX + id);
+      var id = args[1];
+      if (!id) return usage();
+      if (vget(FOLDER_PREFIX + id) == null) return err("not_found");
+      vdel(FOLDER_PREFIX + id);
       audit("folder.rm", id, null);
       return ok({});
     },
@@ -722,7 +768,7 @@ var actions = {
       if (args.length < 1) return usage();
       var OLD_MS = 180 * 24 * 60 * 60 * 1000;
       return withSession(args[0], function (session) {
-        var ids = idsWithPrefix(ITEM_PREFIX);
+        var ids = vaultIds(ITEM_PREFIX);
         var items = [];
         var i;
         for (i = 0; i < ids.length; i++) {
@@ -766,7 +812,7 @@ var actions = {
     run: function (args, usage) {
       if (args.length < 1) return usage();
       return withSession(args[0], function (session) {
-        var ids = idsWithPrefix(ITEM_PREFIX);
+        var ids = vaultIds(ITEM_PREFIX);
         var out = [];
         for (var i = 0; i < ids.length; i++) {
           var it = loadItem(session, ids[i]);
@@ -800,7 +846,9 @@ var actions = {
         for (var i = 0; i < rows.length; i++) {
           var item = normalizeImport(rows[i]);
           if (!item) continue;
-          item.id = nextId("seq");
+          var id = newId();
+          if (!id) continue;
+          item.id = id;
           item.created = now();
           item.updated = now();
           item.history = [];
@@ -825,7 +873,7 @@ var actions = {
         var newSession = v.session;
         try {
           // Phase 1 — prepare: open + re-seal every blob under the new key,
-          // queuing NO writes. If any blob fails, bail before touching kv.
+          // queuing NO writes. If any blob fails, bail before touching storage.
           var plans = [
             planReseal(oldSession, newSession, ITEM_PREFIX),
             planReseal(oldSession, newSession, FOLDER_PREFIX),
@@ -841,11 +889,11 @@ var actions = {
           for (var p = 0; p < plans.length; p++) {
             var writes = plans[p].writes;
             for (var w = 0; w < writes.length; w++) {
-              kv.set(writes[w][0], writes[w][1]);
+              vset(writes[w][0], writes[w][1]);
             }
             moved += writes.length;
           }
-          kv.set(META_KEY, v.meta);
+          vset(META_KEY, v.meta);
           audit("vault.change-master", null, moved);
           return ok({ reencrypted: moved });
         } finally {
@@ -862,7 +910,7 @@ var actions = {
     run: function (args) {
       var limit = args[0] ? parseInt(args[0], 10) : 50;
       if (isNaN(limit) || limit <= 0) limit = 50;
-      var ids = idsWithPrefix(AUDIT_PREFIX);
+      var ids = kvIds(AUDIT_PREFIX);
       ids.reverse();
       var out = [];
       for (var i = 0; i < ids.length && out.length < limit; i++) {
@@ -923,25 +971,25 @@ var actions = {
   },
 };
 
-// Plan, without touching kv, every re-seal needed under one prefix: open each
-// blob with the old key and seal a fresh ciphertext under the new key. Returns
+// Plan, without writing, every re-seal needed under one prefix: open each blob
+// with the old key and seal a fresh ciphertext under the new key. Returns
 // { writes: [[key, blob], ...] } on success or { error } if any blob can't be
 // opened/re-sealed.
 //
-// Preparing before writing is what makes change-master safe. A Terrane backend
-// run commits every buffered kv.set in one atomic batch as soon as the JS
-// returns — including when it returns an { ok:false } error string. So returning
-// an error AFTER some kv.sets have already queued would still commit those
-// partial writes, stranding blobs under the new key while meta still names the
-// old one. By collecting all re-sealed blobs first and queueing the writes only
-// once every blob has succeeded, any failure leaves the write buffer empty: the
-// commit is a no-op and the vault stays wholly on the old key.
+// Preparing before writing is what makes change-master safe: a Terrane backend
+// run commits every buffered write in one atomic batch as soon as the JS returns
+// — even when it returns an { ok:false } error string. So returning an error
+// AFTER some writes have queued would still commit those partial writes,
+// stranding blobs under the new key while meta still names the old one. By
+// collecting all re-sealed blobs first and queueing the writes only once every
+// blob has succeeded, any failure leaves the write buffer empty: the commit is a
+// no-op and the vault stays wholly on the old key.
 function planReseal(oldSession, newSession, prefix) {
-  var ids = idsWithPrefix(prefix);
+  var ids = vaultIds(prefix);
   var writes = [];
   for (var i = 0; i < ids.length; i++) {
     var key = prefix + ids[i];
-    var raw = kv.get(key);
+    var raw = vget(key);
     if (raw == null) continue; // vanished mid-iteration; nothing to re-seal
     var obj = openBlob(oldSession, raw);
     if (obj == null) return { error: "rekey_open_failed" };

@@ -161,6 +161,20 @@ pub fn sha1_hex(text: &str) -> String {
     out
 }
 
+/// A random 128-bit id as lowercase hex. Collision-free in practice, so two
+/// devices editing an offline-synced (CRDT) vault never allocate the same id —
+/// unlike a shared sequential counter, which would collide and lose an item.
+pub fn random_id() -> Result<String, CryptoError> {
+    use std::fmt::Write as _;
+    let mut bytes = [0u8; 16];
+    random_bytes(&mut bytes)?;
+    let mut out = String::with_capacity(32);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    Ok(out)
+}
+
 /// Base64 (standard alphabet) encode.
 pub fn b64(bytes: &[u8]) -> String {
     B64.encode(bytes)

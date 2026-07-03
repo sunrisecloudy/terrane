@@ -204,5 +204,11 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
             "{ ok:true, hex } JSON (uppercase SHA-1)",
             "Uppercase hex SHA-1 — the digest a HIBP k-anonymity breach check splits into prefix+suffix.",
         ),
+        method(
+            "randomId",
+            &[],
+            "{ ok:true, id } JSON (128-bit lowercase hex)",
+            "A random collision-free id — for item keys in an offline-synced CRDT vault.",
+        ),
     ]
 }

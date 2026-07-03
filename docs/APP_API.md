@@ -179,6 +179,7 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.crypto.strength(password)` | read |
 | `ctx.resource.crypto.totp(paramsJson)` | read |
 | `ctx.resource.crypto.sha1Hex(text)` | read |
+| `ctx.resource.crypto.randomId()` | read |
 
 #### `ctx.resource.kv`
 
