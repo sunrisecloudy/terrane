@@ -235,7 +235,22 @@ drop live sessions (the fold subscription shipped).
 
 ---
 
-## 4. ASR engine — recommend **whisper.cpp (GGUF)** (Phase 3, pending)
+## 4. ASR engine — **whisper.cpp (GGUF) via whisper-rs** (confirmed 2026-07-03; Phase 3, pending)
+
+> **Decision (whisper vs Parakeet, 2026-07-03).** Parakeet (NVIDIA TDT 0.6B v3) is
+> the stronger *model* for English ambient dictation now — more accurate + 3–10×
+> faster than Whisper large-v3 for English/25 EU langs, native streaming, and (key
+> for always-listening) it doesn't hallucinate during silence. **But** its clean
+> on-device Mac paths are all worse *fits for Terrane*: MLX reintroduces the
+> fragile resident-Python worker already flagged as risky ([[local-model-capability-merged]]);
+> the ONNX/CoreML path (`transcribe-rs`) underperforms on Apple Silicon; and
+> `parakeet.cpp` (pure C++/Metal, the real contender) is young/single-maintainer.
+> whisper.cpp/whisper-rs uniquely matches the existing **no-Python, compile-time
+> Metal, `OnceLock`+shutdown** infra (identical to the llama.cpp setup), and our
+> **VAD gating already neutralizes Whisper's silence-hallucination weakness** (we
+> only ever transcribe VAD-closed speech). So: ship whisper-rs first; **keep the
+> `AsrEngine` trait engine-plural** so Parakeet (via `parakeet.cpp` or the
+> `transcribe-rs`/ONNX path) is a drop-in fast-follow, not a rewrite. See §7 D10.
 
 Via a new `terrane-asr` crate mirroring `terrane-local-llm`: a process-global
 `OnceLock` engine cache with Metal offload (`llama.rs`'s `cached_llama`), a
@@ -367,6 +382,7 @@ Parakeet/whisper-MLX backend; `stt.pull` model management; log compaction/TTL
 | D7 | runner in `asr.rs` | **runner in `stt_runner.rs`**; `asr.rs` reserved for the whisper engine | Separates the transport/sequencing (done) from the ASR backend (Phase 3). |
 | D8 | (explore suggested) add `Effect::SttTranscribe` | **not added** | Correct — STT never uses `Decision::Effect`; the edge dispatches `stt.segment.append` directly. |
 | D9 | (implied) CLI 3-segment commands `stt.session.open` | **friendly verbs `terrane stt open/append/close/trim`** | The CLI's generic arm only routes 2-segment names; mirrored the `kv.storage.set` special-route precedent. |
+| D10 | Phase-3 engine open (whisper vs Parakeet/MLX) | **whisper-rs first; trait kept engine-plural, Parakeet a fast-follow** | Confirmed 2026-07-03 after a 2026 landscape check. Parakeet is the better English ambient model, but every clean-on-Mac Parakeet path is a worse *fit* (MLX=Python risk, ONNX=slow on Apple Silicon, `parakeet.cpp`=immature); whisper-rs matches existing infra and VAD gating covers Whisper's silence weakness. See §4. |
 
 ---
 
@@ -376,11 +392,20 @@ Parakeet/whisper-MLX backend; `stt.pull` model management; log compaction/TTL
 1. New crate `rust/crates/terrane-asr/` (workspace member + dep, mirroring
    `terrane-local-llm`). `[features] default = []; whisper = ["whisper-rs"]` (or
    vendored whisper.cpp via `cc` if you prefer no third-party binding).
-2. `rust/crates/terrane-asr/src/lib.rs`: `WhisperEngine { ctx: OnceLock<...> }`
-   implementing `terrane_host::stt_runner::AsrEngine`. `transcribe(pcm, hz)`:
-   load model from `TERRANE_STT_MODEL` (cached via `OnceLock`, like
-   `cached_llama`), run inference, return `AsrOutput{text, confidence_milli,
-   lang}`. Resample to 16 kHz mono if `hz != 16000` (whisper.cpp wants 16 kHz).
+2. ⚠️ **Avoid a circular dep.** The `AsrEngine` trait lives in
+   `terrane_host::stt_runner`, so `terrane-asr` must NOT try to `impl` it (that
+   would force `terrane-asr → terrane-host → terrane-asr`). Mirror the working
+   `terrane-local-llm` ↔ `terrane-host/src/local_llm.rs` split instead:
+   - `rust/crates/terrane-asr/src/lib.rs` is a **pure engine** (no `terrane-host`
+     dep): `WhisperEngine` with an *inherent* `transcribe(pcm: &[i16], hz: u32)
+     -> Result<AsrOut, AsrError>` and a `clear_whisper_cache()`, exactly like
+     `terrane-local-llm` exposes `cached_llama`/`clear_llama_cache`. Load model
+     from `TERRANE_STT_MODEL`, cache in `OnceLock<Mutex<HashMap<PathBuf,
+     Arc<Mutex<WhisperContext>>>>>` (the `llama_cache()` pattern), resample i16→
+     16 kHz mono f32 (whisper.cpp's required input).
+   - `rust/crates/terrane-host/src/asr.rs` holds the **bridge**: `struct
+     HostWhisper(...)` `impl AsrEngine` delegating to the pure engine — the same
+     shape as `local_llm.rs` wrapping `terrane-local-llm`.
 3. Shutdown hook: add `asr_shutdown()` in `terrane-host/src/asr.rs` (feature-gated
    pair like `local_llm.rs`), called from `local_llm_shutdown()` in
    `terrane-host/src/lib.rs:40` and the FFI `terrane_local_model_shutdown`. **This
