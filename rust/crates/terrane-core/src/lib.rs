@@ -1143,7 +1143,7 @@ impl<R: EffectRunner + 'static> Core<R> {
 fn admit_command(request: &Request) -> Result<()> {
     // Trusted-host only: `auth.*` plus the host-owned edge of `stt` (session
     // lifecycle, segment append, retention). Apps may call only `stt.select`
-    // and `stt.session.close`, so those are deliberately not gated here.
+    // and `stt.stop`, so those are deliberately not gated here.
     let trusted_only = request.name.starts_with("auth.")
         || request.name == "stt.session.open"
         || request.name == "stt.segment.append"

@@ -72,9 +72,10 @@ pub enum VadEdge {
 }
 
 impl SttVad {
-    /// A conservative default: speech above ~1% of full-scale mean-square
-    /// energy, silence below ~0.1%, and a ~330ms hangover at the configured
-    /// frame duration to avoid clipping short pauses.
+    /// A conservative default: speech above ~4.7% of full-scale mean-square
+    /// energy (`50M` of the ~1.07e9 i16 max), silence below ~0.05% (`500K`),
+    /// and a ~330ms hangover at the configured frame duration to avoid clipping
+    /// short pauses.
     pub fn new(frame_ms: u32) -> Self {
         Self::with_thresholds(50_000_000, 500_000, frames_for_duration(frame_ms, 330))
     }
