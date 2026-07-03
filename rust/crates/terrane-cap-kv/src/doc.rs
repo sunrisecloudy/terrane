@@ -431,7 +431,7 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
                 vec![param("key", "Public bucket key to read.", "kv_key")],
                 "Read one value from the shared cross-app public bucket.",
                 "string|null",
-                Vec::new(),
+                vec!["absent key returns null".to_string()],
             ),
             "publicScan" => method_doc(
                 "publicScan",

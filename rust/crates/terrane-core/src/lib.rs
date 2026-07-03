@@ -1136,7 +1136,14 @@ impl<R: EffectRunner + 'static> Core<R> {
 }
 
 fn admit_command(request: &Request) -> Result<()> {
-    if request.name.starts_with("auth.") && !request.authority.is_trusted_host() {
+    // `auth.*` and `kv.public.*` mutate cross-app/platform data and may only be
+    // issued by the trusted host (CLI + FFI both dispatch as trusted_host). App
+    // backends reach KV only through RuntimeResourceHost::write_resource, which
+    // calls capability.decide() directly and never routes through admit_command
+    // — and there is no public-write ResourceMethod for them to call.
+    let trusted_only = request.name.starts_with("auth.")
+        || request.name.starts_with("kv.public.");
+    if trusted_only && !request.authority.is_trusted_host() {
         return Err(Error::InvalidInput(format!(
             "{} requires trusted host authority",
             request.name

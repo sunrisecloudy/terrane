@@ -175,6 +175,10 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.kv.scan(prefix, limit)` | read |
 | `ctx.resource.kv.range(start, endExclusive, limit)` | read |
 | `ctx.resource.kv.keys(prefix, limit)` | read |
+| `ctx.resource.kv.public(key)` | read |
+| `ctx.resource.kv.publicScan(prefix, limit)` | read |
+| `ctx.resource.kv.publicAll()` | read |
+| `ctx.resource.kv.publicKeys(prefix, limit)` | read |
 
 #### `ctx.resource.local-model`
 
