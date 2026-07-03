@@ -980,6 +980,61 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
 }
 
 #[test]
+fn serves_os_monitor_shell_frame_and_snapshot_invoke() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install_named(&mut core, "os-monitor", "OS Monitor");
+        grant_resource(&mut core, "os-monitor", "sysinfo");
+    }
+
+    let (mut child, addr) = spawn_web(home);
+
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200, "apps: {body}");
+    assert!(
+        body.contains(r#""id":"os-monitor""#) && body.contains("OS Monitor"),
+        "os-monitor missing from catalog: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/apps/os-monitor/", None);
+    assert_eq!(status, 200, "os-monitor shell: {body}");
+    assert!(
+        body.contains("Terrane") && body.contains("id=\"app-frame\""),
+        "shell missing: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/apps/os-monitor/__terrane/frame/", None);
+    assert_eq!(status, 200, "os-monitor frame: {body}");
+    assert!(
+        body.contains("window.terrane") && body.contains("\"os-monitor\""),
+        "frame shim missing: {body}"
+    );
+    assert!(
+        body.contains("OS Monitor")
+            && body.contains("id=\"cpu-usage\"")
+            && body.contains("invoke(\"snapshot\")"),
+        "dashboard markup missing from frame: {body}"
+    );
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/os-monitor/invoke",
+        Some(r#"{"verb":"snapshot","args":[]}"#),
+    );
+    assert_eq!(status, 200, "os-monitor invoke: {body}");
+    assert!(
+        body.contains(r#""output":"#) && body.contains(r#"\"cpu\""#) && body.contains(r#"\"memory\""#),
+        "snapshot invoke body: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn serves_catalog_ui_and_invoke_over_http() {
     let dir = tempdir().unwrap();
     let home = dir.path();
