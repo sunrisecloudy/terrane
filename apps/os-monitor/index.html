@@ -321,6 +321,14 @@
         return bytes(n) + "/s";
       }
 
+      // OS-derived strings (process/interface/volume names) are interpolated into
+      // innerHTML, so escape them — a process is free to name itself "<img …>".
+      function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+        });
+      }
+
       function setBar(id, value) {
         var root = document.getElementById(id);
         if (!root) return;
@@ -390,7 +398,7 @@
         (net.interfaces || []).forEach(function (iface) {
           var row = document.createElement("tr");
           row.innerHTML =
-            "<td class=\"name-cell\">" + iface.name + "</td>" +
+            "<td class=\"name-cell\">" + esc(iface.name) + "</td>" +
             "<td>" + rate(iface.downRate) + "</td>" +
             "<td>" + rate(iface.upRate) + "</td>";
           body.appendChild(row);
@@ -405,11 +413,11 @@
           block.style.marginBottom = "10px";
           block.innerHTML =
             '<div class="metric-row">' +
-              '<span class="metric-label">' + vol.mountPoint + '</span>' +
+              '<span class="metric-label">' + esc(vol.mountPoint) + '</span>' +
               '<span class="metric-value">' + pct(vol.usage) + '</span>' +
             '</div>' +
             '<div class="metric-row">' +
-              '<span class="metric-label">' + vol.name + ' · ' + vol.fileSystem + '</span>' +
+              '<span class="metric-label">' + esc(vol.name) + ' · ' + esc(vol.fileSystem) + '</span>' +
               '<span class="metric-value">' + bytes(vol.used) + ' / ' + bytes(vol.total) + '</span>' +
             '</div>' +
             '<div class="bar"><span style="width:' + Math.max(0, Math.min(100, vol.usage || 0)) + '%"></span></div>';
@@ -424,7 +432,7 @@
           var row = document.createElement("tr");
           row.innerHTML =
             "<td>" + p.pid + "</td>" +
-            "<td class=\"name-cell\">" + p.name + "</td>" +
+            "<td class=\"name-cell\">" + esc(p.name) + "</td>" +
             "<td>" + pct(p.cpu) + "</td>" +
             "<td>" + bytes(p.memory) + "</td>";
           body.appendChild(row);
