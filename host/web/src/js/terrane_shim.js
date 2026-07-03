@@ -3,6 +3,7 @@
   var previewUrl = __PREVIEW_URL_JSON__;
   var builderUrl = __BUILDER_URL_JSON__;
   var builderStatusUrl = __BUILDER_STATUS_URL_JSON__;
+  var previewId = __PREVIEW_ID_JSON__;
   var bridgeSeq = 0;
   var bridgePending = {};
   var bridgeTargetOrigin = window.location.protocol + "//" + window.location.host;
@@ -19,6 +20,19 @@
     var pending = bridgePending[message.id];
     if (!pending) return;
     delete bridgePending[message.id];
+    if (pending.relayTo) {
+      // A nested frame's request we forwarded: hand the answer back down.
+      pending.relayTo.postMessage(
+        {
+          type: "terrane:bridge:response",
+          id: pending.relayId,
+          ok: !!message.ok,
+          body: message.body || {},
+        },
+        "*"
+      );
+      return;
+    }
     clearTimeout(pending.timeout);
     if (message.ok) {
       pending.resolve(message.body || {});
@@ -27,15 +41,107 @@
     }
   });
 
+  // Relay bridge traffic for frames nested inside this app — e.g. the App
+  // Builder preview iframe. postMessage only reaches the immediate parent and
+  // the nested frame's opaque origin blocks fetch, so without this hop its
+  // invokes would never reach the shell.
+  window.addEventListener("message", function (event) {
+    var message = event.data || {};
+    if (!message || message.type !== "terrane:bridge:request") return;
+    if (!message.id || !isChildFrame(event.source)) return;
+    if (canUseParentBridge()) {
+      var relayId = "terrane-relay-" + (++bridgeSeq);
+      bridgePending[relayId] = { relayTo: event.source, relayId: message.id };
+      window.parent.postMessage(
+        {
+          type: "terrane:bridge:request",
+          id: relayId,
+          kind: message.kind,
+          body: message.body || {},
+        },
+        bridgeTargetOrigin
+      );
+      return;
+    }
+    // Opened as the top-level page there is no shell above us, but this
+    // document is same-origin and unsandboxed — answer the child via fetch.
+    answerChildLocally(event.source, message);
+  });
+
+  function answerChildLocally(child, message) {
+    var body = message.body || {};
+    var respond = function (ok, payload) {
+      child.postMessage(
+        {
+          type: "terrane:bridge:response",
+          id: message.id,
+          ok: ok,
+          body: payload || {},
+        },
+        "*"
+      );
+    };
+    if (message.kind !== "previewInvoke" || !body.previewId) {
+      respond(false, { error: "unsupported bridge request" });
+      return;
+    }
+    fetch(
+      "/__terrane/previews/" + encodeURIComponent(String(body.previewId)) + "/invoke",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ verb: String(body.verb || ""), args: body.args || [] }),
+      }
+    )
+      .then(function (response) {
+        return response.text().then(function (text) {
+          var parsed = {};
+          if (text) {
+            try {
+              parsed = JSON.parse(text);
+            } catch (_) {
+              parsed = { error: text };
+            }
+          }
+          if (!response.ok && !parsed.error) parsed.error = "HTTP " + response.status;
+          respond(response.ok, parsed);
+        });
+      })
+      .catch(function (error) {
+        respond(false, { error: errorFromBody({ error: String(error) }) });
+      });
+  }
+
+  function isChildFrame(source) {
+    if (!source) return false;
+    var frames = document.querySelectorAll("iframe");
+    for (var i = 0; i < frames.length; i++) {
+      if (frames[i].contentWindow === source) return true;
+    }
+    return false;
+  }
+
   window.APP_ID = __APP_ID_JSON__;
   window.terrane = {
     invoke: function (verb) {
       var args = Array.prototype.slice.call(arguments, 1).map(String);
-      return postJson("invoke", invokeUrl, { verb: verb, args: args })
-        .then(function (j) {
-          if (j.error) throw new Error(j.error);
-          return j.output;
+      var request;
+      if (previewId && canUseParentBridge()) {
+        // Preview frames are nested (App Builder embeds them inside an app
+        // frame), so the plain "invoke" kind would resolve to the wrong app
+        // upstream. Carry the preview id, like the macOS bridge does.
+        request = bridgeJson("previewInvoke", {
+          previewId: previewId,
+          verb: String(verb),
+          args: args,
         });
+      } else {
+        request = postJson("invoke", invokeUrl, { verb: verb, args: args });
+      }
+      return request.then(function (j) {
+        if (j.error) throw new Error(j.error);
+        return j.output;
+      });
     },
   };
 

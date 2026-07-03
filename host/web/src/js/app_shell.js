@@ -214,13 +214,27 @@
       }
       if (!message || message.type !== "terrane:bridge:request") return;
 
-      var route = bridgeRoute(message.kind);
+      var body = message.body || {};
+      var route;
+      if (message.kind === "previewInvoke") {
+        // A relayed preview-frame invoke: route to that preview's backend,
+        // not the current app's.
+        var previewId = String(body.previewId || "");
+        if (!previewId) {
+          sendBridgeResponse(message.id, false, { error: "missing previewId" });
+          return;
+        }
+        route = "/__terrane/previews/" + encodeURIComponent(previewId) + "/invoke";
+        body = { verb: String(body.verb || ""), args: body.args || [] };
+      } else {
+        route = bridgeRoute(message.kind);
+      }
       if (!route) {
         sendBridgeResponse(message.id, false, { error: "unsupported bridge request" });
         return;
       }
 
-      postJson(route, message.body || {})
+      postJson(route, body)
         .then(function (result) {
           sendBridgeResponse(message.id, result.ok, result.body);
         })

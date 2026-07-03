@@ -390,6 +390,16 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
         body.contains("var previewUrl = null;"),
         "preview frames should disable nested preview creation: {body}"
     );
+    // Nested preview frames must invoke by preview id through the bridge —
+    // the plain "invoke" kind would resolve to the embedding app upstream.
+    assert!(
+        body.contains(&format!("var previewId = \"{preview_id}\";")),
+        "preview id missing from preview shim: {body}"
+    );
+    assert!(
+        body.contains("previewInvoke"),
+        "previewInvoke bridge kind missing from preview shim: {body}"
+    );
 
     let (status, headers, body) = http_raw_with_headers(
         &addr,
@@ -1171,6 +1181,12 @@ fn serves_catalog_ui_and_invoke_over_http() {
     assert!(
         body.contains("__terrane/live-version"),
         "live reload hook missing: {body}"
+    );
+    // Nested frames (App Builder's preview iframe) can't reach the shell or
+    // fetch cross-origin; the app shim must relay their bridge requests.
+    assert!(
+        body.contains("terrane-relay-"),
+        "nested-frame bridge relay missing from shim: {body}"
     );
 
     // Built React frame: manifest.ui points at dist/index.html, and frame
