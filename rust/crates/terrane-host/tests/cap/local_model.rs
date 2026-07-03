@@ -45,6 +45,75 @@ fn local_model_register_and_rm_e2e_smoke() {
 }
 
 #[test]
+fn local_model_embed_register_and_refusal_e2e_smoke() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    terrane(home, &["app", "add", "notes", "Notes"]);
+
+    // No embedding model registered: embed points at the zero-config path.
+    let (ok, _, err) = terrane(home, &["local-model", "embed", "notes", "hello"]);
+    assert!(!ok, "embed should be refused with no embedding model");
+    assert!(err.contains("local-model pull --embed"), "stderr: {err}");
+
+    // Registering an embedding model is pure (no weights) and records the
+    // embedding config, visible in the described event line.
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "local-model",
+            "register",
+            "nomic",
+            "llama_cpp",
+            "/models/nomic.gguf",
+            "--embed",
+        ],
+    );
+    assert!(ok, "register failed: {err}");
+    assert!(out.contains("local-model.registered"), "out: {out}");
+    // The decoded log describes the spec as an embedding model.
+    let (ok, log, err) = terrane(home, &["log"]);
+    assert!(ok, "log failed: {err}");
+    assert!(log.contains("embedding"), "log marks embedding: {log}");
+
+    // A generation model asked to embed is refused by name.
+    terrane(
+        home,
+        &["local-model", "register", "qwen", "llama_cpp", "/models/qwen.gguf"],
+    );
+    let (ok, _, err) = terrane(
+        home,
+        &["local-model", "embed", "notes", "--model", "qwen", "hi"],
+    );
+    assert!(!ok, "embedding via a chat model is refused");
+    assert!(err.contains("not an embedding model"), "stderr: {err}");
+}
+
+#[test]
+#[ignore = "downloads nomic-embed-text-v1.5 (~150 MB) from Hugging Face; run with `cargo test -- --ignored`"]
+fn local_model_embed_e2e_real() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    terrane(home, &["app", "add", "notes", "Notes"]);
+
+    // Pull the recommended embedding model, then embed a document and a query.
+    let (ok, out, err) = terrane(home, &["local-model", "pull", "--embed"]);
+    assert!(ok, "embed pull failed; stderr: {err}");
+    assert!(out.contains("local-model.registered"), "out: {out}");
+
+    let (ok, out, err) = terrane(home, &["local-model", "embed", "notes", "the quick brown fox"]);
+    assert!(ok, "embed failed; stderr: {err}");
+    assert!(out.contains("local-model.embedded"), "out: {out}");
+
+    let (ok, out, err) = terrane(home, &["local-model", "embed", "notes", "--query", "a fox"]);
+    assert!(ok, "query embed failed; stderr: {err}");
+    assert!(out.contains("local-model.embedded"), "out: {out}");
+
+    // The vectors are recorded results; replay rebuilds without re-embedding.
+    let (ok, _, err) = terrane(home, &["replay"]);
+    assert!(ok, "replay failed: {err}");
+}
+
+#[test]
 fn local_model_server_status_and_stop_e2e_smoke() {
     let dir = tempdir().unwrap();
     let home = dir.path();

@@ -185,6 +185,9 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.local-model.askJson(schema, prompt)` | call |
 | `ctx.resource.local-model.chat(prompt)` | call |
 | `ctx.resource.local-model.chatModel(model, prompt)` | call |
+| `ctx.resource.local-model.embed(text)` | call |
+| `ctx.resource.local-model.embedQuery(text)` | call |
+| `ctx.resource.local-model.embedModel(model, text)` | call |
 | `ctx.resource.local-model.pullModel(repo, file)` | call |
 | `ctx.resource.local-model.resetChat()` | call |
 | `ctx.resource.local-model.models()` | read |

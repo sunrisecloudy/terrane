@@ -27,6 +27,7 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
                 "local-model.rm".to_string(),
                 "local-model.default".to_string(),
                 "local-model.ask".to_string(),
+                "local-model.embed".to_string(),
             ],
             queries: Vec::new(),
             events: vec![
@@ -35,6 +36,7 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
                 "local-model.default-set".to_string(),
                 "local-model.responded".to_string(),
                 "local-model.chat-cleared".to_string(),
+                "local-model.embedded".to_string(),
             ],
             subscriptions: vec!["app.removed".to_string()],
             resource_methods: resource_method_docs(),
@@ -140,9 +142,11 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
         internal: if include_internal {
             vec![InternalNote {
                 title: "Replay boundary".to_string(),
-                body: "Effect::LocalModelCall and Effect::LocalModelPull are transient. \
-                       local-model.registered and local-model.responded are the durable replay \
-                       inputs; temperature is carried in thousandths to keep state integral."
+                body: "Effect::LocalModelCall, Effect::LocalModelPull, and Effect::LocalModelEmbed \
+                       are transient. local-model.registered and local-model.responded are the \
+                       durable replay inputs; local-model.embedded records the vectors for the \
+                       caller but is not folded into State (floats aren't replay-comparable). \
+                       Temperature is carried in thousandths to keep state integral."
                     .to_string(),
             }]
         } else {
@@ -177,6 +181,18 @@ fn local_model_commands() -> Vec<CommandDoc> {
             "--draft",
             "Optional draft model for speculative decoding (mlx only; needs a \
              smaller same-tokenizer model and rewindable caches).",
+            "string",
+        ),
+        param(
+            "--embed",
+            "Mark this as an embedding model using the recommended preset (nomic); \
+             a bare `pull --embed` fetches the recommended embedding model.",
+            "flag",
+        ),
+        param(
+            "--embed-preset",
+            "Mark this as an embedding model using a named encoder preset (e.g. nomic), \
+             which sets pooling, prefixes, and normalization.",
             "string",
         ),
     ];
@@ -301,6 +317,41 @@ fn local_model_commands() -> Vec<CommandDoc> {
         ])
         .with_effects(&["LocalModelCall"])
         .with_emits(&["local-model.responded"]),
+        command_doc(
+            "local-model.embed",
+            &[
+                param(
+                    "app",
+                    "Existing app id that owns the recorded embedding.",
+                    "app_id",
+                ),
+                param(
+                    "--model",
+                    "Optional registered embedding model id; defaults to the home's \
+                     default embedding model.",
+                    "model_id",
+                ),
+                param(
+                    "--query",
+                    "Apply the model's query prefix (search side) instead of the \
+                     document prefix (index side).",
+                    "flag",
+                ),
+                param("text", "Text to encode into a dense vector.", "string"),
+            ],
+            "effect",
+            "Validate one app-scoped embedding request and return the edge effect; the \
+             pooled, normalized vector is recorded.",
+        )
+        .with_errors(&[
+            "app not found",
+            "unknown model id",
+            "not an embedding model",
+            "no embedding model registered",
+            "empty text",
+        ])
+        .with_effects(&["LocalModelEmbed"])
+        .with_emits(&["local-model.embedded"]),
     ]
 }
 
@@ -392,6 +443,29 @@ fn local_model_events() -> Vec<EventDoc> {
             "Records the observed local generation for replay.",
         )
         .with_effects(&["appends LocalModelState.turns[app]"]),
+        event_doc(
+            "local-model.embedded",
+            &[
+                param("app", "App id that requested the embedding.", "app_id"),
+                param("model", "Registered embedding model id that ran.", "model_id"),
+                param(
+                    "query",
+                    "Whether the query prefix (vs the document prefix) was applied.",
+                    "bool",
+                ),
+                param("dim", "Dimension of each returned vector.", "u32"),
+                param(
+                    "vectors",
+                    "One pooled, (optionally) L2-normalized vector per input text.",
+                    "f32[][]",
+                ),
+                param("duration_ms", "Wall-clock encoding time.", "u64"),
+            ],
+            "Records the observed vectors so replay never re-runs inference. A derived \
+             read-model: the vectors are consumed by the caller at commit time and are \
+             deliberately not folded into State (floats aren't replay-comparable).",
+        )
+        .with_effects(&["none — vectors are returned to the caller, not stored in State"]),
     ]
 }
 
@@ -449,6 +523,31 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
             "Like chat, but with an explicitly named registered model (each model keeps \
              its own conversation context).",
         ), "string | null"),
+        with_returns(resource_method(
+            "embed",
+            "call",
+            &[param("text", "Document-side text to encode.", "string")],
+            "Encode text into a dense vector with the home's default embedding model, \
+             applying the model's document prefix (index side). Returns the vector as a \
+             JSON array of floats (null when nothing was produced).",
+        ), "string (JSON number array) | null"),
+        with_returns(resource_method(
+            "embedQuery",
+            "call",
+            &[param("text", "Search-side text to encode.", "string")],
+            "Like embed, but applies the model's query prefix for the search side, so \
+             query and document vectors are comparable.",
+        ), "string (JSON number array) | null"),
+        with_returns(resource_method(
+            "embedModel",
+            "call",
+            &[
+                param("model", "A registered embedding model id.", "model_id"),
+                param("text", "Document-side text to encode.", "string"),
+            ],
+            "Like embed, but names the embedding model explicitly instead of using the \
+             default.",
+        ), "string (JSON number array) | null"),
         with_returns(resource_method(
             "pullModel",
             "call",

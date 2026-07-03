@@ -151,8 +151,16 @@ pub(crate) fn pull(
     max_tokens: Option<u32>,
     temperature_milli: Option<u32>,
     draft_model: Option<String>,
+    embed_preset: Option<&str>,
 ) -> Result<Vec<EventRecord>> {
-    use terrane_cap_local_model::{registered_event, LocalModelSpec};
+    use terrane_cap_local_model::{embed_preset as resolve_embed_preset, registered_event, LocalModelSpec};
+
+    let embedding = match embed_preset {
+        None => None,
+        Some(name) => Some(resolve_embed_preset(name).ok_or_else(|| {
+            Error::InvalidInput(format!("unknown embed preset {name:?}"))
+        })?),
+    };
 
     let spec = match backend {
         "mlx" => {
@@ -173,6 +181,7 @@ pub(crate) fn pull(
                 source: Some(format!("hf:{repo}")),
                 size_bytes: Some(size_bytes),
                 draft_model,
+                embedding: None,
             }
         }
         _ => {
@@ -207,10 +216,94 @@ pub(crate) fn pull(
                 source: Some(format!("hf:{repo}/{file}")),
                 size_bytes: Some(size_bytes),
                 draft_model: None,
+                embedding,
             }
         }
     };
     Ok(vec![registered_event(id, &spec)?])
+}
+
+/// Encode texts into vectors with a registered embedding model, applying the
+/// model's configured prefix/pooling/normalization, and record the result.
+#[cfg(feature = "local-llm")]
+pub(crate) fn embed(
+    app: &str,
+    model: &str,
+    texts: &[String],
+    query: bool,
+    state: &State,
+) -> Result<Vec<EventRecord>> {
+    use std::time::Instant;
+
+    use terrane_cap_local_model::{embedded_event, EmbeddedRecord};
+    use terrane_local_llm::{cached_llama, EmbedPooling, EmbedRequest, ModelFile};
+
+    let spec = state
+        .local_model
+        .specs
+        .get(model)
+        .ok_or_else(|| Error::InvalidInput(format!("unknown local model: {model}")))?;
+    let config = spec.embedding.as_ref().ok_or_else(|| {
+        Error::InvalidInput(format!("{model} is not an embedding model"))
+    })?;
+
+    if spec.backend != "llama_cpp" {
+        return Err(Error::Runtime(format!(
+            "embedding backend {} has no edge engine",
+            spec.backend
+        )));
+    }
+
+    // Apply the model's asymmetric prefix (search query vs indexed document).
+    let prefix = if query {
+        &config.query_prefix
+    } else {
+        &config.document_prefix
+    };
+    let prefixed: Vec<String> = texts.iter().map(|text| format!("{prefix}{text}")).collect();
+
+    let engine = cached_llama(&ModelFile {
+        path: resolve_gguf_path(&spec.local_path, spec.source.as_deref()),
+        context_length: spec.context_length,
+        chat_template_override: spec.chat_template.clone(),
+    })
+    .map_err(|e| Error::Runtime(e.to_string()))?;
+    let engine = engine
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    let started = Instant::now();
+    let mut vectors = engine
+        .embed(&EmbedRequest {
+            texts: prefixed,
+            pooling: EmbedPooling::parse(&config.pooling),
+            normalize: config.normalize,
+        })
+        .map_err(|e| Error::Runtime(e.to_string()))?;
+    drop(engine);
+
+    // Matryoshka truncation: keep the leading dims, then renormalize.
+    if let Some(dim) = config.dim.map(|d| d as usize) {
+        for vector in &mut vectors {
+            if vector.len() > dim {
+                vector.truncate(dim);
+                if config.normalize {
+                    terrane_local_llm::l2_normalize(vector);
+                }
+            }
+        }
+    }
+
+    let dim = u32::try_from(vectors.first().map(Vec::len).unwrap_or(0)).unwrap_or(u32::MAX);
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    Ok(vec![embedded_event(&EmbeddedRecord {
+        app: app.to_string(),
+        model: model.to_string(),
+        query,
+        dim,
+        vectors,
+        duration_ms,
+    })?])
 }
 
 /// Drop the in-process engine cache. Hosts MUST call this before a normal
@@ -330,6 +423,21 @@ pub(crate) fn pull(
     _max_tokens: Option<u32>,
     _temperature_milli: Option<u32>,
     _draft_model: Option<String>,
+    _embed_preset: Option<&str>,
+) -> Result<Vec<EventRecord>> {
+    Err(Error::Runtime(
+        "this build has no local inference engine; rebuild terrane-host with --features local-llm"
+            .into(),
+    ))
+}
+
+#[cfg(not(feature = "local-llm"))]
+pub(crate) fn embed(
+    _app: &str,
+    _model: &str,
+    _texts: &[String],
+    _query: bool,
+    _state: &State,
 ) -> Result<Vec<EventRecord>> {
     Err(Error::Runtime(
         "this build has no local inference engine; rebuild terrane-host with --features local-llm"

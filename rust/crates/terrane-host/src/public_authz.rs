@@ -85,7 +85,7 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "model.ask" => PublicCommandDisposition::Refuse {
             reason: "model.ask is not available through untrusted capability_command",
         },
-        "local-model.ask" => PublicCommandDisposition::GrantGated {
+        "local-model.ask" | "local-model.embed" => PublicCommandDisposition::GrantGated {
             namespace: "local-model",
             app_arg_index: 0,
         },

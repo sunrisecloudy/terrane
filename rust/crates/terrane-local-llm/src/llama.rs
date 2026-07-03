@@ -7,14 +7,17 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::params::{LlamaContextParams, LlamaPoolingType};
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-use crate::{Constraint, GenerateRequest, GenerateResponse, LlmError, LocalLlm, StopReason};
+use crate::{
+    l2_normalize, Constraint, EmbedPooling, EmbedRequest, GenerateRequest, GenerateResponse,
+    LlmError, LocalLlm, StopReason,
+};
 
 /// A resolved model file plus per-model overrides from the spec.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -203,6 +206,67 @@ impl LlamaCppBackend {
             chain.push(LlamaSampler::dist(request.config.seed));
         }
         Ok(LlamaSampler::chain_simple(chain))
+    }
+
+    /// Encode each text into one pooled dense vector. Embeddings need their own
+    /// context (embeddings enabled, an explicit pooling type), so this builds a
+    /// fresh context per text rather than reusing the generation path; the
+    /// cached engine still avoids reloading the GGUF weights.
+    pub fn embed(&self, request: &EmbedRequest) -> Result<Vec<Vec<f32>>, LlmError> {
+        let backend = backend()?;
+        let pooling = match request.pooling {
+            EmbedPooling::Mean => LlamaPoolingType::Mean,
+            EmbedPooling::Cls => LlamaPoolingType::Cls,
+            EmbedPooling::Last => LlamaPoolingType::Last,
+        };
+
+        let mut vectors = Vec::with_capacity(request.texts.len());
+        for text in &request.texts {
+            let tokens = self
+                .model
+                .str_to_token(text, AddBos::Always)
+                .map_err(|e| LlmError::Generate(format!("tokenize failed: {e}")))?;
+            if tokens.is_empty() {
+                return Err(LlmError::Generate("cannot embed empty text".into()));
+            }
+            let n_tokens = u32::try_from(tokens.len())
+                .map_err(|_| LlmError::Generate("text too long to embed".into()))?;
+            if n_tokens > self.context_length {
+                return Err(LlmError::Generate(format!(
+                    "text ({n_tokens} tokens) exceeds the model context length ({}); chunk it first",
+                    self.context_length
+                )));
+            }
+
+            let context_params = LlamaContextParams::default()
+                .with_n_ctx(NonZeroU32::new(n_tokens))
+                .with_n_batch(n_tokens)
+                .with_embeddings(true)
+                .with_pooling_type(pooling);
+            let mut context = self
+                .model
+                .new_context(backend, context_params)
+                .map_err(|e| LlmError::Generate(format!("embedding context init failed: {e}")))?;
+
+            // Pooling collapses every token's hidden state, so ask for all of them.
+            let mut batch = LlamaBatch::new(tokens.len(), 1);
+            batch
+                .add_sequence(&tokens, 0, true)
+                .map_err(|e| LlmError::Generate(format!("batch add failed: {e}")))?;
+            context
+                .decode(&mut batch)
+                .map_err(|e| LlmError::Generate(format!("embedding decode failed: {e}")))?;
+
+            let mut vector = context
+                .embeddings_seq_ith(0)
+                .map_err(|e| LlmError::Generate(format!("read embedding failed: {e}")))?
+                .to_vec();
+            if request.normalize {
+                l2_normalize(&mut vector);
+            }
+            vectors.push(vector);
+        }
+        Ok(vectors)
     }
 }
 

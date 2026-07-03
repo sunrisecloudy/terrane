@@ -136,6 +136,49 @@ pub trait LocalLlm {
     ) -> Result<GenerateResponse, LlmError>;
 }
 
+/// How per-token hidden states are collapsed into one vector. Model-specific:
+/// a wrong choice yields a plausible-looking but useless embedding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbedPooling {
+    /// Average of all token states (nomic, EmbeddingGemma, MiniLM).
+    Mean,
+    /// The `[CLS]`/first token state (BGE, GTE encoders, Arctic).
+    Cls,
+    /// The last token state (Qwen3, GTE-Qwen2).
+    Last,
+}
+
+impl EmbedPooling {
+    /// Parse a stored pooling tag; unknown values fall back to `Mean`.
+    pub fn parse(tag: &str) -> Self {
+        match tag {
+            "cls" => EmbedPooling::Cls,
+            "last" => EmbedPooling::Last,
+            _ => EmbedPooling::Mean,
+        }
+    }
+}
+
+/// One text-encoding request against a loaded embedding model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbedRequest {
+    /// The (already prefix-applied) texts to encode, in order.
+    pub texts: Vec<String>,
+    pub pooling: EmbedPooling,
+    /// L2-normalize each vector so cosine similarity is a plain dot product.
+    pub normalize: bool,
+}
+
+/// L2-normalize a vector in place; a zero vector is left untouched.
+pub fn l2_normalize(vector: &mut [f32]) {
+    let norm = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in vector.iter_mut() {
+            *x /= norm;
+        }
+    }
+}
+
 /// Parse a (schema-constrained) generation into a typed value.
 pub fn parse_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, LlmError> {
     serde_json::from_str(text.trim())
