@@ -15,3 +15,4 @@ mod local_model;
 mod model;
 mod native;
 mod net;
+mod password_manager;
