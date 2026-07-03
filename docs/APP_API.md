@@ -164,6 +164,21 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.crdt.textDel(doc, index, len)` | write |
 | `ctx.resource.crdt.textGet(doc)` | read |
 
+#### `ctx.resource.crypto`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.crypto.newVault(masterPassword)` | read |
+| `ctx.resource.crypto.unlock(masterPassword, meta)` | read |
+| `ctx.resource.crypto.lock(session)` | read |
+| `ctx.resource.crypto.status(session)` | read |
+| `ctx.resource.crypto.seal(session, plaintext)` | read |
+| `ctx.resource.crypto.open(session, blob)` | read |
+| `ctx.resource.crypto.generatePassword(optionsJson)` | read |
+| `ctx.resource.crypto.generatePassphrase(optionsJson)` | read |
+| `ctx.resource.crypto.strength(password)` | read |
+| `ctx.resource.crypto.totp(paramsJson)` | read |
+
 #### `ctx.resource.kv`
 
 | Method | Kind |

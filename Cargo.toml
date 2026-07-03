@@ -7,6 +7,7 @@ members = [
   "rust/crates/terrane-cap-build",
   "rust/crates/terrane-cap-builder",
   "rust/crates/terrane-cap-crdt",
+  "rust/crates/terrane-cap-crypto",
   "rust/crates/terrane-cap-harness",
   "rust/crates/terrane-cap-kv",
   "rust/crates/terrane-cap-js-runtime",
@@ -40,6 +41,7 @@ terrane-cap-auth = { path = "rust/crates/terrane-cap-auth" }
 terrane-cap-build = { path = "rust/crates/terrane-cap-build" }
 terrane-cap-builder = { path = "rust/crates/terrane-cap-builder" }
 terrane-cap-crdt = { path = "rust/crates/terrane-cap-crdt" }
+terrane-cap-crypto = { path = "rust/crates/terrane-cap-crypto" }
 terrane-cap-harness = { path = "rust/crates/terrane-cap-harness" }
 terrane-cap-kv = { path = "rust/crates/terrane-cap-kv" }
 terrane-cap-js-runtime = { path = "rust/crates/terrane-cap-js-runtime" }

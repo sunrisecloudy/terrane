@@ -19,6 +19,7 @@ terrane-cap-auth.workspace = true
 terrane-cap-build.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true
+terrane-cap-crypto.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-js-runtime.workspace = true

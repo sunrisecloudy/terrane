@@ -167,6 +167,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
         vec![
             "build",
             "crdt",
+            "crypto",
             "kv",
             "local-model",
             "native",

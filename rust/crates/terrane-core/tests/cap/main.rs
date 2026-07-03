@@ -8,6 +8,7 @@ mod app;
 mod auth;
 mod builder;
 mod crdt;
+mod crypto;
 mod grant_resources;
 mod grant_spec_inventory;
 mod grant_verbs_match_specs;
