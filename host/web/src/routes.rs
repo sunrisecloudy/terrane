@@ -192,6 +192,9 @@ pub fn route(
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => {
             crate::shell::admin_response(live_reload, premium_url)
         }
+        (Method::Get, ["__terrane", "agents"]) => crate::agents::list(core),
+        (Method::Post, ["__terrane", "agents"]) => crate::agents::create(core, request),
+        (Method::Post, ["__terrane", "agents", id]) => crate::agents::update(core, id, request),
         (Method::Post, ["__terrane", "builder", "generate"]) => {
             builder_generate(core, builder_jobs, request)
         }

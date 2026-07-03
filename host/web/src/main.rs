@@ -13,6 +13,7 @@
 //! by default and injects a small polling hook into served HTML.
 
 mod admin;
+mod agents;
 mod args;
 mod builder_jobs;
 mod dev_apps;
@@ -46,6 +47,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    agents::seed_defaults(&mut core);
 
     let server = match Server::http(&args.addr) {
         Ok(server) => server,

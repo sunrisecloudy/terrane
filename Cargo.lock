@@ -3440,6 +3440,7 @@ dependencies = [
  "nanoserde",
  "tempfile",
  "terrane-api",
+ "terrane-cap-agent",
  "terrane-core",
  "terrane-host",
  "tiny_http",
