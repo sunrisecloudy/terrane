@@ -40,6 +40,7 @@ targets:
         NSPrincipalClass: NSApplication
         NSHighResolutionCapable: true
         NSCameraUsageDescription: "Photobooth uses the camera only when you start the camera and take a picture."
+        NSMicrophoneUsageDescription: "Terrane transcribes speech locally when you enable the microphone for ambient dictation."
         CFBundleName: Terrane
         LSUIElement: false
     dependencies:

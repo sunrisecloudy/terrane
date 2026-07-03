@@ -19,6 +19,10 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// The host owns the top bar, so it updates the breadcrumb (and persists).
   var onDocumentSet: ((String) -> Void)?
 
+  var terraneHandle: OpaquePointer { handle }
+
+  var selectedAppId: String { appId }
+
   init?(home: URL) {
     guard let handle = home.path.withCString({ terrane_open($0) }) else {
       return nil

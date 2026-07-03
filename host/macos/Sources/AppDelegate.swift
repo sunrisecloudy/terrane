@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var crumbSeparator: NSTextField!
   private var docField: NSTextField!
   private var bridge: TerraneBridge?
+  private var sttCapture: SttCapture?
+  private var sttMicButton: NSButton!
+  private var sttListeningLabel: NSTextField!
   private var appSchemeHandler: AppSchemeHandler?
   private var previewSchemeHandler: PreviewSchemeHandler?
   private var home: URL!
@@ -73,6 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   }
 
   func applicationWillTerminate(_ notification: Notification) {
+    sttCapture?.stop(reason: "host-exit")
+    terrane_stt_shutdown()
     bridge?.close()
     // Cached local-model engines must be released before ggml's static
     // destructors run at exit, or the process aborts.
@@ -186,6 +191,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false
 
+    sttMicButton = NSButton(title: "🎙", target: self, action: #selector(sttMicButtonClicked(_:)))
+    sttMicButton.bezelStyle = .rounded
+    sttMicButton.toolTip = "Enable microphone"
+    sttMicButton.translatesAutoresizingMaskIntoConstraints = false
+
+    sttListeningLabel = NSTextField(labelWithString: "LISTENING")
+    sttListeningLabel.font = .systemFont(ofSize: 11, weight: .bold)
+    sttListeningLabel.textColor = .systemRed
+    sttListeningLabel.isHidden = true
+    sttListeningLabel.translatesAutoresizingMaskIntoConstraints = false
+
     codeButton = NSButton(title: "Code", target: self, action: #selector(codeButtonChanged(_:)))
     codeButton.setButtonType(.toggle)
     codeButton.bezelStyle = .rounded
@@ -237,6 +253,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     bar.addSubview(appNameLabel)
     bar.addSubview(crumbSeparator)
     bar.addSubview(docField)
+    bar.addSubview(sttListeningLabel)
+    bar.addSubview(sttMicButton)
     bar.addSubview(codeButton)
     content.addSubview(appSidebar)
     content.addSubview(bar)
@@ -259,6 +277,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
       codeButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -16),
       codeButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+
+      sttMicButton.trailingAnchor.constraint(equalTo: codeButton.leadingAnchor, constant: -10),
+      sttMicButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+
+      sttListeningLabel.trailingAnchor.constraint(equalTo: sttMicButton.leadingAnchor, constant: -8),
+      sttListeningLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
 
       appIconView.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
       appIconView.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
@@ -308,9 +332,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     load(app)
   }
 
+  @objc private func sttMicButtonClicked(_ sender: NSButton) {
+    guard let bridge else { return }
+    let appId = bridge.selectedAppId
+    guard !appId.isEmpty else { return }
+    if sttCapture == nil {
+      sttCapture = SttCapture(handle: bridge.terraneHandle, appId: appId)
+      sttCapture?.onListeningChanged = { [weak self] listening in
+        DispatchQueue.main.async {
+          self?.sttListeningLabel.isHidden = !listening
+          self?.sttMicButton.state = listening ? .on : .off
+        }
+      }
+    }
+    if sttCapture?.isListening == true {
+      sttCapture?.stop()
+      return
+    }
+    do {
+      try sttCapture?.start()
+    } catch {
+      let alert = NSAlert()
+      alert.messageText = "Microphone unavailable"
+      alert.informativeText = String(describing: error)
+      alert.runModal()
+    }
+  }
+
   private func load(_ app: TerraneApp, preferredSourcePath: String? = nil) {
+    if sttCapture?.isListening == true {
+      sttCapture?.stop(reason: "stopped")
+    }
     selectedApp = app
     bridge?.select(app: app)
+    sttCapture = nil
     window.title = "\(app.name) - Terrane"
 
     appSidebar.select(appId: app.id)
