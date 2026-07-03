@@ -6,6 +6,15 @@
   var previewId = __PREVIEW_ID_JSON__;
   var bridgeSeq = 0;
   var bridgePending = {};
+  // Per-load nonce, handed to this document by the shell in the frame URL
+  // (?__terrane_n=...). Every app->shell message carries it; the shell only
+  // honors messages bearing the nonce it assigned to the current load. A page
+  // the app navigates its own frame to loads without our shim (and without the
+  // nonce), so it cannot drive the bridge or rename the breadcrumb.
+  var bridgeNonce = "";
+  try {
+    bridgeNonce = new URLSearchParams(window.location.search).get("__terrane_n") || "";
+  } catch (_) {}
   // App frames post to the shell — a real origin we can pin. Preview frames
   // post to their embedding APP frame, whose sandboxed opaque origin never
   // matches a concrete targetOrigin: the browser would silently drop the
@@ -23,9 +32,25 @@
   // give those a human-scale deadline once the host signals progress.
   var ELICITATION_TIMEOUT_MS = 600000;
 
+  // Top-bar document/theme state, kept in sync with the shell.
+  var docState = "";
+  var themeState = "system";
+  var docSubs = [];
+  var themeSubs = [];
+
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
     var message = event.data || {};
+    if (message && message.type === "terrane:document") {
+      docState = String(message.name == null ? "" : message.name);
+      notify(docSubs, docState);
+      return;
+    }
+    if (message && message.type === "terrane:theme") {
+      themeState = String(message.theme || "system");
+      notify(themeSubs, themeState);
+      return;
+    }
     if (message && message.type === "terrane:bridge:progress") {
       var waiting = bridgePending[message.id];
       if (!waiting) return;
@@ -85,6 +110,7 @@
           id: relayId,
           kind: message.kind,
           body: message.body || {},
+          nonce: bridgeNonce,
         },
         bridgeTargetOrigin
       );
@@ -148,6 +174,22 @@
     return false;
   }
 
+  function notify(subs, value) {
+    for (var i = 0; i < subs.length; i++) {
+      try {
+        subs[i](value);
+      } catch (_) {}
+    }
+  }
+
+  function unsubscriber(list, cb) {
+    return function () {
+      for (var i = list.length - 1; i >= 0; i--) {
+        if (list[i] === cb) list.splice(i, 1);
+      }
+    };
+  }
+
   window.APP_ID = __APP_ID_JSON__;
   window.terrane = {
     invoke: function (verb) {
@@ -169,6 +211,44 @@
         if (j.error) throw new Error(j.error);
         return j.output;
       });
+    },
+
+    // --- Top-bar document/theme (host chrome) ---
+    // The host owns the top bar; these let an app read and drive its own
+    // slice of it (the document name) and react to the host theme. Portable:
+    // the macOS host exposes the same surface.
+    getDocument: function () {
+      return docState;
+    },
+    setDocument: function (name) {
+      var clean = String(name == null ? "" : name);
+      docState = clean;
+      if (!canUseParentBridge()) return;
+      window.parent.postMessage(
+        { type: "terrane:document:set", name: clean, nonce: bridgeNonce },
+        bridgeTargetOrigin
+      );
+    },
+    onDocument: function (cb) {
+      if (typeof cb !== "function") return function () {};
+      docSubs.push(cb);
+      if (docState) {
+        try {
+          cb(docState);
+        } catch (_) {}
+      }
+      return unsubscriber(docSubs, cb);
+    },
+    getTheme: function () {
+      return themeState;
+    },
+    onTheme: function (cb) {
+      if (typeof cb !== "function") return function () {};
+      themeSubs.push(cb);
+      try {
+        cb(themeState);
+      } catch (_) {}
+      return unsubscriber(themeSubs, cb);
     },
   };
 
@@ -203,6 +283,16 @@
           return j;
         });
     };
+  }
+
+  // Ask the shell for the current document + theme once this document is set
+  // up. The nonce proves we are the frame the shell loaded, so a navigated-to
+  // page cannot solicit (or be handed) the user's document name and theme.
+  if (canUseParentBridge() && !previewId) {
+    window.parent.postMessage(
+      { type: "terrane:hello", nonce: bridgeNonce },
+      bridgeTargetOrigin
+    );
   }
 
   function waitForBuilderDraft(id, deadline) {
@@ -263,6 +353,7 @@
           id: id,
           kind: kind,
           body: body || {},
+          nonce: bridgeNonce,
         },
         bridgeTargetOrigin
       );
