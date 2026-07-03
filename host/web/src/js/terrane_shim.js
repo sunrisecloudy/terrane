@@ -38,6 +38,16 @@
   var docSubs = [];
   var themeSubs = [];
 
+  // Localization state, pushed by the host alongside theme/document. The host
+  // negotiates the locale (web: Accept-Language; macOS: system language) and
+  // sends the active code, its writing direction, and the merged message
+  // bundle. Absent host → English/LTR/no messages so apps still work headless.
+  var localeState = "en";
+  var messagesState = {};
+  var dirState = "ltr";
+  var localeSubs = [];
+  var messagesSubs = [];
+
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
     var message = event.data || {};
@@ -49,6 +59,17 @@
     if (message && message.type === "terrane:theme") {
       themeState = String(message.theme || "system");
       notify(themeSubs, themeState);
+      return;
+    }
+    if (message && message.type === "terrane:locale") {
+      localeState = String(message.locale || "en");
+      messagesState =
+        message.messages && typeof message.messages === "object"
+          ? message.messages
+          : {};
+      dirState = message.dir === "rtl" ? "rtl" : "ltr";
+      notify(localeSubs, localeState);
+      notify(messagesSubs, copyMessages());
       return;
     }
     if (message && message.type === "terrane:bridge:progress") {
@@ -182,6 +203,38 @@
     }
   }
 
+  // A shallow copy of the message bundle so callers of getMessages/onMessages
+  // cannot mutate the host-owned state.
+  function copyMessages() {
+    var copy = {};
+    for (var k in messagesState) {
+      if (Object.prototype.hasOwnProperty.call(messagesState, k)) {
+        copy[k] = messagesState[k];
+      }
+    }
+    return copy;
+  }
+
+  // Translate `key` for the active locale: look it up in the pushed bundle,
+  // else fall back to params.default, else the key itself; then interpolate
+  // {name} placeholders from params (the reserved "default" is never a
+  // placeholder). Pure string in, string out — assign with textContent.
+  function translate(key, params) {
+    key = String(key == null ? "" : key);
+    var template = Object.prototype.hasOwnProperty.call(messagesState, key)
+      ? messagesState[key]
+      : params && Object.prototype.hasOwnProperty.call(params, "default")
+        ? String(params.default)
+        : key;
+    if (!params) return template;
+    return String(template).replace(/\{(\w+)\}/g, function (match, name) {
+      if (name === "default") return match;
+      return Object.prototype.hasOwnProperty.call(params, name)
+        ? String(params[name])
+        : match;
+    });
+  }
+
   function unsubscriber(list, cb) {
     return function () {
       for (var i = list.length - 1; i >= 0; i--) {
@@ -249,6 +302,40 @@
         cb(themeState);
       } catch (_) {}
       return unsubscriber(themeSubs, cb);
+    },
+
+    // --- Localization (host chrome) — parity with the macOS host ---
+    // The host detects the user's language and pushes {locale, dir, messages}.
+    // getLocale/getDir are synchronous; t(key, params) translates + interpolates
+    // against the pushed bundle. All best-effort: no host → "en"/"ltr", and t()
+    // falls back to params.default (or the key), so apps keep working.
+    getLocale: function () {
+      return localeState;
+    },
+    onLocale: function (cb) {
+      if (typeof cb !== "function") return function () {};
+      localeSubs.push(cb);
+      try {
+        cb(localeState);
+      } catch (_) {}
+      return unsubscriber(localeSubs, cb);
+    },
+    getMessages: function () {
+      return copyMessages();
+    },
+    onMessages: function (cb) {
+      if (typeof cb !== "function") return function () {};
+      messagesSubs.push(cb);
+      try {
+        cb(copyMessages());
+      } catch (_) {}
+      return unsubscriber(messagesSubs, cb);
+    },
+    getDir: function () {
+      return dirState;
+    },
+    t: function (key, params) {
+      return translate(key, params);
     },
   };
 

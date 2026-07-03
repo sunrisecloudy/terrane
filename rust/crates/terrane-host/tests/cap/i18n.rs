@@ -385,13 +385,10 @@ fn repo_seed_catalogs_import_cleanly() {
     assert!(outcome.languages >= 2);
 
     let bucket = &core.state().kv.data[PUBLIC_BUCKET_APP_ID];
-    assert_eq!(bucket["i18n/en/system.app.catalog.title"], "Apps");
-    assert_eq!(
-        bucket["i18n/zh-Hans/system.app.catalog.title"],
-        "应用"
-    );
-    assert_eq!(bucket["i18n/en/todo.added"], "added #{id} {text}");
-    assert_eq!(bucket["i18n/es/todo.added"], "añadido #{id} {text}");
+    assert_eq!(bucket["i18n/en/system.menu.settings"], "Settings");
+    assert_eq!(bucket["i18n/zh-Hans/system.menu.settings"], "设置");
+    assert_eq!(bucket["i18n/en/todo.add"], "Add");
+    assert_eq!(bucket["i18n/es/todo.add"], "Añadir");
 
     assert!(core.replay_matches().unwrap());
 }

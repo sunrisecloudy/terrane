@@ -78,24 +78,61 @@
     </style>
   </head>
   <body>
-    <h1>Todo app test</h1>
+    <h1 data-i18n="todo.heading">Todo</h1>
     <div class="row">
-      <input id="text" type="text" placeholder="Add a todo…" autofocus>
-      <button id="add">Add</button>
+      <input id="text" type="text" data-i18n-attr="placeholder:todo.addPlaceholder" placeholder="Add a todo…" autofocus>
+      <button id="add" data-i18n="todo.add">Add</button>
     </div>
     <ul id="list"></ul>
-    <div id="empty" class="empty" hidden>Nothing to do</div>
+    <div id="empty" class="empty" hidden data-i18n="todo.empty">Nothing to do</div>
 
     <script>
       var listEl = document.getElementById("list");
       var emptyEl = document.getElementById("empty");
       var textEl = document.getElementById("text");
+      var doneTitle = "done";
 
       function invoke() {
         if (!window.terrane || typeof window.terrane.invoke !== "function") {
           return Promise.reject(new Error("Terrane bridge unavailable"));
         }
         return window.terrane.invoke.apply(window.terrane, arguments);
+      }
+
+      // Translate via the host bundle when present, else fall back to English.
+      // The ~15-line localize() block below is the pattern every app copies.
+      function tr(key, fallback, params) {
+        if (window.terrane && typeof window.terrane.t === "function") {
+          var opts = { default: fallback };
+          if (params) {
+            for (var k in params) {
+              if (Object.prototype.hasOwnProperty.call(params, k)) opts[k] = params[k];
+            }
+          }
+          return window.terrane.t(key, opts);
+        }
+        return fallback;
+      }
+
+      function localize() {
+        document.documentElement.dir =
+          (window.terrane && window.terrane.getDir && window.terrane.getDir()) || "ltr";
+        var nodes = document.querySelectorAll("[data-i18n]");
+        for (var i = 0; i < nodes.length; i++) {
+          nodes[i].textContent = tr(nodes[i].getAttribute("data-i18n"), nodes[i].textContent.trim());
+        }
+        var attrNodes = document.querySelectorAll("[data-i18n-attr]");
+        for (var j = 0; j < attrNodes.length; j++) {
+          attrNodes[j].getAttribute("data-i18n-attr").split(";").forEach(function (pair) {
+            var kv = pair.split(":");
+            if (kv.length === 2) {
+              var attr = kv[0].trim();
+              attrNodes[j].setAttribute(attr, tr(kv[1].trim(), attrNodes[j].getAttribute(attr)));
+            }
+          });
+        }
+        document.title = tr("todo.title", "Todo");
+        doneTitle = tr("todo.doneTitle", "done");
       }
 
       function render(items) {
@@ -111,7 +148,7 @@
           text.textContent = it.text;
           var done = document.createElement("button");
           done.className = "done";
-          done.title = "done";
+          done.title = doneTitle;
           done.textContent = "✓";
           done.addEventListener("click", function () {
             invoke("done", String(it.id)).then(refresh).catch(showError);
@@ -146,6 +183,15 @@
       textEl.addEventListener("keydown", function (e) {
         if (e.key === "Enter") add();
       });
+      localize();
+      // The host pushes the locale bundle shortly after load; re-localize then,
+      // and on any later language change, re-rendering the live list too.
+      if (window.terrane && typeof window.terrane.onMessages === "function") {
+        window.terrane.onMessages(function () {
+          localize();
+          refresh();
+        });
+      }
       refresh();
     </script>
   </body>

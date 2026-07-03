@@ -469,6 +469,78 @@ always reports `"system"`.
 > page your app navigates its own frame to loads without the nonce, so it
 > cannot invoke your backend or rename your document.
 
+### Localization — locale, direction & translation
+
+Localization is the third slice of host chrome shared through `window.terrane`,
+identically on the web and macOS hosts. The host detects the user's language
+(web: the `Accept-Language` header or the in-app language picker; macOS: the
+system language), negotiates it to a supported code, and pushes the active
+locale, its writing direction, and a **message bundle** down to your frame.
+
+```js
+window.terrane.getLocale();   // → active code, e.g. "en" | "es" | "zh-Hans" | "ar" (default "en")
+window.terrane.getDir();      // → "ltr" | "rtl"  ("rtl" only for "ar")
+window.terrane.getMessages(); // → a copy of the active bundle { "todo.add": "Añadir", … }
+window.terrane.t("todo.add", { default: "Add" });          // → translate + fall back
+window.terrane.t("todo.added", { id: 1, text: "milk", default: "added #{id} {text}" });
+
+const stop = window.terrane.onLocale((code) => { /* language changed */ });
+window.terrane.onMessages((messages) => { /* bundle arrived / changed → re-render */ });
+```
+
+- **`t(key, params)`** looks `key` up in the active bundle; if it is missing it
+  uses `params.default` (or the key itself), then interpolates `{name}`
+  placeholders from `params`. Pure string in, string out — **assign it with
+  `textContent`, never `innerHTML`.**
+- **Fallback contract.** With no host / no bundle, `getLocale()` is `"en"`,
+  `getDir()` is `"ltr"`, `t()` returns `params.default ?? key`, and
+  `onLocale`/`onMessages` still fire once. Apps keep working headless / in the
+  CLI. Always pass a `default:` so the first paint is correct before the bundle
+  arrives, then re-localize inside `onMessages`.
+- **RTL.** Set `document.documentElement.dir = window.terrane.getDir()` and use
+  CSS logical properties (`margin-inline-start`, `text-align: start`, …) so
+  Arabic mirrors correctly.
+
+#### Where translations live — the `i18n/<code>/<domain>.<key>` convention
+
+Translations are stored once in a shared **public KV** bucket and reused across
+every app and platform, under keys `i18n/<code>/<domain>.<key>` — `<domain>` is
+`system` (host chrome) or your app id. Ship them as flat JSON catalogs beside
+your app, one file per language, and the host seeds them:
+
+```
+apps/<id>/i18n/en.json        # { "add": "Add", "empty": "Nothing to do", … }
+apps/<id>/i18n/es.json        # { "add": "Añadir", … }
+```
+
+`terrane i18n import <path>` (or `terrane_i18n_import` over the C ABI) walks
+`i18n/system` and `apps/*/i18n`, keys every entry as `i18n/<code>/<domain>.<key>`,
+and commits them into public KV via a trusted-host `kv.public.import`. A backend
+that needs the raw strings can read them with `ctx.resource.kv.public(key)` (a
+read-only, cross-app view); the UI never needs to — the host pushes your app's
+merged bundle (its own domain plus the shared `system` domain) to the frame.
+
+Keep `en` **complete** — it is both the fallback and the key inventory. The
+supported set is `en, es, zh-Hans, ar, pt-BR, fr, de, ja, id, th-TH, ko, vi`.
+
+A minimal, copyable localize step (see `apps/todo/index.html`):
+
+```js
+function localize() {
+  document.documentElement.dir = window.terrane.getDir?.() || "ltr";
+  document.querySelectorAll("[data-i18n]").forEach((el) => {
+    el.textContent = window.terrane.t(el.dataset.i18n, { default: el.textContent.trim() });
+  });
+}
+localize();
+window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / changes
+```
+
+> **Backend output is not auto-localized (v1).** The `window.terrane` surface
+> localizes the UI. A backend's return strings, action summaries, and CLI/MCP
+> output stay in the language you write them; localize the UI, which is what the
+> user sees.
+
 ---
 
 ## Manifest — `manifest.json`

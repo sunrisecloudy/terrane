@@ -122,7 +122,18 @@ pub fn route(
             version: CONTRACT_VERSION.into(),
         }),
         (Method::Get, ["__terrane", "admin"]) => {
-            crate::shell::admin_response(live_reload, premium_url)
+            let locale = negotiate_locale(request);
+            let (system, app) = shell_i18n_data(core, &locale, None);
+            crate::shell::admin_response(
+                live_reload,
+                premium_url,
+                &crate::shell::ShellI18n {
+                    locale: &locale,
+                    dir: terrane_host::i18n::dir_for(&locale),
+                    system_messages: &system,
+                    app_messages: &app,
+                },
+            )
         }
         (Method::Get, ["__terrane", "admin", "session"]) => crate::admin::session(admin_session),
         (Method::Post, ["__terrane", "admin", "local", "lock"]) => {
@@ -190,7 +201,18 @@ pub fn route(
             crate::admin::revoke(core, admin_session, request)
         }
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => {
-            crate::shell::admin_response(live_reload, premium_url)
+            let locale = negotiate_locale(request);
+            let (system, app) = shell_i18n_data(core, &locale, None);
+            crate::shell::admin_response(
+                live_reload,
+                premium_url,
+                &crate::shell::ShellI18n {
+                    locale: &locale,
+                    dir: terrane_host::i18n::dir_for(&locale),
+                    system_messages: &system,
+                    app_messages: &app,
+                },
+            )
         }
         (Method::Post, ["__terrane", "builder", "generate"]) => {
             builder_generate(core, builder_jobs, request)
@@ -226,7 +248,20 @@ pub fn route(
         }
         (Method::Get, ["apps", id]) => {
             let exists = core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
-            crate::shell::response(exists, id, live_reload, premium_url)
+            let locale = negotiate_locale(request);
+            let (system, app) = shell_i18n_data(core, &locale, Some(id));
+            crate::shell::response(
+                exists,
+                id,
+                live_reload,
+                premium_url,
+                &crate::shell::ShellI18n {
+                    locale: &locale,
+                    dir: terrane_host::i18n::dir_for(&locale),
+                    system_messages: &system,
+                    app_messages: &app,
+                },
+            )
         }
         (Method::Get, ["apps", id, rest @ ..]) => {
             serve_bundle_asset(core, dev_apps, id, &rest.join("/"), live_reload)
@@ -824,6 +859,50 @@ fn header_value<'a>(request: &'a Request, field: &str) -> Option<&'a str> {
         .iter()
         .find(|h| h.field.to_string().eq_ignore_ascii_case(field))
         .map(|h| h.value.as_str())
+}
+
+/// The active locale for a shell render: the `terrane_lang` cookie override if
+/// it names a supported code (the in-app language picker sets it), else
+/// negotiated from `Accept-Language`, else the default (`en`).
+fn negotiate_locale(request: &Request) -> String {
+    if let Some(choice) = cookie_value(request, "terrane_lang") {
+        if let Some(code) = terrane_host::i18n::canonical(choice.trim()) {
+            return code.to_string();
+        }
+    }
+    terrane_host::i18n::from_accept_language(header_value(request, "Accept-Language").unwrap_or(""))
+        .to_string()
+}
+
+/// Read one cookie value from the request's `Cookie` header.
+fn cookie_value(request: &Request, name: &str) -> Option<String> {
+    for pair in header_value(request, "Cookie")?.split(';') {
+        if let Some((key, value)) = pair.trim().split_once('=') {
+            if key.trim() == name {
+                return Some(value.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Build the shell's i18n payload for `app_id` (`None` in admin mode → no app
+/// frame bundle). Returns the owned locale + bundles; the caller borrows them
+/// into a `ShellI18n` for the render.
+fn shell_i18n_data(
+    core: &terrane_host::HostCore,
+    locale: &str,
+    app_id: Option<&str>,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeMap<String, String>,
+) {
+    let system = terrane_host::i18n::system_bundle(core, locale);
+    let app = match app_id {
+        Some(id) => terrane_host::i18n::app_bundle(core, locale, id),
+        None => std::collections::BTreeMap::new(),
+    };
+    (system, app)
 }
 
 fn origin_host(origin: &str) -> Option<&str> {

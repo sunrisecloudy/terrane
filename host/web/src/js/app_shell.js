@@ -54,6 +54,54 @@
   // loads without it, so it cannot drive the bridge or the breadcrumb.
   var frameNonce = "";
 
+  // Localization: the server injects the negotiated locale, its direction, the
+  // shell-chrome bundle, and the app frame's bundle. shellT() localizes chrome;
+  // the app frame's bundle is pushed to it over the same channel as the theme.
+  var shellLocale =
+    typeof window.__terraneLocale === "string" ? window.__terraneLocale : "en";
+  var shellDir = window.__terraneDir === "rtl" ? "rtl" : "ltr";
+  var shellMessages =
+    window.__terraneMessages && typeof window.__terraneMessages === "object"
+      ? window.__terraneMessages
+      : {};
+  var appMessages =
+    window.__terraneAppMessages && typeof window.__terraneAppMessages === "object"
+      ? window.__terraneAppMessages
+      : {};
+  // Endonyms for the language picker; codes must match terrane-i18n::SUPPORTED.
+  var LANGUAGES = [
+    ["en", "English"],
+    ["es", "Español"],
+    ["zh-Hans", "简体中文"],
+    ["ar", "العربية"],
+    ["pt-BR", "Português (Brasil)"],
+    ["fr", "Français"],
+    ["de", "Deutsch"],
+    ["ja", "日本語"],
+    ["id", "Bahasa Indonesia"],
+    ["th-TH", "ไทย"],
+    ["ko", "한국어"],
+    ["vi", "Tiếng Việt"],
+  ];
+
+  function shellT(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(shellMessages, key)
+      ? shellMessages[key]
+      : fallback == null
+        ? key
+        : fallback;
+  }
+
+  // One-pass sweep: every [data-i18n] node's text becomes its localized string.
+  // The English text stays in the HTML as the pre-bundle fallback.
+  function localizeChrome() {
+    var nodes = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < nodes.length; i++) {
+      var key = nodes[i].getAttribute("data-i18n");
+      nodes[i].textContent = shellT(key, nodes[i].textContent.trim());
+    }
+  }
+
   if (!currentId && !isAdmin) {
     showError("No app selected");
     return;
@@ -61,13 +109,15 @@
 
   var lastCatalogText = "";
 
+  localizeChrome();
   bindDesktopInfo();
   bindBridge();
   bindTopbar();
   bindPremium();
+  bindLanguagePicker();
   setAdminMode(isAdmin);
   if (isAdmin) {
-    setTitle("Admin Console");
+    setTitle(shellT("system.sidebar.admin", "Admin Console"));
   } else {
     loadFrame();
   }
@@ -169,7 +219,7 @@
     if (!apps.length) {
       var empty = document.createElement("div");
       empty.className = "app-empty";
-      empty.textContent = "No apps installed";
+      empty.textContent = shellT("system.sidebar.empty", "No apps installed");
       list.appendChild(empty);
     }
 
@@ -179,7 +229,7 @@
 
     if (!current) {
       if (isAdmin) {
-        setTitle("Admin Console");
+        setTitle(shellT("system.sidebar.admin", "Admin Console"));
         return;
       }
       showError("App not found");
@@ -286,6 +336,7 @@
         if (message.nonce !== frameNonce) return;
         sendToFrame({ type: "terrane:theme", theme: currentTheme });
         sendToFrame({ type: "terrane:document", name: storedDocName() });
+        sendFrameLocale();
         return;
       }
       // App-driven messages must carry the per-load nonce.
@@ -552,7 +603,7 @@
     try {
       stored = window.localStorage.getItem(DOC_KEY) || "";
     } catch (_) {}
-    return stored || "Untitled";
+    return stored || shellT("system.doc.untitled", "Untitled");
   }
 
   function setDocName(raw, fromApp) {
@@ -563,7 +614,7 @@
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 120);
-    if (!name) name = "Untitled";
+    if (!name) name = shellT("system.doc.untitled", "Untitled");
     crumbDoc.textContent = name;
     if (name !== storedDocName()) {
       try {
@@ -603,6 +654,40 @@
   // bridge (invoke/permission) and breadcrumb writes stay fully nonce-gated.
   function sendToFrame(message) {
     if (frame && frame.contentWindow) frame.contentWindow.postMessage(message, "*");
+  }
+
+  // Push the negotiated locale + the app's merged bundle to the frame, over the
+  // same channel as theme/document. Sent on the nonce-checked hello.
+  function sendFrameLocale() {
+    sendToFrame({
+      type: "terrane:locale",
+      locale: shellLocale,
+      dir: shellDir,
+      messages: appMessages,
+    });
+  }
+
+  // The in-app language picker: choosing a language stores a cookie the server
+  // reads on the next render (overriding Accept-Language) and reloads so the
+  // whole shell + frame come back in the chosen language.
+  function bindLanguagePicker() {
+    var select = document.getElementById("menu-language");
+    if (!select) return;
+    select.replaceChildren();
+    for (var i = 0; i < LANGUAGES.length; i++) {
+      var opt = document.createElement("option");
+      opt.value = LANGUAGES[i][0];
+      opt.textContent = LANGUAGES[i][1];
+      if (LANGUAGES[i][0] === shellLocale) opt.selected = true;
+      select.appendChild(opt);
+    }
+    select.addEventListener("change", function () {
+      document.cookie =
+        "terrane_lang=" +
+        encodeURIComponent(select.value) +
+        "; path=/; max-age=31536000; samesite=lax";
+      window.location.reload();
+    });
   }
 
   function bindUserMenu() {
@@ -660,10 +745,17 @@
     var out = isSignedOut();
     userButton.textContent = out ? "?" : (identity.name || "L").charAt(0);
     userButton.dataset.signedOut = out ? "true" : "false";
-    menuAuth.textContent = out ? "Log in" : "Log out";
-    userName.textContent = out ? "Signed out" : identity.name;
-    userSubject.textContent = out ? "Local session only" : identity.subject;
-    setSettingsField("settings-user", out ? "Signed out" : identity.name);
+    menuAuth.textContent = out
+      ? shellT("system.menu.login", "Log in")
+      : shellT("system.menu.logout", "Log out");
+    userName.textContent = out ? shellT("system.auth.signedOut", "Signed out") : identity.name;
+    userSubject.textContent = out
+      ? shellT("system.auth.localOnly", "Local session only")
+      : identity.subject;
+    setSettingsField(
+      "settings-user",
+      out ? shellT("system.auth.signedOut", "Signed out") : identity.name
+    );
     setSettingsField("settings-subject", out ? "-" : identity.subject || "-");
     setSettingsField("settings-source", out ? "-" : identity.source || "-");
     setSettingsField(
@@ -898,7 +990,7 @@
     settingsPanel.hidden = !open;
     frame.hidden = open || isAdmin;
     if (adminPanel) adminPanel.hidden = open || !isAdmin;
-    crumbApp.textContent = open ? "Settings" : appDisplayName;
+    crumbApp.textContent = open ? shellT("system.menu.settings", "Settings") : appDisplayName;
     crumbSep.hidden = open;
     crumbDoc.hidden = open || isAdmin;
   }

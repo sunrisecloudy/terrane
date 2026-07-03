@@ -22,6 +22,12 @@ use terrane_cap_kv::PUBLIC_BUCKET_APP_ID;
 
 use crate::{dispatch_on_core, HostCore};
 
+// Re-export the pure negotiation surface so thin host adapters (web/CLI) reach
+// it through terrane_host::i18n without depending on terrane-i18n directly.
+pub use terrane_i18n::{
+    canonical, dir_for, from_accept_language, from_preferred_list, is_supported, DEFAULT, SUPPORTED,
+};
+
 /// A catalog entry discovered during a walk: its source path, the domain
 /// (`system` or an app id), and the language code stem.
 #[derive(Debug, Clone)]
