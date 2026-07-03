@@ -42,6 +42,7 @@ terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 terrane-core.workspace = true
+terrane-i18n.workspace = true
 terrane-local-llm = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]

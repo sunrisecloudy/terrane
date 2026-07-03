@@ -23,6 +23,7 @@ pub mod cli;
 pub mod edge;
 pub mod ffi;
 pub mod home;
+pub mod i18n;
 mod local_llm;
 pub mod mcp;
 pub mod native;
@@ -33,6 +34,7 @@ pub mod sync;
 
 pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};
 pub use home::{home_page, HomePageOptions};
+pub use i18n::{import_i18n_dir, I18nImportOutcome};
 pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 
 /// Release in-process local-model engines. Hosts (and the CLI) call this once

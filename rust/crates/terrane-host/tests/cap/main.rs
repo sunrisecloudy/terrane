@@ -10,6 +10,7 @@ mod helpers;
 
 mod app;
 mod host;
+mod i18n;
 mod kv;
 mod local_model;
 mod model;

@@ -31,6 +31,8 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
+        ["i18n", "import", path] => run_i18n_import(path),
+        ["i18n", "negotiate", header] => run_i18n_negotiate(header),
         // Host verbs for the local-model edge (runtime + resident server) —
         // machine plumbing, not capability commands: nothing is recorded.
         ["local-model", "setup", "mlx"] => run_local_model_setup_mlx(),
@@ -320,6 +322,23 @@ pub fn run_kv_storage_status() -> Result<(), String> {
     Ok(())
 }
 
+/// `terrane i18n import <path>`: seed the public KV bucket from checked-in
+/// catalog files. Idempotent and replay-safe.
+pub fn run_i18n_import(path: &str) -> Result<(), String> {
+    let root = std::path::Path::new(path);
+    let mut core = crate::open()?;
+    let outcome = crate::import_i18n_dir(&mut core, root)?;
+    println!("{}", outcome.message());
+    Ok(())
+}
+
+/// `terrane i18n negotiate <header>`: resolve an `Accept-Language` header to
+/// the best supported code. Hosts and debug.
+pub fn run_i18n_negotiate(header: &str) -> Result<(), String> {
+    println!("{}", terrane_i18n::from_accept_language(header));
+    Ok(())
+}
+
 pub fn run_native_observe_default() -> Result<(), String> {
     let mut core = crate::open()?;
     let connector = crate::native::default_connector();
@@ -497,6 +516,8 @@ pub fn print_help() {
          \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
          \x20 terrane kv storage clear (--default | --app <app>)\n\
          \x20 terrane kv storage status\n\
+         \x20 terrane i18n import <path>                    seed the public KV bucket from i18n/system & apps/*/i18n catalogs\n\
+         \x20 terrane i18n negotiate <accept-language>       resolve a header to the best supported code\n\
          \x20 terrane native observe-default                    record default host native support\n\
          \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\

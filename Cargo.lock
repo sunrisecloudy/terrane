@@ -3398,10 +3398,11 @@ dependencies = [
  "terrane-cap-native",
  "terrane-cap-net",
  "terrane-cap-replica",
- "terrane-cap-wasm-runtime",
- "terrane-core",
- "terrane-local-llm",
-]
+  "terrane-cap-wasm-runtime",
+  "terrane-core",
+  "terrane-i18n",
+  "terrane-local-llm",
+ ]
 
 [[package]]
 name = "terrane-host-cli"
