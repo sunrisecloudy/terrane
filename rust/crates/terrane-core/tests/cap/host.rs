@@ -728,8 +728,14 @@ fn temporary_build_grant_installs_build_for_memory_run() {
 fn app_api_doc_resource_section_is_generated() {
     const START: &str = "<!-- generated:resource-api:start -->";
     const END: &str = "<!-- generated:resource-api:end -->";
-    let doc_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/APP_API.md");
-    let doc = fs::read_to_string(&doc_path).expect("docs/APP_API.md exists");
+    // Embedded at compile time so doc and generator come from the same source
+    // snapshot: a concurrent write to the working tree (branch switch, another
+    // session's UPDATE_DOCS run) cannot skew the comparison mid-run. Cargo
+    // fingerprints the include, so editing the doc still re-runs the check.
+    let doc = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../docs/APP_API.md"
+    ));
 
     let start = doc.find(START).expect("resource-api start marker") + START.len();
     let end = doc.find(END).expect("resource-api end marker");
@@ -737,8 +743,9 @@ fn app_api_doc_resource_section_is_generated() {
     let generated = terrane_core::resource_api_markdown();
 
     if std::env::var_os("UPDATE_DOCS").is_some() {
+        let doc_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../docs/APP_API.md");
         let new_doc = format!("{}\n{generated}\n{}", &doc[..start], &doc[end..]);
-        fs::write(&doc_path, new_doc).expect("rewrite docs/APP_API.md");
+        fs::write(doc_path, new_doc).expect("rewrite docs/APP_API.md");
         return;
     }
 
