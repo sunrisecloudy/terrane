@@ -892,7 +892,7 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
         "bmi shell iframe should be sandboxed away from admin origin: {body}"
     );
     assert!(
-        body.contains("/apps/\" + encodeURIComponent(currentId) + \"/__terrane/frame/"),
+        body.contains("function loadFrame()") && body.contains("__terrane/frame/?__terrane_n="),
         "bmi shell frame loader missing: {body}"
     );
 
@@ -1097,6 +1097,17 @@ fn serves_catalog_ui_and_invoke_over_http() {
         body.contains("terrane:bridge:request"),
         "app shell should expose the iframe bridge: {body}"
     );
+    // Frame-nav hardening on the shell side: it loads the frame with a per-load
+    // nonce and rejects app messages that do not carry it, and answers the
+    // nonce-checked hello handshake.
+    assert!(
+        body.contains("__terrane_n") && body.contains("frameNonce"),
+        "shell should load the frame with a per-load nonce: {body}"
+    );
+    assert!(
+        body.contains("terrane:hello"),
+        "shell should answer the nonce-checked hello: {body}"
+    );
     let (status, body) = http_with_headers(
         &addr,
         "OPTIONS",
@@ -1199,6 +1210,24 @@ fn serves_catalog_ui_and_invoke_over_http() {
     assert!(
         body.contains("terrane-relay-"),
         "nested-frame bridge relay missing from shim: {body}"
+    );
+    // Portable top-bar API: apps read and drive the document name and react to
+    // the host theme through window.terrane, not raw postMessage.
+    assert!(
+        body.contains("setDocument")
+            && body.contains("onDocument")
+            && body.contains("onTheme"),
+        "top-bar document/theme API missing from shim: {body}"
+    );
+    // Frame-nav hardening: the shim reads the per-load nonce and carries it on
+    // every app->shell message so a navigated-to page cannot drive the bridge.
+    assert!(
+        body.contains("__terrane_n") && body.contains("nonce: bridgeNonce"),
+        "per-load bridge nonce missing from shim: {body}"
+    );
+    assert!(
+        body.contains("terrane:hello"),
+        "nonce-checked hello handshake missing from shim: {body}"
     );
 
     // Built React frame: manifest.ui points at dist/index.html, and frame

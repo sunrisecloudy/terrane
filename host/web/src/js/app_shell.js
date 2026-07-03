@@ -47,6 +47,10 @@
   var settingsOpen = false;
   var currentTheme = "system";
   var identity = { name: "Local user", subject: "", source: "", locked: null };
+  // A fresh nonce per frame load, handed to the app via the frame URL. The
+  // app echoes it on every message; a page the app navigates its own frame to
+  // loads without it, so it cannot drive the bridge or the breadcrumb.
+  var frameNonce = "";
 
   if (!currentId && !isAdmin) {
     showError("No app selected");
@@ -63,7 +67,30 @@
   if (isAdmin) {
     setTitle("Admin Console");
   } else {
-    frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
+    loadFrame();
+  }
+
+  function loadFrame() {
+    frameNonce = randomNonce();
+    frame.src =
+      "/apps/" +
+      encodeURIComponent(currentId) +
+      "/__terrane/frame/?__terrane_n=" +
+      encodeURIComponent(frameNonce);
+  }
+
+  function randomNonce() {
+    try {
+      var bytes = new Uint8Array(16);
+      window.crypto.getRandomValues(bytes);
+      return Array.prototype.map
+        .call(bytes, function (b) {
+          return ("0" + b.toString(16)).slice(-2);
+        })
+        .join("");
+    } catch (_) {
+      return "n" + String(Date.now()) + String(Math.floor(Math.random() * 1e9));
+    }
   }
 
   loadCatalog();
@@ -93,7 +120,7 @@
         }
         if (appVersion !== payload.version) {
           appVersion = payload.version;
-          frame.src = "/apps/" + encodeURIComponent(currentId) + "/__terrane/frame/";
+          loadFrame();
         }
       })
       .catch(function () {});
@@ -250,6 +277,24 @@
     window.addEventListener("message", function (event) {
       if (!frame || event.source !== frame.contentWindow) return;
       var message = event.data || {};
+      // Initial sync: reply with the current theme + document only to a frame
+      // that proves it is the one we loaded (carries the per-load nonce), so a
+      // navigated-to page cannot solicit the user's document name and theme.
+      if (message && message.type === "terrane:hello") {
+        if (message.nonce !== frameNonce) return;
+        sendToFrame({ type: "terrane:theme", theme: currentTheme });
+        sendToFrame({ type: "terrane:document", name: storedDocName() });
+        return;
+      }
+      // App-driven messages must carry the per-load nonce.
+      if (
+        message &&
+        (message.type === "terrane:document:set" ||
+          message.type === "terrane:bridge:request") &&
+        message.nonce !== frameNonce
+      ) {
+        return;
+      }
       if (message && message.type === "terrane:document:set") {
         setDocName(message.name, true);
         return;
@@ -496,13 +541,8 @@
     initTheme();
     loadIdentity();
     updateAuthUi();
-    if (isAdmin) return;
-    // The first applyTheme/setDocName run before the frame navigates; hand the
-    // current state to the app once its document is actually loaded.
-    frame.addEventListener("load", function () {
-      sendToFrame({ type: "terrane:theme", theme: currentTheme });
-      sendToFrame({ type: "terrane:document", name: storedDocName() });
-    });
+    // The app requests the current theme + document via a nonce-checked hello
+    // once it loads (see bindBridge); that is what performs the initial sync.
   }
 
   function storedDocName() {
