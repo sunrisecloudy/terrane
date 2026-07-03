@@ -6,7 +6,14 @@ use terrane_cap_builder::{
 };
 use terrane_cap_interface::{CapBus, Capability, CommandCtx, Error, QueryValue, StateStore};
 
-const ALLOWED_RESOURCES: &[&str] = &["kv", "crdt", "relational_db", "build"];
+const ALLOWED_RESOURCES: &[&str] = &[
+    "kv",
+    "crdt",
+    "relational_db",
+    "build",
+    "search",
+    "local-model",
+];
 
 #[derive(Default)]
 struct Store {

@@ -78,7 +78,7 @@ pub fn builder_doc(include_internal: bool) -> CapabilityDoc {
             "A generated event replaces the draft files and clears the error; a failed event clears files and records the error.".to_string(),
             "Replay determinism comes from folding builder events only; external harnesses are not called during replay.".to_string(),
             "Generated manifest.json must match the requested app id/name, use runtime `js`, and reference existing backend and UI files.".to_string(),
-            "Generated resource allowlists are constrained to grant-spec-backed app resources: kv, crdt, relational_db, and build.".to_string(),
+            "Generated resource allowlists are constrained to grant-spec-backed app resources: kv, crdt, relational_db, build, search, and local-model.".to_string(),
         ],
         limits: vec![
             limit(
@@ -212,7 +212,7 @@ const BUILDER_JS_MANIFEST_SCHEMA: &str = r#"{
     "ui": { "type": "string" },
     "resources": {
       "type": "array",
-      "items": { "enum": ["kv", "crdt", "relational_db", "build"] },
+      "items": { "enum": ["kv", "crdt", "relational_db", "build", "search", "local-model"] },
       "uniqueItems": true
     }
   }
