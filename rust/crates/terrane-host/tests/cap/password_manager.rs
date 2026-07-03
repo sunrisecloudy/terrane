@@ -93,6 +93,23 @@ fn password_manager_vault_lifecycle_and_no_plaintext_in_log() {
     let out = run(&["audit"]);
     assert!(out.contains("item.reveal"), "audit: {out}");
 
+    // Change the master password: every blob is re-sealed under the new key.
+    // The old password must stop working and the item must stay readable (and
+    // still decrypted-only) under the new one.
+    let new_master = "a different battery staple";
+    let out = run(&["change-master", MASTER, new_master]);
+    assert!(
+        out.contains("\"ok\":true") && out.contains("\"reencrypted\":1"),
+        "change-master: {out}"
+    );
+
+    let out = run(&["get", MASTER, "1"]);
+    assert!(out.contains("bad_password"), "old master should fail: {out}");
+
+    let out = run(&["get", new_master, "1"]);
+    assert!(out.contains(SECRET), "new master should reveal secret: {out}");
+    assert!(out.contains("octocat"), "new master get: {out}");
+
     // THE contract: the plaintext secret is nowhere in the event log.
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");

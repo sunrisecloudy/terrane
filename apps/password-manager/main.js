@@ -775,9 +775,27 @@ var actions = {
         if (!v.ok) return err(v.reason || "rekey_failed");
         var newSession = v.session;
         try {
-          var moved = reseal(oldSession, newSession, ITEM_PREFIX) +
-            reseal(oldSession, newSession, FOLDER_PREFIX) +
-            reseal(oldSession, newSession, TRASH_PREFIX);
+          // Phase 1 — prepare: open + re-seal every blob under the new key,
+          // queuing NO writes. If any blob fails, bail before touching kv.
+          var plans = [
+            planReseal(oldSession, newSession, ITEM_PREFIX),
+            planReseal(oldSession, newSession, FOLDER_PREFIX),
+            planReseal(oldSession, newSession, TRASH_PREFIX),
+          ];
+          for (var i = 0; i < plans.length; i++) {
+            if (plans[i].error) return err(plans[i].error);
+          }
+          // Phase 2 — apply: every blob re-sealed, now queue the writes + flip
+          // meta. All of this lands in one atomic batch, so a crash leaves the
+          // vault either fully on the old key (phase 1) or fully on the new.
+          var moved = 0;
+          for (var p = 0; p < plans.length; p++) {
+            var writes = plans[p].writes;
+            for (var w = 0; w < writes.length; w++) {
+              kv.set(writes[w][0], writes[w][1]);
+            }
+            moved += writes.length;
+          }
           kv.set(META_KEY, v.meta);
           audit("vault.change-master", null, moved);
           return ok({ reencrypted: moved });
@@ -856,20 +874,33 @@ var actions = {
   },
 };
 
-// Re-seal every value under a prefix from one session's key to another. Returns
-// how many blobs were moved.
-function reseal(oldSession, newSession, prefix) {
+// Plan, without touching kv, every re-seal needed under one prefix: open each
+// blob with the old key and seal a fresh ciphertext under the new key. Returns
+// { writes: [[key, blob], ...] } on success or { error } if any blob can't be
+// opened/re-sealed.
+//
+// Preparing before writing is what makes change-master safe. A Terrane backend
+// run commits every buffered kv.set in one atomic batch as soon as the JS
+// returns — including when it returns an { ok:false } error string. So returning
+// an error AFTER some kv.sets have already queued would still commit those
+// partial writes, stranding blobs under the new key while meta still names the
+// old one. By collecting all re-sealed blobs first and queueing the writes only
+// once every blob has succeeded, any failure leaves the write buffer empty: the
+// commit is a no-op and the vault stays wholly on the old key.
+function planReseal(oldSession, newSession, prefix) {
   var ids = idsWithPrefix(prefix);
-  var moved = 0;
+  var writes = [];
   for (var i = 0; i < ids.length; i++) {
-    var obj = openBlob(oldSession, kv.get(prefix + ids[i]));
-    if (obj == null) continue;
+    var key = prefix + ids[i];
+    var raw = kv.get(key);
+    if (raw == null) continue; // vanished mid-iteration; nothing to re-seal
+    var obj = openBlob(oldSession, raw);
+    if (obj == null) return { error: "rekey_open_failed" };
     var blob = sealItem(newSession, obj);
-    if (blob == null) continue;
-    kv.set(prefix + ids[i], blob);
-    moved++;
+    if (blob == null) return { error: "rekey_seal_failed" };
+    writes.push([key, blob]);
   }
-  return moved;
+  return { writes: writes };
 }
 
 // Normalize an imported row (generic {name,username,password,...} or a
