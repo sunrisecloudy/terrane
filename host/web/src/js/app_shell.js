@@ -17,6 +17,8 @@
   var menuSettings = document.getElementById("menu-settings");
   var menuAuth = document.getElementById("menu-auth");
   var menuPremium = document.getElementById("menu-premium");
+  var premiumSection = document.getElementById("premium-section");
+  var premiumList = document.getElementById("premium-list");
   var settingsPanel = document.getElementById("settings-panel");
   var settingsClose = document.getElementById("settings-close");
 
@@ -32,6 +34,11 @@
       ? window.__terranePremiumUrl.replace(/\/+$/, "")
       : "";
   var premiumSession = null;
+  // The premium catalog is public metadata; entries already installed on
+  // this host stay in the local list only, the rest render as a "Premium"
+  // sidebar section linking to the control plane.
+  var premiumApps = [];
+  var localAppIds = {};
   var appDisplayName = currentId;
   var settingsOpen = false;
   var currentTheme = "system";
@@ -113,9 +120,11 @@
   function renderCatalog(apps) {
     var current = null;
     list.replaceChildren();
+    localAppIds = {};
 
     apps.forEach(function (app) {
       if (app && app.id === currentId) current = app;
+      if (app && app.id) localAppIds[app.id] = true;
       list.appendChild(appLink(app));
     });
 
@@ -125,6 +134,10 @@
       empty.textContent = "No apps installed";
       list.appendChild(empty);
     }
+
+    // A premium app already installed locally drops out of the premium
+    // section, so re-render it whenever the local catalog changes.
+    renderPremiumCatalog();
 
     if (!current) {
       showError("App not found");
@@ -599,6 +612,67 @@
     });
     if (premiumSession) refreshPremiumAccount();
     updatePremiumUi();
+    loadPremiumCatalog();
+  }
+
+  // The premium catalog is public metadata served by the control plane; it
+  // needs no session, so list it whenever a premium URL is configured.
+  function loadPremiumCatalog() {
+    if (!premiumUrl) return;
+    fetch(premiumUrl + "/marketplace/premium-apps", { cache: "no-store" })
+      .then(function (response) {
+        return response.ok ? response.json() : null;
+      })
+      .then(function (body) {
+        if (!body || body.ok !== true || !body.result) return;
+        premiumApps = Array.isArray(body.result.apps) ? body.result.apps : [];
+        renderPremiumCatalog();
+      })
+      .catch(function (_) {});
+  }
+
+  function renderPremiumCatalog() {
+    if (!premiumSection || !premiumList) return;
+    premiumList.replaceChildren();
+    var shown = 0;
+    premiumApps.forEach(function (app) {
+      if (!app || !app.id) return;
+      // Installed premium apps already run from the local catalog; only the
+      // rest belong in this "get it from Premium" section.
+      if (localAppIds[app.id]) return;
+      premiumList.appendChild(premiumLink(app));
+      shown += 1;
+    });
+    premiumSection.hidden = shown === 0;
+  }
+
+  function premiumLink(app) {
+    var id = String(app.id);
+    var name = app.name ? String(app.name) : id;
+    var root = document.createElement("a");
+    root.className = "app-link";
+    // Premium apps are server-required and not installed on this host, so the
+    // entry opens the control plane's premium dashboard rather than a local
+    // /apps route.
+    root.href = premiumUrl + "/apps.html#" + encodeURIComponent(id);
+    root.target = "_blank";
+    root.rel = "noopener";
+
+    root.appendChild(window.terraneAppIcon(id));
+
+    var text = document.createElement("span");
+    text.className = "app-link-text";
+
+    var label = document.createElement("span");
+    label.textContent = name;
+    text.appendChild(label);
+
+    var meta = document.createElement("small");
+    meta.textContent = app.publisher ? String(app.publisher) : "Premium";
+    text.appendChild(meta);
+
+    root.appendChild(text);
+    return root;
   }
 
   function premiumOrigin() {

@@ -155,6 +155,18 @@
         padding: 9px 10px;
         color: color-mix(in srgb, CanvasText 62%, transparent);
       }
+      .premium-section {
+        margin-top: 18px;
+      }
+      .app-section-title {
+        margin: 0 0 6px;
+        padding: 0 10px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: color-mix(in srgb, CanvasText 55%, transparent);
+      }
       .stage {
         min-width: 0;
         min-height: 100vh;
@@ -524,6 +536,10 @@
         </div>
         <div id="app-list" class="app-list" aria-live="polite">
           Loading apps...
+        </div>
+        <div id="premium-section" class="premium-section" hidden>
+          <h2 class="app-section-title">Premium</h2>
+          <div id="premium-list" class="app-list"></div>
         </div>
       </nav>
       <main class="stage">
