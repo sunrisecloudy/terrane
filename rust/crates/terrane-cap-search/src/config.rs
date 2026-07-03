@@ -7,6 +7,7 @@ pub const DEFAULT_LIMIT: usize = 10;
 pub const MAX_LIMIT: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchConfig {
     #[serde(default = "default_embed_model")]
     pub embed_model: String,
@@ -49,6 +50,7 @@ impl Default for SearchConfig {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueryOptions {
     #[serde(default)]
     pub limit: Option<usize>,
@@ -62,9 +64,34 @@ pub struct QueryOptions {
     pub rrf_k: Option<f64>,
 }
 
+/// A non-negative, finite weight. Negative or NaN weights invert or poison the
+/// ranking, so reject them at the edge.
+fn validate_weight(value: f64, label: &str) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(Error::InvalidInput(format!(
+            "{label} must be a non-negative finite number"
+        )));
+    }
+    Ok(())
+}
+
+/// RRF's `k` sits in the denominator `k + rank`; it must be strictly positive.
+fn validate_rrf_k(value: f64) -> Result<()> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(Error::InvalidInput(
+            "rrfK must be a positive finite number".into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn parse_config(raw: &str) -> Result<SearchConfig> {
-    serde_json::from_str(raw)
-        .map_err(|e| Error::InvalidInput(format!("search config JSON is invalid: {e}")))
+    let config: SearchConfig = serde_json::from_str(raw)
+        .map_err(|e| Error::InvalidInput(format!("search config JSON is invalid: {e}")))?;
+    validate_weight(config.fts_weight, "ftsWeight")?;
+    validate_weight(config.vec_weight, "vecWeight")?;
+    validate_rrf_k(config.rrf_k)?;
+    Ok(config)
 }
 
 pub fn canonical_config_json(config: &SearchConfig) -> Result<String> {
@@ -75,8 +102,18 @@ pub fn parse_query_options(raw: &str) -> Result<QueryOptions> {
     if raw.trim().is_empty() {
         return Ok(QueryOptions::default());
     }
-    serde_json::from_str(raw)
-        .map_err(|e| Error::InvalidInput(format!("query options JSON is invalid: {e}")))
+    let options: QueryOptions = serde_json::from_str(raw)
+        .map_err(|e| Error::InvalidInput(format!("query options JSON is invalid: {e}")))?;
+    if let Some(weight) = options.fts_weight {
+        validate_weight(weight, "ftsWeight")?;
+    }
+    if let Some(weight) = options.vec_weight {
+        validate_weight(weight, "vecWeight")?;
+    }
+    if let Some(k) = options.rrf_k {
+        validate_rrf_k(k)?;
+    }
+    Ok(options)
 }
 
 pub fn effective_limit(config: &SearchConfig, options: &QueryOptions) -> usize {

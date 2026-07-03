@@ -29,6 +29,12 @@ pub fn embedding_prefix(model: &str) -> Result<String> {
     Ok(format!("{SEARCH_PREFIX}embeddings/{model}/"))
 }
 
+/// The prefix covering every model's embeddings, for removing a document's
+/// vectors regardless of which embedding model produced them.
+pub fn embeddings_root() -> String {
+    format!("{SEARCH_PREFIX}embeddings/")
+}
+
 pub fn validate_doc_id(doc_id: &str) -> Result<()> {
     validate_name(doc_id, "doc_id")
 }

@@ -168,6 +168,132 @@ fn set_embedding_requires_indexed_document() {
 }
 
 #[test]
+fn configure_and_status_use_camel_case_fields() {
+    // The documented API is camelCase; configure must actually take effect.
+    let mut state = TestState::default();
+    dispatch(
+        &mut state,
+        "search.configure",
+        vec![
+            "notes".into(),
+            r#"{"embedModel":"gemma","ftsWeight":2.0,"vecWeight":3.0,"rrfK":30.0,"defaultLimit":7}"#
+                .into(),
+        ],
+    );
+    let ReadValue::OptString(Some(raw)) = read(&state, "status", vec![]) else {
+        panic!("expected status");
+    };
+    let status: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(status["embedModel"], "gemma");
+    assert_eq!(status["ftsWeight"], 2.0);
+    assert_eq!(status["vecWeight"], 3.0);
+    assert_eq!(status["rrfK"], 30.0);
+    assert_eq!(status["defaultLimit"], 7);
+}
+
+#[test]
+fn query_vec_is_read_from_camel_case_options() {
+    // Query text matches neither document for BM25; only a camelCase queryVec
+    // can surface doc-2. This fails if the option is silently ignored.
+    let mut state = TestState::default();
+    dispatch(
+        &mut state,
+        "search.upsert",
+        vec!["notes".into(), "doc-1".into(), "alpha".into()],
+    );
+    dispatch(
+        &mut state,
+        "search.setEmbedding",
+        vec!["notes".into(), "doc-1".into(), "[1.0,0.0]".into()],
+    );
+    dispatch(
+        &mut state,
+        "search.upsert",
+        vec!["notes".into(), "doc-2".into(), "beta".into()],
+    );
+    dispatch(
+        &mut state,
+        "search.setEmbedding",
+        vec!["notes".into(), "doc-2".into(), "[0.0,1.0]".into()],
+    );
+    let ReadValue::OptString(Some(raw)) = read(
+        &state,
+        "query",
+        vec!["zzz".into(), r#"{"queryVec":[0.0,1.0]}"#.into()],
+    ) else {
+        panic!("expected query hits");
+    };
+    let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        hits[0]["docId"], "doc-2",
+        "camelCase queryVec must drive vector search: {raw}"
+    );
+    assert!(hits[0]["vecRank"].is_number());
+}
+
+#[test]
+fn remove_clears_embeddings_across_all_models() {
+    let mut state = TestState::default();
+    dispatch(
+        &mut state,
+        "search.upsert",
+        vec!["notes".into(), "doc-1".into(), "hello world".into()],
+    );
+    dispatch(
+        &mut state,
+        "search.setEmbedding",
+        vec!["notes".into(), "doc-1".into(), "[0.1,0.2]".into()],
+    );
+    // Switch the embedding model and store a second vector under it.
+    dispatch(
+        &mut state,
+        "search.configure",
+        vec!["notes".into(), r#"{"embedModel":"gemma"}"#.into()],
+    );
+    dispatch(
+        &mut state,
+        "search.setEmbedding",
+        vec!["notes".into(), "doc-1".into(), "[0.3,0.4]".into()],
+    );
+    let embeddings_before = state
+        .kv
+        .data
+        .get("notes")
+        .unwrap()
+        .keys()
+        .filter(|k| k.starts_with("__terrane/search/v1/embeddings/"))
+        .count();
+    assert_eq!(embeddings_before, 2, "both model embeddings present");
+
+    dispatch(
+        &mut state,
+        "search.remove",
+        vec!["notes".into(), "doc-1".into()],
+    );
+    let app_kv = state.kv.data.get("notes").unwrap();
+    assert!(
+        !app_kv
+            .keys()
+            .any(|k| k.starts_with("__terrane/search/v1/embeddings/")),
+        "remove must clear vectors under every model prefix"
+    );
+    assert!(!app_kv
+        .keys()
+        .any(|k| k.starts_with("__terrane/search/v1/doc/")));
+}
+
+#[test]
+fn rejects_out_of_range_weights() {
+    use crate::config::{parse_config, parse_query_options};
+    assert!(parse_config(r#"{"ftsWeight":-1.0}"#).is_err());
+    assert!(parse_config(r#"{"rrfK":0}"#).is_err());
+    assert!(parse_config(r#"{"vecWeight":1.0}"#).is_ok());
+    assert!(parse_query_options(r#"{"vecWeight":-2.0}"#).is_err());
+    assert!(parse_query_options(r#"{"rrfK":-1.0}"#).is_err());
+    assert!(parse_query_options(r#"{"ftsWeight":0.5}"#).is_ok());
+}
+
+#[test]
 fn search_doc_declares_namespace() {
     let doc = SearchCapability.doc(true);
     assert_eq!(doc.namespace, "search");

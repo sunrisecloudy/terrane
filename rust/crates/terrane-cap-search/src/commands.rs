@@ -11,7 +11,7 @@ fn joined_arg(args: &[String], index: usize, name: &str) -> Result<String> {
 
 use crate::config::{canonical_config_json, canonical_embedding_json, parse_config, SearchConfig};
 use crate::document::{canonical_document_json, parse_document, SearchDocument};
-use crate::key::{config_key, doc_key, embedding_key};
+use crate::key::{config_key, doc_key, embedding_key, embeddings_root};
 
 pub fn decide_upsert(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
@@ -48,13 +48,34 @@ pub fn decide_remove(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
     let doc_id = arg(args, 1, "doc_id")?;
     ensure_app_exists(ctx.bus, &app)?;
-    let config = load_config(ctx.state, &app)?;
+    // Validate the id shape the same way indexing did (also guards the suffix
+    // match below against slashes).
+    crate::key::validate_doc_id(&doc_id)?;
     let mut records = vec![terrane_cap_kv::delete_event(app.clone(), doc_key(&doc_id)?)?];
-    records.push(terrane_cap_kv::delete_event(
-        app,
-        embedding_key(&config.embed_model, &doc_id)?,
-    )?);
+    // Remove this document's embeddings under EVERY model prefix, not just the
+    // current config's, so changing embed_model can't orphan stale vectors.
+    for key in embedding_keys_for_doc(ctx.state, &app, &doc_id)? {
+        records.push(terrane_cap_kv::delete_event(app.clone(), key)?);
+    }
     Ok(Decision::Commit(records))
+}
+
+/// Every stored embedding key for `doc_id`, across all model prefixes. Keys are
+/// `…/embeddings/{model}/{doc_id}`; both `model` and `doc_id` are validated to
+/// exclude `/`, so the last path segment is exactly the doc id.
+fn embedding_keys_for_doc(
+    state: &dyn terrane_cap_interface::StateStore,
+    app: &str,
+    doc_id: &str,
+) -> Result<Vec<String>> {
+    let root = embeddings_root();
+    let mut keys = Vec::new();
+    for (key, _) in terrane_cap_kv::scan_prefix(state, app, &root, usize::MAX)? {
+        if key.rsplit('/').next() == Some(doc_id) {
+            keys.push(key);
+        }
+    }
+    Ok(keys)
 }
 
 pub fn decide_configure(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {

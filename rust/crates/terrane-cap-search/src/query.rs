@@ -63,12 +63,13 @@ pub fn bm25_query(
 ) -> Result<String> {
     let limit = effective_limit(config, options);
     let docs = load_index(state, app, config)?;
+    let lookup = build_lookup(&docs);
     let ranks = bm25_ranks(&docs, query_text, limit);
     let hits = ranks
         .iter()
         .map(|(doc_id, rank)| {
             doc_hit(
-                &docs,
+                &lookup,
                 doc_id,
                 1.0 / (config.rrf_k + *rank as f64),
                 Some(*rank),
@@ -90,12 +91,13 @@ pub fn vector_query(
     let limit = effective_limit(config, options);
     let query_vec = parse_embedding(query_vec_json)?;
     let docs = load_index(state, app, config)?;
+    let lookup = build_lookup(&docs);
     let ranks = vector_ranks(&docs, &query_vec, limit);
     let hits = ranks
         .iter()
         .map(|(doc_id, rank)| {
             doc_hit(
-                &docs,
+                &lookup,
                 doc_id,
                 1.0 / (config.rrf_k + *rank as f64),
                 None,
@@ -309,13 +311,14 @@ fn fuse_rrf(
     doc_ids.extend(fts_ranks.iter().map(|(id, _)| id.clone()));
     doc_ids.extend(vec_ranks.iter().map(|(id, _)| id.clone()));
 
+    let lookup = build_lookup(docs);
     let mut hits: Vec<SearchHit> = doc_ids
         .into_iter()
         .map(|doc_id| {
             let fts_rank = fts_map.get(&doc_id).copied();
             let vec_rank = vec_map.get(&doc_id).copied();
             let score = rrf_score(fts_rank, vec_rank, fts_weight, vec_weight, k);
-            doc_hit(docs, &doc_id, score, fts_rank, vec_rank)
+            doc_hit(&lookup, &doc_id, score, fts_rank, vec_rank)
         })
         .collect();
     hits.sort_by(|a, b| {
@@ -328,30 +331,36 @@ fn fuse_rrf(
     hits
 }
 
+/// A `doc_id → doc` map so hit assembly is O(1) per hit rather than a linear
+/// scan of every indexed document.
+fn build_lookup(docs: &[IndexedDoc]) -> HashMap<&str, &IndexedDoc> {
+    docs.iter().map(|doc| (doc.doc_id.as_str(), doc)).collect()
+}
+
 fn doc_hit(
-    docs: &[IndexedDoc],
+    lookup: &HashMap<&str, &IndexedDoc>,
     doc_id: &str,
     score: f64,
     fts_rank: Option<usize>,
     vec_rank: Option<usize>,
 ) -> SearchHit {
-    let doc = docs
-        .iter()
-        .find(|doc| doc.doc_id == doc_id)
-        .cloned()
-        .unwrap_or_else(|| IndexedDoc {
+    match lookup.get(doc_id) {
+        Some(doc) => SearchHit {
+            doc_id: doc.doc_id.clone(),
+            score,
+            text: doc.text.clone(),
+            metadata: doc.metadata.clone(),
+            fts_rank,
+            vec_rank,
+        },
+        None => SearchHit {
             doc_id: doc_id.to_string(),
+            score,
             text: String::new(),
             metadata: json!({}),
-            embedding: None,
-        });
-    SearchHit {
-        doc_id: doc.doc_id,
-        score,
-        text: doc.text,
-        metadata: doc.metadata,
-        fts_rank,
-        vec_rank,
+            fts_rank,
+            vec_rank,
+        },
     }
 }
 
