@@ -3,7 +3,7 @@
 use std::fs;
 
 use terrane_cap_interface::{Capability, ReadValue, ResourceReadCtx};
-use terrane_core::Core;
+use terrane_core::{Core, Effect, EffectRunner, Error, EventRecord, Result, State};
 
 use crate::helpers::{grant_resource, req};
 
@@ -128,5 +128,95 @@ function handle(input) {
     let output = core.take_last_output().unwrap();
     let hits: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(hits[0]["docId"], "doc-1");
+    assert!(core.replay_matches().unwrap());
+}
+
+/// A stub for the embedding effect so the full embed → setEmbedding → query flow
+/// can run deterministically without a real model.
+struct StubEmbed;
+impl EffectRunner for StubEmbed {
+    fn run(&self, effect: &Effect, _state: &State) -> Result<Vec<EventRecord>> {
+        match effect {
+            Effect::LocalModelEmbed {
+                app,
+                model,
+                texts,
+                query,
+            } => Ok(vec![terrane_cap_local_model::embedded_event(
+                &terrane_cap_local_model::EmbeddedRecord {
+                    app: app.clone(),
+                    model: model.clone(),
+                    query: *query,
+                    dim: 3,
+                    vectors: texts.iter().map(|_| vec![0.5, 0.25, 0.125]).collect(),
+                    duration_ms: 1,
+                },
+            )
+            .map_err(|e| Error::Storage(e.to_string()))?]),
+            other => Err(Error::InvalidInput(format!(
+                "stub runner cannot perform {other:?}"
+            ))),
+        }
+    }
+}
+
+#[test]
+fn embed_then_index_then_query_end_to_end() {
+    // The headline product flow, in one app-backend run: embed a document with
+    // local-model, store the vector via search.setEmbedding, and hybrid-query —
+    // proving the two capabilities compose and replay without re-embedding.
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("bundle");
+    fs::create_dir(&bundle).unwrap();
+    fs::write(
+        bundle.join("manifest.json"),
+        r#"{"id":"notes","name":"Notes","runtime":"js","backend":"main.js","resources":["search","local-model"]}"#,
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("main.js"),
+        r#"
+function handle(input) {
+  ctx.resource.search.upsert("doc-1", "the quick brown fox");
+  var v = JSON.parse(ctx.resource["local-model"].embed("the quick brown fox"));
+  ctx.resource.search.setEmbedding("doc-1", JSON.stringify(v));
+  return ctx.resource.search.query("fox", JSON.stringify({ limit: 5, queryVec: v }));
+}
+"#,
+    )
+    .unwrap();
+
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open_with(&log, StubEmbed).unwrap();
+    core.dispatch(req(
+        "app.add",
+        &[
+            "notes",
+            "Notes",
+            "--source",
+            bundle.to_str().expect("utf-8 path"),
+        ],
+    ))
+    .unwrap();
+    // An embedding model must exist so local-model.embed resolves a default.
+    core.dispatch(req(
+        "local-model.register",
+        &["nomic", "llama_cpp", "/models/nomic.gguf", "--embed"],
+    ))
+    .unwrap();
+    grant_resource(&mut core, "notes", "search");
+    grant_resource(&mut core, "notes", "local-model");
+
+    core.dispatch(req("js-runtime.run", &["notes", "go"])).unwrap();
+    let output = core.take_last_output().unwrap();
+    let hits: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(hits[0]["docId"], "doc-1");
+    // Both halves contributed: BM25 matched "fox", the vector matched the stored
+    // embedding.
+    assert!(hits[0]["ftsRank"].is_number(), "bm25 should rank: {output}");
+    assert!(hits[0]["vecRank"].is_number(), "vector should rank: {output}");
+
+    // Replay rebuilds the projection from kv.* events without re-running JS or
+    // re-embedding (the local-model.embedded event folds to a no-op).
     assert!(core.replay_matches().unwrap());
 }
