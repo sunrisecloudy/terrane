@@ -161,9 +161,22 @@
         }
       }
 
-      function closeModal() { modalRoot.textContent = ""; }
+      // The currently-open modal's teardown hook (e.g. a TOTP refresh interval).
+      // closeModal() runs it on EVERY dismissal path — backdrop click, being
+      // replaced by another modal, or an explicit button — so a viewed 2FA item
+      // can't leave an interval polling `totp` forever, which would perpetually
+      // bump the session's last_used and defeat the idle auto-lock.
+      var currentCleanup = null;
+      function closeModal() {
+        if (currentCleanup) {
+          try { currentCleanup(); } catch (e) {}
+          currentCleanup = null;
+        }
+        modalRoot.textContent = "";
+      }
       function openModal(node) {
         closeModal();
+        currentCleanup = typeof node._cleanup === "function" ? node._cleanup : null;
         var back = document.createElement("div");
         back.className = "backdrop";
         back.addEventListener("click", function (e) { if (e.target === back) closeModal(); });
@@ -365,7 +378,6 @@
         delBtn.textContent = "Delete";
         delBtn.addEventListener("click", function () {
           inv("rm", SESSION, String(item.id)).then(function () {
-            if (node._cleanup) node._cleanup();
             closeModal();
             toast("Moved to trash");
             loadItems(el("search").value.trim());
@@ -374,7 +386,7 @@
         var closeBtn = document.createElement("button");
         closeBtn.className = "link";
         closeBtn.textContent = "Close";
-        closeBtn.addEventListener("click", function () { if (node._cleanup) node._cleanup(); closeModal(); });
+        closeBtn.addEventListener("click", closeModal);
         actions.appendChild(editBtn);
         actions.appendChild(delBtn);
         var sp = document.createElement("div"); sp.style.flex = "1"; actions.appendChild(sp);

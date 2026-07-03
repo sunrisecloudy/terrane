@@ -111,14 +111,14 @@ fn q(s: &str) -> String {
 fn new_vault_op(ctx: ResourceReadCtx<'_>, args: &[String]) -> Result<ReadValue> {
     let master = arg(args, 0, "masterPassword")?;
     match new_vault(&master) {
-        Ok((meta, key)) => {
-            let session = keyring::unlock(ctx.app, key);
-            reply(format!(
+        Ok((meta, key)) => match keyring::unlock(ctx.app, key) {
+            Some(session) => reply(format!(
                 "{{\"ok\":true,\"meta\":{},\"session\":{}}}",
                 q(&meta_to_json(&meta)),
                 q(&session)
-            ))
-        }
+            )),
+            None => fail("rng_unavailable"),
+        },
         Err(_) => fail("kdf_failed"),
     }
 }
@@ -131,10 +131,10 @@ fn unlock_op(ctx: ResourceReadCtx<'_>, args: &[String]) -> Result<ReadValue> {
         Err(_) => return fail("bad_meta"),
     };
     match unlock(&master, &meta) {
-        Ok(Some(key)) => {
-            let session = keyring::unlock(ctx.app, key);
-            reply(format!("{{\"ok\":true,\"session\":{}}}", q(&session)))
-        }
+        Ok(Some(key)) => match keyring::unlock(ctx.app, key) {
+            Some(session) => reply(format!("{{\"ok\":true,\"session\":{}}}", q(&session))),
+            None => fail("rng_unavailable"),
+        },
         Ok(None) => fail("bad_password"),
         Err(_) => fail("bad_meta"),
     }

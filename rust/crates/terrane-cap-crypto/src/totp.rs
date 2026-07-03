@@ -76,6 +76,9 @@ fn hmac_digest(algo: Algorithm, key: &[u8], msg: &[u8]) -> Vec<u8> {
 
 /// RFC 4226 HOTP: an `digits`-length decimal code for a given counter.
 pub fn hotp(secret: &[u8], counter: u64, digits: u32, algo: Algorithm) -> String {
+    // Cap at 9: 10^10 overflows u32 (panic under overflow-checks, silent wrap in
+    // release). 9 digits is already beyond any real TOTP; RFC 6238 uses 6 or 8.
+    let digits = digits.clamp(1, 9);
     let digest = hmac_digest(algo, secret, &counter.to_be_bytes());
     let offset = (digest[digest.len() - 1] & 0x0f) as usize;
     let bin = ((u32::from(digest[offset]) & 0x7f) << 24)
@@ -103,7 +106,7 @@ pub fn totp(
     algo: Algorithm,
 ) -> Result<TotpCode, CryptoError> {
     let period = period.max(1);
-    let digits = digits.clamp(4, 10);
+    let digits = digits.clamp(4, 9);
     let secret = base32_decode(secret_base32)?;
     let counter = unix_seconds / period;
     let code = hotp(&secret, counter, digits, algo);

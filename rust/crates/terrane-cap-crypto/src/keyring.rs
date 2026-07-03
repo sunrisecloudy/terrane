@@ -44,25 +44,26 @@ fn store() -> std::sync::MutexGuard<'static, HashMap<String, Session>> {
     KEYRING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn new_session_id() -> String {
+fn new_session_id() -> Option<String> {
     let mut bytes = [0u8; 16];
-    // A failure here is astronomically unlikely; fall back to a time-seeded id so
-    // we never hand out an empty/guessable session id.
-    if random_bytes(&mut bytes).is_err() {
-        let nanos = Instant::now().elapsed().as_nanos();
-        bytes[..16].copy_from_slice(&nanos.to_le_bytes());
-    }
+    // The session id is a 128-bit bearer token for the unlocked vault key, so it
+    // MUST be unpredictable. If the CSPRNG is unavailable we fail closed (return
+    // None) rather than mint a guessable id — a time-seeded fallback would hand
+    // out an ~all-zero, trivially guessable token.
+    random_bytes(&mut bytes).ok()?;
     let mut out = String::with_capacity(32);
     for b in bytes {
         out.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0'));
         out.push(char::from_digit((b & 0x0f) as u32, 16).unwrap_or('0'));
     }
-    out
+    Some(out)
 }
 
 /// Store a freshly derived key and return its opaque session id, bound to `app`.
-pub fn unlock(app: &str, key: VaultKey) -> String {
-    let id = new_session_id();
+/// Returns `None` if secure randomness is unavailable (the caller must surface
+/// an error and NOT treat the vault as unlocked).
+pub fn unlock(app: &str, key: VaultKey) -> Option<String> {
+    let id = new_session_id()?;
     let mut guard = store();
     guard.insert(
         id.clone(),
@@ -73,7 +74,7 @@ pub fn unlock(app: &str, key: VaultKey) -> String {
             ttl: DEFAULT_TTL,
         },
     );
-    id
+    Some(id)
 }
 
 /// Run `f` with the unlocked key for `(app, session)`, refreshing its idle timer.

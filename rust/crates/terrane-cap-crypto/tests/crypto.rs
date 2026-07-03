@@ -2,8 +2,9 @@
 //! generators, and RFC 6238 TOTP vectors.
 
 use terrane_cap_crypto::{
-    base32_decode, derive_key, new_vault, open, passphrase, password, seal, strength, totp, unlock,
-    verifier, verify_key, Algorithm, KdfParams, PassphraseOptions, PasswordOptions, VaultMeta,
+    base32_decode, derive_key, hotp, new_vault, open, passphrase, password, seal, strength, totp,
+    unlock, verifier, verify_key, Algorithm, KdfParams, PassphraseOptions, PasswordOptions,
+    VaultMeta,
 };
 
 /// Cheap KDF params so tests that derive a key stay fast.
@@ -125,6 +126,17 @@ fn totp_matches_rfc6238_vectors() {
     assert_eq!(at(59), "94287082");
     assert_eq!(at(1111111109), "07081804");
     assert_eq!(at(1234567890), "89005924");
+}
+
+#[test]
+fn totp_oversized_digits_do_not_overflow() {
+    // digits=10 would make 10u32.pow(10) overflow u32 (panic under overflow
+    // checks, silent wrap in release). Both entry points must clamp, not panic.
+    let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+    let code = totp(secret, 59, 30, 10, Algorithm::Sha1).unwrap();
+    assert!(!code.code.is_empty() && code.code.len() <= 9);
+    let h = hotp(b"12345678901234567890", 1, 10, Algorithm::Sha1);
+    assert!(!h.is_empty() && h.len() <= 9);
 }
 
 #[test]
