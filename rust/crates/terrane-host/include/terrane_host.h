@@ -96,6 +96,15 @@ int terrane_local_model_setup_mlx(const char *home, char **out_output,
 int terrane_local_model_server_status(const char *home, char **out_output,
                                       char **out_error);
 
+/* Native ambient STT: open a capture session, enqueue PCM from a real-time
+ * audio thread, then close. `sample_rate_hz` 0 defaults to 16000. */
+int terrane_stt_session_begin(TerraneHandle *h, const char *app,
+                              const char *session_id, unsigned sample_rate_hz);
+int terrane_stt_push_pcm(const char *session_id, const short *pcm, size_t len);
+int terrane_stt_session_end(TerraneHandle *h, const char *app,
+                            const char *session_id, const char *reason);
+void terrane_stt_shutdown(void);
+
 /* Release in-process local-model inference engines. Call once before a normal
  * process exit (e.g. applicationWillTerminate); safe to call at any time. */
 void terrane_local_model_shutdown(void);

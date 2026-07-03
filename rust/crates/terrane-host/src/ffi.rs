@@ -31,8 +31,25 @@ pub const TERRANE_ERR_INTERNAL: c_int = 5;
 
 /// Opaque handle to an open workspace. Only ever crossed as a pointer.
 pub struct TerraneHandle {
-    inner: Mutex<crate::HostCore>,
+    pub(crate) inner: Mutex<crate::HostCore>,
     previews: Mutex<crate::PreviewStore>,
+}
+
+/// Dispatch a trusted host command against an open handle. Used by the native
+/// STT worker thread so PCM enqueue stays on the audio thread.
+pub(crate) unsafe fn dispatch_on_terrane_handle(
+    handle: *mut TerraneHandle,
+    command: &str,
+    args: &[String],
+) -> Result<(), String> {
+    let inner = handle
+        .as_ref()
+        .ok_or_else(|| "terrane handle is null".to_string())?;
+    let mut core = inner
+        .inner
+        .lock()
+        .map_err(|_| "terrane core lock poisoned".to_string())?;
+    crate::dispatch_on_core(&mut core, command, args).map(|_| ())
 }
 
 /// Open (or create) a workspace at `home` (the dir holding `log.bin`); an empty
@@ -538,6 +555,127 @@ pub unsafe extern "C" fn terrane_local_model_server_status(
         TERRANE_OK
     }));
     finish(code, out_error)
+}
+
+/// Begin a native STT capture session: records `stt.session.open` and registers
+/// a runner that drains PCM from [`terrane_stt_push_pcm`].
+///
+/// # Safety
+/// `app` and `session_id` must be valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn terrane_stt_session_begin(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    session_id: *const c_char,
+    sample_rate_hz: u32,
+) -> c_int {
+    match catch_unwind(AssertUnwindSafe(|| -> c_int {
+        if h.is_null() {
+            return TERRANE_ERR_NULL_ARG;
+        }
+        let app = match read_str(app) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let session_id = match read_str(session_id) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        match crate::stt_edge::session_begin(h as usize, &app, &session_id, sample_rate_hz) {
+            Ok(()) => TERRANE_OK,
+            Err(message) => {
+                eprintln!("terrane-host: stt session begin failed: {message}");
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    })) {
+        Ok(code) => code,
+        Err(_) => TERRANE_ERR_PANIC,
+    }
+}
+
+/// Enqueue mono Int16 PCM for a session opened with [`terrane_stt_session_begin`].
+/// Real-time safe: only pushes into a bounded ring.
+///
+/// # Safety
+/// `session_id` must be a valid C string. `pcm` must point to `len` samples when
+/// `len > 0`.
+#[no_mangle]
+pub unsafe extern "C" fn terrane_stt_push_pcm(
+    session_id: *const c_char,
+    pcm: *const i16,
+    len: usize,
+) -> c_int {
+    match catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let session_id = match read_str(session_id) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let samples = if len == 0 {
+            &[][..]
+        } else {
+            if pcm.is_null() {
+                return TERRANE_ERR_NULL_ARG;
+            }
+            std::slice::from_raw_parts(pcm, len)
+        };
+        match crate::stt_edge::push_pcm(&session_id, samples) {
+            Ok(()) => TERRANE_OK,
+            Err(message) => {
+                eprintln!("terrane-host: stt push pcm failed: {message}");
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    })) {
+        Ok(code) => code,
+        Err(_) => TERRANE_ERR_PANIC,
+    }
+}
+
+/// End a native STT session: drops the runner and records `stt.session.close-host`.
+///
+/// # Safety
+/// `app`, `session_id`, and `reason` must be valid NUL-terminated UTF-8 C strings.
+#[no_mangle]
+pub unsafe extern "C" fn terrane_stt_session_end(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    session_id: *const c_char,
+    reason: *const c_char,
+) -> c_int {
+    match catch_unwind(AssertUnwindSafe(|| -> c_int {
+        if h.is_null() {
+            return TERRANE_ERR_NULL_ARG;
+        }
+        let app = match read_str(app) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let session_id = match read_str(session_id) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let reason = match read_str(reason) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        match crate::stt_edge::session_end(h as usize, &app, &session_id, &reason) {
+            Ok(()) => TERRANE_OK,
+            Err(message) => {
+                eprintln!("terrane-host: stt session end failed: {message}");
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    })) {
+        Ok(code) => code,
+        Err(_) => TERRANE_ERR_PANIC,
+    }
+}
+
+/// Stop the native STT worker and drop all capture sessions. Safe at process exit.
+#[no_mangle]
+pub extern "C" fn terrane_stt_shutdown() {
+    let _ = catch_unwind(crate::stt_edge::shutdown);
 }
 
 /// Release in-process local-model inference engines. Call once before a

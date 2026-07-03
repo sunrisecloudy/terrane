@@ -31,6 +31,7 @@ pub mod permission;
 pub mod preview;
 pub mod public_authz;
 pub mod stt_runner;
+mod stt_edge;
 pub mod sync;
 
 pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};
@@ -42,6 +43,7 @@ pub use preview::{PreviewAsset, PreviewCreated, PreviewFile, PreviewStore};
 pub fn local_llm_shutdown() {
     local_llm::shutdown();
     asr::shutdown();
+    stt_edge::shutdown();
 }
 pub use sync::{serve_conn, sync_conn};
 pub use terrane_cap_auth::agent_subject;

@@ -211,6 +211,10 @@ impl<E: AsrEngine, S: SegmentSink> SttRunner<E, S> {
         &self.cfg.session_id
     }
 
+    pub fn app_id(&self) -> &str {
+        &self.cfg.app
+    }
+
     pub fn next_segment_seq(&self) -> u64 {
         self.next_segment_seq
     }
