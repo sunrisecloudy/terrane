@@ -5,23 +5,36 @@ const defaults = {
     height: 170,
     weight: 65
 };
+// Translate through the host bundle when present, else the English fallback.
+function tr(key, fallback) {
+    const api = window.terrane;
+    if (api && typeof api.t === "function") {
+        return api.t(key, {
+            default: fallback
+        });
+    }
+    return fallback;
+}
+const CATEGORY_LABELS = {
+    underweight: "Underweight",
+    healthy: "Healthy",
+    overweight: "Overweight",
+    obesity: "Obesity"
+};
+const STATUS_LABELS = {
+    waiting: "Waiting for Terrane",
+    noBridge: "Terrane bridge unavailable",
+    synced: "Synced with Terrane",
+    failed: "Terrane invoke failed"
+};
 function classify(bmi) {
-    if (bmi < 18.5) return {
-        key: "underweight",
-        label: "Underweight"
-    };
-    if (bmi < 25) return {
-        key: "healthy",
-        label: "Healthy"
-    };
-    if (bmi < 30) return {
-        key: "overweight",
-        label: "Overweight"
-    };
-    return {
-        key: "obesity",
-        label: "Obesity"
-    };
+    if (bmi < 18.5) return "underweight";
+    if (bmi < 25) return "healthy";
+    if (bmi < 30) return "overweight";
+    return "obesity";
+}
+function categoryLabel(key) {
+    return tr(`bmi-calculator.cat.${key}`, CATEGORY_LABELS[key]);
 }
 function formatSliderValue(value) {
     return Number.isInteger(value) ? String(value) : value.toFixed(1);
@@ -38,30 +51,42 @@ function BmiCalculator() {
     const [height, setHeight] = useState(defaults.height);
     const [weight, setWeight] = useState(defaults.weight);
     const [result, setResult] = useState(null);
-    const [status, setStatus] = useState("Waiting for Terrane");
+    const [statusKey, setStatusKey] = useState("waiting");
+    // Bumped when the host pushes/updates the message bundle so the (memoized)
+    // labels re-translate on a language change.
+    const [, setI18nTick] = useState(0);
+    useEffect(()=>{
+        const api = window.terrane;
+        document.documentElement.dir = api && api.getDir && api.getDir() || "ltr";
+        if (api && typeof api.onMessages === "function") {
+            return api.onMessages(()=>{
+                document.documentElement.dir = api.getDir && api.getDir() || "ltr";
+                setI18nTick((tick)=>tick + 1);
+            });
+        }
+        return undefined;
+    }, []);
     useEffect(()=>{
         let cancelled = false;
         async function calculate() {
             if (!window.terrane || typeof window.terrane.invoke !== "function") {
                 setResult(null);
-                setStatus("Terrane bridge unavailable");
+                setStatusKey("noBridge");
                 return;
             }
             try {
                 const json = await window.terrane.invoke("calculate", height, weight);
                 if (cancelled) return;
                 const next = JSON.parse(json);
-                const category = classify(Number(next.bmi));
                 setResult({
                     bmi: Number(next.bmi),
-                    category: next.category || category.label,
-                    key: category.key
+                    key: classify(Number(next.bmi))
                 });
-                setStatus("Synced with Terrane");
+                setStatusKey("synced");
             } catch (_error) {
                 if (cancelled) return;
                 setResult(null);
-                setStatus("Terrane invoke failed");
+                setStatusKey("failed");
             }
         }
         calculate();
@@ -87,21 +112,21 @@ function BmiCalculator() {
         children: [
             /*#__PURE__*/ _jsxs("section", {
                 className: "summary",
-                "aria-label": "BMI summary",
+                "aria-label": tr("bmi-calculator.aria.summary", "BMI summary"),
                 children: [
                     /*#__PURE__*/ _jsxs("div", {
                         className: "intro",
                         children: [
                             /*#__PURE__*/ _jsx("p", {
                                 className: "eyebrow",
-                                children: "Metric BMI"
+                                children: tr("bmi-calculator.eyebrow", "Metric BMI")
                             }),
                             /*#__PURE__*/ _jsx("h1", {
-                                children: "BMI Calculator"
+                                children: tr("bmi-calculator.title", "BMI Calculator")
                             }),
                             /*#__PURE__*/ _jsx("p", {
                                 className: "lede",
-                                children: "Adjust height and weight to calculate body mass index."
+                                children: tr("bmi-calculator.lede", "Adjust height and weight to calculate body mass index.")
                             })
                         ]
                     }),
@@ -113,7 +138,7 @@ function BmiCalculator() {
                         children: [
                             /*#__PURE__*/ _jsx("span", {
                                 className: "result-label",
-                                children: "BMI"
+                                children: tr("bmi-calculator.bmi", "BMI")
                             }),
                             /*#__PURE__*/ _jsx("strong", {
                                 id: "bmi-value",
@@ -123,7 +148,7 @@ function BmiCalculator() {
                                 className: "badge",
                                 id: "bmi-category",
                                 "data-category": categoryKey || undefined,
-                                children: result ? result.category : "Enter values"
+                                children: result ? categoryLabel(result.key) : tr("bmi-calculator.enterValues", "Enter values")
                             })
                         ]
                     })
@@ -131,7 +156,7 @@ function BmiCalculator() {
             }),
             /*#__PURE__*/ _jsxs("section", {
                 className: "controls",
-                "aria-label": "Body measurements",
+                "aria-label": tr("bmi-calculator.aria.measurements", "Body measurements"),
                 children: [
                     /*#__PURE__*/ _jsxs("label", {
                         className: "control",
@@ -141,7 +166,7 @@ function BmiCalculator() {
                                 className: "control-head",
                                 children: [
                                     /*#__PURE__*/ _jsx("span", {
-                                        children: "Height"
+                                        children: tr("bmi-calculator.height", "Height")
                                     }),
                                     /*#__PURE__*/ _jsxs("strong", {
                                         children: [
@@ -186,7 +211,7 @@ function BmiCalculator() {
                                 className: "control-head",
                                 children: [
                                     /*#__PURE__*/ _jsx("span", {
-                                        children: "Weight"
+                                        children: tr("bmi-calculator.weight", "Weight")
                                     }),
                                     /*#__PURE__*/ _jsxs("strong", {
                                         children: [
@@ -227,14 +252,14 @@ function BmiCalculator() {
             }),
             /*#__PURE__*/ _jsxs("section", {
                 className: "scale",
-                "aria-label": "BMI ranges",
+                "aria-label": tr("bmi-calculator.aria.ranges", "BMI ranges"),
                 children: [
                     /*#__PURE__*/ _jsxs("div", {
                         "data-range": "underweight",
                         "aria-current": categoryKey === "underweight" ? "true" : undefined,
                         children: [
                             /*#__PURE__*/ _jsx("span", {
-                                children: "Underweight"
+                                children: categoryLabel("underweight")
                             }),
                             /*#__PURE__*/ _jsx("strong", {
                                 children: "< 18.5"
@@ -246,7 +271,7 @@ function BmiCalculator() {
                         "aria-current": categoryKey === "healthy" ? "true" : undefined,
                         children: [
                             /*#__PURE__*/ _jsx("span", {
-                                children: "Healthy"
+                                children: categoryLabel("healthy")
                             }),
                             /*#__PURE__*/ _jsx("strong", {
                                 children: "18.5-24.9"
@@ -258,7 +283,7 @@ function BmiCalculator() {
                         "aria-current": categoryKey === "overweight" ? "true" : undefined,
                         children: [
                             /*#__PURE__*/ _jsx("span", {
-                                children: "Overweight"
+                                children: categoryLabel("overweight")
                             }),
                             /*#__PURE__*/ _jsx("strong", {
                                 children: "25-29.9"
@@ -270,7 +295,7 @@ function BmiCalculator() {
                         "aria-current": categoryKey === "obesity" ? "true" : undefined,
                         children: [
                             /*#__PURE__*/ _jsx("span", {
-                                children: "Obesity"
+                                children: categoryLabel("obesity")
                             }),
                             /*#__PURE__*/ _jsx("strong", {
                                 children: "30+"
@@ -283,7 +308,7 @@ function BmiCalculator() {
                 className: "status",
                 id: "bridge-status",
                 "aria-live": "polite",
-                children: status
+                children: tr(`bmi-calculator.status.${statusKey}`, STATUS_LABELS[statusKey])
             })
         ]
     });

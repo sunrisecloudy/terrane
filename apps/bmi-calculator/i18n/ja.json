@@ -1,0 +1,20 @@
+{
+  "title": "BMI 計算機",
+  "eyebrow": "メートル法 BMI",
+  "lede": "身長と体重を調整して体格指数を計算します。",
+  "bmi": "BMI",
+  "enterValues": "値を入力",
+  "height": "身長",
+  "weight": "体重",
+  "aria.summary": "BMI の概要",
+  "aria.measurements": "身体測定",
+  "aria.ranges": "BMI の範囲",
+  "cat.underweight": "低体重",
+  "cat.healthy": "普通体重",
+  "cat.overweight": "過体重",
+  "cat.obesity": "肥満",
+  "status.waiting": "Terrane を待機中",
+  "status.noBridge": "Terrane ブリッジを利用できません",
+  "status.synced": "Terrane と同期済み",
+  "status.failed": "Terrane の呼び出しに失敗しました"
+}

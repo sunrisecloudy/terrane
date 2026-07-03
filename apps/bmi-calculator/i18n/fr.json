@@ -1,0 +1,20 @@
+{
+  "title": "Calculateur d'IMC",
+  "eyebrow": "IMC métrique",
+  "lede": "Ajustez la taille et le poids pour calculer l'indice de masse corporelle.",
+  "bmi": "IMC",
+  "enterValues": "Saisissez les valeurs",
+  "height": "Taille",
+  "weight": "Poids",
+  "aria.summary": "Résumé de l'IMC",
+  "aria.measurements": "Mesures corporelles",
+  "aria.ranges": "Plages d'IMC",
+  "cat.underweight": "Insuffisance pondérale",
+  "cat.healthy": "Poids normal",
+  "cat.overweight": "Surpoids",
+  "cat.obesity": "Obésité",
+  "status.waiting": "En attente de Terrane",
+  "status.noBridge": "Passerelle Terrane indisponible",
+  "status.synced": "Synchronisé avec Terrane",
+  "status.failed": "Échec de l'appel à Terrane"
+}

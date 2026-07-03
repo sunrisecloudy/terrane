@@ -1,0 +1,20 @@
+{
+  "title": "BMI Calculator",
+  "eyebrow": "Metric BMI",
+  "lede": "Adjust height and weight to calculate body mass index.",
+  "bmi": "BMI",
+  "enterValues": "Enter values",
+  "height": "Height",
+  "weight": "Weight",
+  "aria.summary": "BMI summary",
+  "aria.measurements": "Body measurements",
+  "aria.ranges": "BMI ranges",
+  "cat.underweight": "Underweight",
+  "cat.healthy": "Healthy",
+  "cat.overweight": "Overweight",
+  "cat.obesity": "Obesity",
+  "status.waiting": "Waiting for Terrane",
+  "status.noBridge": "Terrane bridge unavailable",
+  "status.synced": "Synced with Terrane",
+  "status.failed": "Terrane invoke failed"
+}

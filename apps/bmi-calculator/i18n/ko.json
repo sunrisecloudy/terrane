@@ -1,0 +1,20 @@
+{
+  "title": "BMI 계산기",
+  "eyebrow": "미터법 BMI",
+  "lede": "키와 몸무게를 조정하여 체질량지수를 계산하세요.",
+  "bmi": "BMI",
+  "enterValues": "값 입력",
+  "height": "키",
+  "weight": "몸무게",
+  "aria.summary": "BMI 요약",
+  "aria.measurements": "신체 측정",
+  "aria.ranges": "BMI 범위",
+  "cat.underweight": "저체중",
+  "cat.healthy": "정상 체중",
+  "cat.overweight": "과체중",
+  "cat.obesity": "비만",
+  "status.waiting": "Terrane 대기 중",
+  "status.noBridge": "Terrane 브리지를 사용할 수 없음",
+  "status.synced": "Terrane과 동기화됨",
+  "status.failed": "Terrane 호출 실패"
+}

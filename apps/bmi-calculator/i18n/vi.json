@@ -1,0 +1,20 @@
+{
+  "title": "Máy tính BMI",
+  "eyebrow": "BMI hệ mét",
+  "lede": "Điều chỉnh chiều cao và cân nặng để tính chỉ số khối cơ thể.",
+  "bmi": "BMI",
+  "enterValues": "Nhập giá trị",
+  "height": "Chiều cao",
+  "weight": "Cân nặng",
+  "aria.summary": "Tóm tắt BMI",
+  "aria.measurements": "Số đo cơ thể",
+  "aria.ranges": "Khoảng BMI",
+  "cat.underweight": "Thiếu cân",
+  "cat.healthy": "Cân nặng khỏe mạnh",
+  "cat.overweight": "Thừa cân",
+  "cat.obesity": "Béo phì",
+  "status.waiting": "Đang chờ Terrane",
+  "status.noBridge": "Cầu nối Terrane không khả dụng",
+  "status.synced": "Đã đồng bộ với Terrane",
+  "status.failed": "Gọi Terrane thất bại"
+}

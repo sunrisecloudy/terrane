@@ -1,0 +1,20 @@
+{
+  "title": "BMI-Rechner",
+  "eyebrow": "Metrischer BMI",
+  "lede": "Passe Größe und Gewicht an, um den Body-Mass-Index zu berechnen.",
+  "bmi": "BMI",
+  "enterValues": "Werte eingeben",
+  "height": "Größe",
+  "weight": "Gewicht",
+  "aria.summary": "BMI-Zusammenfassung",
+  "aria.measurements": "Körpermaße",
+  "aria.ranges": "BMI-Bereiche",
+  "cat.underweight": "Untergewicht",
+  "cat.healthy": "Normalgewicht",
+  "cat.overweight": "Übergewicht",
+  "cat.obesity": "Adipositas",
+  "status.waiting": "Warten auf Terrane",
+  "status.noBridge": "Terrane-Bridge nicht verfügbar",
+  "status.synced": "Mit Terrane synchronisiert",
+  "status.failed": "Terrane-Aufruf fehlgeschlagen"
+}

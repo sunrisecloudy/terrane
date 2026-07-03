@@ -27,6 +27,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         }
         ["app", "install", path] => run_install(path),
         ["app", "install-kv", path, rest @ ..] => run_install_kv(path, rest),
+        ["app", "build", dir] => run_app_build(dir),
         ["contract", "export"] => run_contract_export(),
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
@@ -339,6 +340,21 @@ pub fn run_i18n_negotiate(header: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `terrane app build <dir>`: build an app's frontend (terrane-app-build) into
+/// its `dist/`. Terminal parity with the `terrane_build_app` C ABI.
+pub fn run_app_build(dir: &str) -> Result<(), String> {
+    let result = terrane_app_build::build_app(terrane_app_build::BuildOptions {
+        app_dir: std::path::PathBuf::from(dir),
+        check_only: false,
+    })?;
+    println!(
+        "built {} files -> {}",
+        result.files.len(),
+        result.dist.display()
+    );
+    Ok(())
+}
+
 pub fn run_native_observe_default() -> Result<(), String> {
     let mut core = crate::open()?;
     let connector = crate::native::default_connector();
@@ -508,6 +524,7 @@ pub fn print_help() {
          \x20 terrane app install <path>                       copy a bundle into the home & catalog it\n\
          \x20 terrane app install-kv <path> [--storage <backend>] [--path <path>]\n\
          \x20                                                  store a JS bundle in reserved cap-kv keys\n\
+         \x20 terrane app build <dir>                          build an app frontend (terrane-app-build) into dist/\n\
          \x20 terrane app add <id> <name…> [--source <path>]   catalog an app by path (dev)\n\
          \x20 terrane app remove <id>                          remove an app\n\
          \x20 terrane kv set <app> <key> <value…>              store a value\n\
