@@ -52,10 +52,19 @@ struct RunOptions {
     permission_ui: Option<PermissionUi>,
     permission_wait: bool,
     permission_timeout: Duration,
+    ask: bool,
 }
 
 fn run_app(args: &[&str]) -> Result<(), String> {
-    let (options, app, input) = parse_run_args(args)?;
+    let (options, app, mut input) = parse_run_args(args)?;
+    if options.ask {
+        // Prompt (hidden) for the first verb argument — the vault app's `auth`
+        // — so a master password never lands on argv. input[0] is the verb.
+        if input.is_empty() {
+            return Err("run --ask needs a verb, e.g. `run --ask <app> get <id>`".into());
+        }
+        input.insert(1, terrane_host::cli::prompt_secret("Master password: ")?);
+    }
     let mut core = terrane_host::open()?;
     match terrane_host::invoke_app_input_checked_with_admin_base_and_source(
         &mut core,
@@ -121,6 +130,7 @@ fn parse_run_args<'a>(args: &'a [&'a str]) -> Result<(RunOptions, &'a str, Vec<S
         permission_ui: None,
         permission_wait: false,
         permission_timeout: Duration::from_secs(300),
+        ask: false,
     };
     let mut index = 0;
     while index < args.len() {
@@ -133,6 +143,7 @@ fn parse_run_args<'a>(args: &'a [&'a str]) -> Result<(RunOptions, &'a str, Vec<S
                 options.permission_ui = Some(parse_permission_ui(value)?);
             }
             "--permission-wait" => options.permission_wait = true,
+            "--ask" => options.ask = true,
             "--permission-timeout" => {
                 index += 1;
                 let Some(value) = args.get(index) else {
@@ -160,7 +171,7 @@ fn parse_run_args<'a>(args: &'a [&'a str]) -> Result<(RunOptions, &'a str, Vec<S
         index += 1;
     }
     let Some(app) = args.get(index) else {
-        return Err("usage: terrane-host run [--permission-ui web|mac|print|none] [--permission-wait] [--permission-timeout seconds] <app> [input…]".into());
+        return Err("usage: terrane-host run [--permission-ui web|mac|print|none] [--permission-wait] [--permission-timeout seconds] [--ask] <app> [input…]".into());
     };
     let input = args[index + 1..]
         .iter()
@@ -254,8 +265,8 @@ fn open_command(url: &str) -> Command {
 fn print_host_help() {
     println!(
         "terrane-host — the terrane CLI plus the app runtime entry point\n\n\
-         \x20 terrane-host run [--permission-ui web|mac|print|none] [--no-open] [--permission-wait] [--permission-timeout seconds] <app> [input…]\n\
-         \x20                                     run an app backend\n\n\
+         \x20 terrane-host run [--permission-ui web|mac|print|none] [--no-open] [--permission-wait] [--permission-timeout seconds] [--ask] <app> [input…]\n\
+         \x20                                     run an app backend (--ask prompts, hidden, for the first arg)\n\n\
          All standard terrane commands also work:\n"
     );
 }

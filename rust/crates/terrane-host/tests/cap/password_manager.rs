@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use tempfile::tempdir;
 
-use crate::helpers::terrane;
+use crate::helpers::{terrane, terrane_stdin};
 
 fn app_source() -> String {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -140,4 +140,56 @@ fn password_manager_vault_lifecycle_and_no_plaintext_in_log() {
     let (ok, out, err) = terrane(home, &["replay"]);
     assert!(ok, "replay failed: {err}");
     assert!(out.contains("replay ok"), "replay: {out}");
+}
+
+/// `terrane run <app> <verb> --ask` reads the master password from stdin and
+/// splices it in as the vault app's `auth` argument, so it never appears on
+/// argv. Piping stdin here stands in for the interactive hidden prompt.
+#[test]
+fn password_manager_ask_reads_master_from_stdin_not_argv() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let src = app_source();
+
+    let (ok, _, err) = terrane(
+        home,
+        &["app", "add", "password-manager", "PM", "--source", &src],
+    );
+    assert!(ok, "app add: {err}");
+    for ns in ["kv", "crypto"] {
+        let (ok, _, err) = terrane(
+            home,
+            &["auth", "grant", "user:local-owner", "password-manager", ns],
+        );
+        assert!(ok, "grant {ns}: {err}");
+    }
+
+    // Setup: create the vault + an item (master on argv is fine for setup).
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "password-manager", "init", MASTER]);
+    assert!(ok && out.contains("\"ok\":true"), "init: {out} {err}");
+    let (ok, out, _) = terrane(
+        home,
+        &["js-runtime", "run", "password-manager", "add-login", MASTER, "GitHub", "octocat", SECRET, "https://github.com"],
+    );
+    assert!(ok && out.contains("\"id\":1"), "add-login: {out}");
+
+    // Interactive unlock: the master arrives on stdin, NOT argv. Note the argv
+    // below contains only the verb + item id — no password.
+    let (ok, out, err) = terrane_stdin(
+        home,
+        &["run", "password-manager", "get", "--ask", "1"],
+        &format!("{MASTER}\n"),
+    );
+    assert!(ok, "run --ask failed: {err}");
+    assert!(out.contains(SECRET), "ask-unlock should reveal the secret: {out}");
+    assert!(out.contains("octocat"), "ask-unlock get: {out}");
+
+    // A wrong password piped in is refused, just like the argv path.
+    let (ok, out, err) = terrane_stdin(
+        home,
+        &["run", "password-manager", "get", "--ask", "1"],
+        "not-the-master\n",
+    );
+    assert!(ok, "run --ask (wrong) should still exit ok: {err}");
+    assert!(out.contains("bad_password"), "wrong piped master: {out}");
 }
