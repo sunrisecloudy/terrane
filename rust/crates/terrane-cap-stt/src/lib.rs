@@ -20,8 +20,8 @@ mod types;
 
 pub use events::{
     retention_trimmed_event, segment_appended_event, selection_made_event,
-    session_closed_event, session_opened_event, SegmentAppendedRecord, SelectionMadeRecord,
-    SessionOpenedRecord,
+    session_closed_event, session_opened_event, session_purged_event, SegmentAppendedRecord,
+    SelectionMadeRecord, SessionOpenedRecord,
 };
 pub use types::{
     SttSegment, SttSelection, SttSession, SttState, SttStatus, DEFAULT_SAMPLE_RATE_HZ,
@@ -50,6 +50,9 @@ impl Capability for SttCapability {
                     name: "stt.retention.trim",
                 },
                 CommandSpec {
+                    name: "stt.session.purge",
+                },
+                CommandSpec {
                     name: "stt.select",
                 },
                 CommandSpec {
@@ -71,6 +74,9 @@ impl Capability for SttCapability {
                 },
                 EventSpec {
                     kind: "stt.retention.trimmed",
+                },
+                EventSpec {
+                    kind: "stt.session.purged",
                 },
             ],
             queries: Vec::new(),
@@ -97,6 +103,7 @@ impl Capability for SttCapability {
             "stt.segment.append" => commands::decide_segment_append(ctx, args),
             "stt.session.close-host" => commands::decide_session_close_host(ctx, args),
             "stt.retention.trim" => commands::decide_retention_trim(ctx, args),
+            "stt.session.purge" => commands::decide_session_purge(ctx, args),
             "stt.select" => commands::decide_select(ctx, args),
             "stt.stop" => commands::decide_session_close(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),

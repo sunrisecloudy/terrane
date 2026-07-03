@@ -524,6 +524,39 @@ fn js_backend_reads_transcript_selects_and_stops_without_inference() {
 }
 
 #[test]
+fn session_purge_drops_closed_session_from_live_state() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open(&log).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+
+    open_session(&mut core, "demo", "s1");
+    append_segment(&mut core, "demo", "s1", 1, 0, 500, "hello");
+    core.dispatch(req("stt.session.close-host", &["demo", "s1", "stopped"]))
+        .unwrap();
+    assert!(core.state().stt.sessions["demo"].contains_key("s1"));
+
+    core.dispatch(req("stt.session.purge", &["demo", "s1"])).unwrap();
+    assert!(!core.state().stt.sessions["demo"].contains_key("s1"));
+    assert!(core.replay_matches().unwrap());
+
+    let reopened = Core::open(&log).unwrap();
+    assert!(!reopened.state().stt.sessions["demo"].contains_key("s1"));
+}
+
+#[test]
+fn session_purge_rejects_open_sessions() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    open_session(&mut core, "demo", "s1");
+    assert!(matches!(
+        core.dispatch(req("stt.session.purge", &["demo", "s1"])),
+        Err(Error::InvalidInput(_))
+    ));
+}
+
+#[test]
 fn ungranted_stt_resource_is_not_installed() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");

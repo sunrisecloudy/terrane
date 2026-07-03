@@ -48,9 +48,10 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["stt", "append", rest @ ..] => run_stt_dispatch("stt.segment.append", rest),
         ["stt", "close", rest @ ..] => run_stt_dispatch("stt.session.close-host", rest),
         ["stt", "trim", rest @ ..] => run_stt_dispatch("stt.retention.trim", rest),
+        ["stt", "purge", rest @ ..] => run_stt_dispatch("stt.session.purge", rest),
         ["stt", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane stt (open | append | close | trim) …".into())
+            Err("usage: terrane stt (open | append | close | trim | purge) …".into())
         }
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),

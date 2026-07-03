@@ -55,6 +55,12 @@ struct RetentionTrimmed {
     dropped_before_seq: u64,
 }
 
+#[derive(BorshSerialize, BorshDeserialize)]
+struct SessionPurged {
+    app: String,
+    session_id: String,
+}
+
 /// Everything a session open records. The host edge fills this after consent,
 /// so the `"stt.session.opened"` payload shape stays owned by this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +177,17 @@ pub fn retention_trimmed_event(
     )
 }
 
+/// Build the recorded event that drops a closed session from live state.
+pub fn session_purged_event(app: &str, session_id: &str) -> Result<EventRecord> {
+    encode_event(
+        "stt.session.purged",
+        &SessionPurged {
+            app: app.to_string(),
+            session_id: session_id.to_string(),
+        },
+    )
+}
+
 /// The joined selection text inside a freshly committed batch (used by the
 /// `select` call surface to hand the re-derived text back to the app).
 pub(crate) fn selection_text_from_records(records: &[EventRecord]) -> Option<String> {
@@ -273,6 +290,14 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
                 }
             }
         }
+        "stt.session.purged" => {
+            let e: SessionPurged = decode_event(record)?;
+            if let Some(app_sessions) =
+                state_mut::<SttState>(state, "stt")?.sessions.get_mut(&e.app)
+            {
+                app_sessions.remove(&e.session_id);
+            }
+        }
         "app.removed" => {
             let e = decode_app_removed(record)?;
             // Sessions are app-scoped and go with the app: a revoked app must
@@ -329,6 +354,13 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
             Some(format!(
                 "stt.retention.trimmed {}/{} (drop < {})",
                 e.app, e.session_id, e.dropped_before_seq
+            ))
+        }
+        "stt.session.purged" => {
+            let e: SessionPurged = decode_event(record).ok()?;
+            Some(format!(
+                "stt.session.purged {}/{}",
+                e.app, e.session_id
             ))
         }
         _ => None,

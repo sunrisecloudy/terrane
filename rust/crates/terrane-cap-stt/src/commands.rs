@@ -7,8 +7,8 @@ use terrane_cap_interface::{
 
 use crate::events::{
     retention_trimmed_event, segment_appended_event, selection_made_event,
-    session_closed_event, session_opened_event, SegmentAppendedRecord, SelectionMadeRecord,
-    SessionOpenedRecord,
+    session_closed_event, session_opened_event, session_purged_event, SegmentAppendedRecord,
+    SelectionMadeRecord, SessionOpenedRecord,
 };
 use crate::types::{SttState, CLOSE_REASONS};
 
@@ -154,6 +154,16 @@ pub(crate) fn decide_session_close(ctx: CommandCtx<'_>, args: &[String]) -> Resu
     )?]))
 }
 
+/// `stt.session.purge <app> <session_id>` — trusted-host only. Drops a closed
+/// session from live state. The durable log still holds prior events; replay
+/// applies this housekeeping fact so reads no longer surface the transcript.
+pub(crate) fn decide_session_purge(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let session_id = valid_token(arg(args, 1, "session_id")?, "session id")?;
+    ensure_session_closed(ctx, &app, &session_id)?;
+    Ok(Decision::Commit(vec![session_purged_event(&app, &session_id)?]))
+}
+
 /// `stt.retention.trim <app> <session_id> <dropped_before_seq>` — trusted-host
 /// only. Raises the retention floor and drops retained segments below it. The
 /// durable event log is untouched (compaction is a later phase).
@@ -250,6 +260,21 @@ fn ensure_session_exists(ctx: CommandCtx<'_>, app: &str, session_id: &str) -> Re
             "no stt session: {app}/{session_id}"
         )))
     }
+}
+
+fn ensure_session_closed(ctx: CommandCtx<'_>, app: &str, session_id: &str) -> Result<()> {
+    let state = state_ref::<SttState>(ctx.state, "stt")?;
+    let Some(session) = state.sessions.get(app).and_then(|m| m.get(session_id)) else {
+        return Err(Error::InvalidInput(format!(
+            "no stt session: {app}/{session_id}"
+        )));
+    };
+    if session.status.is_open() {
+        return Err(Error::InvalidInput(format!(
+            "stt session still open: {app}/{session_id}"
+        )));
+    }
+    Ok(())
 }
 
 fn selection_id(app: &str, session_id: &str, from: u64, to: u64, sink: &str) -> String {

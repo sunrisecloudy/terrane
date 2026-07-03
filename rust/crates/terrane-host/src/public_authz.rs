@@ -115,7 +115,8 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "stt.session.open"
         | "stt.segment.append"
         | "stt.session.close-host"
-        | "stt.retention.trim" => PublicCommandDisposition::Refuse {
+        | "stt.retention.trim"
+        | "stt.session.purge" => PublicCommandDisposition::Refuse {
             reason: "stt capture commands are trusted-host only (host-owned edge)",
         },
         _ if name.starts_with("auth.") => PublicCommandDisposition::Refuse {

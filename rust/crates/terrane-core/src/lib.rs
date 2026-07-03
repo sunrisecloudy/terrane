@@ -1148,7 +1148,8 @@ fn admit_command(request: &Request) -> Result<()> {
         || request.name == "stt.session.open"
         || request.name == "stt.segment.append"
         || request.name == "stt.session.close-host"
-        || request.name == "stt.retention.trim";
+        || request.name == "stt.retention.trim"
+        || request.name == "stt.session.purge";
     if trusted_only && !request.authority.is_trusted_host() {
         return Err(Error::InvalidInput(format!(
             "{} requires trusted host authority",
