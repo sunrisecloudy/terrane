@@ -27,7 +27,10 @@ const WORKER_POLL_MS: u64 = 30;
 static EDGE: OnceLock<SttEdgeHub> = OnceLock::new();
 
 struct SttEdgeHub {
-    sessions: Mutex<HashMap<String, NativeSession>>,
+    // `Arc<NativeSession>` so the worker can snapshot handles under a brief lock
+    // and run whisper inference WITHOUT holding the map lock — otherwise the
+    // real-time audio thread's `push_pcm` would block on inference.
+    sessions: Mutex<HashMap<String, Arc<NativeSession>>>,
     worker: Mutex<Option<JoinHandle<()>>>,
     stop: Arc<AtomicBool>,
 }
@@ -93,7 +96,10 @@ fn hub() -> &'static SttEdgeHub {
     })
 }
 
-/// Stop the worker and drop all native capture sessions. Safe at process exit.
+/// Stop the worker, drop all native capture sessions, and clear the whisper
+/// engine cache. Safe (and sufficient) at process exit: the whisper cache clear
+/// is mandatory on macOS or resident Metal buffers abort the process when ggml's
+/// static destructors run.
 pub fn shutdown() {
     if let Some(hub) = EDGE.get() {
         hub.stop.store(true, Ordering::SeqCst);
@@ -104,6 +110,8 @@ pub fn shutdown() {
             sessions.clear();
         }
     }
+    // No-op without the `asr-engine` feature; idempotent with local_llm_shutdown.
+    crate::asr::shutdown();
 }
 
 pub(crate) fn session_begin(
@@ -154,7 +162,7 @@ pub(crate) fn session_begin(
         .sessions
         .lock()
         .map_err(|_| "native stt session registry poisoned".to_string())?
-        .insert(session_id.to_string(), session);
+        .insert(session_id.to_string(), Arc::new(session));
     ensure_worker();
     Ok(())
 }
@@ -164,12 +172,17 @@ pub(crate) fn push_pcm(session_id: &str, pcm: &[i16]) -> std::result::Result<(),
     if session_id.is_empty() {
         return Err("session_id is required".into());
     }
-    let sessions = hub()
-        .sessions
-        .lock()
-        .map_err(|_| "native stt session registry poisoned".to_string())?;
-    let Some(session) = sessions.get(session_id) else {
-        return Err(format!("unknown native stt session {session_id}"));
+    // Clone the session's Arc out under a brief map lock, then push into its
+    // ring. The audio thread never holds the map lock (or blocks on inference).
+    let session = {
+        let sessions = hub()
+            .sessions
+            .lock()
+            .map_err(|_| "native stt session registry poisoned".to_string())?;
+        match sessions.get(session_id) {
+            Some(session) => session.clone(),
+            None => return Err(format!("unknown native stt session {session_id}")),
+        }
     };
     session
         .ring
@@ -224,46 +237,43 @@ fn ensure_worker() {
 
 fn worker_loop(stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) {
-        if let Ok(mut sessions) = hub().sessions.lock() {
-            let idle_ms = idle_threshold_ms();
-            let mut idle_closes = Vec::new();
-            for (session_id, session) in sessions.iter_mut() {
-                if let Ok(mut ring) = session.ring.lock() {
-                    let chunk = ring.drain();
-                    if !chunk.is_empty() {
-                        if let Ok(mut runner) = session.runner.lock() {
-                            if let Err(error) = runner.push_pcm(&chunk) {
-                                eprintln!("terrane-host: native stt runner error: {error}");
-                            }
-                            if runner.idle_ms() >= idle_ms {
-                                idle_closes.push((
-                                    session.app.clone(),
-                                    session_id.clone(),
-                                    session.handle,
-                                ));
-                            }
-                        }
-                    } else if let Ok(runner) = session.runner.lock() {
-                        if runner.idle_ms() >= idle_ms {
-                            idle_closes.push((
-                                session.app.clone(),
-                                session_id.clone(),
-                                session.handle,
-                            ));
-                        }
+        // Snapshot the session Arcs under a brief lock, then release the map so
+        // the real-time audio thread's `push_pcm` never blocks on inference.
+        let snapshot: Vec<(String, Arc<NativeSession>)> = match hub().sessions.lock() {
+            Ok(sessions) => sessions
+                .iter()
+                .map(|(id, session)| (id.clone(), session.clone()))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        let idle_ms = idle_threshold_ms();
+        let mut idle_closes = Vec::new();
+        for (session_id, session) in snapshot {
+            // Drain the ring under its own short-lived lock, then run VAD + ASR
+            // holding only the runner lock — never the map or the ring. This is
+            // the invariant that keeps the audio thread glitch-free.
+            let chunk = match session.ring.lock() {
+                Ok(mut ring) => ring.drain(),
+                Err(_) => continue,
+            };
+            if let Ok(mut runner) = session.runner.lock() {
+                if !chunk.is_empty() {
+                    if let Err(error) = runner.push_pcm(&chunk) {
+                        eprintln!("terrane-host: native stt runner error: {error}");
                     }
                 }
-            }
-            for (app, session_id, handle) in idle_closes {
-                sessions.remove(&session_id);
-                let args = vec![
-                    app,
-                    session_id,
-                    "idle".to_string(),
-                ];
-                if let Err(error) = dispatch_on_handle(handle, "stt.session.close-host", &args) {
-                    eprintln!("terrane-host: native stt idle close failed: {error}");
+                if runner.idle_ms() >= idle_ms {
+                    idle_closes.push((session.app.clone(), session_id.clone(), session.handle));
                 }
+            }
+        }
+        for (app, session_id, handle) in idle_closes {
+            if let Ok(mut sessions) = hub().sessions.lock() {
+                sessions.remove(&session_id);
+            }
+            let args = vec![app, session_id, "idle".to_string()];
+            if let Err(error) = dispatch_on_handle(handle, "stt.session.close-host", &args) {
+                eprintln!("terrane-host: native stt idle close failed: {error}");
             }
         }
         thread::sleep(Duration::from_millis(WORKER_POLL_MS));

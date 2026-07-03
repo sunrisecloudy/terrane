@@ -31,17 +31,22 @@ final class SttCapture {
     }
 
     sessionId = UUID().uuidString
+    let input = engine.inputNode
+    let format = input.outputFormat(forBus: 0)
+    // The hardware tap runs at the device rate (often 44.1/48 kHz). Pass that
+    // real rate through so the Rust runner frames + resamples correctly (whisper
+    // wants 16 kHz). Hardcoding 16 kHz fed high-rate audio to whisper mislabeled
+    // as 16 kHz — 3x pitch/speed distortion and wrong segment timings.
+    let sampleRate = UInt32(format.sampleRate.rounded())
     let code = sessionId.withCString { sid in
       appId.withCString { app in
-        terrane_stt_session_begin(handle, app, sid, 16_000)
+        terrane_stt_session_begin(handle, app, sid, sampleRate)
       }
     }
     guard code == TERRANE_OK else {
       throw SttCaptureError.beginFailed(code)
     }
 
-    let input = engine.inputNode
-    let format = input.outputFormat(forBus: 0)
     input.removeTap(onBus: 0)
     input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
       guard let self, self.listening else { return }
