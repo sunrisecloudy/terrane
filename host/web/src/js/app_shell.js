@@ -834,8 +834,9 @@
 
     function reloadFrame() {
       // The agent drove the app's backend through the host's own tools; the
-      // sandboxed frame reads its state on load, so reload it to show the work.
-      if (frame) frame.src = frame.src;
+      // sandboxed frame reads its state on load, so reload it (with a fresh
+      // per-load nonce, like the initial load) to show the work.
+      if (frame && currentId) loadFrame();
     }
 
     // Wiring.
