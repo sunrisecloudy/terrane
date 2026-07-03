@@ -6,8 +6,7 @@
 //! home's replica id from OS entropy (`replica`).
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -661,82 +660,32 @@ fn harness_work_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// A GET that speaks both `http://` and `https://` (TLS via ureq/rustls) and
+/// handles redirects/chunked/gzip — needed for real services like the HIBP
+/// range API. A non-2xx status is returned as data (status + body), not an
+/// error, so callers can decide what to do.
 fn http_get(url: &str) -> Result<(u16, String)> {
-    let rest = url.strip_prefix("http://").ok_or_else(|| {
-        Error::InvalidInput(format!(
-            "the built-in runner supports only http:// URLs: {url}"
-        ))
-    })?;
-    let (authority, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => (
-            host,
-            port.parse::<u16>()
-                .map_err(|_| Error::InvalidInput(format!("bad port in {url}")))?,
-        ),
-        None => (authority, 80u16),
-    };
-
     let timeout = edge_timeout();
-    let addrs: Vec<_> = (host, port)
-        .to_socket_addrs()
-        .map_err(|e| Error::Storage(e.to_string()))?
-        .collect();
-    if addrs.is_empty() {
-        return Err(Error::Storage(format!(
-            "no socket address resolved for {host}:{port}"
-        )));
-    }
-    let deadline = Instant::now() + timeout;
-    let mut last_error = None;
-    let mut stream = None;
-    for addr in addrs {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            break;
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .build();
+    match agent.get(url).call() {
+        Ok(resp) => {
+            let status = resp.status();
+            let body = resp
+                .into_string()
+                .map_err(|e| Error::Storage(format!("reading HTTP body from {url} failed: {e}")))?;
+            Ok((status, body))
         }
-        match TcpStream::connect_timeout(&addr, remaining) {
-            Ok(s) => {
-                stream = Some(s);
-                break;
-            }
-            Err(e) => last_error = Some(e),
+        Err(ureq::Error::Status(code, resp)) => {
+            let body = resp.into_string().unwrap_or_default();
+            Ok((code, body))
+        }
+        Err(ureq::Error::Transport(transport)) => {
+            Err(Error::Storage(format!("HTTP GET {url} failed: {transport}")))
         }
     }
-    let mut stream = stream.ok_or_else(|| {
-        Error::Storage(match last_error {
-            Some(e) => format!("HTTP connect to {host}:{port} timed out or failed: {e}"),
-            None => format!("HTTP connect to {host}:{port} timed out after {timeout:?}"),
-        })
-    })?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    stream
-        .set_write_timeout(Some(timeout))
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let request = format!("GET {path} HTTP/1.0\r\nHost: {host}\r\nConnection: close\r\n\r\n");
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| Error::Storage(e.to_string()))?;
-
-    let mut raw = Vec::new();
-    stream
-        .read_to_end(&mut raw)
-        .map_err(|e| Error::Storage(e.to_string()))?;
-    let text = String::from_utf8_lossy(&raw).into_owned();
-
-    let (head, body) = text.split_once("\r\n\r\n").unwrap_or((text.as_str(), ""));
-    let status = head
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| Error::Storage("malformed HTTP status line".into()))?;
-    Ok((status, body.to_string()))
 }
 
 fn read_pipe(mut pipe: impl Read) -> Result<Vec<u8>> {

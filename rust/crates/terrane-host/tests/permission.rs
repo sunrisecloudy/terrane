@@ -104,7 +104,11 @@ fn open_at_home_seeds_local_owner_membership_once() {
 fn permission_required_reports_only_grantable_missing_resources() {
     let dir = tempdir().unwrap();
     let home = dir.path().join("home");
-    let source = app_fixture(dir.path(), "demo", &["kv", "net", "relational_db"]);
+    // `model` is requested but not a grantable resource (no grant spec), so it
+    // must be dropped from the prompt; only the grantable-but-missing
+    // `relational_db` should be reported. (`net` used to be the non-grantable
+    // example here, but it now exposes the grantable `net.get` resource.)
+    let source = app_fixture(dir.path(), "demo", &["kv", "model", "relational_db"]);
     let mut core = terrane_host::open_at_home(&home).unwrap();
     install(&mut core, "demo", &source);
     grant(&mut core, "demo", "kv");

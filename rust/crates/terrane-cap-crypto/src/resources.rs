@@ -12,7 +12,7 @@ use terrane_cap_interface::{arg, Error, ReadValue, ResourceMethod, ResourceReadC
 
 use crate::generate::{password, passphrase, strength, PasswordOptions, PassphraseOptions};
 use crate::keyring;
-use crate::primitives::{b64, open, seal, unb64};
+use crate::primitives::{b64, open, seal, sha1_hex, unb64};
 use crate::totp::{totp, Algorithm};
 use crate::vault::{new_vault, unlock, VaultMeta};
 
@@ -58,6 +58,10 @@ pub(crate) fn resource_methods() -> Vec<ResourceMethod> {
             name: "totp",
             params: &["paramsJson"],
         },
+        ResourceMethod::Read {
+            name: "sha1Hex",
+            params: &["text"],
+        },
     ]
 }
 
@@ -73,6 +77,7 @@ pub(crate) fn read(ctx: ResourceReadCtx<'_>, name: &str, args: &[String]) -> Res
         "generatePassphrase" => generate_passphrase_op(args),
         "strength" => strength_op(args),
         "totp" => totp_op(args),
+        "sha1Hex" => sha1_op(args),
         other => Err(Error::InvalidInput(format!(
             "unknown resource read: crypto.{other}"
         ))),
@@ -294,6 +299,11 @@ fn totp_op(args: &[String]) -> Result<ReadValue> {
         )),
         Err(_) => fail("bad_secret"),
     }
+}
+
+fn sha1_op(args: &[String]) -> Result<ReadValue> {
+    let text = arg(args, 0, "text")?;
+    reply(format!("{{\"ok\":true,\"hex\":{}}}", q(&sha1_hex(&text))))
 }
 
 fn options_json(args: &[String]) -> String {

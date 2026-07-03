@@ -142,6 +142,38 @@ fn password_manager_vault_lifecycle_and_no_plaintext_in_log() {
     assert!(out.contains("replay ok"), "replay: {out}");
 }
 
+/// Real HIBP breach check over the network (k-anonymity). `#[ignore]`d because
+/// it hits api.pwnedpasswords.com; run with `cargo test -p terrane-host -- --ignored`.
+#[test]
+#[ignore = "hits the real api.pwnedpasswords.com"]
+fn password_manager_breach_check_flags_a_known_pwned_password() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let src = app_source();
+
+    terrane(home, &["app", "add", "password-manager", "PM", "--source", &src]);
+    for ns in ["kv", "crypto", "net"] {
+        terrane(home, &["auth", "grant", "user:local-owner", "password-manager", ns]);
+    }
+    terrane(home, &["js-runtime", "run", "password-manager", "init", MASTER]);
+    // "password" is famously in every breach corpus.
+    terrane(
+        home,
+        &["js-runtime", "run", "password-manager", "add-login", MASTER, "Test", "user", "password", "https://x.test"],
+    );
+
+    let (ok, out, err) = terrane(home, &["js-runtime", "run", "password-manager", "breach", MASTER, "1"]);
+    assert!(ok, "breach failed: {err}");
+    assert!(out.contains("\"breached\":true"), "breach should flag it: {out}");
+
+    // And the breach check must NOT have recorded the response or the prefix.
+    let raw = std::fs::read(home.join("log.bin")).unwrap();
+    assert!(
+        !raw.windows(9).any(|w| w == b"pwnedpass"),
+        "a breach URL/response leaked into the log"
+    );
+}
+
 /// `terrane run <app> <verb> --ask` reads the master password from stdin and
 /// splices it in as the vault app's `auth` argument, so it never appears on
 /// argv. Piping stdin here stands in for the interactive hidden prompt.

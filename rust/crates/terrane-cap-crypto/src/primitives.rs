@@ -8,6 +8,7 @@ use base64::Engine as _;
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::{KeyInit, XChaCha20Poly1305, XNonce};
 use hmac::{Hmac, Mac};
+use sha1::{Digest as _, Sha1};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
@@ -144,6 +145,20 @@ pub fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Result<Vec<u8>, CryptoError> {
     cipher
         .decrypt(XNonce::from_slice(nonce), ct)
         .map_err(|_| CryptoError::Decrypt)
+}
+
+/// Uppercase hex SHA-1 of `text`. Used for the HIBP "Pwned Passwords"
+/// k-anonymity check: the caller sends only the first 5 hex chars (the prefix)
+/// to the range API and matches the 35-char suffix locally, so the password
+/// itself never leaves the device.
+pub fn sha1_hex(text: &str) -> String {
+    use std::fmt::Write as _;
+    let digest = Sha1::digest(text.as_bytes());
+    let mut out = String::with_capacity(40);
+    for byte in digest {
+        let _ = write!(out, "{byte:02X}");
+    }
+    out
 }
 
 /// Base64 (standard alphabet) encode.

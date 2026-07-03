@@ -198,5 +198,11 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
             "{ ok:true, code, period, remaining } or { ok:false, reason } JSON",
             "Compute the current TOTP code for a stored 2FA secret.",
         ),
+        method(
+            "sha1Hex",
+            &[param("text", "Text to hash (e.g. a password for a breach check).", "string")],
+            "{ ok:true, hex } JSON (uppercase SHA-1)",
+            "Uppercase hex SHA-1 — the digest a HIBP k-anonymity breach check splits into prefix+suffix.",
+        ),
     ]
 }

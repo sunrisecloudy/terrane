@@ -121,6 +121,12 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Decision {
     Commit(Vec<EventRecord>),
     Effect(Effect),
+    /// Like [`Decision::Effect`], but the runner's result is returned to the
+    /// caller and NEVER recorded — a live, unrecorded query whose response must
+    /// not enter the replayed event log (e.g. a privacy-preserving breach check
+    /// whose HIBP bucket, and the SHA-1 prefix that fetched it, must never be
+    /// persisted). Only valid from a `ResourceMethod::Call`; not replay-stable.
+    TransientEffect(Effect),
     Runtime(RuntimeRequest),
 }
 

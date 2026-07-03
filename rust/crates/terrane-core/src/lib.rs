@@ -729,7 +729,7 @@ impl RuntimeHost for RuntimeResourceHost {
             .decide(ctx, &name, &scoped_args)?;
         let records = match decision {
             Decision::Commit(records) => records,
-            Decision::Effect(_) | Decision::Runtime(_) => {
+            Decision::Effect(_) | Decision::TransientEffect(_) | Decision::Runtime(_) => {
                 return Err(Error::Runtime(format!(
                     "{name}: effects and runtime calls are not allowed inside a runtime"
                 )));
@@ -778,6 +778,19 @@ impl RuntimeHost for RuntimeResourceHost {
             // The one place effects are legal inside a runtime: run once now;
             // replay folds the recorded events without re-running the app.
             Decision::Effect(effect) => runner.run(&effect, &self.state)?,
+            // A live query: run for its result and hand it back, but record
+            // NOTHING — nothing is persisted, folded, or replayed. Used for
+            // transient reads (e.g. net.get) whose response must never touch the
+            // event log.
+            Decision::TransientEffect(effect) => {
+                let records = runner.run(&effect, &self.state)?;
+                return self.registry.get(namespace)?.resource_call_output(
+                    &self.state,
+                    &self.app,
+                    method,
+                    &records,
+                );
+            }
             Decision::Runtime(_) => {
                 return Err(Error::Runtime(format!(
                     "{name}: nested runtime calls are not allowed inside a runtime"
@@ -961,6 +974,11 @@ impl<R: EffectRunner + 'static> Core<R> {
                 let records = self.runner.run(&effect, &self.state)?;
                 self.commit(records)
             }
+            // Transient effects only make sense as a resource call (they return a
+            // value without recording); a top-level command must not use one.
+            Decision::TransientEffect(_) => Err(Error::InvalidInput(format!(
+                "{namespace}: transient effects are only valid as resource calls"
+            ))),
             Decision::Runtime(request) => self.run_runtime(&namespace, request, principal),
         }
     }

@@ -178,6 +178,7 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.crypto.generatePassphrase(optionsJson)` | read |
 | `ctx.resource.crypto.strength(password)` | read |
 | `ctx.resource.crypto.totp(paramsJson)` | read |
+| `ctx.resource.crypto.sha1Hex(text)` | read |
 
 #### `ctx.resource.kv`
 
@@ -214,6 +215,12 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.native.dialogOpenFile(requestId, optionsJson)` | write |
 | `ctx.resource.native.result(requestId)` | read |
 | `ctx.resource.native.pending()` | read |
+
+#### `ctx.resource.net`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.net.get(url)` | call |
 
 #### `ctx.resource.relational_db`
 

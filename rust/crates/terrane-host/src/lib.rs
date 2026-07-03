@@ -269,7 +269,7 @@ fn dry_run_request_on_core(
         Decision::Commit(records) => Ok(CommandDryRunOutcome {
             records: records.len(),
         }),
-        Decision::Effect(_) => Err(format!(
+        Decision::Effect(_) | Decision::TransientEffect(_) => Err(format!(
             "dryRun unsupported for command '{command}': command requires an effect"
         )),
         Decision::Runtime(_) => Err(format!(

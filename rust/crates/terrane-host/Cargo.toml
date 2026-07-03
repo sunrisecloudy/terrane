@@ -29,6 +29,8 @@ nanoserde = { workspace = true }
 # argv. Reads a line from stdin: no echo on a TTY, plain when piped.
 rpassword = "7"
 serde_json = "1"
+# Edge HTTP(S) GET for the `net` effect (http:// and https://, TLS via rustls).
+ureq = { workspace = true }
 terrane-api.workspace = true
 terrane-app-build.workspace = true
 terrane-cap-app.workspace = true

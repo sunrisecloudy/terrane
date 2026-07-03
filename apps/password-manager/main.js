@@ -29,6 +29,10 @@
 
 var kv = ctx.resource.kv;
 var crypto = ctx.resource.crypto;
+// Optional: only present when `net` is granted. Used solely for the opt-in HIBP
+// breach check, which sends only a 5-char SHA-1 prefix (k-anonymity) and records
+// nothing (net.get is a transient, unrecorded read).
+var net = ctx.resource.net;
 
 var META_KEY = "meta";
 var ITEM_PREFIX = "item:";
@@ -667,6 +671,45 @@ var actions = {
         if (!r.ok) return err(r.reason || "totp_failed");
         audit("item.totp", item.id, null);
         return ok({ code: r.code, remaining: r.remaining, period: r.period });
+      });
+    },
+  },
+
+  breach: {
+    summary:
+      "Check one item's password against HIBP Pwned Passwords (opt-in; needs the " +
+      "`net` grant). Uses k-anonymity: only the first 5 hex chars of the password's " +
+      "SHA-1 leave the device, and nothing is recorded.",
+    args: [AUTH_ARG, { name: "ref", required: true, summary: "item id or name" }],
+    returns: "{ ok, breached, count } or { ok:false, reason }",
+    run: function (args, usage) {
+      if (args.length < 2) return usage();
+      if (!net || !net.get) return err("net_not_granted");
+      return withSession(args[0], function (session) {
+        var item = findItem(session, args[1]);
+        if (!item) return err("not_found");
+        if (!item.password) return err("no_password");
+        var h = cr("sha1Hex", item.password);
+        if (!h.ok) return err("hash_failed");
+        var hex = String(h.hex).toUpperCase();
+        var prefix = hex.slice(0, 5);
+        var suffix = hex.slice(5);
+        // Only the prefix is sent; the API returns every suffix sharing it.
+        var body = net.get("https://api.pwnedpasswords.com/range/" + prefix);
+        if (body == null) return err("network");
+        var count = 0;
+        var lines = String(body).split("\n");
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i].replace(/\r$/, "");
+          var idx = line.indexOf(":");
+          if (idx < 0) continue;
+          if (line.slice(0, idx).toUpperCase() === suffix) {
+            count = parseInt(line.slice(idx + 1), 10) || 0;
+            break;
+          }
+        }
+        audit("item.breach-check", item.id, null);
+        return ok({ breached: count > 0, count: count });
       });
     },
   },
