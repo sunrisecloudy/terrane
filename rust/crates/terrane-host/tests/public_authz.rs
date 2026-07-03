@@ -72,7 +72,8 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "kv",
             "local-model",
             "native",
-            "relational_db"
+            "relational_db",
+            "sysinfo"
         ])
     );
 
