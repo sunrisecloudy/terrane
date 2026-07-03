@@ -116,7 +116,11 @@ pub fn route(
         return json_error(403, "admin header required");
     }
     match (&method, segs.as_slice()) {
-        (Method::Get, []) => crate::home::page(live_reload),
+        (Method::Get, []) => {
+            let locale = negotiate_locale(request);
+            let (system, _) = shell_i18n_data(core, &locale, None);
+            crate::home::page(live_reload, &locale, &system)
+        }
         (Method::Get, ["healthz"]) => json_ok(&HealthResponse {
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),

@@ -32,5 +32,10 @@
   "settings.notSignedIn": "Belum masuk",
   "auth.signedOut": "Keluar",
   "auth.localOnly": "Hanya sesi lokal",
-  "doc.untitled": "Tanpa judul"
+  "doc.untitled": "Tanpa judul",
+  "home.tagline": "Aplikasi lokal Anda, disajikan dari home Anda sendiri. Pilih aplikasi di bawah untuk membukanya.",
+  "home.apps": "Aplikasi",
+  "home.loadError": "Tidak dapat memuat aplikasi",
+  "home.unnamed": "Aplikasi tanpa nama",
+  "home.noUi": "tanpa antarmuka"
 }

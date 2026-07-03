@@ -32,5 +32,10 @@
   "settings.notSignedIn": "Não conectado",
   "auth.signedOut": "Desconectado",
   "auth.localOnly": "Apenas sessão local",
-  "doc.untitled": "Sem título"
+  "doc.untitled": "Sem título",
+  "home.tagline": "Seus apps locais, servidos a partir da sua própria casa. Escolha um app abaixo para abri-lo.",
+  "home.apps": "Apps",
+  "home.loadError": "Não foi possível carregar os apps",
+  "home.unnamed": "App sem nome",
+  "home.noUi": "sem interface"
 }

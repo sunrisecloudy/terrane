@@ -32,5 +32,10 @@
   "settings.notSignedIn": "サインインしていません",
   "auth.signedOut": "サインアウトしました",
   "auth.localOnly": "ローカルセッションのみ",
-  "doc.untitled": "無題"
+  "doc.untitled": "無題",
+  "home.tagline": "あなた自身のホームから提供されるローカルアプリ。下からアプリを選んで開きます。",
+  "home.apps": "アプリ",
+  "home.loadError": "アプリを読み込めません",
+  "home.unnamed": "名称未設定のアプリ",
+  "home.noUi": "UIなし"
 }

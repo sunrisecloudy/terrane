@@ -441,10 +441,8 @@ pub unsafe extern "C" fn terrane_home_page(
         };
         let html = crate::home_page(&crate::HomePageOptions {
             app_href_template: &app_href_template,
-            catalog_url: None,
             catalog_json: Some(&catalog_json),
-            admin_href: None,
-            catalog_poll_ms: None,
+            ..Default::default()
         });
         write_out(out_output, html);
         TERRANE_OK

@@ -32,5 +32,10 @@
   "settings.notSignedIn": "未登录",
   "auth.signedOut": "已退出登录",
   "auth.localOnly": "仅本地会话",
-  "doc.untitled": "未命名"
+  "doc.untitled": "未命名",
+  "home.tagline": "你的本地应用，由你自己的主目录提供。选择下方的应用即可打开。",
+  "home.apps": "应用",
+  "home.loadError": "无法加载应用",
+  "home.unnamed": "未命名应用",
+  "home.noUi": "无界面"
 }

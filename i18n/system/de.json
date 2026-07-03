@@ -32,5 +32,10 @@
   "settings.notSignedIn": "Nicht angemeldet",
   "auth.signedOut": "Abgemeldet",
   "auth.localOnly": "Nur lokale Sitzung",
-  "doc.untitled": "Ohne Titel"
+  "doc.untitled": "Ohne Titel",
+  "home.tagline": "Deine lokalen Apps, bereitgestellt aus deinem eigenen Zuhause. Wähle unten eine App zum Öffnen.",
+  "home.apps": "Apps",
+  "home.loadError": "Apps können nicht geladen werden",
+  "home.unnamed": "Unbenannte App",
+  "home.noUi": "keine Oberfläche"
 }

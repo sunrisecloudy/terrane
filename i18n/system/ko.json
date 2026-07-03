@@ -32,5 +32,10 @@
   "settings.notSignedIn": "로그인하지 않음",
   "auth.signedOut": "로그아웃됨",
   "auth.localOnly": "로컬 세션 전용",
-  "doc.untitled": "제목 없음"
+  "doc.untitled": "제목 없음",
+  "home.tagline": "당신의 홈에서 제공되는 로컬 앱. 아래에서 앱을 선택해 여세요.",
+  "home.apps": "앱",
+  "home.loadError": "앱을 불러올 수 없습니다",
+  "home.unnamed": "이름 없는 앱",
+  "home.noUi": "UI 없음"
 }

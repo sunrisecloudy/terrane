@@ -32,5 +32,10 @@
   "settings.notSignedIn": "Chưa đăng nhập",
   "auth.signedOut": "Đã đăng xuất",
   "auth.localOnly": "Chỉ phiên cục bộ",
-  "doc.untitled": "Chưa có tiêu đề"
+  "doc.untitled": "Chưa có tiêu đề",
+  "home.tagline": "Các ứng dụng cục bộ của bạn, phục vụ từ chính home của bạn. Chọn một ứng dụng bên dưới để mở.",
+  "home.apps": "Ứng dụng",
+  "home.loadError": "Không thể tải ứng dụng",
+  "home.unnamed": "Ứng dụng không tên",
+  "home.noUi": "không có giao diện"
 }

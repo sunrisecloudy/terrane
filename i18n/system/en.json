@@ -32,5 +32,10 @@
   "settings.notSignedIn": "Not signed in",
   "auth.signedOut": "Signed out",
   "auth.localOnly": "Local session only",
-  "doc.untitled": "Untitled"
+  "doc.untitled": "Untitled",
+  "home.tagline": "Your local apps, served from your own home. Pick an app below to open it.",
+  "home.apps": "Apps",
+  "home.loadError": "Cannot load apps",
+  "home.unnamed": "Unnamed app",
+  "home.noUi": "no UI"
 }

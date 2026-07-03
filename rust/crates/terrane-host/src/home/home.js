@@ -2,6 +2,17 @@
   var list = document.getElementById("home-app-list");
   var adminLink = document.getElementById("home-admin-link");
   var config = readConfig();
+  var messages = config.messages && typeof config.messages === "object" ? config.messages : {};
+
+  // Localize the static chrome (the host injects the negotiated locale + the
+  // `system` bundle); the English text in the markup is the fallback.
+  function t(key, fallback) {
+    return Object.prototype.hasOwnProperty.call(messages, key) ? messages[key] : fallback;
+  }
+  document.documentElement.dir = config.dir === "rtl" ? "rtl" : "ltr";
+  Array.prototype.forEach.call(document.querySelectorAll("[data-i18n]"), function (el) {
+    el.textContent = t(el.getAttribute("data-i18n"), el.textContent.trim());
+  });
 
   if (adminLink && config.adminHref) {
     adminLink.href = String(config.adminHref);
@@ -17,7 +28,7 @@
     var pollMs = Number(config.catalogPollMs || 0);
     if (pollMs > 0) setInterval(loadCatalog, pollMs);
   } else {
-    showError("Cannot load apps");
+    showError(t("system.home.loadError", "Cannot load apps"));
   }
 
   function loadCatalog() {
@@ -32,7 +43,7 @@
         renderCatalogText(text);
       })
       .catch(function () {
-        if (!lastCatalogText) showError("Cannot load apps");
+        if (!lastCatalogText) showError(t("system.home.loadError", "Cannot load apps"));
       });
   }
 
@@ -50,7 +61,7 @@
     try {
       catalog = JSON.parse(text) || {};
     } catch (_) {
-      showError("Cannot load apps");
+      showError(t("system.home.loadError", "Cannot load apps"));
       return;
     }
     renderCatalog(Array.isArray(catalog.apps) ? catalog.apps : []);
@@ -66,7 +77,7 @@
     if (!apps.length) {
       var empty = document.createElement("div");
       empty.className = "app-empty";
-      empty.textContent = "No apps installed";
+      empty.textContent = t("system.sidebar.empty", "No apps installed");
       list.appendChild(empty);
     }
   }
@@ -77,7 +88,7 @@
 
   function appCard(app) {
     var id = app && app.id ? String(app.id) : "";
-    var name = app && app.name ? String(app.name) : id || "Unnamed app";
+    var name = app && app.name ? String(app.name) : id || t("system.home.unnamed", "Unnamed app");
     var openable = !!(app && app.has_ui && id && config.appHref);
     var root = openable
       ? document.createElement("a")
@@ -99,7 +110,7 @@
     text.appendChild(label);
 
     var meta = document.createElement("small");
-    meta.textContent = app && app.has_ui ? id : id + " - no UI";
+    meta.textContent = app && app.has_ui ? id : id + " — " + t("system.home.noUi", "no UI");
     text.appendChild(meta);
 
     root.appendChild(text);

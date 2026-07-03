@@ -32,5 +32,10 @@
   "settings.notSignedIn": "لم يتم تسجيل الدخول",
   "auth.signedOut": "تم تسجيل الخروج",
   "auth.localOnly": "جلسة محلية فقط",
-  "doc.untitled": "بدون عنوان"
+  "doc.untitled": "بدون عنوان",
+  "home.tagline": "تطبيقاتك المحلية، مقدَّمة من جهازك الخاص. اختر تطبيقًا أدناه لفتحه.",
+  "home.apps": "التطبيقات",
+  "home.loadError": "تعذّر تحميل التطبيقات",
+  "home.unnamed": "تطبيق بلا اسم",
+  "home.noUi": "بدون واجهة"
 }
