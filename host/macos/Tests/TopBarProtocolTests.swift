@@ -30,6 +30,12 @@ final class TopBarProtocolTests: XCTestCase {
       "onDocument:",
       "getTheme:",
       "onTheme:",
+      "getLocale:",
+      "onLocale:",
+      "getMessages:",
+      "onMessages:",
+      "getDir:",
+      "t:",
       "window.__terrane_apply",
       "kind: \"document:set\"",
     ] {
@@ -60,6 +66,27 @@ final class TopBarProtocolTests: XCTestCase {
     let docOnly = TerraneBridge.applyStateJS(document: "doc", theme: nil)
     XCTAssertTrue(docOnly.contains("document:\"doc\""))
     XCTAssertFalse(docOnly.contains("theme:"))
+  }
+
+  func testApplyStateJsCarriesLocaleAndEscapesMessageBundle() {
+    let js = TerraneBridge.applyStateJS(
+      document: nil,
+      theme: nil,
+      locale: "ar",
+      messages: ["k": "v</script>"],
+      dir: "rtl"
+    )
+    XCTAssertTrue(js.contains("locale:\"ar\""))
+    XCTAssertTrue(js.contains("dir:\"rtl\""))
+    // Bundle values must be escaped so they cannot break out of the JS.
+    XCTAssertFalse(js.contains("</script>"))
+    XCTAssertTrue(js.contains("\\u003c/script>"))
+  }
+
+  func testDirForIsRtlOnlyForArabic() {
+    XCTAssertEqual(TerraneBridge.dir(for: "ar"), "rtl")
+    XCTAssertEqual(TerraneBridge.dir(for: "en"), "ltr")
+    XCTAssertEqual(TerraneBridge.dir(for: "zh-Hans"), "ltr")
   }
 
   func testJsonStringLiteralEscapesDangerousScalars() {

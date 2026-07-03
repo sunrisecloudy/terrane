@@ -118,9 +118,16 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   }
 
   /// The JS a host calls (via `evaluateJavaScript`) to push the current
-  /// document name / theme down to the page, firing `terrane.onDocument` /
-  /// `terrane.onTheme`. Values are JSON-encoded so they cannot break out.
-  static func applyStateJS(document: String?, theme: String?) -> String {
+  /// document name / theme / locale down to the page, firing
+  /// `terrane.onDocument` / `terrane.onTheme` / `terrane.onLocale`. Values are
+  /// JSON-encoded so they cannot break out.
+  static func applyStateJS(
+    document: String?,
+    theme: String?,
+    locale: String? = nil,
+    messages: [String: String]? = nil,
+    dir: String? = nil
+  ) -> String {
     var parts: [String] = []
     if let document {
       parts.append("document:\(jsonStringLiteral(document))")
@@ -128,7 +135,81 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     if let theme {
       parts.append("theme:\(jsonStringLiteral(theme))")
     }
+    if let locale {
+      parts.append("locale:\(jsonStringLiteral(locale))")
+    }
+    if let dir {
+      parts.append("dir:\(jsonStringLiteral(dir))")
+    }
+    if let messages {
+      parts.append("messages:\(jsonObjectLiteral(messages))")
+    }
     return "window.__terrane_apply && window.__terrane_apply({\(parts.joined(separator: ","))});"
+  }
+
+  /// A JSON object literal with every key and value routed through
+  /// `jsonStringLiteral`, so a message-bundle string cannot break out of the
+  /// evaluated JS — the same protection the document name has.
+  static func jsonObjectLiteral(_ map: [String: String]) -> String {
+    let body = map
+      .sorted { $0.key < $1.key }
+      .map { "\(jsonStringLiteral($0.key)):\(jsonStringLiteral($0.value))" }
+      .joined(separator: ",")
+    return "{\(body)}"
+  }
+
+  /// The writing direction for a locale code — parity with terrane-i18n's
+  /// `dir_for` (only Arabic is RTL in the initial set).
+  static func dir(for code: String) -> String {
+    code.lowercased() == "ar" ? "rtl" : "ltr"
+  }
+
+  /// Best supported locale for the system's preferred languages, via the core
+  /// negotiation (one source of truth with the web host's Accept-Language).
+  /// Handle-free. Falls back to "en".
+  static func negotiateLocale(_ prefs: [String]) -> String {
+    let header = prefs.joined(separator: ",")
+    var out: UnsafeMutablePointer<CChar>?
+    var err: UnsafeMutablePointer<CChar>?
+    let rc = header.withCString { terrane_i18n_negotiate($0, &out, &err) }
+    defer {
+      if let out { terrane_string_free(out) }
+      if let err { terrane_string_free(err) }
+    }
+    if rc == 0, let out {
+      return String(cString: out)
+    }
+    return "en"
+  }
+
+  /// The localized message bundle for `code` as `[key: value]`. `appId` empty =
+  /// the shell-chrome ("system") bundle; otherwise the app frame bundle
+  /// (system + that app's domain). English is the fallback layer.
+  func i18nBundle(code: String, appId: String) -> [String: String] {
+    var out: UnsafeMutablePointer<CChar>?
+    var err: UnsafeMutablePointer<CChar>?
+    let rc = code.withCString { codeC in
+      appId.withCString { appC in
+        terrane_i18n_bundle(handle, codeC, appC, &out, &err)
+      }
+    }
+    defer {
+      if let out { terrane_string_free(out) }
+      if let err { terrane_string_free(err) }
+    }
+    guard rc == 0, let out,
+      let data = String(cString: out).data(using: .utf8),
+      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return [:]
+    }
+    var map: [String: String] = [:]
+    for (key, value) in obj {
+      if let string = value as? String {
+        map[key] = string
+      }
+    }
+    return map
   }
 
   /// Strip control/format characters, collapse whitespace, cap length — parity
@@ -453,15 +534,39 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         }
       }
 
-      // Top-bar document/theme state, kept in sync with the native host.
+      // Top-bar document/theme/locale state, kept in sync with the native host.
       var docState = "";
       var themeState = "system";
+      var localeState = "en";
+      var messagesState = {};
+      var dirState = "ltr";
       var docSubs = [];
       var themeSubs = [];
+      var localeSubs = [];
+      var messagesSubs = [];
       function notify(subs, value) {
         for (var i = 0; i < subs.length; i++) {
           try { subs[i](value); } catch (_) {}
         }
+      }
+      function copyMessages() {
+        var copy = {};
+        for (var k in messagesState) {
+          if (Object.prototype.hasOwnProperty.call(messagesState, k)) copy[k] = messagesState[k];
+        }
+        return copy;
+      }
+      function translate(key, params) {
+        key = String(key == null ? "" : key);
+        var template = Object.prototype.hasOwnProperty.call(messagesState, key)
+          ? messagesState[key]
+          : (params && Object.prototype.hasOwnProperty.call(params, "default")
+              ? String(params.default) : key);
+        if (!params) return template;
+        return String(template).replace(/\\{(\\w+)\\}/g, function (m, name) {
+          if (name === "default") return m;
+          return Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : m;
+        });
       }
       function unsubscriber(list, cb) {
         return function () {
@@ -482,6 +587,17 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         if (typeof state.theme === "string") {
           themeState = state.theme;
           notify(themeSubs, themeState);
+        }
+        if (typeof state.locale === "string") {
+          localeState = state.locale || "en";
+          notify(localeSubs, localeState);
+        }
+        if (state.messages && typeof state.messages === "object") {
+          messagesState = state.messages;
+          notify(messagesSubs, copyMessages());
+        }
+        if (typeof state.dir === "string") {
+          dirState = state.dir === "rtl" ? "rtl" : "ltr";
         }
       };
 
@@ -537,6 +653,31 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
           themeSubs.push(cb);
           try { cb(themeState); } catch (_) {}
           return unsubscriber(themeSubs, cb);
+        },
+        // --- Localization (host chrome) — parity with the web host ---
+        getLocale: function () {
+          return localeState;
+        },
+        onLocale: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          localeSubs.push(cb);
+          try { cb(localeState); } catch (_) {}
+          return unsubscriber(localeSubs, cb);
+        },
+        getMessages: function () {
+          return copyMessages();
+        },
+        onMessages: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          messagesSubs.push(cb);
+          try { cb(copyMessages()); } catch (_) {}
+          return unsubscriber(messagesSubs, cb);
+        },
+        getDir: function () {
+          return dirState;
+        },
+        t: function (key, params) {
+          return translate(key, params);
         }
       });
       Object.defineProperty(window, "terrane", {
