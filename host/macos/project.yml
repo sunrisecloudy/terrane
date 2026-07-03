@@ -26,7 +26,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../rust/target/release
+          - $(SRCROOT)/../../target/release
         OTHER_LDFLAGS:
           - $(inherited)
           - -lterrane_host
@@ -51,7 +51,7 @@ targets:
         script: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          cd "$SRCROOT/../../rust"
+          cd "$SRCROOT/../.."
           cargo build -p terrane-host --release
   TerraneHostE2ETests:
     type: bundle.unit-test
@@ -74,7 +74,7 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../rust/target/release
+          - $(SRCROOT)/../../target/release
         OTHER_LDFLAGS:
           - $(inherited)
           - -lterrane_host
@@ -91,7 +91,7 @@ targets:
         script: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-          cd "$SRCROOT/../../rust"
+          cd "$SRCROOT/../.."
           cargo build -p terrane-host --release
 schemes:
   TerraneHost:

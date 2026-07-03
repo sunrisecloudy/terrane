@@ -1,6 +1,6 @@
-# Terrane Rust Workspace
+# Terrane
 
-The shared Rust workspace for Terrane — rebuilt from scratch.
+The root Rust workspace for Terrane — rebuilt from scratch.
 
 Terrane is a local-first platform for personal apps. This repository is a
 deliberate reset: instead of growing the platform outward (sync, server, UI,
@@ -33,17 +33,21 @@ argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──
 ## Layout
 
 ```
-rust/          # the fresh Rust workspace (the only product code)
+Cargo.toml     # root Cargo workspace for all Rust crates and host adapters
+rust/
   crates/
     terrane-core/           # shared vocabulary + deterministic engine + host_runtime
     terrane-cap-*/          # standalone capabilities over terrane-cap-interface
     terrane-host/           # host services, `terrane` binary, C ABI, sync, preview, MCP
+host/
+  cli/                      # CLI adapter package
+  mcp/                      # MCP adapter package
+  web/                      # web adapter package
 ```
 
 ## Build
 
 ```sh
-cd rust
 cargo test
 cargo run -p terrane-host --bin terrane -- help
 ```
@@ -53,7 +57,6 @@ artifacts are reused across checkouts:
 
 ```sh
 source scripts/cargo-cache-env.sh
-cd rust
 cargo test
 ```
 

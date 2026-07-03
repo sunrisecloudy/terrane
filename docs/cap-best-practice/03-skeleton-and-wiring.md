@@ -110,7 +110,7 @@ mod tests;
 
 ## Wiring: the four touch points outside your crate
 
-1. **`rust/Cargo.toml`** — add the crate to `[workspace] members` and to
+1. **`Cargo.toml`** — add the crate to `[workspace] members` and to
    `[workspace.dependencies]`.
 2. **`rust/crates/terrane-core/Cargo.toml`** — add
    `terrane-cap-<name>.workspace = true`.

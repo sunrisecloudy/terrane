@@ -3,8 +3,8 @@
 Use the shared Cargo cache for Rust build and test commands:
 
 ```sh
-scripts/with-cargo-cache.sh cargo test
-scripts/with-cargo-cache.sh cargo clippy --all-targets -- -D warnings
+scripts/with-cargo-cache.sh cargo test --workspace --locked
+scripts/with-cargo-cache.sh cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Project hooks for Codex, Claude Code, and opencode apply the same cache

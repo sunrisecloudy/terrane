@@ -80,11 +80,11 @@ assert!(ok, "stderr: {err}");
 
 ## The gate
 
-Green before every commit, from `rust/`:
+Green before every commit, from the repo root:
 
 ```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Run the effectful suite deliberately when you touched it:
@@ -93,10 +93,12 @@ Run the effectful suite deliberately when you touched it:
 cargo test -p terrane-host -- --ignored
 ```
 
-And validate the separate host workspace if you touched the CLI surface:
+Validate touched host adapters with package-scoped commands when a full
+workspace run is more than the change needs:
 
 ```sh
-cd host/cli && cargo test && cargo clippy --all-targets -- -D warnings
+cargo test -p terrane-host-cli --locked
+cargo clippy -p terrane-host-cli --all-targets --locked -- -D warnings
 ```
 
 Next: [08-public-surface-and-release.md](08-public-surface-and-release.md).

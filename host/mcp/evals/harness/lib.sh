@@ -5,9 +5,9 @@
 harness_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TERRANE_REPO="${TERRANE_REPO:-$(cd "$harness_dir/../../../.." && pwd)}"
 
-MCP_BIN="${MCP_BIN:-$TERRANE_REPO/host/mcp/target/debug/terrane-mcp}"
-CLI_BIN="${CLI_BIN:-$TERRANE_REPO/host/cli/target/debug/terrane-host}"
-WEB_BIN="${WEB_BIN:-$TERRANE_REPO/host/web/target/debug/terrane-web}"
+MCP_BIN="${MCP_BIN:-$TERRANE_REPO/target/debug/terrane-mcp}"
+CLI_BIN="${CLI_BIN:-$TERRANE_REPO/target/debug/terrane-host}"
+WEB_BIN="${WEB_BIN:-$TERRANE_REPO/target/debug/terrane-web}"
 OPENCODE_BIN="${OPENCODE_BIN:-opencode}"
 
 # macOS ships neither; brew coreutils provides `timeout`, sometimes `gtimeout`.

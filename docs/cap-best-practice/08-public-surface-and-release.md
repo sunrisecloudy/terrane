@@ -25,7 +25,7 @@ thing consumers pin. If a change affects routes, MCP tools, capability docs,
 `ctx.resource`, app contract, or sync surface, verify both live declarations and
 the exported artifact.
 
-From `rust/`:
+From the repo root:
 
 ```sh
 cargo test -p terrane-host --test contract

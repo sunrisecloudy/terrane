@@ -1,14 +1,8 @@
-# Standalone workspace: host/web is its own Cargo workspace (separate Cargo.lock
-# and target/) like the other hosts. It path-depends across the boundary into
-# the shared rust/ workspace and serves apps over HTTP with tiny_http (blocking,
-# single-threaded — which suits the non-Send Core).
-[workspace]
-
 [package]
 name = "terrane-host-web"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [features]
 default = []
@@ -19,11 +13,11 @@ name = "terrane-web"
 path = "src/main.rs"
 
 [dependencies]
-terrane-api = { path = "../../rust/crates/terrane-api" }
-terrane-host = { path = "../../rust/crates/terrane-host" }
-nanoserde = { version = "0.2", default-features = false, features = ["json"] }
+terrane-api.workspace = true
+terrane-host.workspace = true
+nanoserde.workspace = true
 tiny_http = "0.12"
 
 [dev-dependencies]
-tempfile = "3"
-terrane-core = { path = "../../rust/crates/terrane-core" }
+tempfile.workspace = true
+terrane-core.workspace = true

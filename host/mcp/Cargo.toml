@@ -1,14 +1,8 @@
-# Standalone workspace: host/mcp is its own Cargo workspace (separate Cargo.lock
-# and target/) like the other hosts, so it isn't entangled with them. It path-
-# depends across the boundary into the shared rust/ workspace. Runtime and CRDT
-# dependencies come transitively through the terrane-core engine crate.
-[workspace]
-
 [package]
 name = "terrane-host-mcp"
-version = "0.1.0"
-edition = "2021"
-license = "MIT OR Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [features]
 default = []
@@ -19,12 +13,12 @@ name = "terrane-mcp"
 path = "src/main.rs"
 
 [dependencies]
-terrane-api = { path = "../../rust/crates/terrane-api" }
-terrane-host = { path = "../../rust/crates/terrane-host" }
-nanoserde = { version = "0.2", default-features = false, features = ["json"] }
+terrane-api.workspace = true
+terrane-host.workspace = true
+nanoserde.workspace = true
 
 [dev-dependencies]
-rusqlite = { version = "0.40.1", features = ["bundled"] }
-serde_json = "1"
-tempfile = "3"
-terrane-core = { path = "../../rust/crates/terrane-core" }
+rusqlite.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+terrane-core.workspace = true

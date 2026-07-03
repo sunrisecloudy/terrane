@@ -103,9 +103,9 @@ events and persisted (the data survives a relaunch because the FFI opens a
 file-backed core, not in-memory):
 
 ```sh
-TERRANE_HOME=~/.terrane ( cd ../../rust && cargo run -q -p terrane-host --bin terrane -- log )
+TERRANE_HOME=~/.terrane ( cd ../.. && cargo run -q -p terrane-host --bin terrane -- log )
 # → app.added + kv.set todo/seq, kv.set todo/item:1; NO host.* records
-TERRANE_HOME=~/.terrane ( cd ../../rust && cargo run -q -p terrane-host --bin terrane -- replay )
+TERRANE_HOME=~/.terrane ( cd ../.. && cargo run -q -p terrane-host --bin terrane -- replay )
 # → replay ok
 ```
 

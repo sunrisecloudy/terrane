@@ -20,10 +20,11 @@ requirements.
 The repeatable path is the harness under `host/mcp/evals/harness/`:
 
 ```sh
-cd /Users/vehasuwat/Project/terrane/host/mcp && cargo build
-cd ../cli && cargo build
-cd ../web && cargo build   # for browser verification
-cd ../mcp/evals/harness && npm install   # optional: puppeteer-core UI check
+cd /Users/vehasuwat/Project/terrane
+cargo build -p terrane-host-mcp
+cargo build -p terrane-host-cli
+cargo build -p terrane-host-web   # for browser verification
+cd host/mcp/evals/harness && npm install   # optional: puppeteer-core UI check
 
 ./run-batch.sh                          # full batch: build -> resume -> grade
 ./run-batch.sh /private/tmp/my-root my-models.tsv
@@ -45,8 +46,8 @@ test) plus the manual escape hatches.
 Build the MCP host:
 
 ```sh
-cd /Users/vehasuwat/Project/terrane/host/mcp
-cargo build
+cd /Users/vehasuwat/Project/terrane
+cargo build -p terrane-host-mcp
 ```
 
 Use a throwaway home per run:
@@ -73,7 +74,7 @@ Create `$OPENCODE_WORK/.opencode/opencode.json`:
     "terrane": {
       "type": "local",
       "command": [
-        "/Users/vehasuwat/Project/terrane/host/mcp/target/debug/terrane-mcp"
+        "/Users/vehasuwat/Project/terrane/target/debug/terrane-mcp"
       ],
       "environment": {
         "TERRANE_HOME": "/private/tmp/terrane-calendar-dsv4-r1-home"

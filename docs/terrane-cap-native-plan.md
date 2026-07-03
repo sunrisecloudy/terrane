@@ -404,7 +404,7 @@ Both outcomes must be visible in recorded native events and docs.
 
 ### Slice 2: Core Capability Crate
 
-- Add `terrane-cap-native` to `rust/Cargo.toml`.
+- Add `terrane-cap-native` to the root `Cargo.toml`.
 - Add `NativeState` to `terrane-core::State`, both `StateStore` arms, and
   `default_registry()`.
 - Implement platform observation, explicit request commands, trusted terminal
@@ -475,14 +475,14 @@ Both outcomes must be visible in recorded native events and docs.
   platform tests agree.
 - Treat Windows as the next likely conformance target after macOS because the
   desktop connector semantics and CLI host are closest. Android and iOS need
-  dedicated host workspace work first.
+  dedicated host adapter work first.
 
 ## Verification Gate
 
-From `rust/`:
+From the repo root:
 
 ```sh
-cargo test
+cargo test --workspace --locked
 cargo test -p terrane-cap-native
 cargo test -p terrane-core --test cap native
 cargo test -p terrane-core --test cap grant_spec_inventory
@@ -491,7 +491,7 @@ cargo test -p terrane-host --test cap native
 cargo test -p terrane-host --test public_authz
 cargo test -p terrane-host --test contract
 cargo test -p terrane-core --test cap app_api_doc
-cargo clippy --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 When resource docs intentionally change:

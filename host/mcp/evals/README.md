@@ -75,7 +75,7 @@ Add the eval plugin to the temporary opencode workspace:
   "mcp": {
     "terrane": {
       "type": "local",
-      "command": ["/absolute/path/to/terrane/host/mcp/target/debug/terrane-mcp"],
+      "command": ["/absolute/path/to/terrane/target/debug/terrane-mcp"],
       "environment": {
         "TERRANE_HOME": "/private/tmp/terrane-eval-home"
       },

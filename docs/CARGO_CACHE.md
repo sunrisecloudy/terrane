@@ -58,7 +58,6 @@ Source the environment before a shell session:
 
 ```sh
 source scripts/cargo-cache-env.sh
-cd rust
 cargo test --workspace --locked
 ```
 
@@ -66,7 +65,7 @@ Or run one command through the wrapper:
 
 ```sh
 scripts/with-cargo-cache.sh cargo test --workspace --locked
-scripts/with-cargo-cache.sh cargo clippy --all-targets -- -D warnings
+scripts/with-cargo-cache.sh cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
 Inspect the active values without running Cargo:
@@ -117,7 +116,7 @@ To test the Codex/Claude hook payload shape without running Cargo:
 
 ```sh
 printf '%s\n' \
-  '{"tool_input":{"command":"cd rust && cargo test --workspace --locked"}}' \
+  '{"tool_input":{"command":"cargo test --workspace --locked"}}' \
   | scripts/agent-hooks/cargo-cache-pretool.py \
   | python3 -m json.tool
 ```

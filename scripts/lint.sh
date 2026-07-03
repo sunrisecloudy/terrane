@@ -10,23 +10,16 @@ log() {
 run_in() {
   local dir="$1"
   shift
-  log "(cd ${dir#$ROOT/} && $*)"
+  local display="${dir#$ROOT/}"
+  [[ "$dir" == "$ROOT" ]] && display="."
+  log "(cd $display && $*)"
   (cd "$dir" && "$@")
 }
-
-rust_workspaces=(
-  "$ROOT/rust"
-  "$ROOT/host/cli"
-  "$ROOT/host/mcp"
-  "$ROOT/host/web"
-)
 
 log "scripts/format.sh --check"
 "$ROOT/scripts/format.sh" --check
 
-for workspace in "${rust_workspaces[@]}"; do
-  run_in "$workspace" cargo clippy --all-targets --locked -- -D warnings
-done
+run_in "$ROOT" cargo clippy --workspace --all-targets --locked -- -D warnings
 
 js_roots=(
   "$ROOT/apps"
@@ -69,6 +62,6 @@ done < <(
 
 for manifest in "${react_app_manifests[@]}"; do
   app_dir="$(dirname "$manifest")"
-  rel_app_dir="../${app_dir#$ROOT/}"
-  run_in "$ROOT/rust" cargo run -p terrane-app-build -- --check "$rel_app_dir"
+  rel_app_dir="${app_dir#$ROOT/}"
+  run_in "$ROOT" cargo run -p terrane-app-build -- --check "$rel_app_dir"
 done

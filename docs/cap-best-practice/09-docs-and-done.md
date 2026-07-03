@@ -59,9 +59,10 @@ A capability lands when all of this holds:
       `capability_command` with `help: true` for each public command.
 - [ ] If exported surface changed, contract export/verification and
       `terrane-host/tests/contract.rs` are green.
-- [ ] From `rust/`: `cargo test` green and
-      `cargo clippy --all-targets -- -D warnings` green. `host/cli` validated
-      separately if touched.
+- [ ] From the repo root: `cargo test --workspace --locked` green and
+      `cargo clippy --workspace --all-targets --locked -- -D warnings` green.
+      Package-scoped host adapter checks run when a full workspace run is more
+      than the change needs.
 - [ ] Smoke by hand:
       `cargo run -p terrane-host --bin terrane -- cap info <ns>`.
 - [ ] Committed as small, green, granular commits on a branch off `main`;

@@ -2,7 +2,7 @@
 # Source this file before running Cargo from Terrane worktrees:
 #
 #   source scripts/cargo-cache-env.sh
-#   cd rust && cargo test --workspace --locked
+#   cargo test --workspace --locked
 #
 # Or inspect the values without changing the parent shell:
 #

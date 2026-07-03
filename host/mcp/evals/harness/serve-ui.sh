@@ -10,7 +10,7 @@ source "$(dirname "$0")/lib.sh" 2>/dev/null || {
   # allow standalone use without ROOT set
   harness_dir="$(cd "$(dirname "$0")" && pwd)"
   TERRANE_REPO="${TERRANE_REPO:-$(cd "$harness_dir/../../../.." && pwd)}"
-  WEB_BIN="${WEB_BIN:-$TERRANE_REPO/host/web/target/debug/terrane-web}"
+  WEB_BIN="${WEB_BIN:-$TERRANE_REPO/target/debug/terrane-web}"
 }
 
 cmd="$1"

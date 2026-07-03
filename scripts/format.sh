@@ -12,7 +12,7 @@ elif [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 usage: scripts/format.sh [--check]
 
 Formats active Terrane source files:
-  - Rust workspaces with cargo fmt
+  - Root Rust workspace with cargo fmt
   - JS/JSX/MJS/TS/TSX/JSON/HTML/CSS/Markdown/YAML with deno fmt
   - macOS Swift sources and tests with swift format
 
@@ -29,24 +29,17 @@ log() {
 run_in() {
   local dir="$1"
   shift
-  log "(cd ${dir#$ROOT/} && $*)"
+  local display="${dir#$ROOT/}"
+  [[ "$dir" == "$ROOT" ]] && display="."
+  log "(cd $display && $*)"
   (cd "$dir" && "$@")
 }
 
-rust_workspaces=(
-  "$ROOT/rust"
-  "$ROOT/host/cli"
-  "$ROOT/host/mcp"
-  "$ROOT/host/web"
-)
-
-for workspace in "${rust_workspaces[@]}"; do
-  if [[ "$CHECK" -eq 1 ]]; then
-    run_in "$workspace" cargo fmt --check
-  else
-    run_in "$workspace" cargo fmt
-  fi
-done
+if [[ "$CHECK" -eq 1 ]]; then
+  run_in "$ROOT" cargo fmt --all --check
+else
+  run_in "$ROOT" cargo fmt --all
+fi
 
 deno_files=()
 while IFS= read -r file; do

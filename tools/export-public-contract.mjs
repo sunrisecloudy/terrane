@@ -41,7 +41,7 @@ export function buildPublicContract() {
     "cargo",
     ["run", "-q", "-p", "terrane-host", "--bin", "terrane", "--", "contract", "export"],
     {
-      cwd: path.join(root, "rust"),
+      cwd: root,
       encoding: "utf8",
       maxBuffer: 16 * 1024 * 1024,
     },
@@ -81,11 +81,8 @@ export function buildPublicContract() {
     conformance: {
       sourceCheckoutRequired: true,
       commands: [
-        "cd rust && cargo test --workspace --locked",
-        "cd rust && cargo clippy --workspace --all-targets --locked -- -D warnings",
-        "cd host/cli && cargo test --locked",
-        "cd host/mcp && cargo test --locked",
-        "cd host/web && cargo test --locked",
+        "cargo test --workspace --locked",
+        "cargo clippy --workspace --all-targets --locked -- -D warnings",
         "node --no-warnings tools/verify-public-contract.mjs",
       ],
     },

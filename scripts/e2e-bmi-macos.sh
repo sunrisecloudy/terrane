@@ -8,7 +8,7 @@ log() {
 }
 
 log "Validate BMI React app build inputs"
-(cd "$ROOT/rust" && cargo run -p terrane-app-build -- --check ../apps/bmi-calculator)
+(cd "$ROOT" && cargo run -p terrane-app-build -- --check apps/bmi-calculator)
 
 log "Generate macOS Xcode project"
 (cd "$ROOT/host/macos" && xcodegen generate)
