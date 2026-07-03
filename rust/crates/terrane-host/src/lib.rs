@@ -29,6 +29,7 @@ pub mod native;
 pub mod permission;
 pub mod preview;
 pub mod public_authz;
+pub mod stt_runner;
 pub mod sync;
 
 pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};
