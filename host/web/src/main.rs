@@ -23,6 +23,7 @@ mod routes;
 mod shell;
 mod shim;
 mod static_files;
+mod stt;
 
 use tiny_http::Server;
 
@@ -54,7 +55,12 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let admin_base_url = format!("http://{}", server.server_addr());
+    let listen_addr = server.server_addr().to_string();
+    let admin_base_url = format!("http://{listen_addr}");
+    if let Err(e) = stt::init(&listen_addr) {
+        eprintln!("terrane-web: stt init failed: {e}");
+        std::process::exit(1);
+    }
     let dev_apps = dev_apps::DevApps::new(args.apps_dir.clone());
     eprintln!(
         "terrane-web: serving {} on http://{} (auth: {}, live reload: {}{})",

@@ -27,6 +27,7 @@
   var premiumList = document.getElementById("premium-list");
   var settingsPanel = document.getElementById("settings-panel");
   var settingsClose = document.getElementById("settings-close");
+  var sttMicButton = document.getElementById("stt-mic-button");
 
   var DOC_KEY = "terrane.doc." + (currentId || "admin");
   var THEME_KEY = "terrane.theme";
@@ -64,6 +65,7 @@
   bindDesktopInfo();
   bindBridge();
   bindTopbar();
+  bindSttMic();
   bindPremium();
   setAdminMode(isAdmin);
   if (isAdmin) {
@@ -532,6 +534,150 @@
   //                 {type: "terrane:document", name}  (sent on frame load and
   //                 on rename)
   //   app -> shell: {type: "terrane:document:set", name}  (rename the crumb)
+  // ---- Shell-owned STT mic capture (outside the sandboxed iframe) ----------
+  var sttCapture = null;
+
+  function bindSttMic() {
+    if (!sttMicButton || isAdmin || !currentId) return;
+    sttMicButton.hidden = false;
+    sttMicButton.addEventListener("click", function () {
+      if (sttCapture) stopSttMic("stopped");
+      else startSttMic();
+    });
+    window.addEventListener("beforeunload", function () {
+      stopSttMic("host-exit");
+    });
+    window.addEventListener("pagehide", function () {
+      stopSttMic("host-exit");
+    });
+  }
+
+  function startSttMic() {
+    var sessionId = randomNonce();
+    sttMicButton.disabled = true;
+    fetchSttConfig()
+      .then(function (config) {
+        return openSttSession(sessionId).then(function (open) {
+          return {
+            wsUrl: open.wsUrl || config.wsUrl,
+            sessionId: open.sessionId || sessionId,
+          };
+        });
+      })
+      .then(function (opened) {
+        return navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+          return startSttAudio(opened, stream);
+        });
+      })
+      .then(function (capture) {
+        sttCapture = capture;
+        sttMicButton.disabled = false;
+        sttMicButton.setAttribute("aria-pressed", "true");
+        sttMicButton.title = "Disable microphone";
+        sendToFrame({ type: "terrane:stt", status: "open", sessionId: capture.sessionId });
+      })
+      .catch(function (error) {
+        sttMicButton.disabled = false;
+        console.warn("stt mic failed:", errorMessage(error));
+      });
+  }
+
+  function fetchSttConfig() {
+    return fetch("/__terrane/stt/config", { cache: "no-store" }).then(function (response) {
+      if (!response.ok) throw new Error("stt config");
+      return response.json();
+    });
+  }
+
+  function openSttSession(sessionId) {
+    return postJsonAdmin("/__terrane/admin/stt/open", {
+      app: currentId,
+      sessionId: sessionId,
+    }).then(function (result) {
+      if (!result.ok) throw new Error(errorMessage(result.body && result.body.error));
+      return result.body || {};
+    });
+  }
+
+  function startSttAudio(opened, stream) {
+    var audioContext = new AudioContext({ sampleRate: 16000 });
+    return audioContext.audioWorklet
+      .addModule("/__terrane/stt/worklet.js")
+      .then(function () {
+        var source = audioContext.createMediaStreamSource(stream);
+        var worklet = new AudioWorkletNode(audioContext, "stt-capture-processor");
+        var ws = new WebSocket(
+          opened.wsUrl + "?session=" + encodeURIComponent(opened.sessionId)
+        );
+        ws.binaryType = "arraybuffer";
+        worklet.port.onmessage = function (event) {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+          ws.send(event.data);
+        };
+        source.connect(worklet);
+        return {
+          sessionId: opened.sessionId,
+          ws: ws,
+          stream: stream,
+          context: audioContext,
+          worklet: worklet,
+        };
+      });
+  }
+
+  function stopSttMic(reason) {
+    if (!sttCapture) return;
+    var capture = sttCapture;
+    sttCapture = null;
+    try {
+      if (capture.ws && capture.ws.readyState === WebSocket.OPEN) capture.ws.close();
+    } catch (_) {}
+    try {
+      if (capture.worklet) capture.worklet.disconnect();
+    } catch (_) {}
+    try {
+      if (capture.context) capture.context.close();
+    } catch (_) {}
+    if (capture.stream) {
+      capture.stream.getTracks().forEach(function (track) {
+        track.stop();
+      });
+    }
+    postJsonAdmin("/__terrane/admin/stt/close", {
+      app: currentId,
+      sessionId: capture.sessionId,
+      reason: reason || "stopped",
+    }).catch(function () {});
+    if (sttMicButton) {
+      sttMicButton.setAttribute("aria-pressed", "false");
+      sttMicButton.title = "Enable microphone";
+    }
+    sendToFrame({ type: "terrane:stt", status: "closed", sessionId: capture.sessionId });
+  }
+
+  function postJsonAdmin(route, body) {
+    return fetch(route, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Terrane-Admin": "local-admin",
+      },
+      body: JSON.stringify(body || {}),
+    }).then(function (response) {
+      return response.text().then(function (text) {
+        var parsed = {};
+        if (text) {
+          try {
+            parsed = JSON.parse(text);
+          } catch (_) {
+            parsed = { error: text };
+          }
+        }
+        return { ok: response.ok, body: parsed };
+      });
+    });
+  }
+
   function bindTopbar() {
     if (!topbarApp || !crumbDoc || !userButton) return;
     if (window.terraneAppIcon) topbarApp.appendChild(window.terraneAppIcon(isAdmin ? "admin" : currentId));

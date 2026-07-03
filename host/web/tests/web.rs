@@ -2051,6 +2051,69 @@ fn shell_injects_premium_url_when_configured() {
     let _ = child.wait();
 }
 
+/// Trusted admin STT routes record finalized segments into the core; apps read
+/// them back through ordinary invoke (Option A — no audio in the log).
+#[test]
+fn admin_stt_routes_record_finalized_segments() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install(&mut core, "scribe");
+        grant_resource(&mut core, "scribe", "stt");
+    }
+    let (mut child, addr) = spawn_web(home);
+
+    let open_body = r#"{"app":"scribe","sessionId":"s-web-1"}"#;
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/admin/stt/open",
+        Some(open_body),
+    );
+    assert_eq!(status, 200, "open: {body}");
+    assert!(body.contains("wsUrl"), "open must return wsUrl: {body}");
+
+    let seg_body = r#"{"app":"scribe","sessionId":"s-web-1","segmentSeq":1,"startMs":0,"endMs":500,"text":"hello web"}"#;
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/__terrane/admin/stt/segment",
+        Some(seg_body),
+    );
+    assert_eq!(status, 200, "segment: {body}");
+
+    let (status, body) = http_without_admin(
+        &addr,
+        "POST",
+        "/__terrane/admin/stt/segment",
+        Some(seg_body),
+    );
+    assert_eq!(status, 403, "segment without admin must be forbidden: {body}");
+
+    let invoke = r#"{"verb":"segments","args":["s-web-1"]}"#;
+    let (status, body) = http(&addr, "POST", "/apps/scribe/invoke", Some(invoke));
+    assert_eq!(status, 200, "invoke: {body}");
+    assert!(
+        body.contains("hello web"),
+        "segments must include appended text: {body}"
+    );
+
+    let (status, body) = http(&addr, "GET", "/__terrane/stt/config", None);
+    assert_eq!(status, 200, "config: {body}");
+    assert!(body.contains("wsUrl"), "config: {body}");
+
+    let (status, body) = http(&addr, "GET", "/__terrane/stt/worklet.js", None);
+    assert_eq!(status, 200, "worklet: {body}");
+    assert!(
+        body.contains("SttCaptureProcessor"),
+        "worklet must serve the capture processor: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// The catalog allows loopback cross-origin reads (the Premium dashboard
 /// lists this host's apps); foreign origins get no CORS grant.
 #[test]

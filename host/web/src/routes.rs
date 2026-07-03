@@ -189,6 +189,17 @@ pub fn route(
         (Method::Delete, ["__terrane", "admin", "grants"]) => {
             crate::admin::revoke(core, admin_session, request)
         }
+        (Method::Post, ["__terrane", "admin", "stt", "open"]) => {
+            crate::stt::admin_open_route(core, request)
+        }
+        (Method::Post, ["__terrane", "admin", "stt", "segment"]) => {
+            crate::stt::admin_segment_route(core, request)
+        }
+        (Method::Post, ["__terrane", "admin", "stt", "close"]) => {
+            crate::stt::admin_close_route(core, request)
+        }
+        (Method::Get, ["__terrane", "stt", "worklet.js"]) => crate::stt::worklet_response(),
+        (Method::Get, ["__terrane", "stt", "config"]) => crate::stt::config_response(),
         (Method::Get, ["__terrane", "admin", "requests", _request_id]) => {
             crate::shell::admin_response(live_reload, premium_url)
         }
@@ -464,6 +475,9 @@ fn is_admin_control_route(method: &Method, segs: &[&str]) -> bool {
             )
             | (Method::Post, ["__terrane", "admin", "grants"])
             | (Method::Delete, ["__terrane", "admin", "grants"])
+            | (Method::Post, ["__terrane", "admin", "stt", "open"])
+            | (Method::Post, ["__terrane", "admin", "stt", "segment"])
+            | (Method::Post, ["__terrane", "admin", "stt", "close"])
     )
 }
 

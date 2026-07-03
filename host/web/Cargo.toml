@@ -14,9 +14,12 @@ path = "src/main.rs"
 
 [dependencies]
 terrane-api.workspace = true
+terrane-core.workspace = true
 terrane-host.workspace = true
 nanoserde.workspace = true
 tiny_http = "0.12"
+tungstenite = "0.26"
+ureq.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
