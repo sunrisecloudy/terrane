@@ -28,6 +28,7 @@ terrane-cap-model.workspace = true
 terrane-cap-native.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
+terrane-cap-sysinfo.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 borsh.workspace = true
 

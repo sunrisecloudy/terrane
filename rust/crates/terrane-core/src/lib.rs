@@ -42,8 +42,8 @@ mod planned_docs;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
-    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, ParamDoc, QueryCtx,
-    QueryValue, ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc,
+    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost, ParamDoc,
+    QueryCtx, QueryValue, ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc,
     ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle, RuntimeOutput,
     RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
     NAMESPACE_SELECTOR_SCHEMA_ID,
@@ -123,6 +123,14 @@ impl StateStore for State {
 /// local I/O implementation) and return the recorded Event(s).
 pub trait EffectRunner {
     fn run(&self, effect: &Effect, state: &State) -> Result<Vec<EventRecord>>;
+
+    /// Edge access for live (non-recorded) reads — system metrics and the like.
+    /// Returns `None` for runners that observe nothing outside the log; the
+    /// default. Hosts with real I/O override this so `ctx.resource.*` reads that
+    /// need a live sample can reach the outside world without recording anything.
+    fn live(&self) -> Option<&dyn LiveHost> {
+        None
+    }
 }
 
 /// A runner that performs no effects — the default for a core opened without
@@ -400,6 +408,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_model::ModelCapability));
     registry.register(Box::new(terrane_cap_local_model::LocalModelCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
+    registry.register(Box::new(terrane_cap_sysinfo::SysinfoCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
     registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
     registry
@@ -700,6 +709,7 @@ impl RuntimeHost for RuntimeResourceHost {
                 state: &self.state,
                 bus: &bus,
                 app: &self.app,
+                host: self.runner.as_deref().and_then(|runner| runner.live()),
             },
             method,
             args,

@@ -211,6 +211,19 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.relational_db.query(table, index, queryJson)` | read |
 | `ctx.resource.relational_db.tables()` | read |
 | `ctx.resource.relational_db.spec(table)` | read |
+
+#### `ctx.resource.sysinfo`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.sysinfo.snapshot()` | read |
+| `ctx.resource.sysinfo.cpu()` | read |
+| `ctx.resource.sysinfo.memory()` | read |
+| `ctx.resource.sysinfo.disk()` | read |
+| `ctx.resource.sysinfo.network()` | read |
+| `ctx.resource.sysinfo.battery()` | read |
+| `ctx.resource.sysinfo.system()` | read |
+| `ctx.resource.sysinfo.processes(sortBy, limit)` | read |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as
