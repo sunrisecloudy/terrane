@@ -165,10 +165,15 @@ fn tokenize(text: &str) -> Vec<String> {
     tokens
 }
 
-fn bm25_score(doc_tokens: &[String], query_terms: &[String], df: &HashMap<String, usize>, n_docs: usize) -> f64 {
+fn bm25_score(
+    doc_tokens: &[String],
+    query_terms: &[String],
+    df: &HashMap<String, usize>,
+    n_docs: usize,
+    avg_len: f64,
+) -> f64 {
     let mut score = 0.0;
     let doc_len = doc_tokens.len().max(1) as f64;
-    let avg_len = doc_len;
     let k1 = 1.2;
     let b = 0.75;
     let mut term_freq = HashMap::new();
@@ -202,13 +207,18 @@ fn bm25_ranks(docs: &[IndexedDoc], query_text: &str, limit: usize) -> Vec<(Strin
             *df.entry(term).or_insert(0) += 1;
         }
     }
+    // Corpus average document length drives BM25's length normalization; without
+    // it (avg == doc_len) the `b` term collapses to 1 and long docs aren't
+    // penalized.
+    let total_len: usize = tokenized_docs.iter().map(Vec::len).sum();
+    let avg_len = (total_len as f64 / tokenized_docs.len().max(1) as f64).max(1.0);
     let mut scored: Vec<(String, f64)> = docs
         .iter()
         .zip(tokenized_docs.iter())
         .map(|(doc, tokens)| {
             (
                 doc.doc_id.clone(),
-                bm25_score(tokens, &query_terms, &df, docs.len()),
+                bm25_score(tokens, &query_terms, &df, docs.len(), avg_len),
             )
         })
         .filter(|(_, score)| *score > 0.0)

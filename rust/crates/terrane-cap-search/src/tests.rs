@@ -122,6 +122,36 @@ fn hybrid_query_returns_bm25_hit_without_vector() {
 }
 
 #[test]
+fn bm25_penalizes_longer_documents() {
+    // Both docs contain the query term exactly once; BM25 length normalization
+    // must rank the shorter one first. Without it the two scores tie and doc-1
+    // (scanned first, sorts first) would win — so this guards the avg_len fix.
+    let mut state = TestState::default();
+    dispatch(
+        &mut state,
+        "search.upsert",
+        vec![
+            "notes".into(),
+            "doc-1".into(),
+            "fox alpha beta gamma delta epsilon zeta eta theta iota".into(),
+        ],
+    );
+    dispatch(
+        &mut state,
+        "search.upsert",
+        vec!["notes".into(), "doc-2".into(), "fox".into()],
+    );
+    let ReadValue::OptString(Some(raw)) = read(&state, "bm25", vec!["fox".into(), "".into()]) else {
+        panic!("expected bm25 hits");
+    };
+    let hits: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(
+        hits[0]["docId"], "doc-2",
+        "shorter document should rank first: {raw}"
+    );
+}
+
+#[test]
 fn set_embedding_requires_indexed_document() {
     let state = TestState::default();
     let bus = Bus;
