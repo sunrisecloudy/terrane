@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>OS Monitor</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --ink: CanvasText;
+        --muted: color-mix(in srgb, CanvasText 58%, transparent);
+        --line: color-mix(in srgb, CanvasText 14%, transparent);
+        --surface: color-mix(in srgb, Canvas 90%, CanvasText 10%);
+        --accent: #0071e3;
+        --ok: #1f9d55;
+        --warn: #d97706;
+        --danger: #d33;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: Canvas;
+        color: var(--ink);
+      }
+
+      .shell {
+        width: min(1180px, calc(100vw - 28px));
+        margin: 0 auto;
+        padding: 18px 0 28px;
+      }
+
+      header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1.1;
+      }
+
+      .subtitle {
+        margin: 4px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .meta {
+        text-align: right;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(12, 1fr);
+        gap: 12px;
+      }
+
+      .card {
+        grid-column: span 4;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface);
+        padding: 14px 14px 12px;
+        min-width: 0;
+      }
+
+      .card.wide { grid-column: span 8; }
+      .card.full { grid-column: span 12; }
+
+      .card h2 {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .metric-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      .metric-row:last-child { margin-bottom: 0; }
+
+      .metric-label { color: var(--muted); }
+
+      .metric-value {
+        font-variant-numeric: tabular-nums;
+        font-weight: 600;
+      }
+
+      .bar {
+        height: 8px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--ink) 10%, transparent);
+        overflow: hidden;
+        margin-top: 6px;
+      }
+
+      .bar > span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 70%, #5ac8fa));
+        width: 0%;
+        transition: width 0.35s ease;
+      }
+
+      .bar.warn > span { background: linear-gradient(90deg, var(--warn), #fbbf24); }
+      .bar.danger > span { background: linear-gradient(90deg, var(--danger), #f87171); }
+
+      .cores {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(54px, 1fr));
+        gap: 6px;
+        margin-top: 10px;
+      }
+
+      .core {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 6px 4px;
+        text-align: center;
+        background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+      }
+
+      .core .label {
+        font-size: 10px;
+        color: var(--muted);
+      }
+
+      .core .value {
+        margin-top: 2px;
+        font-size: 12px;
+        font-weight: 650;
+        font-variant-numeric: tabular-nums;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      th, td {
+        padding: 6px 4px;
+        border-bottom: 1px solid var(--line);
+        text-align: left;
+        font-variant-numeric: tabular-nums;
+      }
+
+      th {
+        color: var(--muted);
+        font-weight: 600;
+        font-size: 11px;
+      }
+
+      tr:last-child td { border-bottom: 0; }
+
+      .name-cell {
+        max-width: 0;
+        width: 42%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #status {
+        min-height: 18px;
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      #status.error { color: var(--danger); }
+
+      @media (max-width: 900px) {
+        .card, .card.wide, .card.full { grid-column: span 12; }
+        header { flex-direction: column; align-items: start; }
+        .meta { text-align: left; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <div>
+          <h1>OS Monitor</h1>
+          <p class="subtitle">Live CPU, memory, disk, network, battery, and processes</p>
+        </div>
+        <div class="meta" id="host-meta">Sampling…</div>
+      </header>
+
+      <div class="grid">
+        <section class="card">
+          <h2>CPU</h2>
+          <div class="metric-row">
+            <span class="metric-label">Usage</span>
+            <span class="metric-value" id="cpu-usage">—</span>
+          </div>
+          <div class="bar" id="cpu-bar"><span></span></div>
+          <div class="metric-row" style="margin-top:10px">
+            <span class="metric-label">Load (1 / 5 / 15)</span>
+            <span class="metric-value" id="cpu-load">—</span>
+          </div>
+          <div class="cores" id="cpu-cores"></div>
+        </section>
+
+        <section class="card">
+          <h2>Memory</h2>
+          <div class="metric-row">
+            <span class="metric-label">RAM</span>
+            <span class="metric-value" id="mem-usage">—</span>
+          </div>
+          <div class="bar" id="mem-bar"><span></span></div>
+          <div class="metric-row" style="margin-top:10px">
+            <span class="metric-label">Swap</span>
+            <span class="metric-value" id="swap-usage">—</span>
+          </div>
+          <div class="bar" id="swap-bar"><span></span></div>
+        </section>
+
+        <section class="card">
+          <h2>Battery</h2>
+          <div class="metric-row">
+            <span class="metric-label">State</span>
+            <span class="metric-value" id="battery-state">—</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Charge</span>
+            <span class="metric-value" id="battery-percent">—</span>
+          </div>
+          <div class="bar" id="battery-bar"><span></span></div>
+          <div class="metric-row" style="margin-top:10px">
+            <span class="metric-label">Source</span>
+            <span class="metric-value" id="battery-source">—</span>
+          </div>
+        </section>
+
+        <section class="card wide">
+          <h2>Network</h2>
+          <div class="metric-row">
+            <span class="metric-label">Down / Up</span>
+            <span class="metric-value" id="net-rates">—</span>
+          </div>
+          <div class="metric-row">
+            <span class="metric-label">Total down / up</span>
+            <span class="metric-value" id="net-totals">—</span>
+          </div>
+          <table>
+            <thead>
+              <tr><th>Interface</th><th>Down</th><th>Up</th></tr>
+            </thead>
+            <tbody id="net-interfaces"></tbody>
+          </table>
+        </section>
+
+        <section class="card">
+          <h2>Disk</h2>
+          <div id="disk-volumes"></div>
+        </section>
+
+        <section class="card full">
+          <h2>Top processes</h2>
+          <table>
+            <thead>
+              <tr><th>PID</th><th>Name</th><th>CPU %</th><th>Memory</th></tr>
+            </thead>
+            <tbody id="processes"></tbody>
+          </table>
+        </section>
+      </div>
+
+      <div id="status"></div>
+    </div>
+
+    <script>
+      var statusEl = document.getElementById("status");
+      var pollMs = 1500;
+
+      function invoke() {
+        if (!window.terrane || typeof window.terrane.invoke !== "function") {
+          return Promise.reject(new Error("Terrane bridge unavailable"));
+        }
+        return window.terrane.invoke.apply(window.terrane, arguments);
+      }
+
+      function pct(n) {
+        return (typeof n === "number" && isFinite(n)) ? n.toFixed(1) + "%" : "—";
+      }
+
+      function bytes(n) {
+        if (typeof n !== "number" || !isFinite(n)) return "—";
+        var units = ["B", "KB", "MB", "GB", "TB"];
+        var i = 0;
+        var v = n;
+        while (v >= 1024 && i < units.length - 1) {
+          v /= 1024;
+          i += 1;
+        }
+        return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+      }
+
+      function rate(n) {
+        return bytes(n) + "/s";
+      }
+
+      // OS-derived strings (process/interface/volume names) are interpolated into
+      // innerHTML, so escape them — a process is free to name itself "<img …>".
+      function esc(s) {
+        return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+          return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+        });
+      }
+
+      function setBar(id, value) {
+        var root = document.getElementById(id);
+        if (!root) return;
+        var span = root.querySelector("span");
+        var v = typeof value === "number" && isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+        span.style.width = v + "%";
+        root.classList.remove("warn", "danger");
+        if (v >= 90) root.classList.add("danger");
+        else if (v >= 75) root.classList.add("warn");
+      }
+
+      function renderCpu(cpu) {
+        document.getElementById("cpu-usage").textContent = pct(cpu.usage);
+        setBar("cpu-bar", cpu.usage);
+        var load = cpu.load || {};
+        document.getElementById("cpu-load").textContent =
+          [load.one, load.five, load.fifteen]
+            .map(function (v) { return typeof v === "number" ? v.toFixed(2) : "—"; })
+            .join(" / ");
+
+        var coresEl = document.getElementById("cpu-cores");
+        coresEl.innerHTML = "";
+        (cpu.perCore || []).forEach(function (core) {
+          var cell = document.createElement("div");
+          cell.className = "core";
+          cell.innerHTML =
+            '<div class="label">C' + core.core + '</div>' +
+            '<div class="value">' + pct(core.usage) + '</div>';
+          coresEl.appendChild(cell);
+        });
+      }
+
+      function renderMemory(mem) {
+        document.getElementById("mem-usage").textContent =
+          pct(mem.usage) + " · " + bytes(mem.used) + " / " + bytes(mem.total);
+        setBar("mem-bar", mem.usage);
+        document.getElementById("swap-usage").textContent =
+          (mem.swapTotal ? pct(mem.swapUsage) + " · " + bytes(mem.swapUsed) + " / " + bytes(mem.swapTotal) : "No swap");
+        setBar("swap-bar", mem.swapUsage || 0);
+      }
+
+      function renderBattery(battery) {
+        if (!battery || !battery.present) {
+          document.getElementById("battery-state").textContent = "No battery";
+          document.getElementById("battery-percent").textContent = "—";
+          document.getElementById("battery-source").textContent = battery && battery.source ? battery.source : "—";
+          setBar("battery-bar", 0);
+          return;
+        }
+        document.getElementById("battery-state").textContent =
+          battery.state || "Unknown";
+        document.getElementById("battery-percent").textContent =
+          typeof battery.percent === "number" ? battery.percent + "%" : "—";
+        document.getElementById("battery-source").textContent =
+          battery.source || "—";
+        setBar("battery-bar", battery.percent || 0);
+      }
+
+      function renderNetwork(net) {
+        document.getElementById("net-rates").textContent =
+          rate(net.downRate) + " · " + rate(net.upRate);
+        document.getElementById("net-totals").textContent =
+          bytes(net.totalDown) + " · " + bytes(net.totalUp);
+
+        var body = document.getElementById("net-interfaces");
+        body.innerHTML = "";
+        (net.interfaces || []).forEach(function (iface) {
+          var row = document.createElement("tr");
+          row.innerHTML =
+            "<td class=\"name-cell\">" + esc(iface.name) + "</td>" +
+            "<td>" + rate(iface.downRate) + "</td>" +
+            "<td>" + rate(iface.upRate) + "</td>";
+          body.appendChild(row);
+        });
+      }
+
+      function renderDisk(disk) {
+        var root = document.getElementById("disk-volumes");
+        root.innerHTML = "";
+        (disk.volumes || []).forEach(function (vol) {
+          var block = document.createElement("div");
+          block.style.marginBottom = "10px";
+          block.innerHTML =
+            '<div class="metric-row">' +
+              '<span class="metric-label">' + esc(vol.mountPoint) + '</span>' +
+              '<span class="metric-value">' + pct(vol.usage) + '</span>' +
+            '</div>' +
+            '<div class="metric-row">' +
+              '<span class="metric-label">' + esc(vol.name) + ' · ' + esc(vol.fileSystem) + '</span>' +
+              '<span class="metric-value">' + bytes(vol.used) + ' / ' + bytes(vol.total) + '</span>' +
+            '</div>' +
+            '<div class="bar"><span style="width:' + Math.max(0, Math.min(100, vol.usage || 0)) + '%"></span></div>';
+          root.appendChild(block);
+        });
+      }
+
+      function renderProcesses(proc) {
+        var body = document.getElementById("processes");
+        body.innerHTML = "";
+        (proc.processes || []).forEach(function (p) {
+          var row = document.createElement("tr");
+          row.innerHTML =
+            "<td>" + p.pid + "</td>" +
+            "<td class=\"name-cell\">" + esc(p.name) + "</td>" +
+            "<td>" + pct(p.cpu) + "</td>" +
+            "<td>" + bytes(p.memory) + "</td>";
+          body.appendChild(row);
+        });
+      }
+
+      function renderSystem(system) {
+        var uptime = typeof system.uptimeSeconds === "number"
+          ? formatUptime(system.uptimeSeconds)
+          : "—";
+        document.getElementById("host-meta").textContent =
+          (system.hostName || "Host") + " · " +
+          (system.osName || "OS") + " " + (system.osVersion || "") + " · " +
+          (system.arch || "") + " · up " + uptime;
+      }
+
+      function formatUptime(seconds) {
+        var days = Math.floor(seconds / 86400);
+        var hours = Math.floor((seconds % 86400) / 3600);
+        var mins = Math.floor((seconds % 3600) / 60);
+        if (days > 0) return days + "d " + hours + "h";
+        if (hours > 0) return hours + "h " + mins + "m";
+        return mins + "m";
+      }
+
+      function render(snapshot) {
+        renderSystem(snapshot.system || {});
+        renderCpu(snapshot.cpu || {});
+        renderMemory(snapshot.memory || {});
+        renderBattery(snapshot.battery || {});
+        renderNetwork(snapshot.network || {});
+        renderDisk(snapshot.disk || {});
+        renderProcesses(snapshot.processes || {});
+      }
+
+      function refresh() {
+        return invoke("snapshot").then(function (json) {
+          var data = JSON.parse(json);
+          render(data);
+          statusEl.textContent = "Updated " + new Date().toLocaleTimeString();
+          statusEl.classList.remove("error");
+        }).catch(function (err) {
+          statusEl.textContent = String(err && err.message ? err.message : err);
+          statusEl.classList.add("error");
+        });
+      }
+
+      refresh();
+      setInterval(refresh, pollMs);
+    </script>
+  </body>
+</html>

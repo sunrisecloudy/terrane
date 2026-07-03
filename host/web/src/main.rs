@@ -13,6 +13,8 @@
 //! by default and injects a small polling hook into served HTML.
 
 mod admin;
+mod agent_jobs;
+mod agents;
 mod args;
 mod builder_jobs;
 mod dev_apps;
@@ -46,6 +48,7 @@ fn main() {
             std::process::exit(1);
         }
     };
+    agents::seed_defaults(&mut core);
 
     let server = match Server::http(&args.addr) {
         Ok(server) => server,
@@ -76,6 +79,7 @@ fn main() {
     let mut previews = terrane_host::PreviewStore::new();
     let mut admin_session = admin::AdminSessionState::default();
     let mut builder_jobs = builder_jobs::BuilderJobs::new(staging);
+    let mut agent_jobs = agent_jobs::AgentJobs::new();
     for mut request in server.incoming_requests() {
         let response = routes::route(
             &mut core,
@@ -83,6 +87,7 @@ fn main() {
                 previews: &mut previews,
                 admin_session: &mut admin_session,
                 builder_jobs: &mut builder_jobs,
+                agent_jobs: &mut agent_jobs,
             },
             &mut request,
             routes::RouteConfig {

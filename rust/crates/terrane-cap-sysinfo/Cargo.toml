@@ -1,0 +1,12 @@
+[package]
+name = "terrane-cap-sysinfo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_sysinfo"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-interface.workspace = true

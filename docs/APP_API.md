@@ -234,6 +234,19 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.relational_db.query(table, index, queryJson)` | read |
 | `ctx.resource.relational_db.tables()` | read |
 | `ctx.resource.relational_db.spec(table)` | read |
+
+#### `ctx.resource.sysinfo`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.sysinfo.snapshot()` | read |
+| `ctx.resource.sysinfo.cpu()` | read |
+| `ctx.resource.sysinfo.memory()` | read |
+| `ctx.resource.sysinfo.disk()` | read |
+| `ctx.resource.sysinfo.network()` | read |
+| `ctx.resource.sysinfo.battery()` | read |
+| `ctx.resource.sysinfo.system()` | read |
+| `ctx.resource.sysinfo.processes(sortBy, limit)` | read |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as
@@ -451,6 +464,42 @@ await window.terrane.invoke("add", "buy milk");
 
 A host that has no UI (CLI-only apps) simply never loads `index.html`; the same
 backend works unchanged.
+
+### Top bar — document name & theme
+
+The host owns the chrome around your app (the sidebar and the top bar). Two
+slices of it are shared with the app through `window.terrane`, identically on
+the web and macOS hosts, so an app is portable:
+
+```js
+// Document name — the editable segment in the breadcrumb ("App / <document>").
+window.terrane.getDocument();          // → current name (string)
+window.terrane.setDocument("Sketch 1"); // rename it (e.g. the file you opened)
+const stop = window.terrane.onDocument((name) => { /* user renamed it */ });
+
+// Host theme — "system" | "light" | "dark".
+window.terrane.getTheme();             // → current theme
+window.terrane.onTheme((theme) => { /* host theme changed */ });
+
+stop(); // every on* returns an unsubscribe function
+```
+
+`onDocument`/`onTheme` fire once with the current value as soon as the host has
+synced it, then again on every change. The host persists the document name per
+app. Everything is best-effort: if a host provides no top bar, `getTheme()`
+returns `"system"`, `onDocument` simply never fires, and `setDocument` is a
+no-op — your app keeps working.
+
+`"system"` means "the host is not overriding — follow the OS"; resolve it with
+`window.matchMedia("(prefers-color-scheme: dark)")` (WebKit already sets the
+page's `color-scheme` from the OS). The web host reports the user's picker
+choice (`system`/`light`/`dark`); the macOS host has no in-app override and so
+always reports `"system"`.
+
+> Security note (web host): each app frame is loaded with a fresh per-load
+> nonce, and only messages carrying it drive the bridge or the breadcrumb. A
+> page your app navigates its own frame to loads without the nonce, so it
+> cannot invoke your backend or rename your document.
 
 ---
 

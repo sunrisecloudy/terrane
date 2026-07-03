@@ -21,7 +21,7 @@ use terrane_cap_kv::{
 use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
 use terrane_cap_replica::initialized_event;
-use terrane_core::{Effect, EffectRunner};
+use terrane_core::{Effect, EffectRunner, LiveHost};
 use terrane_core::{Error, EventRecord, Result};
 use terrane_core::{ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost};
 
@@ -156,6 +156,18 @@ impl EffectRunner for EdgeRunner {
                 draft_model.clone(),
             ),
         }
+    }
+
+    /// The edge samples live system metrics for `ctx.resource.sysinfo` reads.
+    /// These observe the host and record nothing, so they are not effects.
+    fn live(&self) -> Option<&dyn LiveHost> {
+        Some(self)
+    }
+}
+
+impl LiveHost for EdgeRunner {
+    fn sample(&self, domain: &str, args: &[String]) -> Result<String> {
+        crate::metrics::sample(domain, args)
     }
 }
 

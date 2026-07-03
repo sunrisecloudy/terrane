@@ -77,6 +77,7 @@ fn relational_db_dispatches_to_kv_events_and_replays() {
         state: core.state(),
         bus: &bus,
         app: "crm",
+        host: None,
     };
     let ReadValue::OptString(Some(result)) = terrane_cap_relational_db::RelationalDbCapability
         .read_resource(

@@ -55,8 +55,8 @@ argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──
   apps are JS bundles under `apps/`.** A host is a thin client over
   `terrane-host`; it never embeds its own runtime — running app backends is the
   core's `host_runtime`. Apps run their JS backend via `host.run`, which records
-  only ordinary `kv.*` events so replay rebuilds without re-running JS
-  (Option A).
+  only ordinary `kv.*` events so replay rebuilds without re-running JS (Option
+  A).
 - **Always run clippy.** After any change, before committing, both must be
   green: `cargo test --workspace --locked` and
   `cargo clippy --workspace --all-targets --locked -- -D warnings`.
@@ -71,20 +71,35 @@ argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──
 
 ## Validation
 
+Fast local loop — `cargo-nextest` (parallel) plus doctests, with the build cache
+sourced:
+
+```sh
+scripts/test.sh                      # whole workspace
+scripts/test.sh -p terrane-host-web  # one crate (nextest filter args pass through)
+```
+
+Before committing, both must be green in the canonical, lockfile-checked form:
+
 ```sh
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo run -p terrane-host --bin terrane -- help
 ```
 
-This repo uses a shared Cargo/sccache build cache across worktrees. Claude Code
-project hooks rewrite Rust build/test Bash calls to source
-`scripts/cargo-cache-env.sh` automatically. For manual commands, prefer:
+The repo caches builds with a **shared sccache** plus a **per-worktree Cargo
+target dir**, so concurrent worktrees never clobber each other's artifacts (a
+shared target dir links the wrong rlib across branches). Claude Code project
+hooks rewrite Rust build/test Bash calls to source `scripts/cargo-cache-env.sh`
+automatically. For manual shells, prefer:
 
 ```sh
 scripts/with-cargo-cache.sh cargo test --workspace --locked
 scripts/with-cargo-cache.sh cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
+
+Reclaim target dirs left by deleted worktrees with
+`scripts/prune-cargo-targets.sh` (dry-run by default; `--yes` to delete).
 
 Each capability has a file under `tests/cap/` (`tests/cap/main.rs` is the entry
 that includes them + shared `helpers`). The engine logic tests live in

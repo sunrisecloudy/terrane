@@ -96,6 +96,7 @@ fn crdt_capability_records_map_list_and_text_updates() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
     assert_eq!(
         cap.read_resource(ctx, "mapGet", &["profile".into(), "name".into()])

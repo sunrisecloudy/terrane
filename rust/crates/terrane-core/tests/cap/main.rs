@@ -4,6 +4,7 @@
 
 mod helpers;
 
+mod agent;
 mod app;
 mod auth;
 mod builder;

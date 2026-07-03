@@ -85,6 +85,7 @@ fn kv_capability_sets_reads_deletes_and_drops_removed_app_data() {
         state: &store,
         bus: &bus,
         app: "demo",
+        host: None,
     };
     assert_eq!(
         cap.read_resource(ctx, "get", &["greeting".into()]).unwrap(),

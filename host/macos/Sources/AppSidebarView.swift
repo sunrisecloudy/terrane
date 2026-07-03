@@ -184,7 +184,7 @@ final class AppSidebarView: NSVisualEffectView {
     onToggleCollapse?()
   }
 
-  private static func iconName(for app: TerraneApp) -> String {
+  static func iconName(for app: TerraneApp) -> String {
     switch app.id {
     case "app-builder":
       return "hammer"

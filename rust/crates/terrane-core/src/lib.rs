@@ -42,13 +42,14 @@ mod planned_docs;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
-    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, ParamDoc, QueryCtx,
-    QueryValue, ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc,
+    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost, ParamDoc,
+    QueryCtx, QueryValue, ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc,
     ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle, RuntimeOutput,
     RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
     NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
+use terrane_cap_agent::AgentState;
 use terrane_cap_app::AppState;
 use terrane_cap_auth::AuthState;
 use terrane_cap_builder::BuilderState;
@@ -70,6 +71,7 @@ use terrane_cap_replica::ReplicaState;
 /// check and `assert_eq!`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct State {
+    pub agent: AgentState,
     pub app: AppState,
     pub auth: AuthState,
     pub builder: BuilderState,
@@ -86,6 +88,7 @@ pub struct State {
 impl StateStore for State {
     fn get(&self, namespace: &str) -> Option<&dyn Any> {
         match namespace {
+            "agent" => Some(&self.agent),
             "app" => Some(&self.app),
             "auth" => Some(&self.auth),
             "builder" => Some(&self.builder),
@@ -103,6 +106,7 @@ impl StateStore for State {
 
     fn get_mut(&mut self, namespace: &str) -> Option<&mut dyn Any> {
         match namespace {
+            "agent" => Some(&mut self.agent),
             "app" => Some(&mut self.app),
             "auth" => Some(&mut self.auth),
             "builder" => Some(&mut self.builder),
@@ -123,6 +127,14 @@ impl StateStore for State {
 /// local I/O implementation) and return the recorded Event(s).
 pub trait EffectRunner {
     fn run(&self, effect: &Effect, state: &State) -> Result<Vec<EventRecord>>;
+
+    /// Edge access for live (non-recorded) reads — system metrics and the like.
+    /// Returns `None` for runners that observe nothing outside the log; the
+    /// default. Hosts with real I/O override this so `ctx.resource.*` reads that
+    /// need a live sample can reach the outside world without recording anything.
+    fn live(&self) -> Option<&dyn LiveHost> {
+        None
+    }
 }
 
 /// A runner that performs no effects — the default for a core opened without
@@ -387,6 +399,7 @@ impl CapBus for RegistryBus<'_> {
 /// The registry every core opens with: the built-in capabilities.
 pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
+    registry.register(Box::new(terrane_cap_agent::AgentCapability));
     registry.register(Box::new(terrane_cap_app::AppCapability));
     registry.register(Box::new(terrane_cap_auth::AuthCapability));
     registry.register(Box::new(terrane_cap_build::BuildCapability));
@@ -401,6 +414,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_model::ModelCapability));
     registry.register(Box::new(terrane_cap_local_model::LocalModelCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
+    registry.register(Box::new(terrane_cap_sysinfo::SysinfoCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
     registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
     registry
@@ -701,6 +715,7 @@ impl RuntimeHost for RuntimeResourceHost {
                 state: &self.state,
                 bus: &bus,
                 app: &self.app,
+                host: self.runner.as_deref().and_then(|runner| runner.live()),
             },
             method,
             args,
