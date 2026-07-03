@@ -367,12 +367,49 @@
           node._cleanup = function () { clearInterval(iv); };
         }
 
+        // Breach check (opt-in; only meaningful for items with a password).
+        var breachMsg = null;
+        if (item.password) {
+          breachMsg = document.createElement("div");
+          breachMsg.className = "field muted";
+          breachMsg.style.minHeight = "18px";
+          node.appendChild(breachMsg);
+        }
+
         var actions = document.createElement("div");
         actions.className = "rowline";
         actions.style.marginTop = "16px";
         var editBtn = document.createElement("button");
         editBtn.textContent = "Edit";
         editBtn.addEventListener("click", function () { openEdit(item); });
+        var breachBtn = null;
+        if (item.password) {
+          breachBtn = document.createElement("button");
+          breachBtn.textContent = "Check breach";
+          breachBtn.title = "Check this password against Have I Been Pwned (only a SHA-1 prefix is sent)";
+          breachBtn.addEventListener("click", function () {
+            breachBtn.disabled = true;
+            breachMsg.textContent = "Checking Have I Been Pwned…";
+            breachMsg.className = "field muted";
+            inv("breach", SESSION, String(item.id)).then(function (r) {
+              breachBtn.disabled = false;
+              if (r.breached) {
+                breachMsg.className = "field err";
+                breachMsg.textContent = "⚠ Breached — seen " + r.count.toLocaleString() + " times. Change it.";
+              } else {
+                breachMsg.className = "field";
+                breachMsg.style.color = "#2e9b57";
+                breachMsg.textContent = "✓ Not found in known breaches.";
+              }
+            }).catch(function (e) {
+              breachBtn.disabled = false;
+              breachMsg.className = "field muted";
+              breachMsg.textContent = e.message === "net_not_granted"
+                ? "Grant the app the “net” resource to enable breach checks."
+                : (e.message === "network" ? "Breach service unreachable." : e.message);
+            });
+          });
+        }
         var delBtn = document.createElement("button");
         delBtn.className = "danger";
         delBtn.textContent = "Delete";
@@ -388,6 +425,7 @@
         closeBtn.textContent = "Close";
         closeBtn.addEventListener("click", closeModal);
         actions.appendChild(editBtn);
+        if (breachBtn) actions.appendChild(breachBtn);
         actions.appendChild(delBtn);
         var sp = document.createElement("div"); sp.style.flex = "1"; actions.appendChild(sp);
         actions.appendChild(closeBtn);
