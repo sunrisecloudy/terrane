@@ -104,6 +104,20 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             reason: "app.import installs bundles and can configure storage; use app_register/app_register_inline or a trusted path",
         },
         "app.add" | "replica.init" => PublicCommandDisposition::Allow,
+        // App-callable stt surface: record a selection / stop a session. Both
+        // take the app id at arg 0 and are gated by the stt grant.
+        "stt.select" | "stt.stop" => PublicCommandDisposition::GrantGated {
+            namespace: "stt",
+            app_arg_index: 0,
+        },
+        // The host-edge stt verbs (session lifecycle, segment append, retention)
+        // are trusted-host only — admit_command refuses them for public callers.
+        "stt.session.open"
+        | "stt.segment.append"
+        | "stt.session.close-host"
+        | "stt.retention.trim" => PublicCommandDisposition::Refuse {
+            reason: "stt capture commands are trusted-host only (host-owned edge)",
+        },
         _ if name.starts_with("auth.") => PublicCommandDisposition::Refuse {
             reason: "auth commands are trusted-admin-only",
         },

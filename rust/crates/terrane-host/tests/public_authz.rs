@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        53,
+        59,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        23,
+        25,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 28, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 32, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -72,7 +72,8 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "kv",
             "local-model",
             "native",
-            "relational_db"
+            "relational_db",
+            "stt"
         ])
     );
 
