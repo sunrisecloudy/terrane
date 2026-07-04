@@ -65,18 +65,42 @@
         min-width: 0;
       }
       .app-icon {
+        --app-icon-bg: color-mix(in srgb, CanvasText 8%, transparent);
+        --app-icon-fg: rgba(31, 41, 55, 0.9);
         flex: none;
         display: inline-grid;
         place-items: center;
         width: 36px;
         height: 36px;
         border-radius: 9px;
-        background: color-mix(in srgb, CanvasText 8%, transparent);
-        color: color-mix(in srgb, CanvasText 72%, transparent);
+        background: var(--app-icon-bg);
+        color: var(--app-icon-fg);
+      }
+      :root[style*="color-scheme: dark"] .app-icon {
+        --app-icon-bg: rgba(255, 255, 255, 0.08);
+        --app-icon-fg: rgba(255, 255, 255, 0.88);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([style*="color-scheme: light"]) .app-icon {
+          --app-icon-bg: rgba(255, 255, 255, 0.08);
+          --app-icon-fg: rgba(255, 255, 255, 0.88);
+        }
       }
       .app-icon svg {
         width: 19px;
         height: 19px;
+      }
+      .app-icon-glyph {
+        display: block;
+        width: 19px;
+        height: 19px;
+        background: currentColor;
+        mask-position: center;
+        mask-repeat: no-repeat;
+        mask-size: contain;
+        -webkit-mask-position: center;
+        -webkit-mask-repeat: no-repeat;
+        -webkit-mask-size: contain;
       }
       .app-card-text {
         min-width: 0;

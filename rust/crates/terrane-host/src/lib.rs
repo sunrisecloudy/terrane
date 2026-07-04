@@ -489,6 +489,7 @@ pub fn list_apps(core: &HostCore) -> AppsResponse {
         .map(|app| AppSummary {
             id: app.id.clone(),
             name: app.name.clone(),
+            icon: app_icon(app.source.as_deref()).unwrap_or_default(),
             has_ui: app_has_ui(app.source.as_deref()),
         })
         .collect();
@@ -499,12 +500,24 @@ pub fn app_has_ui(source: Option<&str>) -> bool {
     source.and_then(read_manifest_ui).is_some()
 }
 
+pub fn app_icon(source: Option<&str>) -> Option<String> {
+    source.and_then(read_manifest_icon)
+}
+
 /// The app's declared UI entry file (`manifest.ui`), if any.
 pub fn read_manifest_ui(source: &str) -> Option<String> {
     read_manifest(Path::new(source))
         .ok()
         .map(|m| m.ui)
         .filter(|ui| !ui.is_empty())
+}
+
+/// The app's declared icon asset (`manifest.icon`), if any.
+pub fn read_manifest_icon(source: &str) -> Option<String> {
+    read_manifest(Path::new(source))
+        .ok()
+        .map(|m| m.icon)
+        .filter(|icon| !icon.is_empty())
 }
 
 /// `app install <path>`: copy a bundle into this home's `apps/<id>/` and catalog
@@ -697,7 +710,11 @@ pub struct BundleManifest {
     #[nserde(default)]
     pub ui: String,
     #[nserde(default)]
+    pub icon: String,
+    #[nserde(default)]
     pub resources: Vec<String>,
+    #[nserde(default)]
+    pub browser_permissions: Vec<String>,
 }
 
 pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest, Error> {

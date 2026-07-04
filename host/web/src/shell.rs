@@ -19,6 +19,12 @@ pub struct ShellI18n<'a> {
     pub app_messages: &'a BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct AppFramePolicy {
+    pub frame_origin: Option<String>,
+    pub browser_permissions: Vec<String>,
+}
+
 /// `GET /apps/{id}` — the host shell around the app iframe. `exists` is the
 /// router's merged catalog + dev-apps check; `live_reload` turns on catalog
 /// polling in the sidebar so newly dropped dev apps appear without a refresh.
@@ -30,34 +36,46 @@ pub fn response(
     id: &str,
     live_reload: bool,
     premium_url: Option<&str>,
+    frame_policy: &AppFramePolicy,
     i18n: &ShellI18n<'_>,
 ) -> Resp {
     if !exists {
         return json_error(404, &format!("no such app: {id}"));
     }
-    html_response(live_reload, premium_url, "\"app\"", i18n)
+    html_response(live_reload, premium_url, "\"app\"", frame_policy, i18n)
 }
 
 /// `GET /__terrane/admin` — the same host shell, with the admin console mounted
 /// in the main stage instead of navigating away from the sidebar/top bar.
-pub fn admin_response(
-    live_reload: bool,
-    premium_url: Option<&str>,
-    i18n: &ShellI18n<'_>,
-) -> Resp {
-    html_response(live_reload, premium_url, "\"admin\"", i18n)
+pub fn admin_response(live_reload: bool, premium_url: Option<&str>, i18n: &ShellI18n<'_>) -> Resp {
+    html_response(
+        live_reload,
+        premium_url,
+        "\"admin\"",
+        &AppFramePolicy::default(),
+        i18n,
+    )
 }
 
 fn html_response(
     live_reload: bool,
     premium_url: Option<&str>,
     shell_mode: &str,
+    frame_policy: &AppFramePolicy,
     i18n: &ShellI18n<'_>,
 ) -> Resp {
+    let frame_origin = frame_policy
+        .frame_origin
+        .as_deref()
+        .map(json_string_literal)
+        .unwrap_or_else(|| "null".to_string());
     let body = SHELL_HTML
         .replace("__APP_ICONS_JS__", terrane_host::home::app_icons_js())
         .replace("__APP_SHELL_JS__", APP_SHELL_JS)
         .replace("__ADMIN_JS__", ADMIN_JS)
+        .replace("__APP_FRAME_ORIGIN__", &frame_origin)
+        .replace("__APP_FRAME_SANDBOX__", &app_frame_sandbox(frame_policy))
+        .replace("__APP_FRAME_ALLOW__", &app_frame_allow(frame_policy))
         .replace(
             "__LIVE_RELOAD__",
             if live_reload { "true" } else { "false" },
@@ -80,6 +98,32 @@ fn html_response(
         );
     Response::from_data(body.into_bytes())
         .with_header(header("Content-Type", "text/html; charset=utf-8"))
+}
+
+fn app_frame_sandbox(frame_policy: &AppFramePolicy) -> String {
+    let base = "allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+    if frame_policy.frame_origin.is_some() && !frame_policy.browser_permissions.is_empty() {
+        format!("{base} allow-same-origin")
+    } else {
+        base.to_string()
+    }
+}
+
+fn app_frame_allow(frame_policy: &AppFramePolicy) -> String {
+    let mut permissions = frame_policy
+        .browser_permissions
+        .iter()
+        .filter_map(|permission| match permission.as_str() {
+            "camera" | "microphone" => Some(permission.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    permissions.sort_unstable();
+    permissions.dedup();
+    if permissions.is_empty() {
+        return String::new();
+    }
+    format!("allow=\"{}\"", permissions.join("; "))
 }
 
 /// The premium URL as a JS literal — `null` when unconfigured, otherwise a

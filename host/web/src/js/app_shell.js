@@ -1,6 +1,7 @@
 (function () {
   var shellMode = window.__terraneShellMode || "app";
   var isAdmin = shellMode === "admin";
+  var appFrameOrigin = window.__terraneAppFrameOrigin || "";
   var currentId = currentAppId();
   var list = document.getElementById("app-list");
   var adminLink =
@@ -131,6 +132,7 @@
   function loadFrame() {
     frameNonce = randomNonce();
     frame.src =
+      appFrameOrigin +
       "/apps/" +
       encodeURIComponent(currentId) +
       "/__terrane/frame/?__terrane_n=" +
@@ -262,7 +264,7 @@
       root.className += " disabled";
     }
 
-    root.appendChild(window.terraneAppIcon(id));
+    root.appendChild(window.terraneAppIcon(app));
 
     var text = document.createElement("span");
     text.className = "app-link-text";
@@ -798,7 +800,7 @@
 
   function bindTopbar() {
     if (!topbarApp || !crumbDoc || !userButton) return;
-    if (window.terraneAppIcon) topbarApp.appendChild(window.terraneAppIcon(isAdmin ? "admin" : currentId));
+    if (window.terraneAppIcon) topbarApp.appendChild(window.terraneAppIcon({ id: isAdmin ? "admin" : currentId }));
     crumbApp.textContent = appDisplayName;
     crumbDoc.textContent = isAdmin ? "" : storedDocName();
     if (!isAdmin) bindDocEditing();
@@ -1374,7 +1376,7 @@
     root.target = "_blank";
     root.rel = "noopener";
 
-    root.appendChild(window.terraneAppIcon(id));
+    root.appendChild(window.terraneAppIcon(app));
 
     var text = document.createElement("span");
     text.className = "app-link-text";

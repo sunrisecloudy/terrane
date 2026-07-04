@@ -54,6 +54,7 @@ fn responses_round_trip() {
         apps: vec![AppSummary {
             id: "todo".into(),
             name: "Todo".into(),
+            icon: "icon.svg".into(),
             has_ui: true,
         }],
     };

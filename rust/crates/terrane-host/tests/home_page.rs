@@ -83,7 +83,7 @@ fn catalog_poll_config_is_optional_and_numeric() {
 
 #[test]
 fn native_shaped_options_inline_catalog_without_admin_link() {
-    let catalog = r#"{"apps":[{"id":"todo","name":"Todo","has_ui":true}]}"#;
+    let catalog = r#"{"apps":[{"id":"todo","name":"Todo","icon":"icon.svg","has_ui":true}]}"#;
     let html = home_page(&HomePageOptions {
         app_href_template: "terrane-app://{id}/frame/",
         catalog_json: Some(catalog),
@@ -95,7 +95,7 @@ fn native_shaped_options_inline_catalog_without_admin_link() {
         "app href template missing: {html}"
     );
     assert!(
-        html.contains(r#""catalog":"{\"apps\":[{\"id\":\"todo\",\"name\":\"Todo\",\"has_ui\":true}]}""#),
+        html.contains(r#""catalog":"{\"apps\":[{\"id\":\"todo\",\"name\":\"Todo\",\"icon\":\"icon.svg\",\"has_ui\":true}]}""#),
         "inline catalog missing: {html}"
     );
     assert!(

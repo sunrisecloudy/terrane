@@ -100,7 +100,7 @@
       root.className += " disabled";
     }
 
-    root.appendChild(window.terraneAppIcon(id));
+    root.appendChild(window.terraneAppIcon(app));
 
     var text = document.createElement("span");
     text.className = "app-card-text";

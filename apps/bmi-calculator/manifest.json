@@ -5,6 +5,7 @@
   "runtime": "js",
   "backend": "main.js",
   "ui": "dist/index.html",
+  "icon": "icon.svg",
   "frontend": {
     "tool": "terrane-app-build",
     "entry": "src/main.tsx",

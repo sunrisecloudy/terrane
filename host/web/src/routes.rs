@@ -281,6 +281,7 @@ pub fn route(
                 id,
                 live_reload,
                 premium_url,
+                &app_frame_policy(core, dev_apps, request, id),
                 &crate::shell::ShellI18n {
                     locale: &locale,
                     dir: terrane_host::i18n::dir_for(&locale),
@@ -323,6 +324,46 @@ fn app_source(
         .get(id)
         .and_then(|app| app.source.clone())
         .or_else(|| dev_apps.find(id).map(|app| app.source))
+}
+
+fn app_frame_policy(
+    core: &terrane_host::HostCore,
+    dev_apps: &crate::dev_apps::DevApps,
+    request: &Request,
+    id: &str,
+) -> crate::shell::AppFramePolicy {
+    let browser_permissions = app_source(core, dev_apps, id)
+        .and_then(|source| terrane_host::read_manifest(std::path::Path::new(&source)).ok())
+        .map(|manifest| manifest.browser_permissions)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|permission| matches!(permission.as_str(), "camera" | "microphone"))
+        .collect::<Vec<_>>();
+    if browser_permissions.is_empty() {
+        return crate::shell::AppFramePolicy::default();
+    }
+    crate::shell::AppFramePolicy {
+        frame_origin: alternate_loopback_origin(request),
+        browser_permissions,
+    }
+}
+
+fn alternate_loopback_origin(request: &Request) -> Option<String> {
+    let host = header_value(request, "Host")?;
+    let current_host = host_without_port(host)?;
+    if !is_loopback_host(current_host) {
+        return None;
+    }
+    let port = host
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())?;
+    let current_host = current_host.trim_matches(|c| c == '[' || c == ']');
+    let frame_host = if current_host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1"
+    } else {
+        "localhost"
+    };
+    Some(format!("http://{frame_host}:{port}"))
 }
 
 fn admin_requests(

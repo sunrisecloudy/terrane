@@ -5,5 +5,6 @@
   "runtime": "js",
   "backend": "main.js",
   "ui": "index.html",
+  "icon": "icon.svg",
   "resources": []
 }

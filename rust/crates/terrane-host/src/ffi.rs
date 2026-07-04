@@ -429,7 +429,7 @@ pub unsafe extern "C" fn terrane_build_app(
 }
 
 /// Render the shared landing-page HTML for a host-supplied app catalog.
-/// `catalog_json` is the host's catalog as `{"apps":[{"id","name","has_ui"}]}`
+/// `catalog_json` is the host's catalog as `{"apps":[{"id","name","icon","has_ui"}]}`
 /// (treated as opaque text — the page's script parses it); `app_href_template`
 /// is the per-app link with an `{id}` placeholder, e.g.
 /// `terrane-app://{id}/frame/`. Writes the HTML document to `out_output`.

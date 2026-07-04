@@ -170,7 +170,14 @@ fn http_raw_with_headers(
     headers: &[(&str, &str)],
 ) -> (u16, String, String) {
     let mut stream = TcpStream::connect(addr).expect("connect");
-    let mut req = format!("{method} {path} HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n");
+    let has_host = headers
+        .iter()
+        .any(|(field, _)| field.eq_ignore_ascii_case("Host"));
+    let mut req = format!("{method} {path} HTTP/1.0\r\n");
+    if !has_host {
+        req.push_str("Host: localhost\r\n");
+    }
+    req.push_str("Connection: close\r\n");
     for (field, value) in headers {
         req.push_str(field);
         req.push_str(": ");
@@ -849,8 +856,13 @@ fn write_dev_app(dir: &Path, id: &str, name: &str) -> PathBuf {
     std::fs::write(
         app.join("manifest.json"),
         format!(
-            r#"{{ "id": "{id}", "name": "{name}", "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": [] }}"#
+            r#"{{ "id": "{id}", "name": "{name}", "runtime": "js", "backend": "main.js", "ui": "index.html", "icon": "icon.svg", "resources": [] }}"#
         ),
+    )
+    .unwrap();
+    std::fs::write(
+        app.join("icon.svg"),
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g fill="none" stroke="#1f2937" stroke-width="1.8"><circle cx="12" cy="12" r="8"/></g></svg>"##,
     )
     .unwrap();
     std::fs::write(
@@ -885,6 +897,7 @@ fn dev_apps_dir_scans_serves_and_lazily_catalogs() {
     assert!(
         body.contains(r#""id":"devdemo""#)
             && body.contains("Dev Demo")
+            && body.contains(r#""icon":"icon.svg""#)
             && body.contains(r#""has_ui":true"#),
         "dev app missing from catalog: {body}"
     );
@@ -918,7 +931,7 @@ fn dev_apps_dir_scans_serves_and_lazily_catalogs() {
     let (status, body) = http(&addr, "GET", "/apps", None);
     assert_eq!(status, 200);
     assert!(
-        body.contains(r#""id":"late-arrival""#),
+        body.contains(r#""id":"late-arrival""#) && body.contains(r#""icon":"icon.svg""#),
         "late dev app missing: {body}"
     );
     let (status, body) = http(&addr, "GET", "/apps/late-arrival/__terrane/frame/", None);
@@ -1009,6 +1022,11 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
             "sandbox=\"allow-scripts allow-forms allow-modals allow-popups allow-downloads\""
         ),
         "bmi shell iframe should be sandboxed away from admin origin: {body}"
+    );
+    assert!(
+        !body.contains("allow-same-origin")
+            && body.contains("window.__terraneAppFrameOrigin = null"),
+        "ordinary app frame should stay opaque and same-host: {body}"
     );
     assert!(
         body.contains("function loadFrame()") && body.contains("__terrane/frame/?__terrane_n="),
@@ -1130,6 +1148,56 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
     assert!(
         body.contains(r#"\"category\":\"Healthy\""#),
         "bmi updated category: {body}"
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
+fn photobooth_shell_uses_separate_loopback_origin_for_camera() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    {
+        let mut core = Core::open(home.join("log.bin")).unwrap();
+        install_named(&mut core, "photobooth", "Photobooth");
+    }
+
+    let (mut child, addr) = spawn_web(home);
+    let (status, body) = http(&addr, "GET", "/apps", None);
+    assert_eq!(status, 200, "apps catalog: {body}");
+    assert!(
+        body.contains(r#""id":"photobooth""#) && body.contains(r#""icon":"icon.svg""#),
+        "photobooth catalog should expose its manifest-owned icon: {body}"
+    );
+
+    let (status, body) = http_with_headers(
+        &addr,
+        "GET",
+        "/apps/photobooth/",
+        None,
+        &[("Host", addr.as_str())],
+    );
+    assert_eq!(status, 200, "photobooth shell: {body}");
+    assert!(
+        body.contains(
+            "sandbox=\"allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-same-origin\""
+        ),
+        "camera app frame should receive same-origin inside its separate frame origin: {body}"
+    );
+    assert!(
+        body.contains("allow=\"camera\""),
+        "camera permission policy missing from photobooth frame: {body}"
+    );
+    let port = addr
+        .rsplit_once(':')
+        .map(|(_, port)| port)
+        .expect("spawned addr has port");
+    assert!(
+        body.contains(&format!(
+            r#"window.__terraneAppFrameOrigin = "http://localhost:{port}""#
+        )),
+        "photobooth should load through a separate loopback origin: {body}"
     );
 
     let _ = child.kill();

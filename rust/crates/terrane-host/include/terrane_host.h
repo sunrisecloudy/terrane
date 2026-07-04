@@ -77,7 +77,7 @@ int terrane_builder_generate(TerraneHandle *h, const char *app_id,
 int terrane_build_app(const char *app_dir, char **out_output, char **out_error);
 
 /* Render the shared landing-page HTML for a host-supplied app catalog.
- * catalog_json: {"apps":[{"id":"...","name":"...","has_ui":true}, ...]}
+ * catalog_json: {"apps":[{"id":"...","name":"...","icon":"...","has_ui":true}, ...]}
  * (opaque text — the page's script parses it). app_href_template: per-app link
  * with an {id} placeholder, e.g. "terrane-app://{id}/frame/". Handle-free:
  * rendering reads nothing from the workspace. */

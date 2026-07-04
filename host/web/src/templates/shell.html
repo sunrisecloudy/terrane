@@ -109,18 +109,42 @@
         text-decoration: none;
       }
       .app-icon {
+        --app-icon-bg: color-mix(in srgb, CanvasText 8%, transparent);
+        --app-icon-fg: rgba(31, 41, 55, 0.9);
         flex: none;
         display: inline-grid;
         place-items: center;
         width: 28px;
         height: 28px;
         border-radius: 7px;
-        background: color-mix(in srgb, CanvasText 8%, transparent);
-        color: color-mix(in srgb, CanvasText 72%, transparent);
+        background: var(--app-icon-bg);
+        color: var(--app-icon-fg);
+      }
+      :root[style*="color-scheme: dark"] .app-icon {
+        --app-icon-bg: rgba(255, 255, 255, 0.08);
+        --app-icon-fg: rgba(255, 255, 255, 0.88);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([style*="color-scheme: light"]) .app-icon {
+          --app-icon-bg: rgba(255, 255, 255, 0.08);
+          --app-icon-fg: rgba(255, 255, 255, 0.88);
+        }
       }
       .app-icon svg {
         width: 16px;
         height: 16px;
+      }
+      .app-icon-glyph {
+        display: block;
+        width: 16px;
+        height: 16px;
+        background: currentColor;
+        mask-position: center;
+        mask-repeat: no-repeat;
+        mask-size: contain;
+        -webkit-mask-position: center;
+        -webkit-mask-repeat: no-repeat;
+        -webkit-mask-size: contain;
       }
       .app-link-text {
         min-width: 0;
@@ -1185,7 +1209,8 @@
           <iframe
             id="app-frame"
             title="Terrane"
-            sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads"
+            sandbox="__APP_FRAME_SANDBOX__"
+            __APP_FRAME_ALLOW__
           ></iframe>
           <section
             id="admin-panel"
@@ -1268,6 +1293,7 @@
       window.__terraneLiveReload = __LIVE_RELOAD__;
       window.__terranePremiumUrl = __PREMIUM_URL__;
       window.__terraneShellMode = __SHELL_MODE__;
+      window.__terraneAppFrameOrigin = __APP_FRAME_ORIGIN__;
       window.__terraneLocale = __TERRANE_LOCALE_JSON__;
       window.__terraneDir = "__TERRANE_DIR__";
       window.__terraneMessages = __TERRANE_MESSAGES_JSON__;

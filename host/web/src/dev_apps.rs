@@ -16,6 +16,7 @@ pub struct DevApps {
 pub struct DevApp {
     pub id: String,
     pub name: String,
+    pub icon: String,
     pub source: String,
 }
 
@@ -25,6 +26,8 @@ struct DevManifest {
     id: String,
     #[nserde(default)]
     name: String,
+    #[nserde(default)]
+    icon: String,
 }
 
 impl DevApps {
@@ -68,6 +71,7 @@ impl DevApps {
             .into_iter()
             .map(|app| AppSummary {
                 has_ui: terrane_host::app_has_ui(Some(&app.source)),
+                icon: app.icon,
                 id: app.id,
                 name: app.name,
             })
@@ -92,6 +96,7 @@ fn read_dev_app(path: &Path) -> Option<DevApp> {
     Some(DevApp {
         id,
         name,
+        icon: manifest.icon.trim().to_string(),
         source: path.to_string_lossy().into_owned(),
     })
 }

@@ -61,6 +61,9 @@ pub struct HealthResponse {
 pub struct AppSummary {
     pub id: String,
     pub name: String,
+    /// Optional app-owned icon asset path or URL.
+    #[nserde(default)]
+    pub icon: String,
     /// Whether the app ships a UI (`manifest.ui`) the web host can serve.
     pub has_ui: bool,
 }

@@ -24,8 +24,8 @@ pub struct HomePageOptions<'a> {
     pub app_href_template: &'a str,
     /// URL the page fetches the catalog from (hosts with an HTTP `/apps`).
     pub catalog_url: Option<&'a str>,
-    /// Inline catalog JSON (`{"apps":[{"id","name","has_ui"}]}`) for hosts
-    /// without an HTTP catalog route. Takes precedence over `catalog_url`.
+    /// Inline catalog JSON (`{"apps":[{"id","name","icon","has_ui"}]}`) for
+    /// hosts without an HTTP catalog route. Takes precedence over `catalog_url`.
     pub catalog_json: Option<&'a str>,
     /// Admin console link for the footer; `None` hides the link.
     pub admin_href: Option<&'a str>,
