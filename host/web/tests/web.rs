@@ -2310,6 +2310,12 @@ fn shell_injects_premium_url_when_configured() {
         body.contains("id=\"premium-section\"") && body.contains("id=\"premium-list\""),
         "premium apps sidebar section missing: {body}"
     );
+    assert!(
+        body.contains("function openPremiumApp(app)")
+            && body.contains("frame.src = premiumUrl + \"/apps.html#\"")
+            && !body.contains("root.target = \"_blank\""),
+        "premium sidebar apps should open in the shell iframe, not a new page: {body}"
+    );
     let _ = child.kill();
     let _ = child.wait();
 
