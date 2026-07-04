@@ -10,7 +10,11 @@ final class AppSidebarView: NSVisualEffectView {
   private let title = NSTextField(labelWithString: "Terrane")
   private let caption = NSTextField(labelWithString: "Apps")
   private let stack = NSStackView()
-  private let homeButton = AppSidebarButton(title: "Home", appId: "", iconName: "house")
+  private let homeButton = AppSidebarButton(
+    title: "Home",
+    appId: "",
+    iconImage: NSImage(systemSymbolName: "house", accessibilityDescription: nil)
+  )
   let localModelPanel = LocalModelPanel()
   private var apps: [TerraneApp] = []
   private var selectedAppId: String?
@@ -39,7 +43,7 @@ final class AppSidebarView: NSVisualEffectView {
       let button = AppSidebarButton(
         title: app.name,
         appId: app.id,
-        iconName: Self.iconName(for: app),
+        iconImage: Self.iconImage(for: app),
         target: self,
         action: #selector(selectApp(_:))
       )
@@ -184,26 +188,19 @@ final class AppSidebarView: NSVisualEffectView {
     onToggleCollapse?()
   }
 
-  static func iconName(for app: TerraneApp) -> String {
-    switch app.id {
-    case "app-builder":
-      return "hammer"
-    case "bmi-calculator":
-      return "gauge.with.dots.needle.67percent"
-    case "pixel-paint":
-      return "paintpalette"
-    case "todo", "todo-cli", "todo-cli-collaborate":
-      return "checklist"
-    default:
-      return "app.dashed"
+  static func iconImage(for app: TerraneApp) -> NSImage? {
+    if let iconURL = app.iconURL, let image = NSImage(contentsOf: iconURL) {
+      image.isTemplate = true
+      return image
     }
+    return NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
   }
 }
 
 final class AppSidebarButton: NSButton {
   private let fullTitle: String
   private let appId: String
-  private let iconName: String
+  private let iconImage: NSImage?
   private var widthConstraint: NSLayoutConstraint?
   private var heightConstraint: NSLayoutConstraint?
   private var collapsed = false
@@ -218,7 +215,7 @@ final class AppSidebarButton: NSButton {
   override init(frame frameRect: NSRect) {
     fullTitle = ""
     appId = ""
-    iconName = "app.dashed"
+    iconImage = NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
     super.init(frame: frameRect)
     configure()
   }
@@ -226,19 +223,19 @@ final class AppSidebarButton: NSButton {
   convenience init(
     title: String,
     appId: String,
-    iconName: String,
+    iconImage: NSImage?,
     target: AnyObject?,
     action: Selector?
   ) {
-    self.init(title: title, appId: appId, iconName: iconName)
+    self.init(title: title, appId: appId, iconImage: iconImage)
     self.target = target
     self.action = action
   }
 
-  init(title: String, appId: String, iconName: String) {
+  init(title: String, appId: String, iconImage: NSImage?) {
     fullTitle = title
     self.appId = appId
-    self.iconName = iconName
+    self.iconImage = iconImage
     super.init(frame: .zero)
     self.title = title
     toolTip = appId
@@ -248,7 +245,7 @@ final class AppSidebarButton: NSButton {
   required init?(coder: NSCoder) {
     fullTitle = ""
     appId = ""
-    iconName = "app.dashed"
+    iconImage = NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
     super.init(coder: coder)
     configure()
   }
@@ -289,7 +286,8 @@ final class AppSidebarButton: NSButton {
     isBordered = false
     alignment = .left
     font = .systemFont(ofSize: 14, weight: .medium)
-    image = NSImage(systemSymbolName: iconName, accessibilityDescription: nil)
+    iconImage?.isTemplate = true
+    image = iconImage
     symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
     imagePosition = .imageLeading
     imageHugsTitle = true

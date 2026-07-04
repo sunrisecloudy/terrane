@@ -5,6 +5,9 @@ struct TerraneApp: Equatable {
   let name: String
   let directory: URL
   let uiURL: URL
+  let iconPath: String?
+  let iconURL: URL?
+  let browserPermissions: [String]
 }
 
 enum AppCatalog {
@@ -80,12 +83,21 @@ enum AppCatalog {
     guard let uiURL = resolveUI(uiEntry, in: dir, fm: fm) else {
       return nil
     }
+    let iconPath = (manifest["icon"] as? String)?.trimmedNonEmpty
+    let iconURL = iconPath.flatMap { resolveAsset($0, in: dir, fm: fm) }
+    let browserPermissions =
+      (manifest["browser_permissions"] as? [String])?
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty } ?? []
 
     return TerraneApp(
       id: id,
       name: name,
       directory: dir.standardizedFileURL,
-      uiURL: uiURL
+      uiURL: uiURL,
+      iconPath: iconURL == nil ? nil : iconPath,
+      iconURL: iconURL,
+      browserPermissions: browserPermissions
     )
   }
 
@@ -113,6 +125,27 @@ enum AppCatalog {
       return nil
     }
 
+    return target
+  }
+
+  private static func resolveAsset(_ entry: String, in dir: URL, fm: FileManager) -> URL? {
+    guard !entry.hasPrefix("/"),
+      !entry.contains("\\"),
+      !entry.split(separator: "/").contains("..")
+    else {
+      return nil
+    }
+
+    let target = URL(fileURLWithPath: entry, relativeTo: dir).standardizedFileURL
+    let basePath = dir.standardizedFileURL.path
+    guard target.path != basePath, target.path.hasPrefix(basePath + "/") else {
+      return nil
+    }
+
+    var isDir: ObjCBool = false
+    guard fm.fileExists(atPath: target.path, isDirectory: &isDir), !isDir.boolValue else {
+      return nil
+    }
     return target
   }
 }

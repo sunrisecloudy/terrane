@@ -9,7 +9,14 @@ enum HomePage {
 
   static func render(apps: [TerraneApp]) -> String? {
     let catalog: [String: Any] = [
-      "apps": apps.map { ["id": $0.id, "name": $0.name, "has_ui": true] }
+      "apps": apps.map { app in
+        [
+          "id": app.id,
+          "name": app.name,
+          "icon": app.iconPath.flatMap { AppSchemeHandler.assetURL(for: app, relPath: $0)?.absoluteString } ?? "",
+          "has_ui": true,
+        ]
+      }
     ]
     guard
       let data = try? JSONSerialization.data(

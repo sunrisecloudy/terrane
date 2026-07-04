@@ -16,6 +16,8 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertEqual(app.directory.lastPathComponent, "bmi-calculator")
     XCTAssertEqual(app.uiURL.lastPathComponent, "index.html")
     XCTAssertTrue(app.uiURL.path.contains("/dist/"))
+    XCTAssertEqual(app.iconPath, "icon.svg")
+    XCTAssertEqual(app.iconURL?.lastPathComponent, "icon.svg")
 
     XCTAssertTrue(SourceEditorModel.requiresBuild(app: app))
     let sourceFiles = try SourceEditorModel.editableFiles(for: app)
@@ -81,6 +83,15 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertEqual(servedModule.contentType, "text/javascript; charset=utf-8")
     XCTAssertTrue(String(data: servedModule.data, encoding: .utf8)?.contains("createRoot") == true)
 
+    let iconAsset = AppAssetStore.asset(
+      apps: [app], appId: "bmi-calculator", relPath: "icon.svg", base: .appRoot)
+    guard case .success(let servedIcon) = iconAsset else {
+      XCTFail("BMI icon should be served from the app root")
+      return
+    }
+    XCTAssertEqual(servedIcon.contentType, "image/svg+xml; charset=utf-8")
+    XCTAssertTrue(String(data: servedIcon.data, encoding: .utf8)?.contains("currentColor") == true)
+
     let bridge = try XCTUnwrap(TerraneBridge(home: fixture.home))
     defer { bridge.close() }
 
@@ -93,6 +104,8 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(userContent.userScripts[0].source.contains("builderGenerate"))
 
     bridge.select(app: app)
+    let grant = bridge.grant(app: app.id, namespace: "kv")
+    XCTAssertTrue(grant.0, grant.1)
     let result = bridge.invokeSelectedApp(
       verb: "calculate",
       args: ["180", "81"]
@@ -173,13 +186,19 @@ final class BmiCalculatorE2ETests: XCTestCase {
         id: "todo",
         name: "Todo",
         directory: base.appendingPathComponent("todo"),
-        uiURL: base.appendingPathComponent("todo/index.html")
+        uiURL: base.appendingPathComponent("todo/index.html"),
+        iconPath: nil,
+        iconURL: nil,
+        browserPermissions: []
       )
       let paint = TerraneApp(
         id: "pixel-paint",
         name: "Pixel Paint",
         directory: base.appendingPathComponent("pixel-paint"),
-        uiURL: base.appendingPathComponent("pixel-paint/index.html")
+        uiURL: base.appendingPathComponent("pixel-paint/index.html"),
+        iconPath: nil,
+        iconURL: nil,
+        browserPermissions: []
       )
 
       let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 224, height: 640))
@@ -236,7 +255,7 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(html.contains(#"id="harness""#), html)
     XCTAssertTrue(html.contains(#"value="claude-code""#), html)
     XCTAssertTrue(html.contains(#"value="opencode""#), html)
-    XCTAssertTrue(html.contains(#"<span id="status">Ready</span>"#), html)
+    XCTAssertTrue(html.contains(#"<span id="status" data-i18n="app-builder.ready">Ready</span>"#), html)
   }
 
   func testPhotoboothBundleUsesCameraOnlyAndIsServedByNativeHost() throws {
@@ -247,6 +266,8 @@ final class BmiCalculatorE2ETests: XCTestCase {
     let app = try XCTUnwrap(apps.first { $0.id == "photobooth" })
     XCTAssertEqual(app.name, "Photobooth")
     XCTAssertEqual(app.uiURL.lastPathComponent, "index.html")
+    XCTAssertEqual(app.iconPath, "icon.svg")
+    XCTAssertEqual(app.browserPermissions, ["camera"])
 
     let html = try String(contentsOf: app.uiURL, encoding: .utf8)
     XCTAssertTrue(html.contains("navigator.mediaDevices.getUserMedia"), html)

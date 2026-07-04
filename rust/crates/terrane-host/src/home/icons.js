@@ -6,7 +6,12 @@
     if (!app || typeof app !== "object") return "";
     var value = typeof app.icon === "string" ? app.icon.trim() : "";
     if (!value) return "";
-    if (/^data:image\//i.test(value) || /^https?:\/\//i.test(value) || value[0] === "/") {
+    if (
+      /^data:image\//i.test(value) ||
+      /^https?:\/\//i.test(value) ||
+      /^terrane-app:\/\//i.test(value) ||
+      value[0] === "/"
+    ) {
       return value;
     }
     if (!app.id || value.indexOf("..") !== -1 || value.indexOf("\\") !== -1 || value.indexOf("://") !== -1) {

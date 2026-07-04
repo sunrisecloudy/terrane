@@ -34,8 +34,18 @@ enum AppAssetResult {
   case failure(status: Int, message: String)
 }
 
+enum AppAssetBase {
+  case uiDirectory
+  case appRoot
+}
+
 enum AppAssetStore {
-  static func asset(apps: [TerraneApp], appId: String, relPath: String) -> AppAssetResult {
+  static func asset(
+    apps: [TerraneApp],
+    appId: String,
+    relPath: String,
+    base: AppAssetBase = .uiDirectory
+  ) -> AppAssetResult {
     guard let app = apps.first(where: { $0.id == appId }) else {
       return .failure(status: 404, message: "app not found: \(appId)")
     }
@@ -43,11 +53,14 @@ enum AppAssetStore {
       return .failure(status: 403, message: "app asset path escapes app root")
     }
 
-    let base = app.uiURL.deletingLastPathComponent().standardizedFileURL
+    let baseURL =
+      base == .appRoot
+      ? app.directory.standardizedFileURL
+      : app.uiURL.deletingLastPathComponent().standardizedFileURL
     let target =
       relPath.isEmpty
       ? app.uiURL.standardizedFileURL
-      : base.appendingPathComponent(relPath).standardizedFileURL
+      : baseURL.appendingPathComponent(relPath).standardizedFileURL
     let appRoot = app.directory.standardizedFileURL.path
     guard target.path == appRoot || target.path.hasPrefix(appRoot + "/") else {
       return .failure(status: 403, message: "app asset path escapes app root")
@@ -107,6 +120,21 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler {
     return components.url!
   }
 
+  static func assetURL(for app: TerraneApp, relPath: String) -> URL? {
+    guard !relPath.isEmpty,
+      !relPath.hasPrefix("/"),
+      !relPath.contains("\\"),
+      !relPath.split(separator: "/").contains("..")
+    else {
+      return nil
+    }
+    var components = URLComponents()
+    components.scheme = scheme
+    components.host = app.id
+    components.path = "/asset/" + relPath
+    return components.url
+  }
+
   func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
     guard let url = urlSchemeTask.request.url,
       let request = AppAssetRequest(url: url)
@@ -115,7 +143,9 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler {
       return
     }
 
-    switch AppAssetStore.asset(apps: apps(), appId: request.appId, relPath: request.relPath) {
+    switch AppAssetStore.asset(
+      apps: apps(), appId: request.appId, relPath: request.relPath, base: request.base
+    ) {
     case .success(let asset):
       respond(to: urlSchemeTask, asset: asset)
     case .failure(let status, let message):
@@ -191,6 +221,7 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler {
 private struct AppAssetRequest {
   let appId: String
   let relPath: String
+  let base: AppAssetBase
 
   init?(url: URL) {
     guard url.scheme == AppSchemeHandler.scheme,
@@ -204,9 +235,18 @@ private struct AppAssetRequest {
     let resolvedRelPath: String
     if path == "/frame" || path == "/frame/" {
       resolvedRelPath = ""
+      base = .uiDirectory
     } else if path.hasPrefix("/frame/") {
       let rawRelPath = String(path.dropFirst("/frame/".count))
       resolvedRelPath = rawRelPath.removingPercentEncoding ?? rawRelPath
+      base = .uiDirectory
+    } else if path.hasPrefix("/asset/") {
+      let rawRelPath = String(path.dropFirst("/asset/".count))
+      guard !rawRelPath.isEmpty else {
+        return nil
+      }
+      resolvedRelPath = rawRelPath.removingPercentEncoding ?? rawRelPath
+      base = .appRoot
     } else {
       return nil
     }

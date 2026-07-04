@@ -3,6 +3,7 @@
 //! native-shaped options inline the catalog. Either way the config block must
 //! stay script-safe for user-controlled app names.
 
+use terrane_host::home::app_icons_js;
 use terrane_host::{home_page, HomePageOptions};
 
 fn web_options() -> HomePageOptions<'static> {
@@ -101,6 +102,15 @@ fn native_shaped_options_inline_catalog_without_admin_link() {
     assert!(
         !html.contains(r#""catalogUrl":"#) && !html.contains(r#""adminHref":"#),
         "native options must not add web wiring: {html}"
+    );
+}
+
+#[test]
+fn shared_icon_helper_accepts_native_scheme_icons() {
+    let icons_js = app_icons_js();
+    assert!(
+        icons_js.contains("terrane-app"),
+        "native app icon URLs must be allowed by the shared icon helper: {icons_js}"
     );
 }
 

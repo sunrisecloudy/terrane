@@ -396,8 +396,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   private func updateBreadcrumb(for app: TerraneApp) {
     appNameLabel.stringValue = app.name
-    appIconView.image = NSImage(
-      systemSymbolName: AppSidebarView.iconName(for: app), accessibilityDescription: nil)
+    appIconView.image = AppSidebarView.iconImage(for: app)
     appIconView.isHidden = false
     crumbSeparator.isHidden = false
     docField.isHidden = false

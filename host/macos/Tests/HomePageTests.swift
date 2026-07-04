@@ -8,7 +8,10 @@ final class HomePageTests: XCTestCase {
       id: id,
       name: name,
       directory: dir,
-      uiURL: dir.appendingPathComponent("index.html")
+      uiURL: dir.appendingPathComponent("index.html"),
+      iconPath: "icon.svg",
+      iconURL: dir.appendingPathComponent("icon.svg"),
+      browserPermissions: []
     )
   }
 
@@ -23,6 +26,7 @@ final class HomePageTests: XCTestCase {
     // The native catalog is inlined into the page config (no fetch on macOS).
     XCTAssertTrue(html.contains(#"\"id\":\"todo\""#), html)
     XCTAssertTrue(html.contains(#"\"name\":\"Pixel Paint\""#), html)
+    XCTAssertTrue(html.contains(#"\"icon\":\"terrane-app://todo/asset/icon.svg\""#), html)
     XCTAssertTrue(html.contains(#"\"has_ui\":true"#), html)
     XCTAssertFalse(html.contains(#""catalogUrl":"#), html)
     XCTAssertFalse(html.contains(#""adminHref":"#), html)

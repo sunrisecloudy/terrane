@@ -301,6 +301,10 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return hostRun(argv: [verb] + args)
   }
 
+  func grant(app: String, namespace: String) -> (Bool, String) {
+    dispatch(command: "auth.grant", argv: ["user:local-owner", app, namespace])
+  }
+
   private func createPreview(files: Any) -> (Bool, Any) {
     guard JSONSerialization.isValidJSONObject(files),
       let data = try? JSONSerialization.data(withJSONObject: files),
