@@ -50,6 +50,7 @@
   // sidebar section linking to the control plane.
   var premiumApps = [];
   var localAppIds = {};
+  var activePremiumAppId = "";
   var appDisplayName = currentId;
   var settingsOpen = false;
   var currentTheme = "system";
@@ -130,6 +131,7 @@
   }
 
   function loadFrame() {
+    activePremiumAppId = "";
     frameNonce = randomNonce();
     frame.src =
       appFrameOrigin +
@@ -235,6 +237,8 @@
     // section, so re-render it whenever the local catalog changes.
     renderPremiumCatalog();
 
+    if (activePremiumAppId) return;
+
     if (!current) {
       if (isAdmin) {
         setTitle(shellT("system.sidebar.admin", "Admin Console"));
@@ -254,7 +258,7 @@
       ? document.createElement("a")
       : document.createElement("div");
     root.className = "app-link";
-    if (id === currentId) {
+    if (!activePremiumAppId && id === currentId) {
       root.className += " selected";
       root.setAttribute("aria-current", "page");
     }
@@ -1369,12 +1373,15 @@
     var name = app.name ? String(app.name) : id;
     var root = document.createElement("a");
     root.className = "app-link";
-    // Premium apps are server-required and not installed on this host, so the
-    // entry opens the control plane's premium dashboard rather than a local
-    // /apps route.
+    if (id === activePremiumAppId) {
+      root.className += " selected";
+      root.setAttribute("aria-current", "page");
+    }
     root.href = premiumUrl + "/apps.html#" + encodeURIComponent(id);
-    root.target = "_blank";
-    root.rel = "noopener";
+    root.addEventListener("click", function (event) {
+      event.preventDefault();
+      openPremiumApp(app);
+    });
 
     root.appendChild(window.terraneAppIcon(app));
 
@@ -1391,6 +1398,27 @@
 
     root.appendChild(text);
     return root;
+  }
+
+  function openPremiumApp(app) {
+    var id = String(app.id);
+    var name = app.name ? String(app.name) : id;
+    activePremiumAppId = id;
+    frameNonce = "";
+    setAdminMode(false);
+    frame.hidden = false;
+    frame.src = premiumUrl + "/apps.html#" + encodeURIComponent(id);
+    setTitle(name);
+    renderPremiumCatalog();
+    renderLocalSelection();
+  }
+
+  function renderLocalSelection() {
+    var links = list ? list.querySelectorAll(".app-link") : [];
+    for (var i = 0; i < links.length; i++) {
+      links[i].classList.remove("selected");
+      links[i].removeAttribute("aria-current");
+    }
   }
 
   function premiumOrigin() {
