@@ -10,6 +10,40 @@ struct TerraneApp: Equatable {
   let browserPermissions: [String]
 }
 
+struct PremiumApp: Equatable {
+  let id: String
+  let name: String
+  let publisher: String
+  let icon: String
+
+  var dashboardFragment: String {
+    id.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) ?? id
+  }
+}
+
+enum PremiumCatalog {
+  static func parse(_ data: Data) -> [PremiumApp] {
+    guard
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      object["ok"] as? Bool == true,
+      let result = object["result"] as? [String: Any],
+      let apps = result["apps"] as? [[String: Any]]
+    else {
+      return []
+    }
+
+    return apps.compactMap { app in
+      guard let id = (app["id"] as? String)?.trimmedNonEmpty else {
+        return nil
+      }
+      let name = (app["name"] as? String)?.trimmedNonEmpty ?? id
+      let publisher = (app["publisher"] as? String)?.trimmedNonEmpty ?? "Premium"
+      let icon = (app["icon"] as? String)?.trimmedNonEmpty ?? ""
+      return PremiumApp(id: id, name: name, publisher: publisher, icon: icon)
+    }
+  }
+}
+
 enum AppCatalog {
   static func discover(home: URL) -> [TerraneApp] {
     let fm = FileManager.default

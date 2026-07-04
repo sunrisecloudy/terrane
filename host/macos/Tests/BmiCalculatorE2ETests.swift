@@ -203,37 +203,72 @@ final class BmiCalculatorE2ETests: XCTestCase {
 
       let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 224, height: 640))
       var selected: TerraneApp?
+      var selectedPremium: PremiumApp?
       var wentHome = false
       sidebar.onSelect = { selected = $0 }
+      sidebar.onSelectPremium = { selectedPremium = $0 }
       sidebar.onHome = { wentHome = true }
-      sidebar.render(apps: [paint, todo], selectedAppId: "todo")
+      sidebar.render(
+        apps: [paint, todo],
+        premiumApps: [
+          PremiumApp(id: "todo", name: "Premium Todo", publisher: "Terrane Premium", icon: ""),
+          PremiumApp(
+            id: "hold-dear-route-shop", name: "Hold Dear Route Shop",
+            publisher: "Hold Dear Studio", icon: ""),
+        ],
+        selectedAppId: "todo"
+      )
       sidebar.layoutSubtreeIfNeeded()
 
-      // Home leads the stack, then the discovered apps.
+      // Home leads the stack, then discovered apps, then premium apps not installed locally.
       let buttons = subviews(ofType: AppSidebarButton.self, in: sidebar)
-      XCTAssertEqual(buttons.map(\.title), ["Home", "Pixel Paint", "Todo"])
-      XCTAssertEqual(buttons.map(\.toolTip), ["", "pixel-paint", "todo"])
-      XCTAssertEqual(buttons.map(\.isSelected), [false, false, true])
+      XCTAssertEqual(buttons.map(\.title), ["Home", "Pixel Paint", "Todo", "Hold Dear Route Shop"])
+      XCTAssertEqual(buttons.map(\.toolTip), ["", "pixel-paint", "todo", "hold-dear-route-shop"])
+      XCTAssertEqual(buttons.map(\.isSelected), [false, false, true, false])
       XCTAssertTrue(buttons.allSatisfy { $0.image != nil })
 
       sidebar.selectApp(at: 0)
       XCTAssertEqual(selected?.id, "pixel-paint")
 
       sidebar.select(appId: "pixel-paint")
-      XCTAssertEqual(buttons.map(\.isSelected), [false, true, false])
+      XCTAssertEqual(buttons.map(\.isSelected), [false, true, false, false])
 
       buttons[0].performClick(nil)
       XCTAssertTrue(wentHome, "home button should fire onHome")
+      buttons[3].performClick(nil)
+      XCTAssertEqual(selectedPremium?.id, "hold-dear-route-shop")
       sidebar.select(appId: nil)
-      XCTAssertEqual(buttons.map(\.isSelected), [true, false, false])
+      XCTAssertEqual(buttons.map(\.isSelected), [true, false, false, false])
 
       sidebar.setCollapsed(true)
-      XCTAssertEqual(buttons.map(\.title), ["", "", ""])
-      XCTAssertEqual(buttons.map(\.toolTip), ["Home", "Pixel Paint", "Todo"])
+      XCTAssertEqual(buttons.map(\.title), ["", "", "", ""])
+      XCTAssertEqual(buttons.map(\.toolTip), ["Home", "Pixel Paint", "Todo", "Hold Dear Route Shop"])
 
       sidebar.setCollapsed(false)
-      XCTAssertEqual(buttons.map(\.title), ["Home", "Pixel Paint", "Todo"])
+      XCTAssertEqual(buttons.map(\.title), ["Home", "Pixel Paint", "Todo", "Hold Dear Route Shop"])
     }
+  }
+
+  func testPremiumCatalogParsesPublicMarketplaceResponse() throws {
+    let json = """
+      {
+        "ok": true,
+        "result": {
+          "apps": [
+            {"id": "premium-todo", "name": "Premium Todo", "publisher": "Terrane Premium", "icon": "checklist", "serverRequired": true},
+            {"id": "hold dear", "name": "Hold Dear", "publisher": "Hold Dear Studio"}
+          ]
+        }
+      }
+      """
+
+    let apps = PremiumCatalog.parse(try XCTUnwrap(json.data(using: .utf8)))
+    XCTAssertEqual(apps.map(\.id), ["premium-todo", "hold dear"])
+    XCTAssertEqual(apps[0].name, "Premium Todo")
+    XCTAssertEqual(apps[0].publisher, "Terrane Premium")
+    XCTAssertEqual(apps[0].icon, "checklist")
+    XCTAssertEqual(apps[1].publisher, "Hold Dear Studio")
+    XCTAssertEqual(apps[1].dashboardFragment, "hold%20dear")
   }
 
   func testAppBuilderWaitsForExplicitBuildClick() throws {
@@ -311,9 +346,10 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(appDelegate.contains("WKDownloadDelegate"), appDelegate)
     XCTAssertTrue(appDelegate.contains("webView.navigationDelegate = self"), appDelegate)
     XCTAssertTrue(appDelegate.contains("requestMediaCapturePermissionFor"), appDelegate)
-    XCTAssertTrue(appDelegate.contains("case .camera:"), appDelegate)
-    XCTAssertTrue(appDelegate.contains("decisionHandler(.prompt)"), appDelegate)
-    XCTAssertTrue(appDelegate.contains("case .microphone, .cameraAndMicrophone:"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("selectedApp?.browserPermissions"), appDelegate)
+    XCTAssertTrue(appDelegate.contains(#"permissions.contains("camera") ? .prompt : .deny"#), appDelegate)
+    XCTAssertTrue(appDelegate.contains(#"permissions.contains("microphone") ? .prompt : .deny"#), appDelegate)
+    XCTAssertTrue(appDelegate.contains("case .cameraAndMicrophone:"), appDelegate)
     XCTAssertTrue(appDelegate.contains("decisionHandler(.deny)"), appDelegate)
     XCTAssertTrue(appDelegate.contains("navigationAction.shouldPerformDownload"), appDelegate)
     XCTAssertTrue(appDelegate.contains("decisionHandler(.download)"), appDelegate)

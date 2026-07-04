@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var previewSchemeHandler: PreviewSchemeHandler?
   private var home: URL!
   private var apps: [TerraneApp] = []
+  private var premiumURL: URL?
+  private var premiumApps: [PremiumApp] = []
   private var selectedApp: TerraneApp?
   // The system-negotiated locale + the shell-chrome bundle for native strings.
   private var currentLocale = "en"
@@ -32,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     home = Self.resolveHome()
+    premiumURL = Self.resolvePremiumURL()
     apps = AppCatalog.discover(home: home)
 
     let config = WKWebViewConfiguration()
@@ -74,6 +77,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     window.contentView = buildContentView()
 
     renderAppSwitcher()
+    refreshPremiumCatalog()
     if let app = initialApp() {
       select(app, confirmUnsaved: false)
     } else {
@@ -176,11 +180,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     type: WKMediaCaptureType,
     decisionHandler: @escaping (WKPermissionDecision) -> Void
   ) {
+    let permissions = Set(selectedApp?.browserPermissions ?? [])
     switch type {
     case .camera:
-      decisionHandler(.prompt)
-    case .microphone, .cameraAndMicrophone:
-      decisionHandler(.deny)
+      decisionHandler(permissions.contains("camera") ? .prompt : .deny)
+    case .microphone:
+      decisionHandler(permissions.contains("microphone") ? .prompt : .deny)
+    case .cameraAndMicrophone:
+      decisionHandler(
+        permissions.contains("camera") && permissions.contains("microphone") ? .prompt : .deny)
     @unknown default:
       decisionHandler(.deny)
     }
@@ -192,6 +200,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     appSidebar.translatesAutoresizingMaskIntoConstraints = false
     appSidebar.onSelect = { [weak self] app in
       self?.select(app)
+    }
+    appSidebar.onSelectPremium = { [weak self] app in
+      self?.openPremium(app)
     }
     appSidebar.onHome = { [weak self] in
       self?.showHome(confirmUnsaved: true)
@@ -330,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   }
 
   private func renderAppSwitcher() {
-    appSidebar.render(apps: apps, selectedAppId: selectedApp?.id)
+    appSidebar.render(apps: apps, premiumApps: premiumApps, selectedAppId: selectedApp?.id)
   }
 
   /// Only an explicitly requested app id skips the landing page.
@@ -394,6 +405,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       ))
   }
 
+  private func openPremium(_ app: PremiumApp) {
+    guard let url = premiumDashboardURL(for: app) else { return }
+    if selectedApp != nil, !sourceEditor.confirmDiscardIfNeeded(window: window) {
+      restoreSelectedSegment()
+      return
+    }
+    if sttCapture?.isListening == true {
+      sttCapture?.stop(reason: "stopped")
+    }
+    selectedApp = nil
+    bridge?.clearSelection()
+    sttCapture = nil
+    window.title = "\(app.name) - Terrane Premium"
+    appSidebar.select(appId: "premium:\(app.id)")
+    updatePremiumBreadcrumb(for: app)
+    sourceEditor.setApp(nil)
+    codeButton.state = .off
+    sourceEditor.isHidden = true
+    sourceEditorWidthConstraint.constant = 0
+    webView.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+  }
+
+  private func premiumDashboardURL(for app: PremiumApp) -> URL? {
+    guard let premiumURL else { return nil }
+    var components = URLComponents(url: premiumURL.appendingPathComponent("apps.html"), resolvingAgainstBaseURL: false)
+    components?.fragment = app.dashboardFragment
+    return components?.url
+  }
+
+  private func updatePremiumBreadcrumb(for app: PremiumApp) {
+    appNameLabel.stringValue = app.name
+    appIconView.image = AppSidebarView.iconImage(for: app)
+    appIconView.isHidden = false
+    crumbSeparator.isHidden = true
+    docField.isHidden = true
+    docField.stringValue = ""
+  }
+
   private func updateBreadcrumb(for app: TerraneApp) {
     appNameLabel.stringValue = app.name
     appIconView.image = AppSidebarView.iconImage(for: app)
@@ -426,6 +475,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     let emptyMessage = nativeT("system.home.emptyNative", "No plain HTML app UIs found.")
     webView.loadHTMLString(
       HomePage.render(apps: apps) ?? Self.emptyStateHTML(emptyMessage), baseURL: nil)
+  }
+
+  private func refreshPremiumCatalog() {
+    guard let premiumURL else { return }
+    let catalogURL = premiumURL.appendingPathComponent("marketplace/premium-apps")
+    URLSession.shared.dataTask(with: catalogURL) { [weak self] data, _, _ in
+      let apps = data.map(PremiumCatalog.parse) ?? []
+      DispatchQueue.main.async {
+        self?.premiumApps = apps
+        self?.renderAppSwitcher()
+      }
+    }.resume()
   }
 
   private func saveSource(app: TerraneApp, file: SourceFile, text: String) throws
@@ -549,6 +610,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       return args[1]
     }
     return nil
+  }
+
+  static func resolvePremiumURL() -> URL? {
+    let args = CommandLine.arguments
+    let cliValue = args.indices.dropLast().first { args[$0] == "--premium-url" }
+      .map { args[$0 + 1] }
+    let raw = cliValue ?? ProcessInfo.processInfo.environment["TERRANE_PREMIUM_URL"]
+    guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+      .trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+      !trimmed.isEmpty
+    else {
+      return nil
+    }
+    return URL(string: trimmed)
   }
 
   static func safeDownloadFilename(_ suggested: String) -> String {

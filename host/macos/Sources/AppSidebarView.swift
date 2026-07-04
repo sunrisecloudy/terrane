@@ -2,6 +2,7 @@ import AppKit
 
 final class AppSidebarView: NSVisualEffectView {
   var onSelect: ((TerraneApp) -> Void)?
+  var onSelectPremium: ((PremiumApp) -> Void)?
   var onHome: (() -> Void)?
   var onToggleCollapse: (() -> Void)?
 
@@ -9,6 +10,7 @@ final class AppSidebarView: NSVisualEffectView {
   private let brandIcon = NSImageView()
   private let title = NSTextField(labelWithString: "Terrane")
   private let caption = NSTextField(labelWithString: "Apps")
+  private let premiumCaption = NSTextField(labelWithString: "Premium")
   private let stack = NSStackView()
   private let homeButton = AppSidebarButton(
     title: "Home",
@@ -17,8 +19,10 @@ final class AppSidebarView: NSVisualEffectView {
   )
   let localModelPanel = LocalModelPanel()
   private var apps: [TerraneApp] = []
+  private var premiumApps: [PremiumApp] = []
   private var selectedAppId: String?
   private var buttons: [AppSidebarButton] = []
+  private var premiumButtons: [AppSidebarButton] = []
   private var isCollapsed = false
 
   override init(frame frameRect: NSRect) {
@@ -31,12 +35,18 @@ final class AppSidebarView: NSVisualEffectView {
     configure()
   }
 
-  func render(apps: [TerraneApp], selectedAppId: String?) {
+  func render(apps: [TerraneApp], premiumApps: [PremiumApp] = [], selectedAppId: String?) {
     self.apps = apps
+    self.premiumApps = premiumApps.filter { premium in
+      !apps.contains { $0.id == premium.id }
+    }
     self.selectedAppId = selectedAppId
 
     buttons.forEach { $0.removeFromSuperview() }
     buttons = []
+    premiumButtons.forEach { $0.removeFromSuperview() }
+    premiumButtons = []
+    premiumCaption.removeFromSuperview()
     homeButton.isSelected = selectedAppId == nil
 
     for (index, app) in apps.enumerated() {
@@ -53,6 +63,23 @@ final class AppSidebarView: NSVisualEffectView {
       buttons.append(button)
       stack.addArrangedSubview(button)
     }
+
+    guard !self.premiumApps.isEmpty else { return }
+    premiumCaption.isHidden = isCollapsed
+    stack.addArrangedSubview(premiumCaption)
+    for (index, app) in self.premiumApps.enumerated() {
+      let button = AppSidebarButton(
+        title: app.name,
+        appId: app.id,
+        iconImage: Self.iconImage(for: app),
+        target: self,
+        action: #selector(selectPremiumApp(_:))
+      )
+      button.tag = index
+      button.setCollapsed(isCollapsed)
+      premiumButtons.append(button)
+      stack.addArrangedSubview(button)
+    }
   }
 
   func setCollapsed(_ collapsed: Bool) {
@@ -60,6 +87,7 @@ final class AppSidebarView: NSVisualEffectView {
     brandIcon.isHidden = collapsed
     title.isHidden = collapsed
     caption.isHidden = collapsed
+    premiumCaption.isHidden = collapsed || premiumApps.isEmpty
     localModelPanel.isHidden = collapsed
     collapseButton.image = NSImage(
       systemSymbolName: collapsed ? "sidebar.right" : "sidebar.left",
@@ -70,6 +98,9 @@ final class AppSidebarView: NSVisualEffectView {
     stack.spacing = collapsed ? 10 : 6
     homeButton.setCollapsed(collapsed)
     for button in buttons {
+      button.setCollapsed(collapsed)
+    }
+    for button in premiumButtons {
       button.setCollapsed(collapsed)
     }
   }
@@ -111,6 +142,9 @@ final class AppSidebarView: NSVisualEffectView {
     caption.font = .systemFont(ofSize: 11, weight: .medium)
     caption.textColor = .secondaryLabelColor
     caption.translatesAutoresizingMaskIntoConstraints = false
+    premiumCaption.font = .systemFont(ofSize: 11, weight: .medium)
+    premiumCaption.textColor = .secondaryLabelColor
+    premiumCaption.translatesAutoresizingMaskIntoConstraints = false
 
     collapseButton.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: nil)
     collapseButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 16, weight: .medium)
@@ -180,6 +214,11 @@ final class AppSidebarView: NSVisualEffectView {
     selectApp(at: sender.tag)
   }
 
+  @objc private func selectPremiumApp(_ sender: NSButton) {
+    guard premiumApps.indices.contains(sender.tag) else { return }
+    onSelectPremium?(premiumApps[sender.tag])
+  }
+
   @objc private func goHome(_ sender: NSButton) {
     onHome?()
   }
@@ -194,6 +233,22 @@ final class AppSidebarView: NSVisualEffectView {
       return image
     }
     return NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
+  }
+
+  static func iconImage(for app: PremiumApp) -> NSImage? {
+    if app.icon == "checklist" || app.id.contains("todo") {
+      return NSImage(systemSymbolName: "checklist", accessibilityDescription: nil)
+    }
+    if app.id.contains("shop") {
+      return NSImage(systemSymbolName: "bag", accessibilityDescription: nil)
+    }
+    if app.id.contains("admin") {
+      return NSImage(systemSymbolName: "shield", accessibilityDescription: nil)
+    }
+    if app.id.contains("studio") {
+      return NSImage(systemSymbolName: "pencil", accessibilityDescription: nil)
+    }
+    return NSImage(systemSymbolName: "sparkles", accessibilityDescription: nil)
   }
 }
 
