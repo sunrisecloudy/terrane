@@ -83,7 +83,19 @@ fn worker_script_path(home: &Path) -> PathBuf {
 }
 
 fn socket_path(home: &Path) -> PathBuf {
-    engines_dir(home).join("mlx-worker.sock")
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in home.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    #[cfg(unix)]
+    {
+        PathBuf::from(format!("/tmp/terrane-mlx-{hash:016x}.sock"))
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir().join(format!("terrane-mlx-{hash:016x}.sock"))
+    }
 }
 
 #[cfg(unix)]
@@ -171,7 +183,7 @@ pub(crate) fn ensure_worker(home: &Path, runtime: &MlxRuntime) -> Result<PathBuf
         },
     )?;
     touch(home);
-    spawn_watchdog(home, pid)?;
+    spawn_watchdog(home, &socket, pid)?;
     Ok(socket)
 }
 
@@ -274,18 +286,18 @@ pub fn stop_server(home: &Path) -> Result<bool, LlmError> {
 /// past the limit, then exit. Exits on its own when the worker dies first, so
 /// nothing stays resident after an idle shutdown.
 #[cfg(unix)]
-fn spawn_watchdog(home: &Path, pid: u32) -> Result<(), LlmError> {
+fn spawn_watchdog(home: &Path, socket: &Path, pid: u32) -> Result<(), LlmError> {
     let idle_secs = idle_limit().as_secs().max(1);
     let interval = (idle_secs / 3).clamp(1, 30);
     let script = r#"
-T="$1"; S="$2"; P="$3"; I="$4"
+T="$1"; J="$2"; S="$3"; P="$4"; I="$5"
 while :; do
-  sleep "$5"
-  kill -0 "$P" 2>/dev/null || { rm -f "$T" "$S"; exit 0; }
-  [ -f "$T" ] || { kill "$P" 2>/dev/null; rm -f "$S"; exit 0; }
+  sleep "$6"
+  kill -0 "$P" 2>/dev/null || { rm -f "$T" "$J" "$S"; exit 0; }
+  [ -f "$T" ] || { kill "$P" 2>/dev/null; rm -f "$J" "$S"; exit 0; }
   m=$(stat -f %m "$T" 2>/dev/null || stat -c %Y "$T" 2>/dev/null) || exit 0
   age=$(( $(date +%s) - m ))
-  if [ "$age" -gt "$I" ]; then kill "$P" 2>/dev/null; rm -f "$T" "$S"; exit 0; fi
+  if [ "$age" -gt "$I" ]; then kill "$P" 2>/dev/null; rm -f "$T" "$J" "$S"; exit 0; fi
 done
 "#;
     let mut command = Command::new("sh");
@@ -295,6 +307,7 @@ done
         .arg("mlx-watchdog")
         .arg(touch_path(home))
         .arg(state_path(home))
+        .arg(socket)
         .arg(pid.to_string())
         .arg(idle_secs.to_string())
         .arg(interval.to_string())
@@ -401,6 +414,9 @@ fn write_state(home: &Path, state: &WorkerState) -> Result<(), LlmError> {
 }
 
 fn clear_state(home: &Path) {
+    if let Some(state) = read_state(home) {
+        let _ = fs::remove_file(state.socket);
+    }
     let _ = fs::remove_file(state_path(home));
     let _ = fs::remove_file(touch_path(home));
     let _ = fs::remove_file(socket_path(home));

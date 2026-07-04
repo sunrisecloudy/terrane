@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
@@ -41,16 +42,24 @@ fn backend() -> Result<&'static LlamaBackend, LlmError> {
 }
 
 pub struct LlamaCppBackend {
-    model: LlamaModel,
+    // Drop the context before the model it borrows from. The context lifetime
+    // is widened when stored; keeping this field first makes that safe.
+    context: Option<LlamaContext<'static>>,
+    model: Box<LlamaModel>,
     context_length: u32,
     chat_template: Option<LlamaChatTemplate>,
 }
 
+// The cached backend is serialized behind a Mutex. llama.cpp contexts are not
+// marked Send by the wrapper, but moving this owner between host worker threads
+// is fine as long as the context is never used concurrently.
+unsafe impl Send for LlamaCppBackend {}
+
 /// A process-global cache of loaded engines, keyed by the resolved model file.
 /// Long-lived hosts (macOS app, MCP, serve) skip the GGUF reload per ask; the
-/// cache holds only the weights — each generation still gets a fresh context,
-/// so cached engines stay stateless between asks. Entries live for the life of
-/// the process (weights for local models are expected to be few and reused).
+/// cache holds the weights plus a reusable context, clearing KV state between
+/// asks. Entries live for the life of the process (weights for local models are
+/// expected to be few and reused).
 pub fn cached_llama(file: &ModelFile) -> Result<Arc<Mutex<LlamaCppBackend>>, LlmError> {
     let mut cache = llama_cache()
         .lock()
@@ -99,8 +108,10 @@ impl LlamaCppBackend {
             // the build has no GPU backend.
             model_params = model_params.with_n_gpu_layers(1_000_000);
         }
-        let model = LlamaModel::load_from_file(backend, &file.path, &model_params)
-            .map_err(|e| LlmError::Load(format!("{}: {e}", file.path.display())))?;
+        let model = Box::new(
+            LlamaModel::load_from_file(backend, &file.path, &model_params)
+                .map_err(|e| LlmError::Load(format!("{}: {e}", file.path.display())))?,
+        );
 
         let chat_template = match &file.chat_template_override {
             Some(template) => Some(LlamaChatTemplate::new(template).map_err(|e| {
@@ -115,6 +126,7 @@ impl LlamaCppBackend {
             .max(1);
 
         Ok(LlamaCppBackend {
+            context: None,
             model,
             context_length,
             chat_template,
@@ -204,6 +216,40 @@ impl LlamaCppBackend {
         }
         Ok(LlamaSampler::chain_simple(chain))
     }
+
+    fn context_params(&self, batch_capacity: u32) -> LlamaContextParams {
+        LlamaContextParams::default()
+            .with_n_ctx(NonZeroU32::new(self.context_length))
+            .with_n_batch(batch_capacity)
+    }
+
+    fn new_cached_context(&self, batch_capacity: u32) -> Result<LlamaContext<'static>, LlmError> {
+        let context = self
+            .model
+            .new_context(backend()?, self.context_params(batch_capacity))
+            .map_err(|e| LlmError::Generate(format!("context init failed: {e}")))?;
+        // SAFETY: `context.model` points into `self.model`, whose allocation is
+        // stable because it lives in a Box and is never replaced. The context
+        // field is declared before the model field, so Rust drops the context
+        // first when the backend is cleared from the process cache.
+        Ok(unsafe { std::mem::transmute::<LlamaContext<'_>, LlamaContext<'static>>(context) })
+    }
+
+    fn context_for(&mut self, batch_capacity: u32) -> Result<&mut LlamaContext<'static>, LlmError> {
+        let needs_rebuild = self
+            .context
+            .as_ref()
+            .is_none_or(|context| context.n_batch() < batch_capacity);
+        if needs_rebuild {
+            self.context = Some(self.new_cached_context(batch_capacity)?);
+        }
+        let context = self
+            .context
+            .as_mut()
+            .expect("cached context must exist after construction");
+        context.clear_kv_cache();
+        Ok(context)
+    }
 }
 
 impl LocalLlm for LlamaCppBackend {
@@ -230,14 +276,8 @@ impl LocalLlm for LlamaCppBackend {
         }
 
         let batch_capacity = (tokens.len().max(512)) as u32;
-        let context_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(self.context_length))
-            .with_n_batch(batch_capacity);
-        let mut context = self
-            .model
-            .new_context(backend()?, context_params)
-            .map_err(|e| LlmError::Generate(format!("context init failed: {e}")))?;
         let mut sampler = self.build_sampler(request)?;
+        let context = self.context_for(batch_capacity)?;
 
         // Feed the whole prompt, asking for logits on its last token only.
         let mut batch = LlamaBatch::new(batch_capacity as usize, 1);
@@ -263,11 +303,11 @@ impl LocalLlm for LlamaCppBackend {
                 break StopReason::DeadlineExceeded;
             }
 
-            let token = sampler.sample(&context, batch.n_tokens() - 1);
-            if self.model.is_eog_token(token) {
+            let token = sampler.sample(&*context, batch.n_tokens() - 1);
+            if context.model.is_eog_token(token) {
                 break StopReason::Eos;
             }
-            let piece = self
+            let piece = context
                 .model
                 .token_to_piece(token, &mut decoder, false, None)
                 .map_err(|e| LlmError::Generate(format!("detokenize failed: {e}")))?;
