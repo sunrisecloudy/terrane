@@ -43,6 +43,7 @@ payments.
 | --- | --- | --- | --- |
 | [cap-scheduler.md](cap-scheduler.md) | `scheduler` | Draft | time, js-runtime, a long-running host |
 | [cap-job-queue.md](cap-job-queue.md) | `job` | Draft | scheduler |
+| [cap-automation.md](cap-automation.md) | `automation` | Draft | query (JMESPath), scheduler's host loop; push should converge onto it |
 
 ### Outbound & inbound integration
 
@@ -54,6 +55,7 @@ payments.
 | [cap-common.md](cap-common.md) | `common` (`common.send`, channels; email first) | Draft (**name + channel model: locked**) | connection, blob; **v2 receive rides interop** (user-confirmed) |
 | [cap-mcp-client.md](cap-mcp-client.md) | `mcp` | Draft | connection, blob |
 | [cap-web-publish.md](cap-web-publish.md) | `web-publish` | Draft (**Premium-gated: locked**) | Premium relay, connection keychain |
+| [cap-browser.md](cap-browser.md) | `browser` | Draft | blob, net-v2 policies; mac WKWebView / chromium fallback |
 
 ### Multi-user
 
@@ -116,6 +118,32 @@ payments.
    required; scaffold generates defaults for `list`/`get`/`search`/`export`/
    `glance`.
 
+## Agent-readiness follow-ups (small, not full cap plans)
+
+Findings from the 2026-07-05 competitive audit (Sandstorm, Urbit, Val Town,
+Tauri, Jazz/DXOS, ChatGPT Apps SDK, Cloudflare Workers) that are conventions
+or extensions of existing plans, not new capabilities:
+
+- **Bundle smoke tests** — builder validate gains an optional `tests.json`
+  (verb + args + expected shape) run against the draft; agents self-verify
+  what they build before commit. Extension of the existing builder cap.
+- **Agent memory** — shell agents persist memory through their own app's kv
+  scope; a convention documented in the agent cap, not new storage.
+- **Model spend limits** — per-app rate/size caps on `model.*`/`local-model.*`
+  calls, same decide-time pattern as `common.send` limits; fold into
+  [cap-model-v2.md](cap-model-v2.md).
+- **Durable multi-step workflows** — compose [cap-job-queue.md](cap-job-queue.md)
+  + [cap-scheduler.md](cap-scheduler.md) (Cloudflare-Workflows shape); document
+  the pattern in job-queue; only cap-ify if real usage demands it.
+- **Per-item sharing granularity** — Sandstorm shares documents (grains);
+  Terrane v1 shares apps ([cap-share-invite.md](cap-share-invite.md)). Known
+  coarser granularity; per-document sharing is a crdt/document-level v2.
+- **Agent permission scoping** — the agent cap already carries a security
+  principal + grants (verify the deferred P1 from the top-bar-agents work is
+  fully closed before agents get interop access).
+- **MCP Apps compatibility** — the Apps-SDK widget protocol is standardizing;
+  track it so Terrane apps can render inside ChatGPT/Claude hosts later.
+
 ## Suggested build order
 
 1. **blob** → unblocks net v2, media, capture, tts, native-v2, webhook/stream
@@ -123,8 +151,8 @@ payments.
 2. **net v2, query, time, document, telemetry, interop** — mutually
    independent (interop is locked and high-leverage: email-receive, deep
    links, and the picker all ride it).
-3. **connection** → email, mcp-client; **scheduler** → job-queue;
-   **deep-links + history** alongside.
+3. **connection** → common.send, mcp-client; **scheduler** → job-queue →
+   automation; **deep-links + history + browser** alongside.
 4. **sync v2** → share-invite, presence, push; **web-publish** with the
    Premium relay.
 5. **schema-migration** → app-update → publish; model-v2 alongside.
