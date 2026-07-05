@@ -326,7 +326,9 @@ fn request_json(request: &RequestJsonInput<'_>, redact: bool) -> Value {
     obj.insert("url".to_string(), Value::String(request.url.to_string()));
     let mut header_obj = Map::new();
     for header in request.headers {
-        let value = if redact && is_sensitive_header(&header.name, request.sensitive) {
+        let value = if matches!(header.value, RequestValue::Secret(_)) {
+            request_value_json(&header.value)
+        } else if redact && is_sensitive_header(&header.name, request.sensitive) {
             Value::String(REDACTED.to_string())
         } else {
             request_value_json(&header.value)

@@ -349,11 +349,13 @@ impl Capability for AuthCapability {
 fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let subject = non_empty(arg(args, 0, "subject")?, "subject")?;
     let app = non_empty(arg(args, 1, "app")?, "app")?;
-    let namespace = non_empty(arg(args, 2, "namespace")?, "namespace")?;
+    let raw_resource = non_empty(arg(args, 2, "namespace")?, "namespace")?;
+    let grant_target = parse_grant_target(&raw_resource)?;
+    let namespace = grant_target.namespace.clone();
     ensure_app_exists(ctx.bus, &app)?;
     validate_segment_input("subject", &subject)?;
     validate_segment_input("app", &app)?;
-    validate_segment_input("namespace", &namespace)?;
+    validate_segment_input("namespace", &raw_resource)?;
     let spec = namespace_v1_spec(ctx.bus, &namespace)?;
 
     let verbs = match args.get(3) {
@@ -361,7 +363,7 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         None => spec.verbs.iter().map(|verb| (*verb).to_string()).collect(),
     };
     ensure_grantable_subject(ctx.state, &subject)?;
-    let resource_id = namespace_resource_id(&namespace);
+    let resource_id = grant_target.resource_id;
     let key = grant_key(
         terrane_cap_interface::LOCAL_ORG,
         &subject,
@@ -381,8 +383,8 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         app,
         namespace: namespace.clone(),
         selector_schema_id: spec.selector_schema_id.to_string(),
-        selector_id: String::new(),
-        selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(&namespace)),
+        selector_id: grant_target.selector_id,
+        selector_json: grant_target.selector_json,
         resource_id,
         verbs,
         granted_by: LOCAL_OWNER_SUBJECT.to_string(),
@@ -415,14 +417,15 @@ fn decide_member_ensure_local_owner(ctx: CommandCtx<'_>, args: &[String]) -> Res
 fn decide_revoke(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let subject = non_empty(arg(args, 0, "subject")?, "subject")?;
     let app = non_empty(arg(args, 1, "app")?, "app")?;
-    let namespace = non_empty(arg(args, 2, "namespace")?, "namespace")?;
+    let raw_resource = non_empty(arg(args, 2, "namespace")?, "namespace")?;
+    let grant_target = parse_grant_target(&raw_resource)?;
     ensure_app_exists(ctx.bus, &app)?;
     validate_segment_input("subject", &subject)?;
     validate_segment_input("app", &app)?;
-    validate_segment_input("namespace", &namespace)?;
-    namespace_v1_spec(ctx.bus, &namespace)?;
+    validate_segment_input("namespace", &raw_resource)?;
+    namespace_v1_spec(ctx.bus, &grant_target.namespace)?;
 
-    let resource_id = namespace_resource_id(&namespace);
+    let resource_id = grant_target.resource_id;
     let key = grant_key(
         terrane_cap_interface::LOCAL_ORG,
         &subject,
@@ -917,6 +920,21 @@ pub fn namespace_granted(
         .contains_key(&key))
 }
 
+pub fn resource_granted(
+    state: &dyn StateStore,
+    principal: &ExecutionPrincipal,
+    app: &str,
+    resource_id: &str,
+) -> Result<bool> {
+    if principal.subject.starts_with("agent:") && !agent_is_active(state, &principal.subject)? {
+        return Ok(false);
+    }
+    let key = grant_key(&principal.org, &principal.subject, app, resource_id);
+    Ok(state_ref::<AuthState>(state, "auth")?
+        .grants
+        .contains_key(&key))
+}
+
 pub fn namespace_resource_id(namespace: &str) -> String {
     namespace.to_string()
 }
@@ -1237,6 +1255,35 @@ fn validate_segment_input(label: &str, value: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+struct GrantTarget {
+    namespace: String,
+    selector_id: String,
+    selector_json: String,
+    resource_id: String,
+}
+
+fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
+    if let Some(name) = raw.strip_prefix("connection:") {
+        let name = terrane_cap_connection::validate_name(name)?;
+        let resource_id = terrane_cap_connection::connection_resource_id(&name)?;
+        return Ok(GrantTarget {
+            namespace: "connection".to_string(),
+            selector_id: name.clone(),
+            selector_json: format!(
+                r#"{{"namespace":"connection","name":"{}"}}"#,
+                json_string(&name)
+            ),
+            resource_id,
+        });
+    }
+    Ok(GrantTarget {
+        namespace: raw.to_string(),
+        selector_id: String::new(),
+        selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(raw)),
+        resource_id: namespace_resource_id(raw),
+    })
 }
 
 fn parse_verbs(raw: &str) -> Result<Vec<String>> {

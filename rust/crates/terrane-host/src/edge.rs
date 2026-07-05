@@ -112,7 +112,7 @@ impl EffectRunner for EdgeRunner {
                 let (status, body) = http_get(url)?;
                 Ok(vec![fetched_event(app, url, status, body)?])
             }
-            Effect::HttpRequest { app, request } => http_request(self.home()?, app, request),
+            Effect::HttpRequest { app, request } => http_request(self.home()?, state, app, request),
             Effect::ModelCall { app, agent, prompt } => {
                 let (response, exit_code) = run_agent(agent, prompt)?;
                 Ok(vec![responded_event(
@@ -952,23 +952,23 @@ fn http_get(url: &str) -> Result<(u16, String)> {
     }
 }
 
-fn http_request(home: &Path, app: &str, request: &str) -> Result<Vec<EventRecord>> {
+fn http_request(home: &Path, state: &terrane_core::State, app: &str, request: &str) -> Result<Vec<EventRecord>> {
     let prepared = terrane_cap_net::request::prepare_request(request)?;
-    if prepared.has_unresolved_secret {
-        return Err(Error::InvalidInput(
-            "net.request contains unresolved {$secret}; secret resolution belongs to cap-oauth-connections"
-                .into(),
-        ));
-    }
-    validate_http_target(&prepared.url)?;
+    let execution_request = if prepared.has_unresolved_secret {
+        crate::secret_store::resolve_net_request(home, state, app, request)?
+    } else {
+        request.to_string()
+    };
+    let execution_prepared = terrane_cap_net::request::prepare_request(&execution_request)?;
+    validate_http_target(&execution_prepared.url)?;
 
-    let timeout = Duration::from_millis(prepared.timeout_ms);
+    let timeout = Duration::from_millis(execution_prepared.timeout_ms);
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(timeout)
         .timeout_read(timeout)
         .redirects(0)
         .build();
-    let resp = perform_http_request(&agent, &prepared)?;
+    let resp = perform_http_request(&agent, &execution_prepared)?;
 
     let status = resp.status();
     let response_headers = filtered_response_headers(&resp);

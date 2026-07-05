@@ -196,6 +196,13 @@ internal notes hidden unless `includeInternal=true`.
 | --- | --- |
 | `ctx.resource.build.compileTs(path, source)` | read |
 
+#### `ctx.resource.connection`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.connection.list()` | read |
+| `ctx.resource.connection.stat(name)` | read |
+
 #### `ctx.resource.crdt`
 
 | Method | Kind |

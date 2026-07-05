@@ -66,6 +66,7 @@ use terrane_cap_auth::AuthState;
 use terrane_cap_blob::BlobState;
 use terrane_cap_builder::BuilderState;
 use terrane_cap_crdt::CrdtState;
+use terrane_cap_connection::ConnectionState;
 use terrane_cap_document::DocumentState;
 use terrane_cap_harness::HarnessState;
 use terrane_cap_history::HistoryState;
@@ -108,6 +109,7 @@ pub struct State {
     pub scheduler: SchedulerState,
     pub stt: SttState,
     pub crdt: CrdtState,
+    pub connection: ConnectionState,
     pub document: DocumentState,
     pub replica: ReplicaState,
     pub time: TimeState,
@@ -134,6 +136,7 @@ impl StateStore for State {
             "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
             "crdt" => Some(&self.crdt),
+            "connection" => Some(&self.connection),
             "document" => Some(&self.document),
             "replica" => Some(&self.replica),
             "time" => Some(&self.time),
@@ -161,6 +164,7 @@ impl StateStore for State {
             "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
             "crdt" => Some(&mut self.crdt),
+            "connection" => Some(&mut self.connection),
             "document" => Some(&mut self.document),
             "replica" => Some(&mut self.replica),
             "time" => Some(&mut self.time),
@@ -461,6 +465,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_search::SearchCapability));
     registry.register(Box::new(terrane_cap_crdt::CrdtCapability));
     registry.register(Box::new(terrane_cap_crypto::CryptoCapability));
+    registry.register(Box::new(terrane_cap_connection::ConnectionCapability));
     registry.register(Box::new(terrane_cap_document::DocumentCapability));
     registry.register(Box::new(terrane_cap_replica::ReplicaCapability));
     registry.register(Box::new(terrane_cap_net::NetCapability));

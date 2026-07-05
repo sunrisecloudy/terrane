@@ -10,6 +10,7 @@ mod app;
 mod auth;
 mod blob;
 mod builder;
+mod connection;
 mod crdt;
 mod crypto;
 mod document;

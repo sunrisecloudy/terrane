@@ -125,6 +125,11 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "kv.public.set" | "kv.public.rm" | "kv.public.import" => PublicCommandDisposition::Refuse {
             reason: "public KV is trusted-host-only; app backends read it via ctx.resource.kv.public*",
         },
+        "connection.define" | "connection.remove" | "connection.mark_authorized" => {
+            PublicCommandDisposition::Refuse {
+                reason: "connection credentials are trusted-admin-only; apps consume grants through $secret markers",
+            }
+        }
         "js-runtime.run" | "wasm-runtime.run" => PublicCommandDisposition::Refuse {
             reason: "run apps through the invoke tool",
         },

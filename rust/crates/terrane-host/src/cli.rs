@@ -40,6 +40,15 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             Err("usage: terrane logs <app> [--level warn] [--tail 200] [--follow]".into())
         }
         ["contract", "export"] => run_contract_export(),
+        ["connection", "set", name, rest @ ..] => run_connection_set(name, rest),
+        ["connection", "rm", name] | ["connection", "remove", name] => run_connection_rm(name),
+        ["connection", "ls"] | ["connection", "list"] => run_connection_ls(),
+        ["connection", "stat", name] => run_connection_stat(name),
+        ["connection", "authorize", name] => run_connection_authorize(name),
+        ["connection", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane connection (set <name> [--kind apiKey|oauth2|smtp] [--field key] [--config json] | rm <name> | ls | stat <name> | authorize <name>)".into())
+        }
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
@@ -181,6 +190,91 @@ pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result
 pub fn run_install(path: &str) -> Result<(), String> {
     println!("{}", crate::install_app(path)?.message());
     Ok(())
+}
+
+fn run_connection_set(name: &str, rest: &[&str]) -> Result<(), String> {
+    let mut kind = "apiKey";
+    let mut field = "key";
+    let mut config = "{}";
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--kind" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--kind requires a value".into());
+                };
+                kind = value;
+                i += 2;
+            }
+            "--field" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--field requires a value".into());
+                };
+                field = value;
+                i += 2;
+            }
+            "--config" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--config requires a value".into());
+                };
+                config = value;
+                i += 2;
+            }
+            other => return Err(format!("unknown connection set option: {other}")),
+        }
+    }
+    let name = terrane_cap_connection::validate_name(name).map_err(|e| e.to_string())?;
+    let field = terrane_cap_connection::validate_field(field).map_err(|e| e.to_string())?;
+    let secret = prompt_secret("Secret: ")?;
+    crate::secret_store::set_secret(&crate::home_dir(), &name, &field, &secret)
+        .map_err(|e| e.to_string())?;
+    let args = vec![name, kind.to_string(), config.to_string()];
+    print_command_outcome(crate::dispatch("connection.define", &args)?);
+    Ok(())
+}
+
+fn run_connection_rm(name: &str) -> Result<(), String> {
+    let name = terrane_cap_connection::validate_name(name).map_err(|e| e.to_string())?;
+    let args = vec![name.clone()];
+    let outcome = crate::dispatch("connection.remove", &args)?;
+    crate::secret_store::remove_connection(&crate::home_dir(), &name).map_err(|e| e.to_string())?;
+    print_command_outcome(outcome);
+    Ok(())
+}
+
+fn run_connection_ls() -> Result<(), String> {
+    let core = crate::open()?;
+    for status in terrane_cap_connection::all_statuses(core.state()).map_err(|e| e.to_string())? {
+        let expiry = status.expires_at.unwrap_or_else(|| "-".to_string());
+        println!(
+            "{}\t{}\tauthorized={}\texpires={}",
+            status.name, status.kind, status.authorized, expiry
+        );
+    }
+    Ok(())
+}
+
+fn run_connection_stat(name: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    match terrane_cap_connection::status(core.state(), name).map_err(|e| e.to_string())? {
+        Some(status) => println!(
+            "{}",
+            serde_json::json!({
+                "name": status.name,
+                "kind": status.kind,
+                "authorized": status.authorized,
+                "scopes": status.scopes,
+                "expires_at": status.expires_at,
+            })
+        ),
+        None => return Err(format!("unknown connection: {name}")),
+    }
+    Ok(())
+}
+
+fn run_connection_authorize(name: &str) -> Result<(), String> {
+    let _ = terrane_cap_connection::validate_name(name).map_err(|e| e.to_string())?;
+    Err("OAuth browser authorization is not wired in this host yet; use connection.mark_authorized after a trusted edge exchange".into())
 }
 
 /// `terrane app remove <id>` — dispatches the core command and, on success,
@@ -1156,6 +1250,8 @@ pub fn print_help() {
          \x20 terrane i18n negotiate <accept-language>       resolve a header to the best supported code\n\
          \x20 terrane native observe-default                    record default host native support\n\
          \x20 terrane native drain-once                         drain one pending native request\n\
+         \x20 terrane connection set <name> [--field key]       read a secret from stdin/prompt and record public metadata\n\
+         \x20 terrane connection ls|stat|rm                     inspect or remove non-secret connection metadata\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane net request <app> <request-json>          full HTTP request; record redacted request + response\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\

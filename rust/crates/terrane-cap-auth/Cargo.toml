@@ -10,5 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 terrane-cap-interface.workspace = true
+terrane-cap-connection.workspace = true
 terrane-cap-kv.workspace = true
 borsh.workspace = true

@@ -10,6 +10,7 @@ members = [
   "rust/crates/terrane-cap-blob",
   "rust/crates/terrane-cap-crdt",
   "rust/crates/terrane-cap-crypto",
+  "rust/crates/terrane-cap-connection",
   "rust/crates/terrane-cap-document",
   "rust/crates/terrane-cap-harness",
   "rust/crates/terrane-cap-history",
@@ -58,6 +59,7 @@ terrane-cap-builder = { path = "rust/crates/terrane-cap-builder" }
 terrane-cap-blob = { path = "rust/crates/terrane-cap-blob" }
 terrane-cap-crdt = { path = "rust/crates/terrane-cap-crdt" }
 terrane-cap-crypto = { path = "rust/crates/terrane-cap-crypto" }
+terrane-cap-connection = { path = "rust/crates/terrane-cap-connection" }
 terrane-cap-document = { path = "rust/crates/terrane-cap-document" }
 terrane-cap-harness = { path = "rust/crates/terrane-cap-harness" }
 terrane-cap-history = { path = "rust/crates/terrane-cap-history" }
@@ -91,6 +93,7 @@ borsh = { version = "1", features = ["derive"] }
 llama-cpp-2 = "0.1"
 libc = "0.2"
 ureq = "2"
+keyring = "3"
 # JSON path only; no binary/ron/toml. borsh stays the event-log format. This
 # only reads hand-authored bundle manifests at the edge.
 nanoserde = { version = "0.2", default-features = false, features = ["json"] }

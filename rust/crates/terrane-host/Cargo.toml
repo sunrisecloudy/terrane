@@ -31,6 +31,7 @@ nanoserde = { workspace = true }
 rpassword = "7"
 rusqlite.workspace = true
 serde_json = "1"
+keyring.workspace = true
 # Edge HTTP(S) GET for the `net` effect (http:// and https://, TLS via rustls).
 ureq = { workspace = true }
 sysinfo = "0.33"
@@ -41,6 +42,8 @@ terrane-cap-auth.workspace = true
 terrane-cap-blob.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true
+terrane-cap-connection.workspace = true
+terrane-cap-crypto.workspace = true
 terrane-cap-document.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-history.workspace = true
