@@ -38,6 +38,7 @@ mod model;
 mod native;
 mod net;
 mod person;
+mod publish;
 mod query;
 mod relational_db;
 mod replica;

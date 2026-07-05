@@ -148,6 +148,8 @@ pub const TOOL_APP_REGISTER_INLINE: &str = "app_register_inline";
 pub const TOOL_APP_REGISTER: &str = "app_register";
 /// MCP tool: trusted local app bundle upgrade through app.upgrade.
 pub const TOOL_APP_UPGRADE: &str = "app_upgrade";
+/// MCP tool: install a signed .terrane app archive through publish.install.
+pub const TOOL_APP_INSTALL: &str = "app_install";
 /// MCP tool: list capability docs.
 pub const TOOL_CAPABILITIES_LIST: &str = "capabilities_list";
 /// MCP tool: return detailed capability docs for one namespace.
@@ -296,6 +298,11 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             name: TOOL_APP_UPGRADE,
             description: "Trusted local upgrade for an existing app. Runs manifest migrations, archives outgoing and incoming bundles in blob CAS, records app.upgraded, and swaps kv bundle files atomically. Provide exactly one of source, toVersion, or fromDraft.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string","description":"Existing app id."},"source":{"type":"string","description":"Incoming bundle directory containing manifest.json."},"toVersion":{"type":"string","description":"Archived version to reinstall from blob CAS."},"fromDraft":{"type":"string","description":"Server-side app_build draft id to install."}},"required":["app"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_INSTALL,
+            description: "Trusted install for a signed .terrane archive. Verifies publisher signature and bundle hash, records TOFU trust/provenance, and installs or upgrades through publish.install.",
+            input_schema: r#"{"type":"object","properties":{"source":{"type":"string","description":"Path or URL to a signed .terrane archive."}},"required":["source"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_LIST_APPS,

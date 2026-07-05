@@ -4122,6 +4122,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-publish"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-app",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-query"
 version = "0.1.0"
 dependencies = [
@@ -4294,6 +4303,7 @@ dependencies = [
  "terrane-cap-native",
  "terrane-cap-net",
  "terrane-cap-person",
+ "terrane-cap-publish",
  "terrane-cap-query",
  "terrane-cap-relational-db",
  "terrane-cap-replica",
@@ -4361,6 +4371,7 @@ dependencies = [
  "terrane-cap-native",
  "terrane-cap-net",
  "terrane-cap-person",
+ "terrane-cap-publish",
  "terrane-cap-replica",
  "terrane-cap-scheduler",
  "terrane-cap-stream",

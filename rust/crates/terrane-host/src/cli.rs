@@ -33,6 +33,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane cap (list | info <namespace>) [--format json|markdown|skill] [--include-internal]".into())
         }
+        ["app", "export", app, rest @ ..] => run_app_export(app, rest),
         ["app", "install", path] => run_install(path),
         ["app", "install-kv", path, rest @ ..] => run_install_kv(path, rest),
         ["app", "upgrade", app, rest @ ..] => run_app_upgrade(app, rest),
@@ -277,7 +278,30 @@ pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result
 }
 
 pub fn run_install(path: &str) -> Result<(), String> {
-    println!("{}", crate::install_app(path)?.message());
+    let args = vec![path.to_string()];
+    print_command_outcome(crate::dispatch("publish.install", &args)?);
+    Ok(())
+}
+
+pub fn run_app_export(app: &str, rest: &[&str]) -> Result<(), String> {
+    let mut output = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "-o" | "--output" => {
+                let Some(path) = rest.get(i + 1) else {
+                    return Err("--output requires a path".into());
+                };
+                output = Some(PathBuf::from(path));
+                i += 2;
+            }
+            other => return Err(format!("unknown app export option: {other}")),
+        }
+    }
+    println!(
+        "{}",
+        crate::export_app_archive(app, output.as_deref())?.message()
+    );
     Ok(())
 }
 
@@ -2219,7 +2243,8 @@ pub fn print_help() {
         "terrane — your local app catalog\n\n\
          Commands are <namespace> <verb> [args…], routed to the capability that\n\
          owns that namespace. Built-in capabilities:\n\n\
-         \x20 terrane app install <path>                       copy a bundle into the home & catalog it\n\
+         \x20 terrane app export <id> [-o path]                write a signed .terrane app archive\n\
+         \x20 terrane app install <path|url>                   verify a signed .terrane archive & install it\n\
          \x20 terrane app install-kv <path> [--storage <backend>] [--path <path>]\n\
          \x20                                                  store a JS bundle in reserved cap-kv keys\n\
          \x20 terrane app upgrade <id> <bundle|--to-version v|--from-draft d>\n\

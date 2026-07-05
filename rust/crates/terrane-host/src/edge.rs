@@ -179,6 +179,9 @@ impl EffectRunner for EdgeRunner {
             Effect::UpgradeAppBundle { id, source } => {
                 upgrade_app_bundle(self, id, source, state)
             }
+            Effect::InstallSignedBundle { source } => {
+                crate::publish::install_signed_bundle(self, state, source)
+            }
             Effect::BlobStore {
                 app,
                 name,
@@ -399,7 +402,7 @@ fn store_person_seed(home: &Path, person_id: &str, seed: &[u8; 32]) -> Result<()
     )
 }
 
-fn load_person_key(home: &Path, person_id: &str) -> Result<SigningKey> {
+pub(crate) fn load_person_key(home: &Path, person_id: &str) -> Result<SigningKey> {
     let secret = crate::secret_store::get_secret(home, &person_secret_name(person_id)?, "ed25519")?;
     let bytes = B64
         .decode(secret)
@@ -1121,11 +1124,22 @@ fn import_app_bundle(
     state: &terrane_core::State,
 ) -> Result<Vec<EventRecord>> {
     let src = Path::new(source);
-    let manifest = crate::read_manifest(src)?;
+    let files = read_text_bundle_files(src)?;
+    import_app_bundle_files(source, files, storage_backend, storage_path, state)
+}
+
+pub(crate) fn import_app_bundle_files(
+    source: &str,
+    files: BTreeMap<String, String>,
+    storage_backend: &Option<String>,
+    storage_path: &Option<String>,
+    state: &terrane_core::State,
+) -> Result<Vec<EventRecord>> {
+    let manifest = manifest_from_files(&files)?;
     let id = manifest.id.trim().to_string();
     crate::validate_bundle_id(source, &id).map_err(Error::InvalidInput)?;
     crate::validate_runtime(source, &manifest.runtime).map_err(Error::InvalidInput)?;
-    crate::validate_common_api_bundle(src).map_err(Error::InvalidInput)?;
+    validate_common_api_files(&id, &manifest, &files)?;
     if manifest.runtime != "js" {
         return Err(Error::InvalidInput(
             "app.import currently supports js text bundles only".into(),
@@ -1138,7 +1152,6 @@ fn import_app_bundle(
         "" => id.clone(),
         name => name.to_string(),
     };
-    let files = read_text_bundle_files(src)?;
 
     let mut records = Vec::new();
     if let Some(raw_backend) = storage_backend {
@@ -1194,6 +1207,17 @@ fn upgrade_app_bundle(
     source: &str,
     state: &terrane_core::State,
 ) -> Result<Vec<EventRecord>> {
+    let incoming_files = resolve_upgrade_files(runner.home()?, id, source, state)?;
+    upgrade_app_bundle_files(runner, id, source, incoming_files, state)
+}
+
+pub(crate) fn upgrade_app_bundle_files(
+    runner: &EdgeRunner,
+    id: &str,
+    source: &str,
+    incoming_files: BTreeMap<String, String>,
+    state: &terrane_core::State,
+) -> Result<Vec<EventRecord>> {
     let app = state
         .app
         .apps
@@ -1203,7 +1227,6 @@ fn upgrade_app_bundle(
     let current_manifest = manifest_from_files(&current_files)?;
     let current_data_version = crate::manifest_data_version(&current_manifest);
     let current_version = app.version.as_str();
-    let incoming_files = resolve_upgrade_files(runner.home()?, id, source, state)?;
     let incoming_manifest = manifest_from_files(&incoming_files)?;
     let incoming_id = incoming_manifest.id.trim();
     crate::validate_bundle_id(source, incoming_id).map_err(Error::InvalidInput)?;
@@ -1269,7 +1292,7 @@ fn upgrade_app_bundle(
     Ok(records)
 }
 
-fn current_bundle_files(
+pub(crate) fn current_bundle_files(
     id: &str,
     source: Option<&str>,
     state: &terrane_core::State,
@@ -1317,7 +1340,9 @@ fn resolve_upgrade_files(
     read_text_bundle_files(Path::new(source))
 }
 
-fn manifest_from_files(files: &BTreeMap<String, String>) -> Result<crate::BundleManifest> {
+pub(crate) fn manifest_from_files(
+    files: &BTreeMap<String, String>,
+) -> Result<crate::BundleManifest> {
     let manifest = terrane_cap_js_runtime::read_manifest_from_files(files)?;
     let manifest = crate::BundleManifest {
         id: manifest.id,
@@ -1346,6 +1371,29 @@ fn manifest_from_files(files: &BTreeMap<String, String>) -> Result<crate::Bundle
     terrane_cap_app::validate_version(&manifest.version)?;
     crate::validate_manifest_migrations(&manifest, None)?;
     Ok(manifest)
+}
+
+fn validate_common_api_files(
+    id: &str,
+    manifest: &crate::BundleManifest,
+    files: &BTreeMap<String, String>,
+) -> Result<()> {
+    if manifest.runtime != "js" {
+        return Ok(());
+    }
+    let source = files
+        .get(&manifest.backend)
+        .ok_or_else(|| {
+            Error::InvalidInput(format!("bundle backend file is missing: {}", manifest.backend))
+        })?
+        .clone();
+    crate::validate_common_api_bundle_source(
+        id,
+        terrane_cap_interface::non_empty_or(manifest.name.clone(), id),
+        source,
+        manifest.resources.clone(),
+    )
+    .map_err(Error::InvalidInput)
 }
 
 fn run_upgrade_migrations(
@@ -1441,12 +1489,12 @@ fn bundle_diff_events(
     Ok(records)
 }
 
-fn bundle_hash(files: &BTreeMap<String, String>) -> Result<String> {
+pub(crate) fn bundle_hash(files: &BTreeMap<String, String>) -> Result<String> {
     let bytes = encode_bundle_archive(files)?;
     Ok(sha256_hex(&bytes))
 }
 
-fn encode_bundle_archive(files: &BTreeMap<String, String>) -> Result<Vec<u8>> {
+pub(crate) fn encode_bundle_archive(files: &BTreeMap<String, String>) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     out.extend_from_slice(b"TRNAPPARCHIVE1\n");
     for (path, content) in files {
@@ -1464,7 +1512,7 @@ fn encode_bundle_archive(files: &BTreeMap<String, String>) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-fn decode_bundle_archive(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
+pub(crate) fn decode_bundle_archive(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
     let header = b"TRNAPPARCHIVE1\n";
     if !bytes.starts_with(header) {
         return Err(Error::Storage("bundle archive header mismatch".into()));
@@ -1540,7 +1588,7 @@ fn hex_digest(bytes: &[u8]) -> String {
     out
 }
 
-fn read_text_bundle_files(root: &Path) -> Result<BTreeMap<String, String>> {
+pub(crate) fn read_text_bundle_files(root: &Path) -> Result<BTreeMap<String, String>> {
     if !root.is_dir() {
         return Err(Error::InvalidInput(format!(
             "app.import source must be a bundle directory: {}",

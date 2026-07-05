@@ -14,8 +14,9 @@ use terrane_api::{
     mcp_prompts, mcp_resource_templates, mcp_resources, mcp_tools, MCP_PROTOCOL_VERSION,
     MCP_SERVER_INSTRUCTIONS, TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD,
     TOOL_APP_BUILD_GET, TOOL_APP_BUILD_LIST, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
-    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_LOGS, TOOL_APP_RECIPE,
-    TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_APP_UPGRADE,
+    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_INSTALL, TOOL_APP_LOGS,
+    TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD,
+    TOOL_APP_UPGRADE,
     TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY,
     TOOL_INVOKE, TOOL_LIST_APPS,
     TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
@@ -906,6 +907,20 @@ fn tool_call(
                 Err(e) => return tool_text(id, &e, true),
             };
             match app_upgrade_json(core, &app, &source, &to_version, &from_draft) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_INSTALL => {
+            let args = match args_object(TOOL_APP_INSTALL, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let source = match required_string(args, "source", TOOL_APP_INSTALL) {
+                Ok(source) => source,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match app_install_json(core, &source) {
                 Ok(output) => tool_json(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }
@@ -2498,6 +2513,21 @@ fn app_upgrade_json(
         "next": [
             {"tool": "list_apps", "arguments": {}},
             {"tool": "app_actions", "arguments": {"app": app}}
+        ]
+    })
+    .to_string())
+}
+
+fn app_install_json(core: &mut HostCore, source: &str) -> Result<String, String> {
+    let argv = vec![source.to_string()];
+    let outcome = crate::dispatch_on_core(core, "publish.install", &argv)?;
+    Ok(json!({
+        "command": "publish.install",
+        "args": argv,
+        "records": outcome.records.len(),
+        "output": outcome.output,
+        "next": [
+            {"tool": "list_apps", "arguments": {}}
         ]
     })
     .to_string())
