@@ -457,6 +457,12 @@ is live discovery and records nothing.
 | `ctx.resource.tts.render(text, options)` | call |
 | `ctx.resource.tts.voices()` | read |
 | `ctx.resource.tts.renders()` | read |
+
+#### `ctx.resource.webhook`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.webhook.list()` | read |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as
@@ -478,6 +484,15 @@ has the `net` grant, or through the CLI as
 redacted before persistence for built-in sensitive names and app-declared
 `sensitiveHeaders`; `{"$secret":"name"}` is reserved for future host secret
 resolution and is rejected at the edge until that resolver exists.
+
+For `webhook`: declare `"webhook"` in `manifest.resources` if the backend needs
+to list its own hook URL paths with `ctx.resource.webhook.list()`. A trusted
+operator registers a hook with `webhook.register <app> <name> <verb>`, which
+mints `POST /hook/<app>/<name>/<token>`. When a listening host receives a
+delivery, it records `webhook.received` first, then invokes the registered
+backend `verb` with one argument: a JSON delivery object containing `method`,
+redacted `headers`, `body_kind`, `body`, `body_is_base64`, `body_hash`,
+`body_size`, `body_mime`, and `received_at`.
 
 For `tts`: `ctx.resource.tts.speak(text)` is transient and records nothing, so
 replay never makes sound. `ctx.resource.tts.render(text, "--voice", voice,

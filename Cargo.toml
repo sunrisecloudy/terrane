@@ -9,6 +9,7 @@ members = [
   "rust/crates/terrane-cap-builder",
   "rust/crates/terrane-cap-browser",
   "rust/crates/terrane-cap-blob",
+  "rust/crates/terrane-cap-webhook",
   "rust/crates/terrane-cap-common",
   "rust/crates/terrane-cap-crdt",
   "rust/crates/terrane-cap-crypto",
@@ -64,6 +65,7 @@ terrane-cap-build = { path = "rust/crates/terrane-cap-build" }
 terrane-cap-builder = { path = "rust/crates/terrane-cap-builder" }
 terrane-cap-browser = { path = "rust/crates/terrane-cap-browser" }
 terrane-cap-blob = { path = "rust/crates/terrane-cap-blob" }
+terrane-cap-webhook = { path = "rust/crates/terrane-cap-webhook" }
 terrane-cap-common = { path = "rust/crates/terrane-cap-common" }
 terrane-cap-crdt = { path = "rust/crates/terrane-cap-crdt" }
 terrane-cap-crypto = { path = "rust/crates/terrane-cap-crypto" }

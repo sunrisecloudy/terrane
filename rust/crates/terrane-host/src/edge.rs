@@ -161,6 +161,21 @@ impl EffectRunner for EdgeRunner {
                     mime,
                 )?])
             }
+            Effect::WebhookRegister { app, name, verb } => {
+                let token = mint_webhook_token()?;
+                let existing = state
+                    .webhook
+                    .routes
+                    .get(app)
+                    .and_then(|routes| routes.get(name))
+                    .is_some();
+                let event = if existing {
+                    terrane_cap_webhook::rotated_event(app, name, verb, token)?
+                } else {
+                    terrane_cap_webhook::registered_event(app, name, verb, token)?
+                };
+                Ok(vec![event])
+            }
             Effect::ChannelSend {
                 app,
                 channel,
@@ -313,6 +328,18 @@ Effect::LocalModelEmbed {
     fn live(&self) -> Option<&dyn LiveHost> {
         Some(self)
     }
+}
+
+fn mint_webhook_token() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| Error::Runtime(format!("mint webhook token: {e}")))?;
+    let mut out = String::with_capacity(32);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    Ok(out)
 }
 
 fn run_app_call(

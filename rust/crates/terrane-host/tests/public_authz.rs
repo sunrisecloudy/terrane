@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        109,
+        113,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        56,
+        59,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 51, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 52, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -92,7 +92,8 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "sysinfo",
             "telemetry",
             "time",
-            "tts"
+            "tts",
+            "webhook"
         ])
     );
 

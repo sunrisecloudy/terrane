@@ -34,3 +34,4 @@ mod sysinfo;
 mod telemetry;
 mod time;
 mod tts;
+mod webhook;

@@ -44,6 +44,15 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "blob",
             app_arg_index: 0,
         },
+        "webhook.register" | "webhook.rotate" | "webhook.unregister" => {
+            PublicCommandDisposition::GrantGated {
+                namespace: "webhook",
+                app_arg_index: 0,
+            }
+        }
+        "webhook.ingest" => PublicCommandDisposition::Refuse {
+            reason: "webhook.ingest is trusted-host-only; inbound HTTP must be observed by a listening host",
+        },
         "crdt.mapSet"
         | "crdt.mapDel"
         | "crdt.listPush"

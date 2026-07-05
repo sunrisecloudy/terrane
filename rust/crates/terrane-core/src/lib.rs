@@ -66,6 +66,7 @@ use terrane_cap_auth::AuthState;
 use terrane_cap_blob::BlobState;
 use terrane_cap_browser::BrowserState;
 use terrane_cap_builder::BuilderState;
+use terrane_cap_webhook::WebhookState;
 use terrane_cap_common::CommonState;
 use terrane_cap_crdt::CrdtState;
 use terrane_cap_connection::ConnectionState;
@@ -102,6 +103,7 @@ pub struct State {
     pub app: AppState,
     pub auth: AuthState,
     pub blob: BlobState,
+    pub webhook: WebhookState,
     pub browser: BrowserState,
     pub builder: BuilderState,
     pub common: CommonState,
@@ -135,6 +137,7 @@ impl StateStore for State {
             "app" => Some(&self.app),
             "auth" => Some(&self.auth),
             "blob" => Some(&self.blob),
+            "webhook" => Some(&self.webhook),
             "browser" => Some(&self.browser),
             "builder" => Some(&self.builder),
             "common" => Some(&self.common),
@@ -169,6 +172,7 @@ impl StateStore for State {
             "app" => Some(&mut self.app),
             "auth" => Some(&mut self.auth),
             "blob" => Some(&mut self.blob),
+            "webhook" => Some(&mut self.webhook),
             "browser" => Some(&mut self.browser),
             "builder" => Some(&mut self.builder),
             "common" => Some(&mut self.common),
@@ -478,6 +482,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_app::AppCapability));
     registry.register(Box::new(terrane_cap_auth::AuthCapability));
     registry.register(Box::new(terrane_cap_blob::BlobCapability));
+    registry.register(Box::new(terrane_cap_webhook::WebhookCapability));
     registry.register(Box::new(terrane_cap_browser::BrowserCapability));
     registry.register(Box::new(terrane_cap_build::BuildCapability));
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));

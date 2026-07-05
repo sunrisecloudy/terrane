@@ -73,6 +73,16 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["blob", "rm", app, name] => run_blob_rm(app, name),
         ["blob", "verify", rest @ ..] => run_blob_verify(rest),
         ["blob", "gc", rest @ ..] => run_blob_gc(rest),
+        ["webhook", "register", app, name, verb] => run_webhook_register(app, name, verb),
+        ["webhook", "rotate", app, name] => run_webhook_rotate(app, name),
+        ["webhook", "unregister", app, name] | ["webhook", "rm", app, name] => {
+            run_webhook_unregister(app, name)
+        }
+        ["webhook", "ls", app] | ["webhook", "list", app] => run_webhook_list(app),
+        ["webhook", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane webhook (register <app> <name> <verb> | rotate <app> <name> | unregister <app> <name> | ls <app>)".into())
+        }
         ["tts", "speak", app, rest @ ..] => run_tts_speak(app, rest),
         ["tts", "render", app, rest @ ..] => run_tts_render(app, rest),
         ["tts", "voices"] => run_tts_voices(),
@@ -1014,6 +1024,72 @@ pub fn run_blob_rm(app: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_webhook_register(app: &str, name: &str, verb: &str) -> Result<(), String> {
+    let mut core = crate::open()?;
+    let args = vec![app.to_string(), name.to_string(), verb.to_string()];
+    crate::dispatch_on_core(&mut core, "webhook.register", &args)?;
+    print_webhook_route(&core, app, name)
+}
+
+pub fn run_webhook_rotate(app: &str, name: &str) -> Result<(), String> {
+    let mut core = crate::open()?;
+    let args = vec![app.to_string(), name.to_string()];
+    crate::dispatch_on_core(&mut core, "webhook.rotate", &args)?;
+    print_webhook_route(&core, app, name)
+}
+
+pub fn run_webhook_unregister(app: &str, name: &str) -> Result<(), String> {
+    let args = vec![app.to_string(), name.to_string()];
+    print_command_outcome(crate::dispatch("webhook.unregister", &args)?);
+    Ok(())
+}
+
+pub fn run_webhook_list(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let Some(routes) = core.state().webhook.routes.get(app) else {
+        println!("[]");
+        return Ok(());
+    };
+    let mut out = String::from("[");
+    let mut first = true;
+    for (name, meta) in routes {
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str(&format!(
+            "{{\"name\":\"{}\",\"verb\":\"{}\",\"url_path\":\"/hook/{}/{}/{}\"}}",
+            escape_json(name),
+            escape_json(&meta.verb),
+            escape_json(app),
+            escape_json(name),
+            escape_json(&meta.token)
+        ));
+    }
+    out.push(']');
+    println!("{out}");
+    Ok(())
+}
+
+fn print_webhook_route(core: &terrane_core::Core<crate::EdgeRunner>, app: &str, name: &str) -> Result<(), String> {
+    let meta = core
+        .state()
+        .webhook
+        .routes
+        .get(app)
+        .and_then(|routes| routes.get(name))
+        .ok_or_else(|| format!("webhook route not found after commit: {app}/{name}"))?;
+    println!(
+        "{{\"name\":\"{}\",\"verb\":\"{}\",\"url_path\":\"/hook/{}/{}/{}\",\"note\":\"deliveries arrive only while a listening Terrane web/mac host is running\"}}",
+        escape_json(name),
+        escape_json(&meta.verb),
+        escape_json(app),
+        escape_json(name),
+        escape_json(&meta.token)
+    );
+    Ok(())
+}
+
 pub fn run_blob_verify(rest: &[&str]) -> Result<(), String> {
     let core = crate::open()?;
     let hashes = blob_hashes_for_args(core.state(), rest)?;
@@ -1553,6 +1629,9 @@ pub fn print_help() {
          \x20 terrane blob rm <app> <name>                    remove a blob name\n\
          \x20 terrane blob verify [app [name]]                verify live blob hashes against the CAS\n\
          \x20 terrane blob gc [--dry-run|--yes]               report or delete unreferenced CAS rows\n\
+         \x20 terrane webhook register <app> <name> <verb>    mint a local-network webhook URL\n\
+         \x20 terrane webhook rotate|unregister <app> <name>  rotate or remove a webhook URL\n\
+         \x20 terrane webhook ls <app>                        list webhook URL paths\n\
          \x20 terrane tts speak <app> [--voice v] [--rate r] <text…>   speak text now; record nothing\n\
          \x20 terrane tts render <app> [--voice v] [--rate r] <text…>  render speech into blob CAS\n\
          \x20 terrane tts voices|renders <app>                list host voices or folded render metadata\n\
