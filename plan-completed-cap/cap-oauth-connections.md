@@ -4,7 +4,7 @@ New crate `rust/crates/terrane-cap-connection/`, namespace `connection`,
 registered in `default_registry`. The host-level store of **named credentials**
 ("github", "smtp-default", "openai") and the machinery that keeps OAuth2
 tokens fresh. This is the doc [cap-net-v2.md](cap-net-v2.md),
-[cap-email.md](cap-email.md), [cap-mcp-client.md](cap-mcp-client.md),
+[cap-common.md](cap-common.md), [cap-mcp-client.md](cap-mcp-client.md),
 [cap-webhook.md](cap-webhook.md) (MAC keys) and [cap-stream.md](cap-stream.md)
 lean on.
 
@@ -96,7 +96,7 @@ CLI host: `authorize` runs a one-shot loopback listener for the callback
 `{"$secret": "<name>"}` (and `{"$secret": "<name>.<field>"}` for multi-field
 kinds) after checking the app's grant on `<name>`, refreshing oauth2 tokens as
 above. `EdgeRunner::run` calls it for `HttpRequest`
-([net-v2](cap-net-v2.md)), `EmailSend` ([email](cap-email.md)), `McpCall`
+([net-v2](cap-net-v2.md)), `ChannelSend` ([common.send](cap-common.md)), `McpCall`
 ([mcp-client](cap-mcp-client.md)), and stream opens
 ([stream](cap-stream.md)). Resolved values exist only in edge memory.
 

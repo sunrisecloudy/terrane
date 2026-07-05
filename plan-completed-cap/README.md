@@ -51,7 +51,7 @@ payments.
 | [cap-oauth-connections.md](cap-oauth-connections.md) | `connection` | Draft | net v2 (fulfils its `$secret` reservation), crypto primitives, OS keychain |
 | [cap-webhook.md](cap-webhook.md) | `webhook` | Draft | blob, net v2 redaction rules |
 | [cap-stream.md](cap-stream.md) | `stream` | Draft | net v2, blob; log growth ties to compaction |
-| [cap-email.md](cap-email.md) | `email` | Draft | connection, blob; **v2 receive rides interop** (user-confirmed) |
+| [cap-common.md](cap-common.md) | `common` (`common.send`, channels; email first) | Draft (**name + channel model: locked**) | connection, blob; **v2 receive rides interop** (user-confirmed) |
 | [cap-mcp-client.md](cap-mcp-client.md) | `mcp` | Draft | connection, blob |
 | [cap-web-publish.md](cap-web-publish.md) | `web-publish` | Draft (**Premium-gated: locked**) | Premium relay, connection keychain |
 
@@ -110,6 +110,11 @@ payments.
    the edge → `common.receive("email", …)` to the user-routed app (email v2).
 6. **Web publish is Premium-gated** through the relay; the home host only ever
    dials out.
+7. **Outbound messaging = `common.send`** (cap renamed from `email` to
+   `common`; email is the first *channel*, grants are channel-scoped) —
+   symmetric with `common.receive`. Common-verb set approved: only `receive`
+   required; scaffold generates defaults for `list`/`get`/`search`/`export`/
+   `glance`.
 
 ## Suggested build order
 

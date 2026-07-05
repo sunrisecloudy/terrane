@@ -131,7 +131,7 @@ Gate after each step:
 
 App-controlled HTTP responses, internet exposure/tunnels (future sync/relay
 transport), delivery retries/dead-lettering, inbound auth schemes beyond
-token-path + recorded MACs, receiving email (see [cap-email.md](cap-email.md)
+token-path + recorded MACs, receiving email (see [cap-common.md](cap-common.md)
 non-goals).
 
 ## Decisions to confirm

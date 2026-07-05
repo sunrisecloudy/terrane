@@ -70,7 +70,7 @@ mirrors the protocol flag and still folds — a tool error is a fact.
 - stdio sessions: spawned child, reused across calls, killed after 5 min
   idle or on `mcp.disconnected` fold. Spawn failure → `mcp.called` with
   `is_error` + message (a failed attempt is recorded, matching
-  [cap-email.md](cap-email.md)).
+  [cap-common.md](cap-common.md)).
 - http sessions: reuse net-v2's HTTP client and its SSRF stance (`http(s)`
   only, deny `169.254.169.254`, private/loopback allowed).
 - Timeout 60 s default / 300 s max per call, from `args`-level `timeoutMs`?

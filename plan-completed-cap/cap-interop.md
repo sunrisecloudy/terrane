@@ -27,18 +27,31 @@ second caller — other apps.
 
 A registry of well-known verbs under `common.*`, documented in `APP_API.md`:
 
-| Verb | Required | Contract |
-| --- | --- | --- |
-| `common.receive` | **yes** | `handle(["common.receive", kind, payloadJson])` → string reply. `kind` is a hint (`"text"`, `"json"`, `"email"`, `"link"`, `"blob"`); payload for blobs is a `{name, hash, size, mime}` ref per [cap-blob.md](cap-blob.md). The scaffold default stores the item under `inbox/<n>` in kv. |
-| `common.search` | no | `(query)` → JSON array of `{id, title, snippet}` |
-| `common.export` | no | `(format)` → document/blob ref |
+| Verb | Interface | Required | Contract |
+| --- | --- | --- | --- |
+| `common.receive` | `inbox` | **yes** | `handle(["common.receive", kind, payloadJson])` → string reply. `kind` is a hint (`"text"`, `"json"`, `"email"`, `"link"`, `"blob"`); payload for blobs is a `{name, hash, size, mime}` ref per [cap-blob.md](cap-blob.md). The scaffold default stores the item under `inbox/<n>` in kv. |
+| `common.list` | `items` | no | `(filterJson?)` → JSON array of `{id, title, kind}` — the app's items, for pickers/linking/agent browsing |
+| `common.get` | `items` | no | `(id)` → one item as JSON — pairs with `list`/`search` results |
+| `common.search` | `search` | no | `(query)` → JSON array of `{id, title, snippet}` — global search fans out over `search` apps |
+| `common.export` | `export` | no | `(format)` → document/blob ref — portability, backup, "copy as markdown" |
+| `common.glance` | `glance` | no | `()` → `{badge, headline}` — shell home-screen tile status ("3 tasks due") |
+
+**Verb set approved by the user (2026-07-05): only `common.receive` is
+required; the scaffold generates working defaults for all six**, so apps built
+by agents have the full surface in practice, and picker/search/home-tile
+features light up per declared interface. (`common.migrate` was considered
+and rejected — schema evolution belongs to
+[cap-schema-migration.md](cap-schema-migration.md)'s manifest-declared
+migrations, not a verb convention.)
 
 The manifest gains `"interfaces": ["inbox", …]` — `inbox` is implied and
-mandatory; optional interfaces advertise picker eligibility (e.g. a
-"send to…" sheet lists `inbox` apps; a global search fans out to `search`
-apps). Consumers of this contract: inbound email
-([cap-email.md](cap-email.md) v2), OS deep links / share sheet
-([cap-deep-links.md](cap-deep-links.md)), and any app with data to hand off.
+mandatory; optional interfaces advertise picker eligibility. Consumers of this
+contract: inbound email ([cap-common.md](cap-common.md) v2), OS deep links /
+share sheet ([cap-deep-links.md](cap-deep-links.md)), and any app with data to
+hand off. The **platform half** of the common API is the `common` capability
+itself — apps call `ctx.resource.common.send(…)` for outbound messaging
+([cap-common.md](cap-common.md)): one verb in (`common.receive`), one verb out
+(`common.send`).
 
 ## Command / event / resource surface
 
