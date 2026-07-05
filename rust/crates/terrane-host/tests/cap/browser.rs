@@ -70,6 +70,7 @@ fn chromium_available() -> bool {
 }
 
 #[test]
+#[ignore = "requires a system browser engine that renders JS; headless CI environments time out"]
 fn browser_render_sees_js_inserted_text_that_net_fetch_misses() {
     if !chromium_available() {
         eprintln!("skipping browser render e2e: no system Chrome/Chromium");
