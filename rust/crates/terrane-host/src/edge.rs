@@ -161,6 +161,29 @@ impl EffectRunner for EdgeRunner {
                     mime,
                 )?])
             }
+            Effect::TtsSpeak {
+                app: _,
+                text,
+                voice,
+                rate_milli,
+            } => {
+                crate::tts_edge::speak(text, voice.as_deref(), *rate_milli)?;
+                Ok(Vec::new())
+            }
+            Effect::TtsRender {
+                app,
+                text,
+                text_hash,
+                voice,
+                rate_milli,
+            } => crate::tts_edge::render(
+                self.home()?,
+                app,
+                text,
+                text_hash,
+                voice.as_deref(),
+                *rate_milli,
+            ),
             Effect::MediaTransform {
                 app,
                 source_hash,
@@ -433,6 +456,7 @@ impl LiveHost for EdgeRunner {
                 let bytes = crate::blob_store::read_verified(self.home()?, hash)?;
                 crate::media_edge::info(&bytes, mime)
             }
+            "tts.voices" => crate::tts_edge::voices_json(),
             "telemetry.read" => {
                 let app = args
                     .first()

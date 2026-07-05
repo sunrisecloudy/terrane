@@ -44,6 +44,7 @@ pub mod scheduler;
 pub mod secret_store;
 mod stt_edge;
 pub mod stt_runner;
+mod tts_edge;
 pub mod sync;
 
 pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};

@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        101,
+        103,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,7 +52,7 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        52,
+        54,
         "grant-gated commands: {grant_gated:?}"
     );
     assert_eq!(refused.len(), 47, "refused commands: {refused:?}");
@@ -88,7 +88,8 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "stt",
             "sysinfo",
             "telemetry",
-            "time"
+            "time",
+            "tts"
         ])
     );
 
@@ -126,7 +127,8 @@ fn public_query_inventory_covers_every_registered_query() {
             "interop.apps",
             "native.supports",
             "query.jmespath",
-            "replica.peer"
+            "replica.peer",
+            "tts.supports"
         ]
     );
     for query in queries {

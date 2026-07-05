@@ -62,6 +62,14 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["blob", "rm", app, name] => run_blob_rm(app, name),
         ["blob", "verify", rest @ ..] => run_blob_verify(rest),
         ["blob", "gc", rest @ ..] => run_blob_gc(rest),
+        ["tts", "speak", app, rest @ ..] => run_tts_speak(app, rest),
+        ["tts", "render", app, rest @ ..] => run_tts_render(app, rest),
+        ["tts", "voices"] => run_tts_voices(),
+        ["tts", "renders", app] => run_tts_renders(app),
+        ["tts", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane tts (speak <app> [--voice v] [--rate r] <text…> | render <app> [--voice v] [--rate r] <text…> | voices | renders <app>)".into())
+        }
         ["media", "info", app, name] => run_media_info(app, name),
         ["media", "transform", app, source, ops_json, dest] => {
             run_media_transform(app, source, ops_json, dest)
@@ -633,6 +641,158 @@ pub fn run_stt_dispatch(command: &str, rest: &[&str]) -> Result<(), String> {
     let args: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
     print_command_outcome(crate::dispatch(command, &args)?);
     Ok(())
+}
+
+pub fn run_tts_speak(app: &str, rest: &[&str]) -> Result<(), String> {
+    let parsed = parse_tts_args(rest)?;
+    let core = crate::open()?;
+    if !core.state().app.apps.contains_key(app) {
+        return Err(format!("app not found: {app}"));
+    }
+    crate::tts_edge::speak(&parsed.text, parsed.voice.as_deref(), parsed.rate_milli)
+        .map_err(|e| e.to_string())?;
+    println!("ok");
+    Ok(())
+}
+
+pub fn run_tts_render(app: &str, rest: &[&str]) -> Result<(), String> {
+    let parsed = parse_tts_args(rest)?;
+    let mut args = vec![app.to_string()];
+    if let Some(voice) = parsed.voice {
+        args.push("--voice".to_string());
+        args.push(voice);
+    }
+    args.push("--rate".to_string());
+    args.push(parsed.rate_milli.to_string());
+    args.push(parsed.text);
+    print_command_outcome(crate::dispatch("tts.render", &args)?);
+    Ok(())
+}
+
+pub fn run_tts_voices() -> Result<(), String> {
+    println!("{}", crate::tts_edge::voices_json().map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+pub fn run_tts_renders(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let Some(renders) = core.state().tts.renders.get(app) else {
+        println!("[]");
+        return Ok(());
+    };
+    let json = serde_json::to_string(
+        &renders
+            .values()
+            .map(|render| {
+                serde_json::json!({
+                    "textHash": render.text_hash,
+                    "voice": render.voice,
+                    "rateMilli": render.rate_milli,
+                    "blobHash": render.blob_hash,
+                    "size": render.size,
+                    "mime": render.mime,
+                    "durationMs": render.duration_ms,
+                })
+            })
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| format!("encode tts renders: {e}"))?;
+    println!("{json}");
+    Ok(())
+}
+
+struct ParsedTtsArgs {
+    voice: Option<String>,
+    rate_milli: u32,
+    text: String,
+}
+
+fn parse_tts_args(rest: &[&str]) -> Result<ParsedTtsArgs, String> {
+    let mut voice = None;
+    let mut rate_milli = terrane_cap_tts::DEFAULT_RATE_MILLI;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--voice" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--voice requires a value".into());
+                };
+                validate_tts_voice(value)?;
+                voice = Some((*value).to_string());
+                i += 2;
+            }
+            "--rate" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--rate requires a value".into());
+                };
+                rate_milli = parse_tts_rate(value)?;
+                i += 2;
+            }
+            _ => break,
+        }
+    }
+    if i >= rest.len() {
+        return Err("tts text must not be empty".into());
+    }
+    let text = rest[i..].join(" ");
+    if text.trim().is_empty() {
+        return Err("tts text must not be empty".into());
+    }
+    if text.len() > terrane_cap_tts::MAX_TEXT_BYTES {
+        return Err(format!(
+            "tts text exceeds {} bytes",
+            terrane_cap_tts::MAX_TEXT_BYTES
+        ));
+    }
+    Ok(ParsedTtsArgs {
+        voice,
+        rate_milli,
+        text,
+    })
+}
+
+fn validate_tts_voice(raw: &str) -> Result<(), String> {
+    let valid = !raw.trim().is_empty()
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "voice must be a non-empty token using [A-Za-z0-9_.:-], got {raw:?}"
+        ))
+    }
+}
+
+fn parse_tts_rate(raw: &str) -> Result<u32, String> {
+    let value = if let Some((whole, frac)) = raw.split_once('.') {
+        if whole.is_empty() || frac.is_empty() || frac.len() > 3 {
+            return Err(format!(
+                "rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"
+            ));
+        }
+        let whole = whole
+            .parse::<u32>()
+            .map_err(|_| format!("rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"))?;
+        let frac_len = frac.len();
+        let frac = frac
+            .parse::<u32>()
+            .map_err(|_| format!("rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"))?;
+        let scale = 10u32.pow(u32::try_from(frac_len).unwrap_or(3));
+        whole * 1000 + (frac * 1000) / scale
+    } else {
+        raw.parse::<u32>()
+            .map_err(|_| format!("rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"))?
+    };
+    if !(terrane_cap_tts::MIN_RATE_MILLI..=terrane_cap_tts::MAX_RATE_MILLI).contains(&value) {
+        return Err(format!(
+            "rate_milli must be {}-{}, got {value}",
+            terrane_cap_tts::MIN_RATE_MILLI,
+            terrane_cap_tts::MAX_RATE_MILLI
+        ));
+    }
+    Ok(value)
 }
 
 pub fn run_kv_storage_status() -> Result<(), String> {
@@ -1304,6 +1464,9 @@ pub fn print_help() {
          \x20 terrane blob rm <app> <name>                    remove a blob name\n\
          \x20 terrane blob verify [app [name]]                verify live blob hashes against the CAS\n\
          \x20 terrane blob gc [--dry-run|--yes]               report or delete unreferenced CAS rows\n\
+         \x20 terrane tts speak <app> [--voice v] [--rate r] <text…>   speak text now; record nothing\n\
+         \x20 terrane tts render <app> [--voice v] [--rate r] <text…>  render speech into blob CAS\n\
+         \x20 terrane tts voices|renders <app>                list host voices or folded render metadata\n\
          \x20 terrane media info <app> <name>                 probe media metadata for a stored blob\n\
          \x20 terrane media transform <app> <source> <ops-json> <dest>  transform media into a new blob\n\
          \x20 terrane document ls <app>                       list document summaries as JSON\n\

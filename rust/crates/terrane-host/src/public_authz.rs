@@ -159,6 +159,10 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "time",
             app_arg_index: 0,
         },
+        "tts.speak" | "tts.render" => PublicCommandDisposition::GrantGated {
+            namespace: "tts",
+            app_arg_index: 0,
+        },
         "telemetry.error" => PublicCommandDisposition::GrantGated {
             namespace: "telemetry",
             app_arg_index: 0,
@@ -264,7 +268,7 @@ pub fn authorize_public_command(
 
 pub fn classify_public_query_name(name: &str) -> PublicQueryDisposition {
     match name {
-        "app.exists" | "interop.apps" | "native.supports" | "replica.peer" => {
+        "app.exists" | "interop.apps" | "native.supports" | "replica.peer" | "tts.supports" => {
             PublicQueryDisposition::Allow
         }
         _ => PublicQueryDisposition::Unclassified,
