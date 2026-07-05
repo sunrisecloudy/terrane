@@ -5,10 +5,11 @@ use std::path::Path;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
-    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
-    CapBus, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern,
-    EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, ReadValue, ResourceReadCtx,
-    Result, StateStore, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
+    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, restore_state,
+    snapshot_state, state_mut, state_ref, CapBus, CapManifest, Capability, CommandCtx,
+    CommandSpec, Decision, Error, EventPattern, EventRecord, EventSpec, ExecutionPrincipal,
+    GrantResourceSpec, ReadValue, ResourceReadCtx, Result, StateStore, LOCAL_OWNER_SUBJECT,
+    LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 use terrane_cap_kv::KvStorageBinding;
 
@@ -19,7 +20,7 @@ mod tests;
 pub const AUTH_PROJECTION_APP_ID: &str = "__terrane/auth";
 pub const AUTH_PROJECTION_KEY_PREFIX: &str = "__terrane/auth/v1";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AuthState {
     pub members: BTreeMap<String, AuthMember>,
     pub grants: BTreeMap<String, AuthGrant>,
@@ -27,7 +28,7 @@ pub struct AuthState {
     pub agents: BTreeMap<String, AuthAgent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AuthMember {
     pub org: String,
     pub subject: String,
@@ -36,7 +37,7 @@ pub struct AuthMember {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AuthGrant {
     pub org: String,
     pub subject: String,
@@ -61,7 +62,7 @@ pub struct AuthPermissionResource {
     pub verbs: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AuthPermissionRequest {
     pub request_id: String,
     pub org: String,
@@ -78,7 +79,7 @@ pub struct AuthPermissionRequest {
     pub decision_source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AuthAgent {
     pub org: String,
     pub agent: String,
@@ -290,6 +291,14 @@ impl Capability for AuthCapability {
 
     fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         fold(state, record)
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        snapshot_state::<AuthState>(state, self.namespace())
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        restore_state::<AuthState>(state, self.namespace(), payload)
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {

@@ -4280,6 +4280,7 @@ dependencies = [
  "loro",
  "rusqlite",
  "serde_json",
+ "sha2",
  "tempfile",
  "terrane-cap-agent",
  "terrane-cap-app",

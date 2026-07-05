@@ -15,15 +15,15 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::Capability;
 use terrane_cap_interface::{
-    decode_event, encode_event, state_mut, state_ref, CapManifest, CommandCtx, CommandSpec,
-    Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue, Result,
-    StateStore,
+    decode_event, encode_event, restore_state, snapshot_state, state_mut, state_ref, CapManifest,
+    CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec,
+    QueryValue, Result, StateStore,
 };
 
 mod doc;
 
 /// This capability's slice of State: the home's PeerID, once minted.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct ReplicaState {
     pub peer: Option<u64>,
 }
@@ -101,6 +101,14 @@ impl Capability for ReplicaCapability {
             }
         }
         Ok(())
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        snapshot_state::<ReplicaState>(state, self.namespace())
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        restore_state::<ReplicaState>(state, self.namespace(), payload)
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {

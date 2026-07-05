@@ -40,6 +40,33 @@ pub struct ViewSnapshot {
     pub rows: BTreeMap<String, Value>,
 }
 
+#[derive(BorshSerialize, BorshDeserialize)]
+struct QuerySnapshot {
+    event_cursor: u64,
+    views: Vec<QuerySnapshotApp>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct QuerySnapshotApp {
+    app: String,
+    views: Vec<QuerySnapshotView>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct QuerySnapshotView {
+    view: String,
+    def_json: String,
+    def_hash: String,
+    source_cursor: u64,
+    rows: Vec<QuerySnapshotRow>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct QuerySnapshotRow {
+    key: String,
+    doc_json: String,
+}
+
 #[derive(Debug, Clone, BorshSerialize, BorshDeserialize)]
 struct ViewDefined {
     app: String,
@@ -134,6 +161,75 @@ impl Capability for QueryCapability {
 
     fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         fold(state, record)
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        let query = state_ref::<QueryState>(state, self.namespace())?;
+        if query == &QueryState::default() {
+            return Ok(None);
+        }
+        let views = query
+            .views
+            .iter()
+            .map(|(app, app_views)| QuerySnapshotApp {
+                app: app.clone(),
+                views: app_views
+                    .iter()
+                    .map(|(view, snapshot)| QuerySnapshotView {
+                        view: view.clone(),
+                        def_json: snapshot.def_json.clone(),
+                        def_hash: snapshot.def_hash.clone(),
+                        source_cursor: snapshot.source_cursor,
+                        rows: snapshot
+                            .rows
+                            .iter()
+                            .map(|(key, value)| QuerySnapshotRow {
+                                key: key.clone(),
+                                doc_json: value.to_string(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        borsh::to_vec(&QuerySnapshot {
+            event_cursor: query.event_cursor,
+            views,
+        })
+        .map(Some)
+        .map_err(|e| Error::Storage(format!("snapshot query: {e}")))
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        let snapshot = borsh::from_slice::<QuerySnapshot>(payload)
+            .map_err(|e| Error::Storage(format!("restore query: {e}")))?;
+        let mut views = BTreeMap::new();
+        for app in snapshot.views {
+            let mut app_views = BTreeMap::new();
+            for view in app.views {
+                let mut rows = BTreeMap::new();
+                for row in view.rows {
+                    let value = serde_json::from_str::<Value>(&row.doc_json)
+                        .map_err(|e| Error::Storage(format!("restore query row: {e}")))?;
+                    rows.insert(row.key, value);
+                }
+                app_views.insert(
+                    view.view,
+                    ViewSnapshot {
+                        def_json: view.def_json,
+                        def_hash: view.def_hash,
+                        source_cursor: view.source_cursor,
+                        rows,
+                    },
+                );
+            }
+            views.insert(app.app, app_views);
+        }
+        *state_mut::<QueryState>(state, self.namespace())? = QueryState {
+            event_cursor: snapshot.event_cursor,
+            views,
+        };
+        Ok(())
     }
 
     fn query(&self, ctx: QueryCtx<'_>, name: &str, args: &[String]) -> Result<QueryValue> {

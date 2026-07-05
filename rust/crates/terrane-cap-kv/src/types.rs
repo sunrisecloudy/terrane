@@ -153,7 +153,7 @@ pub struct KvStoragePlan {
 
 /// This capability's slice of State: per-app key/value maps plus user-owned
 /// storage bindings.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct KvState {
     pub data: BTreeMap<AppId, BTreeMap<String, String>>,
     pub storage: KvStorageState,

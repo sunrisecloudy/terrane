@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::Capability;
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, state_mut, state_ref, AppId, CapManifest, CommandCtx,
-    CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue,
-    Result, StateStore,
+    arg, decode_event, encode_event, restore_state, snapshot_state, state_mut, state_ref, AppId,
+    CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec,
+    QueryCtx, QuerySpec, QueryValue, Result, StateStore,
 };
 use terrane_cap_kv::RESERVED_PREFIX;
 
@@ -17,7 +17,7 @@ pub const MAX_LINK_PAYLOAD_BYTES: usize = 64 * 1024;
 
 /// A saved app, as the user sees it in their catalog. `source` is where the
 /// app's body lives — a path to its bundle (UI + backend).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AppRecord {
     pub id: AppId,
     pub name: String,
@@ -29,7 +29,7 @@ pub struct AppRecord {
     pub links: Vec<LinkRegistration>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct VersionEntry {
     pub version: String,
     pub bundle_hash: String,
@@ -43,7 +43,7 @@ pub struct LinkRegistration {
 }
 
 /// This capability's slice of State.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AppState {
     pub apps: BTreeMap<AppId, AppRecord>,
     pub links: BTreeMap<AppId, Vec<LinkRegistration>>,
@@ -308,6 +308,14 @@ impl Capability for AppCapability {
             _ => {}
         }
         Ok(())
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        snapshot_state::<AppState>(state, self.namespace())
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        restore_state::<AppState>(state, self.namespace(), payload)
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {
