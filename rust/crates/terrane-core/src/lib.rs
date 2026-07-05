@@ -36,6 +36,8 @@ use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use borsh::{BorshDeserialize, BorshSerialize};
+
 pub mod domain;
 pub mod filelock;
 mod planned_docs;
@@ -48,6 +50,15 @@ pub use terrane_cap_interface::{
     RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
     NAMESPACE_SELECTOR_SCHEMA_ID,
 };
+
+const LOG_HEADER: &[u8] = b"TRNLOG\x01\n";
+const PRE_ACTOR_BACKUP_NAME: &str = "log.bin.pre-actor";
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct LegacyEventRecord {
+    kind: String,
+    payload: Vec<u8>,
+}
 
 use terrane_cap_agent::AgentState;
 use terrane_cap_app::AppState;
@@ -880,18 +891,96 @@ fn dev_allow_requested_resources() -> bool {
     false
 }
 
-/// Read every [`EventRecord`] from the log, in order. The log is a flat sequence
-/// of length-prefixed borsh records: a little-endian `u32` byte length followed
-/// by that many bytes of one borsh-encoded `EventRecord`. A missing log is an
-/// empty history, not an error.
+/// Read every [`EventRecord`] from the log, in order. New logs start with a
+/// fixed magic/version header, followed by length-prefixed borsh records: a
+/// little-endian `u32` byte length followed by that many bytes of one
+/// borsh-encoded `EventRecord`. A missing log is an empty history, not an error.
 pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
-    let mut records = Vec::new();
+    read_new_log(log_path)
+}
+
+fn old_log_error() -> Error {
+    Error::Storage(
+        "old-format event log: run `terrane migrate-log` before opening this home".into(),
+    )
+}
+
+fn read_new_log(log_path: &Path) -> Result<Vec<EventRecord>> {
     let file = match std::fs::File::open(log_path) {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(records),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(Error::Storage(e.to_string())),
     };
     let mut reader = BufReader::new(file);
+    match read_header(&mut reader)? {
+        HeaderStatus::MissingEmpty => return Ok(Vec::new()),
+        HeaderStatus::Present => {}
+        HeaderStatus::OldFormat => return Err(old_log_error()),
+    }
+    read_framed_records(&mut reader, |buf| {
+        borsh::from_slice::<EventRecord>(buf)
+            .map_err(|e| Error::Storage(format!("corrupt log record: {e}")))
+    })
+}
+
+enum HeaderStatus {
+    Present,
+    OldFormat,
+    MissingEmpty,
+}
+
+fn read_header(reader: &mut BufReader<std::fs::File>) -> Result<HeaderStatus> {
+    let mut header = vec![0u8; LOG_HEADER.len()];
+    let mut got = 0usize;
+    while got < header.len() {
+        match reader.read(&mut header[got..]) {
+            Ok(0) if got == 0 => return Ok(HeaderStatus::MissingEmpty),
+            Ok(0) => return Ok(HeaderStatus::OldFormat),
+            Ok(n) => got += n,
+            Err(e) => return Err(Error::Storage(e.to_string())),
+        }
+    }
+    if header == LOG_HEADER {
+        Ok(HeaderStatus::Present)
+    } else {
+        Ok(HeaderStatus::OldFormat)
+    }
+}
+
+fn read_legacy_log(log_path: &Path) -> Result<Vec<EventRecord>> {
+    let file = match std::fs::File::open(log_path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Error::Storage(e.to_string())),
+    };
+    let mut reader = BufReader::new(file);
+    match read_header(&mut reader)? {
+        HeaderStatus::MissingEmpty => return Ok(Vec::new()),
+        HeaderStatus::Present => {
+            return Err(Error::Storage(
+                "event log already uses the actor format".into(),
+            ))
+        }
+        HeaderStatus::OldFormat => {}
+    }
+    let file = std::fs::File::open(log_path).map_err(|e| Error::Storage(e.to_string()))?;
+    let mut reader = BufReader::new(file);
+    read_framed_records(&mut reader, |buf| {
+        let legacy = borsh::from_slice::<LegacyEventRecord>(buf)
+            .map_err(|e| Error::Storage(format!("corrupt legacy log record: {e}")))?;
+        Ok(EventRecord {
+            kind: legacy.kind,
+            payload: legacy.payload,
+            actor: LOCAL_OWNER_SUBJECT.to_string(),
+        })
+    })
+}
+
+fn read_framed_records<T>(
+    reader: &mut BufReader<std::fs::File>,
+    mut decode: impl FnMut(&[u8]) -> Result<T>,
+) -> Result<Vec<T>> {
+    let mut records = Vec::new();
     'records: loop {
         let mut len_buf = [0u8; 4];
         let mut got = 0usize;
@@ -912,11 +1001,93 @@ pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
         reader
             .read_exact(&mut buf)
             .map_err(|e| Error::Storage(format!("truncated log record: {e}")))?;
-        let record = borsh::from_slice::<EventRecord>(&buf)
-            .map_err(|e| Error::Storage(format!("corrupt log record: {e}")))?;
-        records.push(record);
+        records.push(decode(&buf)?);
     }
     Ok(records)
+}
+
+fn write_new_log(log_path: &Path, records: &[EventRecord]) -> Result<()> {
+    if let Some(parent) = log_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::Storage(e.to_string()))?;
+        }
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(log_path)
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    file.write_all(LOG_HEADER)
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    write_record_frames(&mut file, records)
+}
+
+fn write_record_frames(file: &mut std::fs::File, records: &[EventRecord]) -> Result<()> {
+    let mut frame = Vec::new();
+    for record in records {
+        let bytes = borsh::to_vec(record).map_err(|e| Error::Storage(e.to_string()))?;
+        let len = u32::try_from(bytes.len())
+            .map_err(|_| Error::Storage("event record too large".into()))?;
+        frame.extend_from_slice(&len.to_le_bytes());
+        frame.extend_from_slice(&bytes);
+    }
+    file.write_all(&frame)
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(())
+}
+
+pub fn migrate_log(log_path: &Path) -> Result<usize> {
+    let old_records = read_legacy_log(log_path)?;
+    let registry = default_registry();
+    let mut old_state = State::default();
+    for record in &old_records {
+        apply(&registry, &mut old_state, record)?;
+    }
+
+    let migrated_records: Vec<EventRecord> = old_records
+        .into_iter()
+        .map(|mut record| {
+            record.actor = LOCAL_OWNER_SUBJECT.to_string();
+            record
+        })
+        .collect();
+    let mut migrated_state = State::default();
+    for record in &migrated_records {
+        apply(&registry, &mut migrated_state, record)?;
+    }
+    if old_state != migrated_state {
+        return Err(Error::Storage(
+            "migrated actor log did not replay to the same state".into(),
+        ));
+    }
+
+    let tmp_path = log_path.with_extension("bin.actor-migrating");
+    write_new_log(&tmp_path, &migrated_records)?;
+    let backup_path = log_path.with_file_name(PRE_ACTOR_BACKUP_NAME);
+    if backup_path.exists() {
+        return Err(Error::Storage(format!(
+            "backup already exists: {}; move it before rerunning migrate-log",
+            backup_path.display()
+        )));
+    }
+    if log_path.exists() {
+        std::fs::rename(log_path, &backup_path).map_err(|e| {
+            Error::Storage(format!(
+                "move {} to {}: {e}",
+                log_path.display(),
+                backup_path.display()
+            ))
+        })?;
+    }
+    std::fs::rename(&tmp_path, log_path).map_err(|e| {
+        Error::Storage(format!(
+            "move {} to {}: {e}",
+            tmp_path.display(),
+            log_path.display()
+        ))
+    })?;
+    Ok(migrated_records.len())
 }
 
 /// The engine: an on-disk event log, the State folded from it, an injected
@@ -995,10 +1166,10 @@ impl<R: EffectRunner + 'static> Core<R> {
         let principal = request.principal.clone();
         let decision = self.decide(request)?;
         match decision {
-            Decision::Commit(records) => self.commit(records),
+            Decision::Commit(records) => self.commit(records, &principal),
             Decision::Effect(effect) => {
                 let records = self.runner.run(&effect, &self.state)?;
-                self.commit(records)
+                self.commit(records, &principal)
             }
             // Transient effects only make sense as a resource call (they return a
             // value without recording); a top-level command must not use one.
@@ -1079,7 +1250,7 @@ impl<R: EffectRunner + 'static> Core<R> {
             RuntimeResourceHost::new_with_principal(
                 request.app.clone(),
                 self.state.clone(),
-                principal,
+                principal.clone(),
             )
             .with_runner(self.runner.clone()),
         ));
@@ -1090,7 +1261,7 @@ impl<R: EffectRunner + 'static> Core<R> {
             host: host.clone(),
         };
         let result = self.registry.get(namespace)?.run_runtime(ctx, request)?;
-        let records = self.commit(host.take_records())?;
+        let records = self.commit(host.take_records(), &principal)?;
         self.last_output = Some(result.output);
         Ok(records)
     }
@@ -1110,10 +1281,9 @@ impl<R: EffectRunner + 'static> Core<R> {
                 .ok()
                 .and_then(|ns| self.registry.get(ns).ok())
                 .and_then(|cap| cap.describe(&record));
-            lines
-                .push(described.unwrap_or_else(|| {
-                    format!("{} ({} bytes)", record.kind, record.payload.len())
-                }));
+            let detail = described
+                .unwrap_or_else(|| format!("{} ({} bytes)", record.kind, record.payload.len()));
+            lines.push(format!("{} {detail}", record.actor));
         }
         Ok(lines)
     }
@@ -1129,7 +1299,19 @@ impl<R: EffectRunner + 'static> Core<R> {
     }
 
     /// Persist records to the log, then fold them into State.
-    fn commit(&mut self, records: Vec<EventRecord>) -> Result<Vec<EventRecord>> {
+    fn commit(
+        &mut self,
+        records: Vec<EventRecord>,
+        principal: &ExecutionPrincipal,
+    ) -> Result<Vec<EventRecord>> {
+        let actor = principal.actor();
+        let records: Vec<EventRecord> = records
+            .into_iter()
+            .map(|mut record| {
+                record.actor = actor.clone();
+                record
+            })
+            .collect();
         let before_kv = self.state.kv.clone();
         let before_auth = self.state.auth.clone();
         self.append(&records)?;
@@ -1160,23 +1342,32 @@ impl<R: EffectRunner + 'static> Core<R> {
         }
         let mut file = OpenOptions::new()
             .create(true)
+            .read(true)
             .append(true)
             .open(&self.log_path)
             .map_err(|e| Error::Storage(e.to_string()))?;
+        let is_empty = file
+            .metadata()
+            .map_err(|e| Error::Storage(e.to_string()))?
+            .len()
+            == 0;
+        if is_empty {
+            file.write_all(LOG_HEADER)
+                .map_err(|e| Error::Storage(e.to_string()))?;
+        } else {
+            let check =
+                std::fs::File::open(&self.log_path).map_err(|e| Error::Storage(e.to_string()))?;
+            let mut reader = BufReader::new(check);
+            match read_header(&mut reader)? {
+                HeaderStatus::Present => {}
+                HeaderStatus::MissingEmpty => {}
+                HeaderStatus::OldFormat => return Err(old_log_error()),
+            }
+        }
         // Frame the whole batch in one buffer and write it once: with O_APPEND
         // plus the home lock, a single `write_all` cannot interleave a length from
         // one writer with bytes from another (no torn records).
-        let mut frame = Vec::new();
-        for record in records {
-            let bytes = borsh::to_vec(record).map_err(|e| Error::Storage(e.to_string()))?;
-            let len = u32::try_from(bytes.len())
-                .map_err(|_| Error::Storage("event record too large".into()))?;
-            frame.extend_from_slice(&len.to_le_bytes());
-            frame.extend_from_slice(&bytes);
-        }
-        file.write_all(&frame)
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        Ok(())
+        write_record_frames(&mut file, records)
     }
 }
 

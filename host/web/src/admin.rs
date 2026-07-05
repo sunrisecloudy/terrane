@@ -246,6 +246,7 @@ pub fn audit(core: &terrane_host::HostCore) -> Resp {
 }
 
 fn is_auth_audit_line(line: &str) -> bool {
+    let line = line.split_once(' ').map_or(line, |(_, detail)| detail);
     line.starts_with("added ")
         || line.starts_with("granted ")
         || line.starts_with("revoked ")

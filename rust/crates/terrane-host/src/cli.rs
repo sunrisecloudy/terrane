@@ -19,6 +19,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["state"] => run_state(),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
+        ["migrate-log"] => run_migrate_log(),
         ["cap", "list", rest @ ..] => run_cap_list(rest),
         ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
         ["cap", rest @ ..] => {
@@ -365,6 +366,12 @@ pub fn run_replay() -> Result<(), String> {
     }
 }
 
+pub fn run_migrate_log() -> Result<(), String> {
+    let count = terrane_core::migrate_log(&crate::log_path()).map_err(|e| e.to_string())?;
+    println!("migrated {count} events; backup kept at log.bin.pre-actor");
+    Ok(())
+}
+
 pub fn run_kv_storage_set(rest: &[&str]) -> Result<(), String> {
     let args = parse_kv_storage_set(rest)?;
     print_command_outcome(crate::dispatch("kv.storage.set", &args)?);
@@ -627,6 +634,7 @@ pub fn print_help() {
          \x20 terrane state                  print the whole world\n\
          \x20 terrane log                    print the event log (decoded)\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
+         \x20 terrane migrate-log            upgrade a pre-actor log and keep log.bin.pre-actor\n\
          \x20 terrane cap list               list capability docs\n\
          \x20 terrane cap info <namespace>   show capability docs\n\
          \x20 terrane contract export        print the public API contract (JSON)\n\

@@ -136,6 +136,7 @@ fn decide_rejects_all_commands_and_fold_is_inert() {
     let record = EventRecord {
         kind: "sysinfo.whatever".to_string(),
         payload: Vec::new(),
+        actor: String::new(),
     };
     SysinfoCapability.fold(&mut store, &record).unwrap();
 }

@@ -23,6 +23,10 @@ impl ExecutionPrincipal {
             source: LOCAL_SOURCE.to_string(),
         }
     }
+
+    pub fn actor(&self) -> String {
+        self.subject.clone()
+    }
 }
 
 impl Default for ExecutionPrincipal {
@@ -85,6 +89,7 @@ impl Request {
 pub struct EventRecord {
     pub kind: String,
     pub payload: Vec<u8>,
+    pub actor: String,
 }
 
 /// Typed errors. No panics on real paths.
@@ -218,6 +223,7 @@ pub fn encode_event<E: BorshSerialize>(kind: &str, event: &E) -> Result<EventRec
     Ok(EventRecord {
         kind: kind.to_string(),
         payload,
+        actor: String::new(),
     })
 }
 

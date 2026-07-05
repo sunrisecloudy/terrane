@@ -1,8 +1,8 @@
 use std::any::Any;
 
 use terrane_cap_interface::{
-    app_exists, ensure_app_exists, extract_json_object, namespace_of, replica_peer, state_mut,
-    state_ref, CapBus, Error, QueryValue, StateStore,
+    app_exists, encode_event, ensure_app_exists, extract_json_object, namespace_of, replica_peer,
+    state_mut, state_ref, CapBus, Error, QueryValue, StateStore,
 };
 
 #[derive(Default)]
@@ -79,4 +79,13 @@ fn name_and_json_helpers_keep_external_cap_parsing_consistent() {
         extract_json_object("text {\"files\":[]} text", "builder").unwrap(),
         "{\"files\":[]}"
     );
+}
+
+#[test]
+fn encode_event_leaves_actor_empty_for_engine_stamping() {
+    let record = encode_event("sample.changed", &"payload".to_string()).unwrap();
+
+    assert_eq!(record.kind, "sample.changed");
+    assert_eq!(record.actor, "");
+    assert!(!record.payload.is_empty());
 }
