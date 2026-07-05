@@ -12,9 +12,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, state_mut, state_ref, CapManifest, Capability, CommandCtx,
-    CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue,
-    Result, StateStore,
+    arg, decode_event, encode_event, restore_state, snapshot_state, state_mut, state_ref,
+    CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord,
+    EventSpec, QueryCtx, QuerySpec, QueryValue, Result, StateStore,
 };
 
 mod doc;
@@ -25,12 +25,12 @@ pub const PERSON_ID_HEX_LEN: usize = 16;
 pub const MAX_ATTESTATIONS_PER_PERSON: usize = 128;
 pub const MAX_CLAIM_LEN: usize = 512;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct PersonState {
     pub persons: BTreeMap<String, PersonRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct PersonRecord {
     pub person_id: String,
     pub pubkey: String,
@@ -38,7 +38,7 @@ pub struct PersonRecord {
     pub rotated_to: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct AttestationRecord {
     pub kind: String,
     pub claim: String,
@@ -287,6 +287,14 @@ impl Capability for PersonCapability {
             _ => {}
         }
         Ok(())
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        snapshot_state::<PersonState>(state, self.namespace())
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        restore_state::<PersonState>(state, self.namespace(), payload)
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {

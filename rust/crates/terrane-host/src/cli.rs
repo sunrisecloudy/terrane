@@ -27,6 +27,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["migrate", "status", app] => run_migrate_status(app),
         ["migrate", app] => run_migrate(app),
         ["migrate-log"] => run_migrate_log(),
+        ["compact", rest @ ..] => run_compact(rest),
         ["cap", "list", rest @ ..] => run_cap_list(rest),
         ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
         ["cap", rest @ ..] => {
@@ -811,6 +812,53 @@ pub fn run_replay() -> Result<(), String> {
 pub fn run_migrate_log() -> Result<(), String> {
     let count = terrane_core::migrate_log(&crate::log_path()).map_err(|e| e.to_string())?;
     println!("migrated {count} events; backup kept at log.bin.pre-actor");
+    Ok(())
+}
+
+pub fn run_compact(args: &[&str]) -> Result<(), String> {
+    let mut retain = 0usize;
+    let mut prune_archive = false;
+    let mut verify = false;
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i] {
+            "--retain" => {
+                i += 1;
+                if i >= args.len() {
+                    return Err("--retain requires a value".into());
+                }
+                retain = args[i]
+                    .parse::<usize>()
+                    .map_err(|_| "--retain must be a non-negative integer".to_string())?;
+            }
+            "--prune-archive" => prune_archive = true,
+            "--verify" => verify = true,
+            other => return Err(format!("unknown compact option: {other}")),
+        }
+        i += 1;
+    }
+    let report = terrane_core::compact_log(
+        &crate::log_path(),
+        terrane_core::CompactionOptions {
+            retain,
+            prune_archive,
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    let core = crate::open()?;
+    if !core.replay_matches().map_err(|e| e.to_string())? {
+        return Err("compaction replay mismatch after reopen".into());
+    }
+    let verify_note = if verify { "; verified" } else { "" };
+    println!(
+        "compacted {} events to {} retained events across {} snapshot sections{verify_note}; log {} -> {} bytes, snapshot {} bytes; archive kept at log.bin.archive",
+        report.archived_records,
+        report.retained_records,
+        report.snapshot_sections,
+        report.old_log_bytes,
+        report.new_log_bytes,
+        report.snapshot_bytes
+    );
     Ok(())
 }
 
@@ -2302,6 +2350,7 @@ pub fn print_help() {
          \x20 terrane logs <app> [--level warn] [--tail 200]  read an app's local backend log buffer\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
          \x20 terrane migrate-log            upgrade a pre-actor log and keep log.bin.pre-actor\n\
+         \x20 terrane compact [--retain n] [--verify] [--prune-archive]  snapshot folded state and retain a tail log\n\
          \x20 terrane query jmespath <app> <sourceJson> <expression>  read folded state with JMESPath\n\
          \x20 terrane cap list               list capability docs\n\
          \x20 terrane cap info <namespace>   show capability docs\n\

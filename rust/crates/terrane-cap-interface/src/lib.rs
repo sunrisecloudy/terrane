@@ -33,7 +33,7 @@ pub use runtime::{
     CapBus, CommandCtx, LiveHost, QueryCtx, QueryValue, ReadValue, ResourceReadCtx, RuntimeCtx,
     RuntimeHost, RuntimeHostHandle,
 };
-pub use state::{state_mut, state_ref, StateStore};
+pub use state::{restore_state, snapshot_state, state_mut, state_ref, StateStore};
 
 #[cfg(test)]
 mod tests;

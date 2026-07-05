@@ -57,6 +57,7 @@ terrane-cap-sysinfo.workspace = true
 terrane-cap-telemetry.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 borsh.workspace = true
+sha2 = "0.10"
 
 [dev-dependencies]
 tempfile.workspace = true

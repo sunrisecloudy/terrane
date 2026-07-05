@@ -2,8 +2,9 @@
 //! dropping that app's data.
 
 use terrane_cap_interface::{
-    CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec, GrantResourceSpec, ReadValue, ResourceReadCtx, Result, StateStore,
+    restore_state, snapshot_state, CapManifest, Capability, CommandCtx, CommandSpec, Decision,
+    Error, EventPattern, EventRecord, EventSpec, GrantResourceSpec, ReadValue, ResourceReadCtx,
+    Result, StateStore,
 };
 
 mod commands;
@@ -112,6 +113,14 @@ impl Capability for KvCapability {
 
     fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         events::fold(state, record)
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        snapshot_state::<KvState>(state, self.namespace())
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        restore_state::<KvState>(state, self.namespace(), payload)
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {

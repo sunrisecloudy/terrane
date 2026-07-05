@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use loro::LoroDoc;
-use terrane_cap_interface::AppId;
+use loro::{ExportMode, LoroDoc};
+use terrane_cap_interface::{state_mut, state_ref, AppId, Error, Result, StateStore};
 
 /// This capability's slice of State: one Loro document per app. Reacts to
 /// `app.removed` by dropping that app's document.
@@ -58,4 +58,49 @@ impl std::fmt::Debug for CrdtState {
 pub(crate) struct Update {
     pub app: String,
     pub bytes: Vec<u8>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct CrdtSnapshot {
+    docs: Vec<CrdtSnapshotDoc>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct CrdtSnapshotDoc {
+    app: String,
+    bytes: Vec<u8>,
+}
+
+pub(crate) fn snapshot(state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+    let slice = state_ref::<CrdtState>(state, "crdt")?;
+    if slice.docs.is_empty() {
+        return Ok(None);
+    }
+    let mut docs = Vec::new();
+    for (app, doc) in &slice.docs {
+        let bytes = doc
+            .export(ExportMode::Snapshot)
+            .map_err(|e| Error::Storage(format!("crdt snapshot export: {e}")))?;
+        docs.push(CrdtSnapshotDoc {
+            app: app.clone(),
+            bytes,
+        });
+    }
+    borsh::to_vec(&CrdtSnapshot { docs })
+        .map(Some)
+        .map_err(|e| Error::Storage(format!("snapshot crdt: {e}")))
+}
+
+pub(crate) fn restore(state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+    let snapshot = borsh::from_slice::<CrdtSnapshot>(payload)
+        .map_err(|e| Error::Storage(format!("restore crdt: {e}")))?;
+    let mut docs = BTreeMap::new();
+    for item in snapshot.docs {
+        let doc = LoroDoc::default();
+        doc.import(&item.bytes)
+            .map_err(|e| Error::Storage(format!("crdt snapshot import: {e}")))?;
+        docs.insert(item.app, doc);
+    }
+    state_mut::<CrdtState>(state, "crdt")?.docs = docs;
+    Ok(())
 }

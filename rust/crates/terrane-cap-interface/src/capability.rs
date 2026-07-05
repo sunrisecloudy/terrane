@@ -33,6 +33,19 @@ pub trait Capability {
 
     fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()>;
 
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        let _ = state;
+        Ok(None)
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        let _ = (state, payload);
+        Err(Error::Storage(format!(
+            "{} does not support snapshot restore",
+            self.namespace()
+        )))
+    }
+
     fn describe(&self, record: &EventRecord) -> Option<String> {
         let _ = record;
         None

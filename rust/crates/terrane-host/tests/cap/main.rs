@@ -14,6 +14,7 @@ mod automation;
 mod blob;
 mod browser;
 mod common;
+mod compaction;
 mod connection;
 mod deep_links;
 mod document;

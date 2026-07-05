@@ -7,10 +7,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde_json::json;
 use terrane_cap_interface::{
-    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
-    CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec, GrantResourceSpec, QueryCtx, QuerySpec, QueryValue, ReadValue, ResourceMethod,
-    ResourceReadCtx, Result, StateStore,
+    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, restore_state,
+    snapshot_state, state_mut, state_ref, CapManifest, Capability, CommandCtx, CommandSpec,
+    Decision, Error, EventPattern, EventRecord, EventSpec, GrantResourceSpec, QueryCtx, QuerySpec,
+    QueryValue, ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
 mod doc;
@@ -21,7 +21,7 @@ pub const MAX_REVERT_KEYS: usize = 10_000;
 
 const KIND_REVERTED: &str = "history.reverted";
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct HistoryState {
     pub next_seq: u64,
     pub records: Vec<HistoryRecord>,
@@ -29,7 +29,7 @@ pub struct HistoryState {
     pub current_values: BTreeMap<String, BTreeMap<String, String>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct HistoryRecord {
     pub seq: u64,
     pub kind: String,
@@ -39,7 +39,7 @@ pub struct HistoryRecord {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct KeyChange {
     pub seq: u64,
     pub actor: String,
@@ -152,6 +152,14 @@ impl Capability for HistoryCapability {
 
     fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         fold(state, record)
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        snapshot_state::<HistoryState>(state, self.namespace())
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        restore_state::<HistoryState>(state, self.namespace(), payload)
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {

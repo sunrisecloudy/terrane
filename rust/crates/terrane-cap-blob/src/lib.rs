@@ -5,10 +5,10 @@ use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
-    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
-    AppId, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern,
-    EventRecord, EventSpec, GrantResourceSpec, ReadValue, ResourceMethod, ResourceReadCtx, Result,
-    StateStore,
+    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, restore_state,
+    snapshot_state, state_mut, state_ref, AppId, CapManifest, Capability, CommandCtx, CommandSpec,
+    Decision, Effect, Error, EventPattern, EventRecord, EventSpec, GrantResourceSpec, ReadValue,
+    ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
 mod doc;
@@ -25,7 +25,7 @@ pub struct BlobMeta {
     pub mime: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct BlobState {
     pub blobs: BTreeMap<AppId, BTreeMap<String, BlobMeta>>,
     pub refs: BTreeMap<String, u64>,
@@ -239,6 +239,14 @@ impl Capability for BlobCapability {
             _ => {}
         }
         Ok(())
+    }
+
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        snapshot_state::<BlobState>(state, self.namespace())
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        restore_state::<BlobState>(state, self.namespace(), payload)
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {

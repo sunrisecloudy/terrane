@@ -91,6 +91,14 @@ impl Capability for CrdtCapability {
         events::fold(state, record)
     }
 
+    fn snapshot(&self, state: &dyn StateStore) -> Result<Option<Vec<u8>>> {
+        state::snapshot(state)
+    }
+
+    fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
+        state::restore(state, payload)
+    }
+
     fn describe(&self, record: &EventRecord) -> Option<String> {
         events::describe(record)
     }

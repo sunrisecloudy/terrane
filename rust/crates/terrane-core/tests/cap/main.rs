@@ -14,6 +14,7 @@ mod blob;
 mod browser;
 mod builder;
 mod common;
+mod compaction;
 mod connection;
 mod crdt;
 mod crypto;

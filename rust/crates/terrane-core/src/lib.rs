@@ -41,6 +41,7 @@ use borsh::{BorshDeserialize, BorshSerialize};
 pub mod domain;
 pub mod filelock;
 mod planned_docs;
+pub mod snapshot;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
@@ -1313,6 +1314,251 @@ fn write_record_frames(file: &mut std::fs::File, records: &[EventRecord]) -> Res
     Ok(())
 }
 
+fn read_file_bytes(path: &Path) -> Result<Vec<u8>> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(bytes),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(Error::Storage(e.to_string())),
+    }
+}
+
+fn restore_snapshot_sections(
+    registry: &Registry,
+    state: &mut State,
+    snapshot: &snapshot::SnapshotFile,
+) -> Result<()> {
+    for section in &snapshot.sections {
+        let capability = registry.caps.get(section.namespace.as_str()).ok_or_else(|| {
+            Error::Storage(format!(
+                "snapshot references unknown capability namespace: {}",
+                section.namespace
+            ))
+        })?;
+        capability.restore(state, &section.payload)?;
+    }
+    Ok(())
+}
+
+fn snapshot_should_apply(log_path: &Path, snapshot: &snapshot::SnapshotFile) -> Result<bool> {
+    let archive_path = snapshot::archive_path(log_path);
+    if !archive_path.exists() {
+        return Ok(true);
+    }
+    let archive_bytes = read_file_bytes(&archive_path)?;
+    if snapshot::hash_bytes(&archive_bytes) != snapshot.header.log_head_hash {
+        return Err(Error::Storage(
+            "snapshot archive hash does not match log.bin.archive".into(),
+        ));
+    }
+    let archived_count = read_log(&archive_path)?.len();
+    let seq = usize::try_from(snapshot.header.seq)
+        .map_err(|_| Error::Storage("snapshot seq too large".into()))?;
+    if seq > archived_count {
+        return Err(Error::Storage("snapshot seq exceeds archived log length".into()));
+    }
+    let live_count = read_log(log_path)?.len();
+    Ok(live_count == archived_count.saturating_sub(seq))
+}
+
+fn fold_snapshot_and_log(
+    registry: &Registry,
+    log_path: &Path,
+    snapshot_file: Option<&snapshot::SnapshotFile>,
+) -> Result<State> {
+    let mut state = State::default();
+    if let Some(snapshot) = snapshot_file {
+        restore_snapshot_sections(registry, &mut state, snapshot)?;
+    }
+    for record in read_log(log_path)? {
+        apply(registry, &mut state, &record)?;
+    }
+    Ok(state)
+}
+
+fn load_state_from_storage(registry: &Registry, log_path: &Path) -> Result<State> {
+    let snapshot_path = snapshot::snapshot_path(log_path);
+    let snapshot_file = snapshot::read_snapshot(&snapshot_path)?;
+    let apply_snapshot = match snapshot_file.as_ref() {
+        Some(snapshot) => snapshot_should_apply(log_path, snapshot)?,
+        None => false,
+    };
+    fold_snapshot_and_log(
+        registry,
+        log_path,
+        if apply_snapshot {
+            snapshot_file.as_ref()
+        } else {
+            None
+        },
+    )
+}
+
+fn snapshot_sections(registry: &Registry, state: &State) -> Result<Vec<snapshot::SnapshotSection>> {
+    let mut sections = Vec::new();
+    for capability in registry.caps.values() {
+        if let Some(payload) = capability.snapshot(state)? {
+            sections.push(snapshot::SnapshotSection {
+                namespace: capability.namespace().to_string(),
+                payload,
+            });
+        }
+    }
+    Ok(sections)
+}
+
+fn state_diff_names(a: &State, b: &State) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    macro_rules! check {
+        ($field:ident, $name:literal) => {
+            if a.$field != b.$field {
+                names.push($name);
+            }
+        };
+    }
+    check!(agent, "agent");
+    check!(app, "app");
+    check!(applescript, "applescript");
+    check!(auth, "auth");
+    check!(automation, "automation");
+    check!(blob, "blob");
+    check!(webhook, "webhook");
+    check!(browser, "browser");
+    check!(builder, "builder");
+    check!(common, "common");
+    check!(harness, "harness");
+    check!(history, "history");
+    check!(interop, "interop");
+    check!(job, "job");
+    check!(kv, "kv");
+    check!(query, "query");
+    check!(net, "net");
+    check!(model, "model");
+    check!(local_model, "local-model");
+    check!(media, "media");
+    check!(migration, "migration");
+    check!(mcp, "mcp");
+    check!(native, "native");
+    check!(person, "person");
+    check!(scheduler, "scheduler");
+    check!(stt, "stt");
+    check!(stream, "stream");
+    check!(tts, "tts");
+    check!(crdt, "crdt");
+    check!(connection, "connection");
+    check!(document, "document");
+    check!(geo, "geo");
+    check!(replica, "replica");
+    check!(time, "time");
+    check!(telemetry, "telemetry");
+    names
+}
+
+pub struct CompactionReport {
+    pub archived_records: usize,
+    pub retained_records: usize,
+    pub snapshot_sections: usize,
+    pub old_log_bytes: u64,
+    pub new_log_bytes: u64,
+    pub snapshot_bytes: u64,
+    pub archive_pruned: bool,
+}
+
+pub struct CompactionOptions {
+    pub retain: usize,
+    pub prune_archive: bool,
+}
+
+pub fn compact_log(log_path: &Path, options: CompactionOptions) -> Result<CompactionReport> {
+    let _home_lock = filelock::acquire(log_path)?;
+    let records = read_log(log_path)?;
+    let old_log_bytes = read_file_bytes(log_path)?;
+    let retain = options.retain.min(records.len());
+    let horizon = records.len().saturating_sub(retain);
+    let (prefix, tail) = records.split_at(horizon);
+    let registry = default_registry();
+    let mut prefix_state = State::default();
+    for record in prefix {
+        apply(&registry, &mut prefix_state, record)?;
+    }
+    let mut full_state = prefix_state.clone();
+    for record in tail {
+        apply(&registry, &mut full_state, record)?;
+    }
+    let sections = snapshot_sections(&registry, &prefix_state)?;
+    let seq = u64::try_from(horizon).map_err(|_| Error::Storage("log too long".into()))?;
+    let log_head_hash = snapshot::hash_bytes(&old_log_bytes);
+    let tmp_snapshot = snapshot::tmp_snapshot_path(log_path);
+    let tmp_log = snapshot::tmp_log_path(log_path);
+    let archive = snapshot::archive_path(log_path);
+    if archive.exists() && !options.prune_archive {
+        return Err(Error::Storage(format!(
+            "archive already exists: {}; run `terrane compact --prune-archive` first",
+            archive.display()
+        )));
+    }
+    if archive.exists() && options.prune_archive {
+        std::fs::remove_file(&archive).map_err(|e| Error::Storage(e.to_string()))?;
+    }
+    snapshot::write_snapshot(&tmp_snapshot, seq, log_head_hash, sections.clone())?;
+    write_new_log(&tmp_log, tail)?;
+    let snapshot_file = snapshot::read_snapshot(&tmp_snapshot)?
+        .ok_or_else(|| Error::Storage("missing temporary snapshot".into()))?;
+    let mut verified = State::default();
+    restore_snapshot_sections(&registry, &mut verified, &snapshot_file)?;
+    for record in tail {
+        apply(&registry, &mut verified, record)?;
+    }
+    if verified != full_state {
+        let diff = state_diff_names(&verified, &full_state).join(", ");
+        let _ = std::fs::remove_file(&tmp_snapshot);
+        let _ = std::fs::remove_file(&tmp_log);
+        return Err(Error::Storage(format!(
+            "compacted snapshot did not replay to the same state: {diff}"
+        )));
+    }
+    if log_path.exists() {
+        std::fs::copy(log_path, &archive).map_err(|e| {
+            Error::Storage(format!(
+                "copy {} to {}: {e}",
+                log_path.display(),
+                archive.display()
+            ))
+        })?;
+    } else {
+        write_new_log(&archive, &[])?;
+    }
+    std::fs::rename(&tmp_snapshot, snapshot::snapshot_path(log_path)).map_err(|e| {
+        Error::Storage(format!(
+            "move {} to {}: {e}",
+            tmp_snapshot.display(),
+            snapshot::snapshot_path(log_path).display()
+        ))
+    })?;
+    std::fs::rename(&tmp_log, log_path).map_err(|e| {
+        Error::Storage(format!(
+            "move {} to {}: {e}",
+            tmp_log.display(),
+            log_path.display()
+        ))
+    })?;
+    let new_log_bytes = std::fs::metadata(log_path)
+        .map_err(|e| Error::Storage(e.to_string()))?
+        .len();
+    let snapshot_bytes = std::fs::metadata(snapshot::snapshot_path(log_path))
+        .map_err(|e| Error::Storage(e.to_string()))?
+        .len();
+    Ok(CompactionReport {
+        archived_records: records.len(),
+        retained_records: tail.len(),
+        snapshot_sections: sections.len(),
+        old_log_bytes: u64::try_from(old_log_bytes.len())
+            .map_err(|_| Error::Storage("log too large".into()))?,
+        new_log_bytes,
+        snapshot_bytes,
+        archive_pruned: options.prune_archive,
+    })
+}
+
 pub fn migrate_log(log_path: &Path) -> Result<usize> {
     let old_records = read_legacy_log(log_path)?;
     let registry = default_registry();
@@ -1400,10 +1646,7 @@ impl<R: EffectRunner + 'static> Core<R> {
         // then own the log without a second writer racing us.
         let home_lock = filelock::acquire(&log_path)?;
         let registry = default_registry();
-        let mut state = State::default();
-        for record in read_log(&log_path)? {
-            apply(&registry, &mut state, &record)?;
-        }
+        let state = load_state_from_storage(&registry, &log_path)?;
         let kv_storage_plan = terrane_cap_kv::storage_plan(&state)?;
         let storage_home = storage_home(&log_path);
         terrane_cap_kv::sync_full_storage(&storage_home, &state.kv)?;
@@ -1588,10 +1831,7 @@ impl<R: EffectRunner + 'static> Core<R> {
     /// True if replaying the log reproduces the in-memory State — the
     /// determinism contract, checkable at any time.
     pub fn replay_matches(&self) -> Result<bool> {
-        let mut fresh = State::default();
-        for record in read_log(&self.log_path)? {
-            apply(&self.registry, &mut fresh, &record)?;
-        }
+        let fresh = load_state_from_storage(&self.registry, &self.log_path)?;
         Ok(fresh == self.state)
     }
 
