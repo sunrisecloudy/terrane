@@ -312,6 +312,21 @@ pub enum Effect {
         app: String,
         connection: String,
     },
+    /// Mint the local ed25519 person keypair at the edge. The runner stores the
+    /// private seed in host secret storage and records only `person.created`.
+    PersonKeygen,
+    /// Sign an attestation with the person key held by the host secret store.
+    PersonSign {
+        person_id: String,
+        kind: String,
+        claim: String,
+    },
+    /// Rotate the person signing key. The runner signs the new public key with
+    /// the current secret, stores the replacement seed, and records only the
+    /// new public key plus signature.
+    PersonRotate {
+        person_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

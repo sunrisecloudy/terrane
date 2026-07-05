@@ -36,6 +36,7 @@ mod mcp;
 mod model;
 mod native;
 mod net;
+mod person;
 mod query;
 mod relational_db;
 mod replica;

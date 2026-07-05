@@ -16,7 +16,12 @@ const FALLBACK_KEY_FILE: &str = "secrets.key";
 
 pub fn set_secret(home: &Path, name: &str, field: &str, value: &str) -> Result<()> {
     validate_secret_len(value)?;
-    if !force_file_store() && try_keyring_set(home, name, field, value).is_ok() {
+    if !force_file_store()
+        && try_keyring_set(home, name, field, value).is_ok()
+        && try_keyring_get(home, name, field)
+            .map(|stored| stored == value)
+            .unwrap_or(false)
+    {
         return Ok(());
     }
     fallback_set(home, name, field, value)
