@@ -111,6 +111,10 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "js-runtime.run" | "wasm-runtime.run" => PublicCommandDisposition::Refuse {
             reason: "run apps through the invoke tool",
         },
+        "net.request" => PublicCommandDisposition::GrantGated {
+            namespace: "net",
+            app_arg_index: 0,
+        },
         "net.fetch" => PublicCommandDisposition::Refuse {
             reason: "net.fetch is not available through untrusted capability_command",
         },

@@ -3614,7 +3614,10 @@ dependencies = [
 name = "terrane-cap-net"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "borsh",
+ "serde_json",
+ "sha2",
  "terrane-cap-interface",
 ]
 

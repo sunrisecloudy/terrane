@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        86,
+        87,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,7 +52,7 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        42,
+        43,
         "grant-gated commands: {grant_gated:?}"
     );
     assert_eq!(refused.len(), 42, "refused commands: {refused:?}");
@@ -171,6 +171,28 @@ fn resource_commands_need_grants_and_never_prompt_for_missing_apps() {
         authorize_public_command(&core, "kv.set", &[]).unwrap(),
         PublicCommandAuthz::Refuse { reason } if reason.contains("args[0]")
     ));
+}
+
+#[test]
+fn net_request_is_grant_gated_for_public_callers() {
+    let dir = tempdir().unwrap();
+    let mut core = terrane_host::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    app(&mut core, "demo");
+    let request = r#"{"url":"http://127.0.0.1/","responseBody":"inline"}"#.to_string();
+
+    assert_eq!(
+        authorize_public_command(&core, "net.request", &["demo".into(), request.clone()]).unwrap(),
+        PublicCommandAuthz::NeedsGrant {
+            app: "demo".into(),
+            namespace: "net".into()
+        }
+    );
+
+    grant(&mut core, "demo", "net");
+    assert_eq!(
+        authorize_public_command(&core, "net.request", &["demo".into(), request]).unwrap(),
+        PublicCommandAuthz::Allow
+    );
 }
 
 #[test]

@@ -266,7 +266,7 @@ pub fn run_state() -> Result<(), String> {
     print_kv_storage_plan(core.kv_storage_plan());
 
     println!("fetches:");
-    if state.net.fetches.is_empty() {
+    if state.net.fetches.is_empty() && state.net.requests.is_empty() {
         println!("  (none)");
     }
     for (app, responses) in &state.net.fetches {
@@ -275,6 +275,14 @@ pub fn run_state() -> Result<(), String> {
                 "  {app} {url} -> {} ({} bytes)",
                 resp.status,
                 resp.body.len()
+            );
+        }
+    }
+    for (app, responses) in &state.net.requests {
+        for (request_key, resp) in responses {
+            println!(
+                "  {app} request {request_key} -> {} {} ({} bytes)",
+                resp.status, resp.body_kind, resp.body_size
             );
         }
     }
@@ -832,6 +840,7 @@ pub fn print_help() {
          \x20 terrane native observe-default                    record default host native support\n\
          \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
+         \x20 terrane net request <app> <request-json>          full HTTP request; record redacted request + response\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane local-model pull [<id> <hf-repo> [<file>]] [--backend gguf|mlx] [options…]  fetch + register (bare = recommended model)\n\
          \x20 terrane local-model register <id> <llama_cpp|mlx> <path-or-repo> [--context N] [--template T] [--max-tokens N] [--temp F]\n\
