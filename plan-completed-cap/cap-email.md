@@ -117,10 +117,21 @@ touches; the log is plaintext. So:
 Gate after each step:
 `cargo test --workspace --locked && cargo clippy --workspace --all-targets --locked -- -D warnings`.
 
+## v2 (planned, user-confirmed 2026-07-05): receiving email
+
+Inbound email is a delivery problem, not an email problem: a received message
+is just a payload looking for an app. It rides
+[cap-interop.md](cap-interop.md) — the host's mail intake (IMAP/JMAP poll or a
+provider inbound webhook via [cap-webhook.md](cap-webhook.md)) records
+`email.received {message_id, from, to, subject, body_ref}` and delivers it to
+the user-routed app through the required `common.receive("email", …)` verb,
+exactly like any other interop sender. Routing = address-per-app
+(`<app>@<user-domain>`) or user rules picked through the interop picker. No
+new app-facing surface is needed — every app can already receive.
+
 ## Non-goals (v1)
 
-Receiving email (IMAP/JMAP or provider inbound webhooks — the latter would be
-a [cap-webhook.md](cap-webhook.md) consumer, not new machinery), templating,
+Receiving email is **v2 above**, not v1. Also out: templating,
 scheduling/queued retry, bounce tracking, provider-specific APIs, HTML
 sanitization (the app authors its own body).
 

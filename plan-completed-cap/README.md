@@ -28,6 +28,14 @@ payments.
 | [cap-document.md](cap-document.md) | `document` | Draft | — (names frozen by the live host's planned entry) |
 | [cap-time.md](cap-time.md) | `time` | Draft | — |
 | [cap-telemetry.md](cap-telemetry.md) | `telemetry` | Draft | js-runtime |
+| [cap-history.md](cap-history.md) | `history` | Draft | the log itself; compaction horizon |
+
+### App-to-app composition
+
+| Plan | Namespace | Status | Depends on |
+| --- | --- | --- | --- |
+| [cap-interop.md](cap-interop.md) | `interop` | **Locked** | js-runtime, auth elicitation; `common.receive` **required on every app** |
+| [cap-deep-links.md](cap-deep-links.md) | `app` (extended) | Draft | interop (`common.receive`), blob |
 
 ### Background work
 
@@ -43,8 +51,9 @@ payments.
 | [cap-oauth-connections.md](cap-oauth-connections.md) | `connection` | Draft | net v2 (fulfils its `$secret` reservation), crypto primitives, OS keychain |
 | [cap-webhook.md](cap-webhook.md) | `webhook` | Draft | blob, net v2 redaction rules |
 | [cap-stream.md](cap-stream.md) | `stream` | Draft | net v2, blob; log growth ties to compaction |
-| [cap-email.md](cap-email.md) | `email` | Draft | connection, blob |
+| [cap-email.md](cap-email.md) | `email` | Draft | connection, blob; **v2 receive rides interop** (user-confirmed) |
 | [cap-mcp-client.md](cap-mcp-client.md) | `mcp` | Draft | connection, blob |
+| [cap-web-publish.md](cap-web-publish.md) | `web-publish` | Draft (**Premium-gated: locked**) | Premium relay, connection keychain |
 
 ### Multi-user
 
@@ -93,14 +102,26 @@ payments.
 3. **Net secrets = redact on record.** Built-in sensitive-header list plus an
    app-declared list; `{"$secret": name}` reserved and later fulfilled by
    [cap-oauth-connections.md](cap-oauth-connections.md).
+4. **Interop = MCP-shaped calls over the existing verb surface**, host-mediated
+   (no in-QuickJS MCP client), replies recorded. **`common.receive` is required
+   on every app** — validation rejects bundles without it, existing bundles get
+   patched.
+5. **Inbound email = interop delivery**, not new app surface: mail intake at
+   the edge → `common.receive("email", …)` to the user-routed app (email v2).
+6. **Web publish is Premium-gated** through the relay; the home host only ever
+   dials out.
 
 ## Suggested build order
 
 1. **blob** → unblocks net v2, media, capture, tts, native-v2, webhook/stream
    offload, model-v2 images.
-2. **net v2, query, time, document, telemetry** — mutually independent.
-3. **connection** → email, mcp-client; **scheduler** → job-queue.
-4. **sync v2** → share-invite, presence, push.
+2. **net v2, query, time, document, telemetry, interop** — mutually
+   independent (interop is locked and high-leverage: email-receive, deep
+   links, and the picker all ride it).
+3. **connection** → email, mcp-client; **scheduler** → job-queue;
+   **deep-links + history** alongside.
+4. **sync v2** → share-invite, presence, push; **web-publish** with the
+   Premium relay.
 5. **schema-migration** → app-update → publish; model-v2 alongside.
 6. **compaction / backup-export** — whenever disk growth or portability starts
    to hurt; nothing user-visible blocks on them.
