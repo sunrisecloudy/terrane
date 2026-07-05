@@ -1,25 +1,46 @@
-use super::{OperationCatalogEntry, RESULT_SIZE_INLINE_SMALL};
+use super::{
+    OperationCatalogEntry, OP_SCREEN_CAPTURE, OP_SHORTCUT_REGISTER_GLOBAL, OP_TRAY_SET_MENU,
+    OP_WINDOW_CONTROL, RESULT_SIZE_BLOB_REF, RESULT_SIZE_INLINE_SMALL,
+};
 
 pub const GROUP: &str = "desktop";
 
 pub const CATALOG: &[OperationCatalogEntry] = &[
     OperationCatalogEntry {
-        id: "tray.setMenu",
+        id: OP_TRAY_SET_MENU,
         group: GROUP,
-        status: "planned",
+        status: "v1",
         safety: "host-plumbing",
-        policy: "not-command",
+        policy: "grant-gated",
         result_size: RESULT_SIZE_INLINE_SMALL,
-        summary: "Host shell chrome, not a v1 app-originated native operation.",
+        summary: "Install or replace the app's durable tray menu registration.",
     },
     OperationCatalogEntry {
-        id: "screen.capture",
+        id: OP_SCREEN_CAPTURE,
         group: GROUP,
-        status: "planned",
+        status: "v1",
         safety: "sensitive",
         policy: "refuse-until-selector",
-        result_size: "blob-ref",
-        summary: "Potential future screen capture using a blob reference, not inline event data.",
+        result_size: RESULT_SIZE_BLOB_REF,
+        summary: "Capture screen/window pixels into the blob CAS and complete with a blob reference.",
+    },
+    OperationCatalogEntry {
+        id: OP_SHORTCUT_REGISTER_GLOBAL,
+        group: GROUP,
+        status: "v1",
+        safety: "host-plumbing",
+        policy: "grant-gated",
+        result_size: RESULT_SIZE_INLINE_SMALL,
+        summary: "Register one app-owned global shortcut that dispatches an app verb at the edge.",
+    },
+    OperationCatalogEntry {
+        id: OP_WINDOW_CONTROL,
+        group: GROUP,
+        status: "v1",
+        safety: "safe-request",
+        policy: "grant-gated",
+        result_size: RESULT_SIZE_INLINE_SMALL,
+        summary: "Control only the requesting app's own shell window.",
     },
     OperationCatalogEntry {
         id: "shell.openPath",

@@ -9,6 +9,8 @@ pub struct NativeState {
     pub active_host_id: Option<String>,
     pub platforms: BTreeMap<String, NativePlatformObservation>,
     pub requests: BTreeMap<String, BTreeMap<String, NativeRequestRecord>>,
+    pub tray_menus: BTreeMap<String, TrayMenu>,
+    pub shortcuts: BTreeMap<String, BTreeMap<String, GlobalShortcut>>,
     pub next_sequence: u64,
 }
 
@@ -34,6 +36,24 @@ pub struct NativeRequestRecord {
     pub retention_class: String,
     pub result_json: Option<String>,
     pub error_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrayMenu {
+    pub title: String,
+    pub items: Vec<TrayMenuItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrayMenuItem {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobalShortcut {
+    pub accelerator: String,
+    pub verb: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

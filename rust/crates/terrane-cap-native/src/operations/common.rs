@@ -1,6 +1,7 @@
 use super::{
-    OperationCatalogEntry, OP_CLIPBOARD_WRITE_TEXT, OP_DIALOG_OPEN_FILE, OP_EXTERNAL_OPEN_URL,
-    OP_NOTIFICATION_SHOW, RESULT_SIZE_INLINE_SMALL, RESULT_SIZE_NONE,
+    OperationCatalogEntry, OP_CLIPBOARD_READ_TEXT, OP_CLIPBOARD_WRITE_TEXT, OP_DIALOG_OPEN_FILE,
+    OP_DIALOG_SAVE_FILE, OP_EXTERNAL_OPEN_URL, OP_NOTIFICATION_SHOW, RESULT_SIZE_INLINE_SMALL,
+    RESULT_SIZE_NONE,
 };
 
 pub const GROUP: &str = "common";
@@ -14,6 +15,15 @@ pub const CATALOG: &[OperationCatalogEntry] = &[
         policy: "grant-gated",
         result_size: RESULT_SIZE_NONE,
         summary: "Write a bounded text string to the system clipboard.",
+    },
+    OperationCatalogEntry {
+        id: OP_CLIPBOARD_READ_TEXT,
+        group: GROUP,
+        status: "v1",
+        safety: "sensitive",
+        policy: "refuse-until-selector",
+        result_size: RESULT_SIZE_INLINE_SMALL,
+        summary: "Read bounded text from the system clipboard through an operation-level grant.",
     },
     OperationCatalogEntry {
         id: OP_EXTERNAL_OPEN_URL,
@@ -41,6 +51,15 @@ pub const CATALOG: &[OperationCatalogEntry] = &[
         policy: "grant-gated",
         result_size: RESULT_SIZE_INLINE_SMALL,
         summary: "Open a native file picker and record bounded selected path metadata.",
+    },
+    OperationCatalogEntry {
+        id: OP_DIALOG_SAVE_FILE,
+        group: GROUP,
+        status: "v1",
+        safety: "user-mediated",
+        policy: "grant-gated",
+        result_size: RESULT_SIZE_INLINE_SMALL,
+        summary: "Ask the host to save a named blob through a user-mediated save dialog.",
     },
     OperationCatalogEntry {
         id: "secureStorage.get",

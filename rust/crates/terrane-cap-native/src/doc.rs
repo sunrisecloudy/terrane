@@ -5,9 +5,13 @@ use terrane_cap_interface::{
 };
 
 use crate::operations::{
-    CANCEL, CLIPBOARD_WRITE_TEXT, COMPLETE, DIALOG_OPEN_FILE, EXTERNAL_OPEN_URL, FAIL,
-    NOTIFICATION_SHOW, PLATFORM_OBSERVE, RESOURCE_CLIPBOARD_WRITE_TEXT, RESOURCE_DIALOG_OPEN_FILE,
-    RESOURCE_EXTERNAL_OPEN_URL, RESOURCE_NOTIFICATION_SHOW,
+    CANCEL, CLIPBOARD_READ_TEXT, CLIPBOARD_WRITE_TEXT, COMPLETE, DIALOG_OPEN_FILE,
+    DIALOG_SAVE_FILE, EXTERNAL_OPEN_URL, FAIL, NOTIFICATION_SHOW, PLATFORM_OBSERVE,
+    RESOURCE_CLIPBOARD_READ_TEXT, RESOURCE_CLIPBOARD_WRITE_TEXT, RESOURCE_DIALOG_OPEN_FILE,
+    RESOURCE_DIALOG_SAVE_FILE, RESOURCE_EXTERNAL_OPEN_URL, RESOURCE_NOTIFICATION_SHOW,
+    RESOURCE_SCREEN_CAPTURE, RESOURCE_SHORTCUT_REGISTER_GLOBAL, RESOURCE_TRAY_SET_MENU,
+    RESOURCE_WINDOW_CONTROL, SCREEN_CAPTURE, SHORTCUT_REGISTER_GLOBAL, TRAY_SET_MENU,
+    WINDOW_CONTROL,
 };
 
 pub fn native_doc(include_internal: bool) -> CapabilityDoc {
@@ -26,13 +30,25 @@ pub fn native_doc(include_internal: bool) -> CapabilityDoc {
             commands: vec![
                 PLATFORM_OBSERVE.to_string(),
                 CLIPBOARD_WRITE_TEXT.to_string(),
+                CLIPBOARD_READ_TEXT.to_string(),
                 EXTERNAL_OPEN_URL.to_string(),
                 NOTIFICATION_SHOW.to_string(),
                 DIALOG_OPEN_FILE.to_string(),
+                DIALOG_SAVE_FILE.to_string(),
+                SCREEN_CAPTURE.to_string(),
+                TRAY_SET_MENU.to_string(),
+                SHORTCUT_REGISTER_GLOBAL.to_string(),
+                WINDOW_CONTROL.to_string(),
                 "native.clipboardWriteText".to_string(),
+                "native.clipboardReadText".to_string(),
                 "native.externalOpenUrl".to_string(),
                 "native.notificationShow".to_string(),
                 "native.dialogOpenFile".to_string(),
+                "native.dialogSaveFile".to_string(),
+                "native.screenCapture".to_string(),
+                "native.traySetMenu".to_string(),
+                "native.shortcutRegisterGlobal".to_string(),
+                "native.windowControl".to_string(),
                 COMPLETE.to_string(),
                 FAIL.to_string(),
                 CANCEL.to_string(),
@@ -57,20 +73,23 @@ pub fn native_doc(include_internal: bool) -> CapabilityDoc {
         constraints: vec![
             "Native operations requested by apps are asynchronous; results are read on a later invoke."
                 .to_string(),
-            "The operation catalog is grouped into common, desktop, and mobile rows; only v1 common rows are registered as app-callable commands."
+            "The operation catalog is grouped into common, desktop, and mobile rows; v1 common/desktop rows are registered as app-callable queued requests."
                 .to_string(),
             "Resource methods record native.requested only; OS work runs in a trusted host drain service."
                 .to_string(),
             "native.supports reads folded platform observation state and never probes a live connector."
                 .to_string(),
-            "Large media results are not supported in v1; only none and inline-small result classes are implemented."
+            "Large native bytes are not stored inline; screen.capture completes with a blob CAS reference."
+                .to_string(),
+            "clipboard.readText and screen.capture require operation-level native grants: native:clipboard.readText and native:screen.capture."
                 .to_string(),
         ],
         limits: vec![
             LimitDoc {
                 name: "resultSize".to_string(),
-                value: "inline-small".to_string(),
-                reason: "The event log stores bounded JSON facts, not large media blobs.".to_string(),
+                value: "none | inline-small | blob-ref".to_string(),
+                reason: "The event log stores bounded JSON facts; screen pixels live in the blob CAS."
+                    .to_string(),
             },
             LimitDoc {
                 name: "terminalRetention".to_string(),
@@ -125,12 +144,25 @@ fn commands() -> Vec<CommandDoc> {
         ])
         .with_emits(&["native.platform.observed"]),
         request_command(CLIPBOARD_WRITE_TEXT, "Request clipboard text write."),
+        request_command(CLIPBOARD_READ_TEXT, "Request clipboard text read."),
         request_command(EXTERNAL_OPEN_URL, "Request opening an external URL."),
         request_command(NOTIFICATION_SHOW, "Request a local notification."),
         request_command(DIALOG_OPEN_FILE, "Request a native open-file dialog."),
+        request_command(DIALOG_SAVE_FILE, "Request a user-mediated save-file dialog."),
+        request_command(SCREEN_CAPTURE, "Request screen/window capture into the blob CAS."),
+        request_command(TRAY_SET_MENU, "Request installation of an app tray menu."),
+        request_command(
+            SHORTCUT_REGISTER_GLOBAL,
+            "Request registration of an app global shortcut.",
+        ),
+        request_command(WINDOW_CONTROL, "Request control of the app's own shell window."),
         request_command(
             RESOURCE_CLIPBOARD_WRITE_TEXT,
             "Resource alias used by ctx.resource.native.clipboardWriteText.",
+        ),
+        request_command(
+            RESOURCE_CLIPBOARD_READ_TEXT,
+            "Resource alias used by ctx.resource.native.clipboardReadText.",
         ),
         request_command(
             RESOURCE_EXTERNAL_OPEN_URL,
@@ -143,6 +175,26 @@ fn commands() -> Vec<CommandDoc> {
         request_command(
             RESOURCE_DIALOG_OPEN_FILE,
             "Resource alias used by ctx.resource.native.dialogOpenFile.",
+        ),
+        request_command(
+            RESOURCE_DIALOG_SAVE_FILE,
+            "Resource alias used by ctx.resource.native.dialogSaveFile.",
+        ),
+        request_command(
+            RESOURCE_SCREEN_CAPTURE,
+            "Resource alias used by ctx.resource.native.screenCapture.",
+        ),
+        request_command(
+            RESOURCE_TRAY_SET_MENU,
+            "Resource alias used by ctx.resource.native.traySetMenu.",
+        ),
+        request_command(
+            RESOURCE_SHORTCUT_REGISTER_GLOBAL,
+            "Resource alias used by ctx.resource.native.shortcutRegisterGlobal.",
+        ),
+        request_command(
+            RESOURCE_WINDOW_CONTROL,
+            "Resource alias used by ctx.resource.native.windowControl.",
         ),
         command_doc(
             COMPLETE,
@@ -268,6 +320,13 @@ fn resource_methods() -> Vec<terrane_cap_interface::ResourceMethodDoc> {
             "void",
         ),
         native_resource_method(
+            "clipboardReadText",
+            "write",
+            &[param("requestId", "Native request id.", "string")],
+            "Record a sensitive clipboard read request.",
+            "void",
+        ),
+        native_resource_method(
             "externalOpenUrl",
             "write",
             &[
@@ -296,6 +355,60 @@ fn resource_methods() -> Vec<terrane_cap_interface::ResourceMethodDoc> {
                 param("optionsJson", "Open-file options JSON.", "json"),
             ],
             "Record an open-file dialog request.",
+            "void",
+        ),
+        native_resource_method(
+            "dialogSaveFile",
+            "write",
+            &[
+                param("requestId", "Native request id.", "string"),
+                param("suggestedName", "Suggested file name.", "string"),
+                param("blobName", "Blob CAS name to save.", "string"),
+            ],
+            "Record a save-file dialog request.",
+            "void",
+        ),
+        native_resource_method(
+            "screenCapture",
+            "write",
+            &[
+                param("requestId", "Native request id.", "string"),
+                param("target", "screen or window.", "string"),
+            ],
+            "Record a sensitive screen capture request.",
+            "void",
+        ),
+        native_resource_method(
+            "traySetMenu",
+            "write",
+            &[
+                param("requestId", "Native request id.", "string"),
+                param("title", "Tray menu title.", "string"),
+                param("itemsJson", "JSON array of {id,label}.", "json"),
+            ],
+            "Record a durable tray menu registration request.",
+            "void",
+        ),
+        native_resource_method(
+            "shortcutRegisterGlobal",
+            "write",
+            &[
+                param("requestId", "Native request id.", "string"),
+                param("accelerator", "Shortcut accelerator.", "string"),
+                param("verb", "App verb to dispatch.", "string"),
+            ],
+            "Record a durable global shortcut registration request.",
+            "void",
+        ),
+        native_resource_method(
+            "windowControl",
+            "write",
+            &[
+                param("requestId", "Native request id.", "string"),
+                param("action", "focus, minimize, or setTitle.", "string"),
+                param("title", "Required only for setTitle.", "string"),
+            ],
+            "Record an own-window control request.",
             "void",
         ),
         native_resource_method(

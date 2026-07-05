@@ -356,7 +356,7 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     validate_segment_input("subject", &subject)?;
     validate_segment_input("app", &app)?;
     validate_segment_input("namespace", &raw_resource)?;
-    let spec = namespace_v1_spec(ctx.bus, &namespace)?;
+    let spec = grant_target_spec(ctx.bus, &grant_target)?;
 
     let verbs = match args.get(3) {
         Some(raw) => parse_grant_verbs(raw, spec.verbs)?,
@@ -423,7 +423,7 @@ fn decide_revoke(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     validate_segment_input("subject", &subject)?;
     validate_segment_input("app", &app)?;
     validate_segment_input("namespace", &raw_resource)?;
-    namespace_v1_spec(ctx.bus, &grant_target.namespace)?;
+    grant_target_spec(ctx.bus, &grant_target)?;
 
     let resource_id = grant_target.resource_id;
     let key = grant_key(
@@ -1276,6 +1276,7 @@ fn validate_segment_input(label: &str, value: &str) -> Result<()> {
 
 struct GrantTarget {
     namespace: String,
+    selector_schema_id: String,
     selector_id: String,
     selector_json: String,
     resource_id: String,
@@ -1287,6 +1288,7 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
         let resource_id = terrane_cap_connection::connection_resource_id(&name)?;
         return Ok(GrantTarget {
             namespace: "connection".to_string(),
+            selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
             selector_id: name.clone(),
             selector_json: format!(
                 r#"{{"namespace":"connection","name":"{}"}}"#,
@@ -1303,6 +1305,7 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
         }
         return Ok(GrantTarget {
             namespace: "common".to_string(),
+            selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
             selector_id: channel.to_string(),
             selector_json: format!(
                 r#"{{"namespace":"common","action":"send","channel":"{}"}}"#,
@@ -1315,6 +1318,7 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
         let name = terrane_cap_connection::validate_name(name)?;
         return Ok(GrantTarget {
             namespace: "mcp".to_string(),
+            selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
             selector_id: name.clone(),
             selector_json: format!(
                 r#"{{"namespace":"mcp","name":"{}"}}"#,
@@ -1323,8 +1327,26 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
             resource_id: format!("mcp:{name}"),
         });
     }
+    if let Some(operation) = raw.strip_prefix("native:") {
+        if !matches!(operation, "clipboard.readText" | "screen.capture") {
+            return Err(Error::InvalidInput(format!(
+                "unknown native operation grant: {operation}"
+            )));
+        }
+        return Ok(GrantTarget {
+            namespace: "native".to_string(),
+            selector_schema_id: "native.operation.v1".to_string(),
+            selector_id: operation.to_string(),
+            selector_json: format!(
+                r#"{{"namespace":"native","operation":"{}"}}"#,
+                json_string(operation)
+            ),
+            resource_id: raw.to_string(),
+        });
+    }
     Ok(GrantTarget {
         namespace: raw.to_string(),
+        selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
         selector_id: String::new(),
         selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(raw)),
         resource_id: namespace_resource_id(raw),
@@ -1445,6 +1467,16 @@ fn namespace_v1_spec(bus: &dyn CapBus, namespace: &str) -> Result<GrantResourceS
         .ok_or_else(|| {
             Error::InvalidInput(format!(
                 "unknown grant resource namespace or selector schema: {namespace}/{NAMESPACE_SELECTOR_SCHEMA_ID}"
+            ))
+        })
+}
+
+fn grant_target_spec(bus: &dyn CapBus, target: &GrantTarget) -> Result<GrantResourceSpec> {
+    bus.grant_resource_spec(&target.namespace, &target.selector_schema_id)?
+        .ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "unknown grant resource namespace or selector schema: {}/{}",
+                target.namespace, target.selector_schema_id
             ))
         })
 }

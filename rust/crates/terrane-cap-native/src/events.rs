@@ -5,8 +5,9 @@ use terrane_cap_interface::{
 };
 
 use crate::types::{
-    terminal_retention_limit, Cancelled, NativePlatformObservation, NativeRequestRecord,
-    NativeRequestStatus, NativeState, PlatformObserved, Requested, Terminal,
+    terminal_retention_limit, Cancelled, GlobalShortcut, NativePlatformObservation,
+    NativeRequestRecord, NativeRequestStatus, NativeState, PlatformObserved, Requested, Terminal,
+    TrayMenu, TrayMenuItem,
 };
 
 pub fn platform_observed_event(
@@ -131,11 +132,25 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
         "native.completed" => {
             let event: Terminal = decode_event(record)?;
             let state = state_mut::<NativeState>(state, "native")?;
+            let registration_update = state
+                .requests
+                .get(&event.app)
+                .and_then(|requests| requests.get(&event.request_id))
+                .map(|record| {
+                    (
+                        record.operation_id.clone(),
+                        record.input_json.clone(),
+                        event.payload_json.clone(),
+                    )
+                });
             if let Some(record) = request_mut(state, &event.app, &event.request_id) {
                 if !record.status.is_terminal() {
                     record.status = NativeRequestStatus::Completed;
                     record.result_json = Some(event.payload_json);
                 }
+            }
+            if let Some((operation_id, input_json, result_json)) = registration_update {
+                fold_registration_completion(state, &event.app, &operation_id, &input_json, &result_json);
             }
             enforce_retention(state, &event.app);
         }
@@ -163,9 +178,10 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
         }
         "app.removed" => {
             let event = decode_app_removed(record)?;
-            state_mut::<NativeState>(state, "native")?
-                .requests
-                .remove(&event.id);
+            let state = state_mut::<NativeState>(state, "native")?;
+            state.requests.remove(&event.id);
+            state.tray_menus.remove(&event.id);
+            state.shortcuts.remove(&event.id);
         }
         _ => {}
     }
@@ -253,4 +269,82 @@ fn cancelled_json(reason: &str) -> String {
         "reason": reason,
     })
     .to_string()
+}
+
+fn fold_registration_completion(
+    state: &mut NativeState,
+    app: &str,
+    operation_id: &str,
+    input_json: &str,
+    result_json: &str,
+) {
+    match operation_id {
+        crate::operations::OP_TRAY_SET_MENU => {
+            let Ok(result) = serde_json::from_str::<serde_json::Value>(result_json) else {
+                return;
+            };
+            if result.get("installed").and_then(|value| value.as_bool()) != Some(true) {
+                return;
+            }
+            let Ok(input) = serde_json::from_str::<serde_json::Value>(input_json) else {
+                return;
+            };
+            let Some(title) = input.get("title").and_then(|value| value.as_str()) else {
+                return;
+            };
+            let Some(items) = input.get("items").and_then(|value| value.as_array()) else {
+                return;
+            };
+            if items.is_empty() {
+                state.tray_menus.remove(app);
+                return;
+            }
+            let mut menu_items = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(id) = item.get("id").and_then(|value| value.as_str()) else {
+                    return;
+                };
+                let Some(label) = item.get("label").and_then(|value| value.as_str()) else {
+                    return;
+                };
+                menu_items.push(TrayMenuItem {
+                    id: id.to_string(),
+                    label: label.to_string(),
+                });
+            }
+            state.tray_menus.insert(
+                app.to_string(),
+                TrayMenu {
+                    title: title.to_string(),
+                    items: menu_items,
+                },
+            );
+        }
+        crate::operations::OP_SHORTCUT_REGISTER_GLOBAL => {
+            let Ok(result) = serde_json::from_str::<serde_json::Value>(result_json) else {
+                return;
+            };
+            if result.get("registered").and_then(|value| value.as_bool()) != Some(true) {
+                return;
+            }
+            let Ok(input) = serde_json::from_str::<serde_json::Value>(input_json) else {
+                return;
+            };
+            let Some(accelerator) = input.get("accelerator").and_then(|value| value.as_str())
+            else {
+                return;
+            };
+            let Some(verb) = input.get("verb").and_then(|value| value.as_str()) else {
+                return;
+            };
+            state.shortcuts.entry(app.to_string()).or_default().insert(
+                accelerator.to_string(),
+                GlobalShortcut {
+                    accelerator: accelerator.to_string(),
+                    verb: verb.to_string(),
+                },
+            );
+        }
+        _ => {}
+    }
 }

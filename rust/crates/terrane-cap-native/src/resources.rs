@@ -11,6 +11,10 @@ pub(crate) fn resource_methods() -> Vec<ResourceMethod> {
             params: &["requestId", "text"],
         },
         ResourceMethod::Write {
+            name: "clipboardReadText",
+            params: &["requestId"],
+        },
+        ResourceMethod::Write {
             name: "externalOpenUrl",
             params: &["requestId", "url"],
         },
@@ -21,6 +25,26 @@ pub(crate) fn resource_methods() -> Vec<ResourceMethod> {
         ResourceMethod::Write {
             name: "dialogOpenFile",
             params: &["requestId", "optionsJson"],
+        },
+        ResourceMethod::Write {
+            name: "dialogSaveFile",
+            params: &["requestId", "suggestedName", "blobName"],
+        },
+        ResourceMethod::Write {
+            name: "screenCapture",
+            params: &["requestId", "target"],
+        },
+        ResourceMethod::Write {
+            name: "traySetMenu",
+            params: &["requestId", "title", "itemsJson"],
+        },
+        ResourceMethod::Write {
+            name: "shortcutRegisterGlobal",
+            params: &["requestId", "accelerator", "verb"],
+        },
+        ResourceMethod::Write {
+            name: "windowControl",
+            params: &["requestId", "action", "title"],
         },
         ResourceMethod::Read {
             name: "result",
