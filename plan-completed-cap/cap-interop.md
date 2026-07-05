@@ -30,14 +30,17 @@ A registry of well-known verbs under `common.*`, documented in `APP_API.md`:
 | Verb | Interface | Required | Contract |
 | --- | --- | --- | --- |
 | `common.receive` | `inbox` | **yes** | `handle(["common.receive", kind, payloadJson])` → string reply. `kind` is a hint (`"text"`, `"json"`, `"email"`, `"link"`, `"blob"`); payload for blobs is a `{name, hash, size, mime}` ref per [cap-blob.md](cap-blob.md). The scaffold default stores the item under `inbox/<n>` in kv. |
-| `common.list` | `items` | no | `(filterJson?)` → JSON array of `{id, title, kind}` — the app's items, for pickers/linking/agent browsing |
-| `common.get` | `items` | no | `(id)` → one item as JSON — pairs with `list`/`search` results |
+| `common.list` | `items` | **yes** | `(filterJson?)` → JSON array of `{id, title, kind}` — the app's items, for pickers/linking/agent browsing; `[]` is a valid answer ([primitive-item.md](primitive-item.md)) |
+| `common.get` | `items` | **yes** | `(id)` → one item as JSON or typed not-found — resolves `terrane://app/<id>/item/<itemId>` URIs |
 | `common.search` | `search` | no | `(query)` → JSON array of `{id, title, snippet}` — global search fans out over `search` apps |
 | `common.export` | `export` | no | `(format)` → document/blob ref — portability, backup, "copy as markdown" |
 | `common.glance` | `glance` | no | `()` → `{badge, headline}` — shell home-screen tile status ("3 tasks due") |
 
-**Verb set approved by the user (2026-07-05): only `common.receive` is
-required; the scaffold generates working defaults for all six**, so apps built
+**Verb set approved by the user (2026-07-05, amended same day): required =
+`common.receive` + `common.list` + `common.get`** (the `items` interface is
+mandatory so every app is addressable — [primitive-item.md](primitive-item.md);
+an empty item list is a valid answer). `search`/`export`/`glance` stay
+optional; the scaffold generates working defaults for all six, so apps built
 by agents have the full surface in practice, and picker/search/home-tile
 features light up per declared interface. (`common.migrate` was considered
 and rejected — schema evolution belongs to
@@ -102,9 +105,11 @@ Reply 256 KiB inline / 8 MiB via blob; args ≤ 64 KiB total; depth 4;
    `terrane-cap-interface::abi`; extend `ExecutionPrincipal` with an
    app-caller variant.
 2. **Manifest:** `interfaces` field in bundle manifest parsing (terrane-cap-app
-   / builder); validation rule: `inbox` mandatory + backend must answer a
-   `common.receive` probe in builder validate; `app.import` enforces the
-   manifest declaration (deterministic check).
+   / builder); validation rule: `inbox` + `items` mandatory + backend must
+   answer `common.receive`/`common.list`/`common.get` probes in builder
+   validate ([primitive-item.md](primitive-item.md) defines the probe
+   contract); `app.import` enforces the manifest declaration (deterministic
+   check).
 3. **Crate `terrane-cap-interop`:** manifest, decide (grant check, chain
    rules), fold (`interop.called`, keep last N per caller), doc, describe.
 4. **Edge:** `AppCall` arm in `EdgeRunner::run` — nested `js-runtime.run`

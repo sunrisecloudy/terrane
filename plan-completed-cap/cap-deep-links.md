@@ -12,7 +12,7 @@ just the second sender after email, which is why this plan is thin.
 
 | Piece | Design |
 | --- | --- |
-| URL scheme | `terrane://open/<app>` (open in shell) and `terrane://send/<app>?kind=…&payload=…` (deliver via `common.receive("link", payload)`). Host registers the scheme (mac: Info.plist `CFBundleURLTypes`; web shell: `registerProtocolHandler` where applicable). |
+| URL scheme | `terrane://open/<app>` (open in shell), `terrane://send/<app>?kind=…&payload=…` (deliver via `common.receive("link", payload)`), and item URIs `terrane://app/<app>/item/<itemId>` (open the app focused on the item — resolved via required `common.get`, [primitive-item.md](primitive-item.md)). Host registers the scheme (mac: Info.plist `CFBundleURLTypes`; web shell: `registerProtocolHandler` where applicable). |
 | File associations | Manifest gains `"fileTypes": [{ext, mime}]`. The mac host registers declared types (`CFBundleDocumentTypes`); "Open with Terrane" imports the file's bytes to the blob CAS ([cap-blob.md](cap-blob.md)) and delivers `common.receive("blob", {name, hash, size, mime})`. Multiple claimants → the interop picker. |
 | Share target | mac Services / share-sheet extension: "Send to Terrane" → picker over `inbox` apps → `common.receive`. |
 | Recorded facts | `app.link.registered {app, kind: scheme-route\|filetype, spec}` on install (folded from the manifest — deterministic); each delivery is the ordinary `interop.called` event, nothing new. |

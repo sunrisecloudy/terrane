@@ -22,6 +22,15 @@ matrix live in [research/](research/README.md).
 
 ## Index
 
+### Primitives — the level above capabilities
+
+| Plan | What it is | Status | Depends on |
+| --- | --- | --- | --- |
+| [primitive-actor.md](primitive-actor.md) | required `actor` on every event (engine change + one-time log migration) | **Locked** | nothing — do **early**, before data accumulates |
+| [primitive-person.md](primitive-person.md) | durable identity = local ed25519 keypair + attestations | **Locked** | connection keychain |
+| [primitive-org.md](primitive-org.md) | org = shared home; Premium hosting as convenience | **Locked** | person, sync v2, share-invite, actor |
+| [primitive-item.md](primitive-item.md) | `terrane://app/<id>/item/<itemId>`; `items` interface required on every app | **Locked** | interop rollout (same validation slice) |
+
 ### Foundation — data & core surface
 
 | Plan | Namespace | Status | Depends on |
@@ -118,9 +127,21 @@ matrix live in [research/](research/README.md).
    dials out.
 7. **Outbound messaging = `common.send`** (cap renamed from `email` to
    `common`; email is the first *channel*, grants are channel-scoped) —
-   symmetric with `common.receive`. Common-verb set approved: only `receive`
-   required; scaffold generates defaults for `list`/`get`/`search`/`export`/
-   `glance`.
+   symmetric with `common.receive`. Common-verb set approved, later amended
+   by decision 11: required = `receive` + `list` + `get`; scaffold generates
+   defaults for all six.
+8. **Person = local ed25519 keypair + attestations** — the keypair IS the
+   identity; Premium/Google login, devices, emails attach as attestations,
+   never define it.
+9. **Org = shared home** — its own log/apps/data, members sync under
+   person-signed role grants; **Premium hosting is a convenience offering,
+   never a limitation**.
+10. **Actor is a required field on every event** — `{kind, payload, actor}`,
+    stamped by the engine; no backward compatibility — one-time migration
+    stamps existing logs `user:local-owner`.
+11. **Items are required-addressable** — `terrane://app/<id>/item/<itemId>`
+    resolved live via `common.get`; the `items` interface (`list`+`get`) is
+    mandatory on every app, empty item space valid.
 
 ## Agent-readiness follow-ups (small, not full cap plans)
 
@@ -150,15 +171,19 @@ or extensions of existing plans, not new capabilities:
 
 ## Suggested build order
 
+0. **actor** — first, full stop: an engine/log-format change is cheapest
+   before any other plan lands data, and every later cap inherits provenance
+   for free.
 1. **blob** → unblocks net v2, media, capture, tts, native-v2, webhook/stream
    offload, model-v2 images.
-2. **net v2, query, time, document, telemetry, interop** — mutually
-   independent (interop is locked and high-leverage: email-receive, deep
-   links, and the picker all ride it).
-3. **connection** → common.send, mcp-client; **scheduler** → job-queue →
-   automation; **deep-links + history + browser** alongside.
-4. **sync v2** → share-invite, presence, push; **web-publish** with the
-   Premium relay.
+2. **net v2, query, time, document, telemetry, interop (+ item, same
+   validation slice)** — mutually independent (interop is locked and
+   high-leverage: email-receive, deep links, and the picker all ride it).
+3. **connection** (→ **person** rides its keychain) → common.send,
+   mcp-client; **scheduler** → job-queue → automation; **deep-links +
+   history + browser** alongside.
+4. **sync v2** → share-invite, presence, push, **org**; **web-publish** with
+   the Premium relay.
 5. **schema-migration** → app-update → publish; model-v2 alongside.
 6. **compaction / backup-export** — whenever disk growth or portability starts
    to hurt; nothing user-visible blocks on them.
