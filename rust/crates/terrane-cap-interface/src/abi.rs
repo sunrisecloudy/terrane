@@ -222,6 +222,12 @@ pub enum Effect {
         /// prefix (index side) — asymmetric encoders need the distinction.
         query: bool,
     },
+    /// Read the host wall clock once and record the observation as a
+    /// `time.observed` event. The edge performs the read; replay folds the
+    /// recorded fact and never consults a clock.
+    ObserveTime {
+        app: String,
+    },
 }
 
 /// Encode a capability's typed event into a name-tagged [`EventRecord`].

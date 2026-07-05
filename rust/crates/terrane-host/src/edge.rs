@@ -189,12 +189,17 @@ impl EffectRunner for EdgeRunner {
                 draft_model.clone(),
                 embed_preset.as_deref(),
             ),
-            Effect::LocalModelEmbed {
-                app,
-                model,
-                texts,
-                query,
-            } => crate::local_llm::embed(app, model, texts, *query, state),
+Effect::LocalModelEmbed {
+            app,
+            model,
+            texts,
+            query,
+        } => crate::local_llm::embed(app, model, texts, *query, state),
+            Effect::ObserveTime { app } => {
+                let epoch_ms =
+                    terrane_cap_time::system_time_to_epoch_ms(std::time::SystemTime::now())?;
+                Ok(vec![terrane_cap_time::observed_event(app, epoch_ms)?])
+            }
         }
     }
 

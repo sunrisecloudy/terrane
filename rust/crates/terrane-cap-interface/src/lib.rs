@@ -13,7 +13,7 @@ pub use abi::{
     EventRecord, ExecutionPrincipal, Request, Result, RuntimeOutput, RuntimeRequest, LOCAL_ORG,
     LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
 };
-pub use capability::Capability;
+pub use capability::{Capability, RecordedCallCap};
 pub use doc::{
     command_doc, event_doc, limit, param, query_doc, resource_method, schema, CapabilityDoc,
     CapabilityManifestDoc, CommandDoc, EventDoc, ExampleDoc, InternalNote, LimitDoc, ParamDoc,

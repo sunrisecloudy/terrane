@@ -45,10 +45,10 @@ pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
     ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost, ParamDoc,
-    QueryCtx, QueryValue, ReadValue, Request, ResourceDoc, ResourceMethod, ResourceMethodDoc,
-    ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle, RuntimeOutput,
-    RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
-    NAMESPACE_SELECTOR_SCHEMA_ID,
+    QueryCtx, QueryValue, ReadValue, RecordedCallCap, Request, ResourceDoc, ResourceMethod,
+    ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle,
+    RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT,
+    LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 const LOG_HEADER: &[u8] = b"TRNLOG\x01\n";
@@ -76,6 +76,7 @@ use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_stt::SttState;
+use terrane_cap_time::TimeState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -102,6 +103,7 @@ pub struct State {
     pub stt: SttState,
     pub crdt: CrdtState,
     pub replica: ReplicaState,
+    pub time: TimeState,
 }
 
 impl StateStore for State {
@@ -123,6 +125,7 @@ impl StateStore for State {
             "stt" => Some(&self.stt),
             "crdt" => Some(&self.crdt),
             "replica" => Some(&self.replica),
+            "time" => Some(&self.time),
             _ => None,
         }
     }
@@ -145,6 +148,7 @@ impl StateStore for State {
             "stt" => Some(&mut self.stt),
             "crdt" => Some(&mut self.crdt),
             "replica" => Some(&mut self.replica),
+            "time" => Some(&mut self.time),
             _ => None,
         }
     }
@@ -446,6 +450,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
+    registry.register(Box::new(terrane_cap_time::TimeCapability));
     registry.register(Box::new(terrane_cap_sysinfo::SysinfoCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
     registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
@@ -660,6 +665,11 @@ pub struct RuntimeResourceHost {
     registry: Registry,
     temporary_allowed_resources: BTreeSet<String>,
     recorded: Vec<RecordedWrite>,
+    /// Per-(namespace.method) count of recorded `Decision::Effect` calls in this
+    /// run, used to enforce [`Capability::recorded_call_per_run_limit`]. A host
+    /// is fresh per backend run, so this is naturally per-run scoped and never
+    /// persisted or replayed.
+    recorded_call_counts: BTreeMap<String, usize>,
     /// Runs `Decision::Effect` from `ResourceMethod::Call` invocations; calls
     /// are refused when the host was built without one.
     runner: Option<std::sync::Arc<dyn EffectRunner>>,
@@ -682,6 +692,7 @@ impl RuntimeResourceHost {
             registry: default_registry(),
             temporary_allowed_resources: BTreeSet::new(),
             recorded: Vec::new(),
+            recorded_call_counts: BTreeMap::new(),
             runner: None,
         }
     }
@@ -816,15 +827,22 @@ impl RuntimeHost for RuntimeResourceHost {
             state: &self.state,
             bus: &bus,
         };
-        let decision = self
-            .registry
-            .get(namespace)?
-            .decide(ctx, &name, &scoped_args)?;
+        let capability = self.registry.get(namespace)?;
+        let recorded_call_limit = capability.recorded_call_per_run_limit(method);
+        let decision = capability.decide(ctx, &name, &scoped_args)?;
         let records = match decision {
             Decision::Commit(records) => records,
             // The one place effects are legal inside a runtime: run once now;
             // replay folds the recorded events without re-running the app.
-            Decision::Effect(effect) => runner.run(&effect, &self.state)?,
+            Decision::Effect(effect) => {
+                enforce_recorded_call_per_run_limit(
+                    &mut self.recorded_call_counts,
+                    namespace,
+                    method,
+                    recorded_call_limit,
+                )?;
+                runner.run(&effect, &self.state)?
+            }
             // A live query: run for its result and hand it back, but record
             // NOTHING — nothing is persisted, folded, or replayed. Used for
             // transient reads (e.g. net.get) whose response must never touch the
@@ -899,6 +917,32 @@ fn dev_allow_requested_resources() -> bool {
 #[cfg(not(debug_assertions))]
 fn dev_allow_requested_resources() -> bool {
     false
+}
+
+/// Enforce a capability's declared per-run cap on recorded `Decision::Effect`
+/// calls. `counts` is the runtime host's per-run tally (keyed by
+/// `"<namespace>.<method>"`); `None` means the capability did not declare a cap
+/// and the call proceeds uncapped. The (limit+1)-th recorded call is rejected
+/// with a typed error naming the capability's escape hint.
+fn enforce_recorded_call_per_run_limit(
+    counts: &mut BTreeMap<String, usize>,
+    namespace: &str,
+    method: &str,
+    limit: Option<RecordedCallCap>,
+) -> Result<()> {
+    let Some(rcap) = limit else {
+        return Ok(());
+    };
+    let key = format!("{namespace}.{method}");
+    let count = counts.entry(key).or_insert(0);
+    if *count >= rcap.limit {
+        return Err(Error::InvalidInput(format!(
+            "{namespace}.{method}: per-run recorded-call limit ({}) reached; {}",
+            rcap.limit, rcap.escape_hint
+        )));
+    }
+    *count += 1;
+    Ok(())
 }
 
 /// Read every [`EventRecord`] from the log, in order. New logs start with a

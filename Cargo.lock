@@ -2012,9 +2012,9 @@ dependencies = [
 
 [[package]]
 name = "num-bigint"
-version = "0.4.7"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c863e9ab5e7bf9c99ba75e1050f1e4d624ae87ed3532d6238ffbdc7b585dbbe6"
+checksum = "a5e44f723f1133c9deac646763579fdb3ac745e418f2a7af9cd0c431da1f20b9"
 dependencies = [
  "num-integer",
  "num-traits",
@@ -3691,6 +3691,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-time"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-wasm-runtime"
 version = "0.1.0"
 dependencies = [
@@ -3734,6 +3742,7 @@ dependencies = [
  "terrane-cap-search",
  "terrane-cap-stt",
  "terrane-cap-sysinfo",
+ "terrane-cap-time",
  "terrane-cap-wasm-runtime",
  "wat",
 ]
@@ -3771,6 +3780,7 @@ dependencies = [
  "terrane-cap-net",
  "terrane-cap-replica",
  "terrane-cap-scheduler",
+ "terrane-cap-time",
  "terrane-cap-wasm-runtime",
  "terrane-core",
  "terrane-i18n",
