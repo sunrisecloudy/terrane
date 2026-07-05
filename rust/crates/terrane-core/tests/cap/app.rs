@@ -1,10 +1,27 @@
 //! Engine tests for the `app` capability (and core dispatch/routing).
 
 use tempfile::tempdir;
-use terrane_core::Core;
+use terrane_core::{Core, Effect, EffectRunner, EventRecord, Result};
 use terrane_core::Error;
 
 use crate::helpers::req;
+
+struct UpgradeBatch {
+    records: Vec<EventRecord>,
+}
+
+impl EffectRunner for UpgradeBatch {
+    fn run(&self, effect: &Effect, _state: &terrane_core::State) -> Result<Vec<EventRecord>> {
+        match effect {
+            Effect::UpgradeAppBundle { id, source } => {
+                assert_eq!(id, "notes");
+                assert_eq!(source, "/tmp/notes-v2");
+                Ok(self.records.clone())
+            }
+            other => Err(Error::Runtime(format!("unexpected effect: {other:?}"))),
+        }
+    }
+}
 
 #[test]
 fn dispatches_and_replays_identically() {
@@ -41,6 +58,45 @@ fn source_round_trips_through_the_log() {
         reopened.state().app.apps["notes"].source.as_deref(),
         Some("apps/notes")
     );
+}
+
+#[test]
+fn upgrade_effect_batch_replays_identically() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let batch = vec![
+        terrane_cap_migration::applied_event(
+            "notes",
+            1,
+            2,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        )
+        .unwrap(),
+        terrane_cap_app::upgraded_event(
+            "notes",
+            terrane_cap_app::DEFAULT_VERSION,
+            "1.1.0",
+            "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        )
+        .unwrap(),
+        terrane_cap_kv::set_event("notes", "__terrane/app-bundle/main.js", "v2").unwrap(),
+        terrane_cap_kv::delete_event("notes", "__terrane/app-bundle/old.js").unwrap(),
+    ];
+    let mut core = Core::open_with(&log, UpgradeBatch { records: batch }).unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"]))
+        .unwrap();
+    core.dispatch(req("app.upgrade", &["notes", "/tmp/notes-v2"]))
+        .unwrap();
+
+    assert_eq!(core.state().app.apps["notes"].version, "1.1.0");
+    assert_eq!(
+        core.state().migration.apps["notes"].version,
+        2,
+        "migration event should fold before replay"
+    );
+    assert!(core.replay_matches().unwrap());
+    let reopened = Core::open(&log).unwrap();
+    assert_eq!(reopened.state(), core.state());
 }
 
 #[test]

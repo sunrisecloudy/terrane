@@ -24,6 +24,9 @@ pub struct BundleManifest {
     /// Display name.
     #[nserde(default)]
     pub name: String,
+    /// Semver app bundle version. Empty/omitted manifests default to 0.0.0.
+    #[nserde(default)]
+    pub version: String,
     /// The backend JS file, e.g. `"main.js"`.
     pub backend: String,
     /// Runtime engine. Empty means JS for source-only developer use.

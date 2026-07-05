@@ -924,6 +924,8 @@ pub struct BundleManifest {
     #[nserde(default)]
     pub name: String,
     #[nserde(default)]
+    pub version: String,
+    #[nserde(default)]
     pub runtime: String,
     #[nserde(default)]
     pub backend: String,
@@ -971,11 +973,17 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest, Error> {
     let manifest = BundleManifest::deserialize_json(&text)
         .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
     let manifest = BundleManifest {
+        version: default_manifest_version(manifest.version),
         runtime: non_empty_or(manifest.runtime, "js"),
         ..manifest
     };
+    terrane_cap_app::validate_version(&manifest.version)?;
     validate_manifest_migrations(&manifest, Some(bundle_dir))?;
     Ok(manifest)
+}
+
+pub fn default_manifest_version(version: String) -> String {
+    non_empty_or(version, terrane_cap_app::DEFAULT_VERSION)
 }
 
 pub fn manifest_data_version(manifest: &BundleManifest) -> u64 {
@@ -1063,6 +1071,8 @@ pub fn validate_common_api_bundle_source(
                 name,
                 source: None,
                 runtime: "js".to_string(),
+                version: terrane_cap_app::DEFAULT_VERSION.to_string(),
+                history: Vec::new(),
                 interfaces: terrane_cap_app::mandatory_interfaces(),
                 links: Vec::new(),
             },

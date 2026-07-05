@@ -35,6 +35,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         }
         ["app", "install", path] => run_install(path),
         ["app", "install-kv", path, rest @ ..] => run_install_kv(path, rest),
+        ["app", "upgrade", app, rest @ ..] => run_app_upgrade(app, rest),
         ["app", "build", dir] => run_app_build(dir),
         ["app", "remove", app] => run_app_remove(app),
         ["logs", app, rest @ ..] => run_logs(app, rest),
@@ -263,6 +264,16 @@ pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result
 
 pub fn run_install(path: &str) -> Result<(), String> {
     println!("{}", crate::install_app(path)?.message());
+    Ok(())
+}
+
+pub fn run_app_upgrade(app: &str, rest: &[&str]) -> Result<(), String> {
+    if rest.is_empty() {
+        return Err("usage: terrane app upgrade <id> <bundle|--to-version v|--from-draft d>".into());
+    }
+    let mut args = vec![app.to_string()];
+    args.extend(rest.iter().map(|part| (*part).to_string()));
+    print_command_outcome(crate::dispatch("app.upgrade", &args)?);
     Ok(())
 }
 
@@ -883,6 +894,7 @@ fn host_manifest_from_runtime(
     crate::BundleManifest {
         id: manifest.id,
         name: manifest.name,
+        version: crate::default_manifest_version(manifest.version),
         runtime: manifest.runtime,
         backend: manifest.backend,
         module: String::new(),
@@ -2165,6 +2177,7 @@ pub fn print_help() {
          \x20 terrane app install <path>                       copy a bundle into the home & catalog it\n\
          \x20 terrane app install-kv <path> [--storage <backend>] [--path <path>]\n\
          \x20                                                  store a JS bundle in reserved cap-kv keys\n\
+         \x20 terrane app upgrade <id> <bundle|--to-version v|--from-draft d>\n\
          \x20 terrane app build <dir>                          build an app frontend (terrane-app-build) into dist/\n\
          \x20 terrane app add <id> <name…> [--source <path>]   catalog an app by path (dev)\n\
          \x20 terrane app remove <id>                          remove an app (also prunes its log buffer)\n\

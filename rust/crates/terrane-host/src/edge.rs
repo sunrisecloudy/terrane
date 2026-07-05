@@ -18,8 +18,9 @@ use base64::Engine as _;
 use terrane_cap_builder as builder;
 use terrane_cap_harness as harness;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
+use sha2::{Digest as _, Sha256};
 use terrane_cap_kv::{
-    app_bundle_app_id, app_bundle_files, app_bundle_key, app_bundle_source, set_event,
+    app_bundle_app_id, app_bundle_files, app_bundle_key, app_bundle_source, delete_event, set_event,
     storage_configured_event, KvStorageBackend,
 };
 use terrane_cap_model::responded_event;
@@ -149,6 +150,9 @@ impl EffectRunner for EdgeRunner {
                 storage_backend,
                 storage_path,
             } => import_app_bundle(source, storage_backend, storage_path, state),
+            Effect::UpgradeAppBundle { id, source } => {
+                upgrade_app_bundle(self, id, source, state)
+            }
             Effect::BlobStore {
                 app,
                 name,
@@ -1067,6 +1071,14 @@ fn import_app_bundle(
         manifest.runtime,
         terrane_cap_app::normalize_interfaces(manifest.interfaces),
     )?);
+    if manifest.version != terrane_cap_app::DEFAULT_VERSION {
+        records.push(terrane_cap_app::upgraded_event(
+            id.clone(),
+            terrane_cap_app::DEFAULT_VERSION,
+            manifest.version.clone(),
+            bundle_hash(&files)?,
+        )?);
+    }
     for link in terrane_cap_app::default_scheme_links(&id) {
         records.push(terrane_cap_app::link_registered_event(
             &id, &link.kind, &link.spec,
@@ -1083,6 +1095,358 @@ fn import_app_bundle(
         records.push(set_event(id.clone(), app_bundle_key(&path)?, value)?);
     }
     Ok(records)
+}
+
+fn upgrade_app_bundle(
+    runner: &EdgeRunner,
+    id: &str,
+    source: &str,
+    state: &terrane_core::State,
+) -> Result<Vec<EventRecord>> {
+    let app = state
+        .app
+        .apps
+        .get(id)
+        .ok_or_else(|| Error::AppNotFound(id.to_string()))?;
+    let current_files = current_bundle_files(id, app.source.as_deref(), state)?;
+    let current_manifest = manifest_from_files(&current_files)?;
+    let current_data_version = crate::manifest_data_version(&current_manifest);
+    let current_version = app.version.as_str();
+    let incoming_files = resolve_upgrade_files(runner.home()?, id, source, state)?;
+    let incoming_manifest = manifest_from_files(&incoming_files)?;
+    let incoming_id = incoming_manifest.id.trim();
+    crate::validate_bundle_id(source, incoming_id).map_err(Error::InvalidInput)?;
+    if incoming_id != id {
+        return Err(Error::InvalidInput(format!(
+            "app.upgrade bundle id {incoming_id:?} does not match target {id:?}"
+        )));
+    }
+    crate::validate_runtime(source, &incoming_manifest.runtime).map_err(Error::InvalidInput)?;
+    if incoming_manifest.runtime != "js" {
+        return Err(Error::InvalidInput(
+            "app.upgrade currently supports js text bundles only".into(),
+        ));
+    }
+    let incoming_hash = bundle_hash(&incoming_files)?;
+    if incoming_manifest.version == current_version {
+        let current_hash = bundle_hash(&current_files)?;
+        if incoming_hash == current_hash {
+            return Err(Error::InvalidInput(format!(
+                "app {id} already at {}",
+                incoming_manifest.version
+            )));
+        }
+        return Err(Error::InvalidInput(format!(
+            "app version {} is immutable; bump the version before changing bundle bytes",
+            incoming_manifest.version
+        )));
+    }
+    let incoming_data_version = crate::manifest_data_version(&incoming_manifest);
+    if incoming_data_version < current_data_version {
+        return Err(Error::InvalidInput(format!(
+            "app.upgrade cannot downgrade dataVersion {current_data_version} -> {incoming_data_version}; rollback requires equal dataVersion"
+        )));
+    }
+
+    let mut records = Vec::new();
+    records.extend(run_upgrade_migrations(
+        runner,
+        id,
+        state,
+        &incoming_files,
+        incoming_data_version,
+    )?);
+    records.extend(archive_bundle_events(
+        runner.home()?,
+        id,
+        current_version,
+        &current_files,
+    )?);
+    records.extend(archive_bundle_events(
+        runner.home()?,
+        id,
+        &incoming_manifest.version,
+        &incoming_files,
+    )?);
+    records.push(terrane_cap_app::upgraded_event(
+        id,
+        current_version,
+        incoming_manifest.version.clone(),
+        incoming_hash,
+    )?);
+    records.extend(bundle_diff_events(id, &current_files, &incoming_files)?);
+    Ok(records)
+}
+
+fn current_bundle_files(
+    id: &str,
+    source: Option<&str>,
+    state: &terrane_core::State,
+) -> Result<BTreeMap<String, String>> {
+    let source = source.ok_or_else(|| Error::Runtime(format!("app {id} has no source bundle")))?;
+    if let Some(source_app) = app_bundle_app_id(source) {
+        if source_app != id {
+            return Err(Error::Runtime(format!(
+                "app {id} points at kv bundle for different app {source_app}"
+            )));
+        }
+        let files = app_bundle_files(state, id)?;
+        if files.is_empty() {
+            return Err(Error::Runtime(format!(
+                "app {id} has kv bundle source but no stored bundle files"
+            )));
+        }
+        return Ok(files);
+    }
+    read_text_bundle_files(Path::new(source))
+}
+
+fn resolve_upgrade_files(
+    home: &Path,
+    id: &str,
+    source: &str,
+    state: &terrane_core::State,
+) -> Result<BTreeMap<String, String>> {
+    if let Some(version) = source.strip_prefix("version://") {
+        let name = format!("__app__/{id}/{version}");
+        let hash = state
+            .blob
+            .blobs
+            .get(id)
+            .and_then(|names| names.get(&name))
+            .map(|meta| meta.hash.as_str())
+            .ok_or_else(|| Error::InvalidInput(format!("app {id} has no archived version {version}")))?;
+        let bytes = crate::blob_store::read_verified(home, hash)?;
+        return decode_bundle_archive(&bytes);
+    }
+    if let Some(draft) = source.strip_prefix("draft://") {
+        let path = home.join(".mcp-drafts").join(draft).join("bundle");
+        return read_text_bundle_files(&path);
+    }
+    read_text_bundle_files(Path::new(source))
+}
+
+fn manifest_from_files(files: &BTreeMap<String, String>) -> Result<crate::BundleManifest> {
+    let manifest = terrane_cap_js_runtime::read_manifest_from_files(files)?;
+    let manifest = crate::BundleManifest {
+        id: manifest.id,
+        name: manifest.name,
+        version: crate::default_manifest_version(manifest.version),
+        runtime: terrane_cap_interface::non_empty_or(manifest.runtime, "js"),
+        backend: manifest.backend,
+        module: String::new(),
+        entry: String::new(),
+        ui: manifest.ui,
+        icon: String::new(),
+        resources: manifest.resources,
+        interfaces: manifest.interfaces,
+        file_types: Vec::new(),
+        browser_permissions: Vec::new(),
+        data_version: manifest.data_version,
+        migrations: manifest
+            .migrations
+            .into_iter()
+            .map(|step| crate::MigrationSpec {
+                to: step.to,
+                script: step.script,
+            })
+            .collect(),
+    };
+    terrane_cap_app::validate_version(&manifest.version)?;
+    crate::validate_manifest_migrations(&manifest, None)?;
+    Ok(manifest)
+}
+
+fn run_upgrade_migrations(
+    runner: &EdgeRunner,
+    id: &str,
+    state: &terrane_core::State,
+    incoming_files: &BTreeMap<String, String>,
+    incoming_data_version: u64,
+) -> Result<Vec<EventRecord>> {
+    let mut records = Vec::new();
+    let mut scratch = state.clone();
+    let mut current = terrane_cap_migration::version(&scratch, id)?;
+    if current > incoming_data_version {
+        return Err(Error::InvalidInput(format!(
+            "app {id} data version is {current}, but this bundle expects {incoming_data_version}; restore a newer app bundle or a pre-migration backup"
+        )));
+    }
+    while current < incoming_data_version {
+        let next = current + 1;
+        let manifest = manifest_from_files(incoming_files)?;
+        let step = manifest
+            .migrations
+            .iter()
+            .find(|step| step.to == next)
+            .ok_or_else(|| Error::InvalidInput(format!("manifest is missing migration step to {next}")))?;
+        let script = incoming_files
+            .get(&step.script)
+            .ok_or_else(|| Error::InvalidInput(format!("migration script missing from bundle: {}", step.script)))?
+            .clone();
+        let script_hash = terrane_cap_migration::sha256_hex(script.as_bytes());
+        let host = RuntimeHostHandle::new(Box::new(
+            RuntimeResourceHost::new_with_principal(
+                id.to_string(),
+                scratch.clone(),
+                ExecutionPrincipal::local_owner(),
+            )
+            .with_runner(std::sync::Arc::new(runner.clone_for_nested())),
+        ));
+        let _ = terrane_cap_js_runtime::run_js_migration(
+            id,
+            &script,
+            &terrane_cap_js_runtime::read_manifest_from_files(incoming_files)?.resources,
+            host.clone(),
+        )?;
+        let mut step_records = host.take_records();
+        step_records.push(terrane_cap_migration::applied_event(
+            id,
+            current,
+            next,
+            &script_hash,
+        )?);
+        terrane_core::fold_records_in_memory(&mut scratch, &step_records)?;
+        records.extend(step_records);
+        current = terrane_cap_migration::version(&scratch, id)?;
+    }
+    Ok(records)
+}
+
+fn archive_bundle_events(
+    home: &Path,
+    id: &str,
+    version: &str,
+    files: &BTreeMap<String, String>,
+) -> Result<Vec<EventRecord>> {
+    let bytes = encode_bundle_archive(files)?;
+    let hash = sha256_hex(&bytes);
+    crate::blob_store::insert_if_absent(home, &hash, &bytes)?;
+    Ok(vec![terrane_cap_blob::stored_event(
+        id,
+        format!("__app__/{id}/{version}"),
+        hash,
+        u64::try_from(bytes.len()).map_err(|_| Error::Storage("bundle archive too large".into()))?,
+        "application/vnd.terrane.app-bundle".to_string(),
+    )?])
+}
+
+fn bundle_diff_events(
+    id: &str,
+    current: &BTreeMap<String, String>,
+    incoming: &BTreeMap<String, String>,
+) -> Result<Vec<EventRecord>> {
+    let mut records = Vec::new();
+    for (path, value) in incoming {
+        if current.get(path) != Some(value) {
+            records.push(set_event(id.to_string(), app_bundle_key(path)?, value.clone())?);
+        }
+    }
+    for path in current.keys() {
+        if !incoming.contains_key(path) {
+            records.push(delete_event(id.to_string(), app_bundle_key(path)?)?);
+        }
+    }
+    Ok(records)
+}
+
+fn bundle_hash(files: &BTreeMap<String, String>) -> Result<String> {
+    let bytes = encode_bundle_archive(files)?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn encode_bundle_archive(files: &BTreeMap<String, String>) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"TRNAPPARCHIVE1\n");
+    for (path, content) in files {
+        let path_bytes = path.as_bytes();
+        let content_bytes = content.as_bytes();
+        let path_len = u32::try_from(path_bytes.len())
+            .map_err(|_| Error::Storage("bundle archive path too long".into()))?;
+        let content_len = u64::try_from(content_bytes.len())
+            .map_err(|_| Error::Storage("bundle archive content too long".into()))?;
+        out.extend_from_slice(&path_len.to_be_bytes());
+        out.extend_from_slice(path_bytes);
+        out.extend_from_slice(&content_len.to_be_bytes());
+        out.extend_from_slice(content_bytes);
+    }
+    Ok(out)
+}
+
+fn decode_bundle_archive(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
+    let header = b"TRNAPPARCHIVE1\n";
+    if !bytes.starts_with(header) {
+        return Err(Error::Storage("bundle archive header mismatch".into()));
+    }
+    let mut i = header.len();
+    let mut files = BTreeMap::new();
+    while i < bytes.len() {
+        let path_len = read_u32(bytes, &mut i)? as usize;
+        let path_end = i
+            .checked_add(path_len)
+            .ok_or_else(|| Error::Storage("bundle archive path length overflow".into()))?;
+        let path = std::str::from_utf8(bytes.get(i..path_end).ok_or_else(|| {
+            Error::Storage("bundle archive truncated path".into())
+        })?)
+        .map_err(|e| Error::Storage(format!("bundle archive path utf8: {e}")))?
+        .to_string();
+        i = path_end;
+        app_bundle_key(&path)?;
+        let content_len = usize::try_from(read_u64(bytes, &mut i)?)
+            .map_err(|_| Error::Storage("bundle archive content too large".into()))?;
+        let content_end = i
+            .checked_add(content_len)
+            .ok_or_else(|| Error::Storage("bundle archive content length overflow".into()))?;
+        let content = std::str::from_utf8(bytes.get(i..content_end).ok_or_else(|| {
+            Error::Storage("bundle archive truncated content".into())
+        })?)
+        .map_err(|e| Error::Storage(format!("bundle archive content utf8: {e}")))?
+        .to_string();
+        i = content_end;
+        files.insert(path, content);
+    }
+    Ok(files)
+}
+
+fn read_u32(bytes: &[u8], offset: &mut usize) -> Result<u32> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| Error::Storage("bundle archive length overflow".into()))?;
+    let slice = bytes
+        .get(*offset..end)
+        .ok_or_else(|| Error::Storage("bundle archive truncated u32".into()))?;
+    *offset = end;
+    let mut raw = [0u8; 4];
+    raw.copy_from_slice(slice);
+    Ok(u32::from_be_bytes(raw))
+}
+
+fn read_u64(bytes: &[u8], offset: &mut usize) -> Result<u64> {
+    let end = offset
+        .checked_add(8)
+        .ok_or_else(|| Error::Storage("bundle archive length overflow".into()))?;
+    let slice = bytes
+        .get(*offset..end)
+        .ok_or_else(|| Error::Storage("bundle archive truncated u64".into()))?;
+    *offset = end;
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(slice);
+    Ok(u64::from_be_bytes(raw))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    hex_digest(&digest)
+}
+
+fn hex_digest(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn read_text_bundle_files(root: &Path) -> Result<BTreeMap<String, String>> {

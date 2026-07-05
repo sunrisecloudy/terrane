@@ -15,9 +15,9 @@ use terrane_api::{
     MCP_SERVER_INSTRUCTIONS, TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD,
     TOOL_APP_BUILD_GET, TOOL_APP_BUILD_LIST, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
     TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_LOGS, TOOL_APP_RECIPE,
-    TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST,
-    TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE,
-    TOOL_LIST_APPS,
+    TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_APP_UPGRADE,
+    TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY,
+    TOOL_INVOKE, TOOL_LIST_APPS,
     TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
     TOOL_WORKFLOW_INFO,
 };
@@ -880,6 +880,32 @@ fn tool_call(
                 &runtime_override,
                 dry_run,
             ) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e, true),
+            }
+        }
+        TOOL_APP_UPGRADE => {
+            let args = match args_object(TOOL_APP_UPGRADE, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let app = match required_string(args, "app", TOOL_APP_UPGRADE) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let source = match optional_string(args, "source", TOOL_APP_UPGRADE) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let to_version = match optional_string(args, "toVersion", TOOL_APP_UPGRADE) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let from_draft = match optional_string(args, "fromDraft", TOOL_APP_UPGRADE) {
+                Ok(value) => value,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match app_upgrade_json(core, &app, &source, &to_version, &from_draft) {
                 Ok(output) => tool_json(id, &output, false),
                 Err(e) => tool_text(id, &e, true),
             }
@@ -2433,6 +2459,50 @@ fn app_register_json(
     }
 }
 
+fn app_upgrade_json(
+    core: &mut HostCore,
+    app: &str,
+    source: &str,
+    to_version: &str,
+    from_draft: &str,
+) -> Result<String, String> {
+    let selected = [
+        !source.trim().is_empty(),
+        !to_version.trim().is_empty(),
+        !from_draft.trim().is_empty(),
+    ]
+    .into_iter()
+    .filter(|value| *value)
+    .count();
+    if selected != 1 {
+        return Err(
+            "app_upgrade requires exactly one of source, toVersion, or fromDraft".to_string(),
+        );
+    }
+    let mut argv = vec![app.to_string()];
+    if !source.trim().is_empty() {
+        argv.push(source.to_string());
+    } else if !to_version.trim().is_empty() {
+        argv.push("--to-version".to_string());
+        argv.push(to_version.to_string());
+    } else {
+        argv.push("--from-draft".to_string());
+        argv.push(from_draft.to_string());
+    }
+    let outcome = crate::dispatch_on_core(core, "app.upgrade", &argv)?;
+    Ok(json!({
+        "command": "app.upgrade",
+        "args": argv,
+        "records": outcome.records.len(),
+        "output": outcome.output,
+        "next": [
+            {"tool": "list_apps", "arguments": {}},
+            {"tool": "app_actions", "arguments": {"app": app}}
+        ]
+    })
+    .to_string())
+}
+
 const MAX_DRAFT_FILE_BYTES: usize = 512 * 1024;
 const MAX_DRAFT_TOTAL_BYTES: usize = 2 * 1024 * 1024;
 
@@ -3929,6 +3999,7 @@ fn tool_call_example(tool: &str) -> String {
             "dryRun": true
         }),
         TOOL_APP_REGISTER => json!({"source": "/path/to/bundle", "dryRun": true}),
+        TOOL_APP_UPGRADE => json!({"app": "APP_ID", "source": "/path/to/new-bundle"}),
         TOOL_APP_ACTIONS => json!({"app": "APP_ID"}),
         TOOL_INVOKE => json!({"app": "APP_ID", "verb": "read", "args": []}),
         TOOL_APP_LOGS => json!({"app": "APP_ID", "level": "warn", "tail": 200}),
