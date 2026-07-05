@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        86,
+        87,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,7 +52,7 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        42,
+        43,
         "grant-gated commands: {grant_gated:?}"
     );
     assert_eq!(refused.len(), 42, "refused commands: {refused:?}");
@@ -71,6 +71,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "build",
             "crdt",
             "crypto",
+            "history",
             "kv",
             "local-model",
             "native",
@@ -113,13 +114,19 @@ fn public_query_inventory_covers_every_registered_query() {
         queries,
         vec![
             "app.exists",
+            "history.at",
+            "history.key",
+            "history.list",
             "native.supports",
             "query.jmespath",
             "replica.peer"
         ]
     );
     for query in queries {
-        let expected = if query == "query.jmespath" {
+        let expected = if matches!(
+            query,
+            "history.at" | "history.key" | "history.list" | "query.jmespath"
+        ) {
             PublicQueryDisposition::Unclassified
         } else {
             PublicQueryDisposition::Allow
@@ -193,6 +200,7 @@ fn dangerous_and_effect_commands_are_refused() {
         "local-model.rm",
         "harness.generate-app",
         "harness.run-js",
+        "history.revert",
         "app.import",
         "app.remove",
         "auth.grant",

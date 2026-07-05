@@ -42,6 +42,7 @@ terrane-cap-blob.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true
 terrane-cap-harness.workspace = true
+terrane-cap-history.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-local-model.workspace = true

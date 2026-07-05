@@ -37,6 +37,8 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
+        ["history", app, rest @ ..] => run_history(app, rest),
+        ["revert", app, rest @ ..] => run_revert(app, rest),
         ["blob", "put", app, name, mime, path] => run_blob_put(app, name, mime, path),
         ["blob", "get", app, name, path] => run_blob_get(app, name, path),
         ["blob", "stat", app, name] => run_blob_stat(app, name),
@@ -430,6 +432,43 @@ pub fn run_kv_storage_status() -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_history(app: &str, rest: &[&str]) -> Result<(), String> {
+    let core = crate::open()?;
+    let args = parse_history_args(app, rest)?;
+    let query = if args.at {
+        "at"
+    } else if args.key.is_some() {
+        "key"
+    } else {
+        "list"
+    };
+    let value = crate::query_on_core(&core, "history", query, &args.into_query_args())?;
+    match value {
+        terrane_core::QueryValue::Json(json) => println!("{json}"),
+        other => return Err(format!("history.{query} returned unexpected value: {other:?}")),
+    }
+    Ok(())
+}
+
+pub fn run_revert(app: &str, rest: &[&str]) -> Result<(), String> {
+    let parsed = parse_revert_args(app, rest)?;
+    let mut core = crate::open()?;
+    if parsed.yes {
+        print_command_outcome(crate::dispatch_on_core(
+            &mut core,
+            "history.revert",
+            &parsed.command_args,
+        )?);
+    } else {
+        let dry = crate::dry_run_on_core(&core, "history.revert", &parsed.command_args)?;
+        println!(
+            "would append {} event(s); pass --yes to apply",
+            dry.records
+        );
+    }
+    Ok(())
+}
+
 pub fn run_blob_put(app: &str, name: &str, mime: &str, path: &str) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("read blob file {path}: {e}"))?;
     let args = vec![
@@ -734,6 +773,173 @@ fn parse_install_kv_options(rest: &[&str]) -> Result<(Option<String>, Option<Str
     Ok((storage_backend, storage_path))
 }
 
+struct HistoryArgs {
+    app: String,
+    key: Option<String>,
+    at_seq: Option<String>,
+    filter: Option<String>,
+    before: Option<String>,
+    limit: Option<String>,
+    at: bool,
+}
+
+impl HistoryArgs {
+    fn into_query_args(self) -> Vec<String> {
+        if self.at {
+            return vec![
+                self.app,
+                self.key.unwrap_or_default(),
+                self.at_seq.unwrap_or_default(),
+            ];
+        }
+        if let Some(key) = self.key {
+            return vec![self.app, key, self.limit.unwrap_or_default()];
+        }
+        vec![
+            self.app,
+            self.filter.unwrap_or_default(),
+            self.before.unwrap_or_default(),
+            self.limit.unwrap_or_default(),
+        ]
+    }
+}
+
+fn parse_history_args(app: &str, rest: &[&str]) -> Result<HistoryArgs, String> {
+    let mut args = HistoryArgs {
+        app: app.to_string(),
+        key: None,
+        at_seq: None,
+        filter: None,
+        before: None,
+        limit: None,
+        at: false,
+    };
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--key" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--key requires a value".into());
+                };
+                args.key = Some((*value).to_string());
+                i += 2;
+            }
+            "--at" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--at requires a sequence".into());
+                };
+                args.at = true;
+                args.at_seq = Some((*value).to_string());
+                i += 2;
+            }
+            "--filter" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--filter requires a value".into());
+                };
+                args.filter = Some((*value).to_string());
+                i += 2;
+            }
+            "--before" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--before requires a sequence".into());
+                };
+                args.before = Some((*value).to_string());
+                i += 2;
+            }
+            "--limit" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--limit requires a value".into());
+                };
+                args.limit = Some((*value).to_string());
+                i += 2;
+            }
+            other => return Err(format!("unknown history option: {other}")),
+        }
+    }
+    if args.at && args.key.is_none() {
+        return Err("usage: terrane history <app> --key <key> --at <seq>".into());
+    }
+    if args.at && (args.filter.is_some() || args.before.is_some() || args.limit.is_some()) {
+        return Err("history --at only accepts --key and --at".into());
+    }
+    Ok(args)
+}
+
+struct RevertArgs {
+    command_args: Vec<String>,
+    yes: bool,
+}
+
+fn parse_revert_args(app: &str, rest: &[&str]) -> Result<RevertArgs, String> {
+    let mut to_seq = None;
+    let mut scope = "app".to_string();
+    let mut selector = String::new();
+    let mut actor = None;
+    let mut yes = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--to" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--to requires a sequence".into());
+                };
+                to_seq = Some((*value).to_string());
+                i += 2;
+            }
+            "--scope" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--scope requires key, prefix, or app".into());
+                };
+                scope = (*value).to_string();
+                i += 2;
+            }
+            "--key" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--key requires a value".into());
+                };
+                scope = "key".to_string();
+                selector = (*value).to_string();
+                i += 2;
+            }
+            "--prefix" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--prefix requires a value".into());
+                };
+                scope = "prefix".to_string();
+                selector = (*value).to_string();
+                i += 2;
+            }
+            "--actor" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--actor requires a value".into());
+                };
+                actor = Some((*value).to_string());
+                i += 2;
+            }
+            "--yes" => {
+                yes = true;
+                i += 1;
+            }
+            "--dry-run" => {
+                yes = false;
+                i += 1;
+            }
+            other => return Err(format!("unknown revert option: {other}")),
+        }
+    }
+    let Some(to_seq) = to_seq else {
+        return Err("usage: terrane revert <app> --to <seq> [--key k | --prefix p | --scope app] [--actor actor] [--yes]".into());
+    };
+    if scope == "app" {
+        selector.clear();
+    }
+    let mut command_args = vec![app.to_string(), to_seq, scope, selector];
+    if let Some(actor) = actor {
+        command_args.push(actor);
+    }
+    Ok(RevertArgs { command_args, yes })
+}
+
 fn print_kv_storage_plan(plan: &terrane_cap_kv::KvStoragePlan) {
     println!("  default -> {}", plan.default.describe());
     if plan.apps.is_empty() {
@@ -821,6 +1027,8 @@ pub fn print_help() {
          \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
          \x20 terrane kv storage clear (--default | --app <app>)\n\
          \x20 terrane kv storage status\n\
+         \x20 terrane history <app> [--key k] [--at seq] [--filter f] [--before seq] [--limit n]\n\
+         \x20 terrane revert <app> --to <seq> [--key k | --prefix p | --scope app] [--actor actor] [--yes]\n\
          \x20 terrane blob put <app> <name> <mime> <path>     store file bytes in the blob CAS\n\
          \x20 terrane blob get <app> <name> <path>            verify and write blob bytes to a file\n\
          \x20 terrane blob ls <app> [prefix]                  list blob metadata\n\

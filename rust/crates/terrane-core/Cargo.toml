@@ -23,6 +23,7 @@ terrane-cap-blob.workspace = true
 terrane-cap-crdt.workspace = true
 terrane-cap-crypto.workspace = true
 terrane-cap-harness.workspace = true
+terrane-cap-history.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-query.workspace = true
 terrane-cap-js-runtime.workspace = true
