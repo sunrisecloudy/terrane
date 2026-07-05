@@ -61,6 +61,7 @@ use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
 use terrane_cap_replica::ReplicaState;
+use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_stt::SttState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
@@ -82,6 +83,7 @@ pub struct State {
     pub model: ModelState,
     pub local_model: LocalModelState,
     pub native: NativeState,
+    pub scheduler: SchedulerState,
     pub stt: SttState,
     pub crdt: CrdtState,
     pub replica: ReplicaState,
@@ -100,6 +102,7 @@ impl StateStore for State {
             "model" => Some(&self.model),
             "local-model" => Some(&self.local_model),
             "native" => Some(&self.native),
+            "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
             "crdt" => Some(&self.crdt),
             "replica" => Some(&self.replica),
@@ -119,6 +122,7 @@ impl StateStore for State {
             "model" => Some(&mut self.model),
             "local-model" => Some(&mut self.local_model),
             "native" => Some(&mut self.native),
+            "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
             "crdt" => Some(&mut self.crdt),
             "replica" => Some(&mut self.replica),
@@ -419,6 +423,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_model::ModelCapability));
     registry.register(Box::new(terrane_cap_local_model::LocalModelCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
+    registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
     registry.register(Box::new(terrane_cap_sysinfo::SysinfoCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));

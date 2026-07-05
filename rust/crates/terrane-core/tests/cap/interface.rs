@@ -173,6 +173,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "native",
             "net",
             "relational_db",
+            "scheduler",
             "search",
             "stt",
             "sysinfo"

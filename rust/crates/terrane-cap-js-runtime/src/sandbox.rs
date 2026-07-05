@@ -312,15 +312,15 @@ fn js_string_arg(v: &Value) -> std::result::Result<String, &'static str> {
     }
 }
 
-/// Convert each JS argument to a string with no coercion, attributing a
-/// non-string to its resource call and parameter name.
+/// Convert each JS argument to a string with no coercion, except payload-shaped
+/// params where object/array literals are encoded as JSON for resource APIs.
 fn string_args(call: &str, params: &[&str], vals: &[Value]) -> Result<Vec<String>> {
     let mut out = Vec::with_capacity(vals.len());
     for (i, v) in vals.iter().enumerate() {
-        match js_string_arg(v) {
+        let param = params.get(i).copied().unwrap_or("arg");
+        match js_resource_arg(v, param) {
             Ok(s) => out.push(s),
             Err(got) => {
-                let param = params.get(i).copied().unwrap_or("arg");
                 return Err(Error::InvalidInput(format!(
                     "{call}: expected string {param}, got {got}"
                 )));
@@ -328,6 +328,22 @@ fn string_args(call: &str, params: &[&str], vals: &[Value]) -> Result<Vec<String
         }
     }
     Ok(out)
+}
+
+fn js_resource_arg(v: &Value, param: &str) -> std::result::Result<String, &'static str> {
+    if let Ok(s) = js_string_arg(v) {
+        return Ok(s);
+    }
+    if matches!(param, "payload" | "payloadJson")
+        && (v.is_object() || v.is_array() || v.is_bool() || v.is_number() || v.is_null())
+    {
+        let ctx = v.ctx();
+        let json: Object = ctx.globals().get("JSON").map_err(|_| v.type_name())?;
+        let stringify: Function = json.get("stringify").map_err(|_| v.type_name())?;
+        let encoded: Value = stringify.call((v.clone(),)).map_err(|_| v.type_name())?;
+        return js_string_arg(&encoded);
+    }
+    Err(v.type_name())
 }
 
 /// Fold a caught JS exception/value into our typed Runtime error.

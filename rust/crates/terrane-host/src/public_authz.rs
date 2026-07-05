@@ -81,6 +81,17 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 reason: "native connector and terminal commands are trusted-host-only",
             }
         }
+        "scheduler.create" | "scheduler.pause" | "scheduler.resume" | "scheduler.remove" => {
+            PublicCommandDisposition::GrantGated {
+                namespace: "scheduler",
+                app_arg_index: 0,
+            }
+        }
+        "scheduler.run.start" | "scheduler.run.complete" | "scheduler.run.fail" => {
+            PublicCommandDisposition::Refuse {
+                reason: "scheduler run commands are trusted-host-only",
+            }
+        }
         "kv.storage.set" | "kv.storage.clear" => PublicCommandDisposition::Refuse {
             reason: "storage configuration is trusted-admin-only",
         },

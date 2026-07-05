@@ -32,6 +32,7 @@ pub mod native;
 pub mod permission;
 pub mod preview;
 pub mod public_authz;
+pub mod scheduler;
 pub mod stt_runner;
 mod stt_edge;
 pub mod sync;

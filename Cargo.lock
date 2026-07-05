@@ -3601,6 +3601,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-scheduler"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-search"
 version = "0.1.0"
 dependencies = [
@@ -3667,6 +3676,7 @@ dependencies = [
  "terrane-cap-net",
  "terrane-cap-relational-db",
  "terrane-cap-replica",
+ "terrane-cap-scheduler",
  "terrane-cap-search",
  "terrane-cap-stt",
  "terrane-cap-sysinfo",
@@ -3703,6 +3713,7 @@ dependencies = [
  "terrane-cap-native",
  "terrane-cap-net",
  "terrane-cap-replica",
+ "terrane-cap-scheduler",
  "terrane-cap-wasm-runtime",
  "terrane-core",
  "terrane-i18n",

@@ -242,6 +242,17 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.relational_db.tables()` | read |
 | `ctx.resource.relational_db.spec(table)` | read |
 
+#### `ctx.resource.scheduler`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.scheduler.create(id, cron, timezone, action, payload)` | write |
+| `ctx.resource.scheduler.list()` | read |
+| `ctx.resource.scheduler.pause(id)` | write |
+| `ctx.resource.scheduler.resume(id)` | write |
+| `ctx.resource.scheduler.remove(id)` | write |
+| `ctx.resource.scheduler.history(id, limit)` | read |
+
 #### `ctx.resource.search`
 
 | Method | Kind |

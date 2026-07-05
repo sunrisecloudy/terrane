@@ -16,6 +16,7 @@ fn every_runtime_resource_capability_declares_namespace_v1() {
         "native",
         "relational_db",
         "search",
+        "scheduler",
         "stt",
     ] {
         let spec = specs
