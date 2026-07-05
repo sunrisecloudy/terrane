@@ -40,6 +40,10 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "kv",
             app_arg_index: 0,
         },
+        "blob.put" | "blob.rm" | "blob.link" => PublicCommandDisposition::GrantGated {
+            namespace: "blob",
+            app_arg_index: 0,
+        },
         "crdt.mapSet"
         | "crdt.mapDel"
         | "crdt.listPush"

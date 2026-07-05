@@ -15,15 +15,16 @@ use terrane_cap_builder::draft_json;
 use terrane_cap_crdt::crdt_export_hex;
 use terrane_cap_kv::app_bundle_source;
 use terrane_core::Core;
-use terrane_core::{Decision, Error, QueryValue, Request};
 pub use terrane_core::EventRecord;
+use terrane_core::{Decision, Error, QueryValue, Request};
 
+pub mod asr;
+pub mod blob_store;
 pub mod cap_doc;
 pub mod cli;
 pub mod edge;
 pub mod ffi;
 pub mod home;
-pub mod asr;
 pub mod i18n;
 mod local_llm;
 pub mod mcp;
@@ -33,8 +34,8 @@ pub mod permission;
 pub mod preview;
 pub mod public_authz;
 pub mod scheduler;
-pub mod stt_runner;
 mod stt_edge;
+pub mod stt_runner;
 pub mod sync;
 
 pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};
@@ -151,17 +152,19 @@ pub fn open_at_home_with_staging(
     home: impl AsRef<Path>,
     staging: HarnessStaging,
 ) -> Result<HostCore, String> {
-    open_at_log_path_with(
-        log_path_for_home(home),
-        EdgeRunner::with_staging(staging),
-    )
+    open_at_log_path_with(log_path_for_home(home), EdgeRunner::with_staging(staging))
 }
 
 fn open_at_log_path_with(
     log_path: impl Into<PathBuf>,
     runner: EdgeRunner,
 ) -> Result<HostCore, String> {
-    let mut core = Core::open_with(log_path.into(), runner).map_err(|e| e.to_string())?;
+    let log_path = log_path.into();
+    let home = log_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut core = Core::open_with(log_path, runner.with_home(home)).map_err(|e| e.to_string())?;
     ensure_identity(&mut core)?;
     Ok(core)
 }
@@ -609,22 +612,32 @@ pub fn install_app_to_kv(
 /// `sync <app> --from <home>`: pull another replica's edits for one app and
 /// merge them into this one.
 pub fn sync_from_home(app: &str, from_home: &str) -> Result<SyncOutcome, String> {
-    let src_log = PathBuf::from(from_home).join("log.bin");
+    let source_home = PathBuf::from(from_home);
+    let src_log = source_home.join("log.bin");
     let source = Core::open(&src_log).map_err(|e| format!("open --from {from_home}: {e}"))?;
 
     let mut local = open()?;
     let hex = crdt_export_hex(source.state(), app, local.state()).map_err(|e| e.to_string())?;
-    let Some(hex) = hex else {
+    let had_crdt = hex.is_some();
+    let mut changed = false;
+    if let Some(hex) = hex {
+        let records = local
+            .dispatch(Request::new("crdt.merge", vec![app.to_string(), hex]))
+            .map_err(|e| e.to_string())?;
+        changed |= !records.is_empty();
+    }
+    changed |= sync_blob_metadata(app, source.state(), &mut local)?;
+    let hashes = terrane_cap_blob::live_hashes_for_app(&source.state().blob, app);
+    crate::blob_store::copy_hashes_from_home(&home_dir(), &source_home, &hashes)
+        .map_err(|e| e.to_string())?;
+
+    if hashes.is_empty() && !changed && !had_crdt {
         return Ok(SyncOutcome::NothingToSync {
             app: app.to_string(),
             from_home: from_home.to_string(),
         });
-    };
-
-    let records = local
-        .dispatch(Request::new("crdt.merge", vec![app.to_string(), hex]))
-        .map_err(|e| e.to_string())?;
-    if records.is_empty() {
+    }
+    if !changed {
         Ok(SyncOutcome::AlreadyUpToDate {
             from_home: from_home.to_string(),
         })
@@ -634,6 +647,44 @@ pub fn sync_from_home(app: &str, from_home: &str) -> Result<SyncOutcome, String>
             from_home: from_home.to_string(),
         })
     }
+}
+
+fn sync_blob_metadata(
+    app: &str,
+    source: &terrane_core::State,
+    local: &mut HostCore,
+) -> Result<bool, String> {
+    let Some(source_names) = source.blob.blobs.get(app) else {
+        return Ok(false);
+    };
+    let mut changed = false;
+    for (name, meta) in source_names {
+        let same = local
+            .state()
+            .blob
+            .blobs
+            .get(app)
+            .and_then(|names| names.get(name))
+            .map(|local_meta| local_meta == meta)
+            .unwrap_or(false);
+        if same {
+            continue;
+        }
+        let records = local
+            .dispatch(Request::new(
+                "blob.link",
+                vec![
+                    app.to_string(),
+                    name.clone(),
+                    meta.hash.clone(),
+                    meta.size.to_string(),
+                    meta.mime.clone(),
+                ],
+            ))
+            .map_err(|e| e.to_string())?;
+        changed |= !records.is_empty();
+    }
+    Ok(changed)
 }
 
 /// The public API surface assembled from `terrane-api` and `terrane-core`

@@ -5,7 +5,11 @@
 //!
 //! Catalog lives at `$TERRANE_HOME/log.bin` (default `./.terrane/`).
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
+
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 
 pub use crate::{serve_conn, sync_conn, EdgeRunner};
 
@@ -33,6 +37,13 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
+        ["blob", "put", app, name, mime, path] => run_blob_put(app, name, mime, path),
+        ["blob", "get", app, name, path] => run_blob_get(app, name, path),
+        ["blob", "stat", app, name] => run_blob_stat(app, name),
+        ["blob", "ls", app, rest @ ..] => run_blob_ls(app, rest),
+        ["blob", "rm", app, name] => run_blob_rm(app, name),
+        ["blob", "verify", rest @ ..] => run_blob_verify(rest),
+        ["blob", "gc", rest @ ..] => run_blob_gc(rest),
         ["i18n", "import", path] => run_i18n_import(path),
         ["i18n", "negotiate", header] => run_i18n_negotiate(header),
         // Host verbs for the local-model edge (runtime + resident server) —
@@ -398,6 +409,187 @@ pub fn run_kv_storage_status() -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_blob_put(app: &str, name: &str, mime: &str, path: &str) -> Result<(), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read blob file {path}: {e}"))?;
+    let args = vec![
+        app.to_string(),
+        name.to_string(),
+        mime.to_string(),
+        B64.encode(bytes),
+    ];
+    print_command_outcome(crate::dispatch("blob.put", &args)?);
+    Ok(())
+}
+
+pub fn run_blob_get(app: &str, name: &str, path: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let meta = core
+        .state()
+        .blob
+        .blobs
+        .get(app)
+        .and_then(|names| names.get(name))
+        .ok_or_else(|| format!("key not found: {app}/{name}"))?;
+    let bytes = crate::blob_store::read_verified(&crate::home_dir(), &meta.hash)
+        .map_err(|e| e.to_string())?;
+    std::fs::write(path, bytes).map_err(|e| format!("write blob file {path}: {e}"))?;
+    println!("wrote {path}");
+    Ok(())
+}
+
+pub fn run_blob_stat(app: &str, name: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let meta = core
+        .state()
+        .blob
+        .blobs
+        .get(app)
+        .and_then(|names| names.get(name))
+        .ok_or_else(|| format!("key not found: {app}/{name}"))?;
+    println!(
+        "{{\"name\":\"{}\",\"hash\":\"{}\",\"size\":{},\"mime\":\"{}\"}}",
+        escape_json(name),
+        meta.hash,
+        meta.size,
+        escape_json(&meta.mime)
+    );
+    Ok(())
+}
+
+pub fn run_blob_ls(app: &str, rest: &[&str]) -> Result<(), String> {
+    let prefix = match rest {
+        [] => "",
+        [prefix] => prefix,
+        _ => return Err("usage: terrane blob ls <app> [prefix]".into()),
+    };
+    let core = crate::open()?;
+    let Some(names) = core.state().blob.blobs.get(app) else {
+        println!("[]");
+        return Ok(());
+    };
+    let mut out = String::from("[");
+    let mut first = true;
+    for (name, meta) in names {
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push_str(&format!(
+            "{{\"name\":\"{}\",\"hash\":\"{}\",\"size\":{},\"mime\":\"{}\"}}",
+            escape_json(name),
+            meta.hash,
+            meta.size,
+            escape_json(&meta.mime)
+        ));
+    }
+    out.push(']');
+    println!("{out}");
+    Ok(())
+}
+
+pub fn run_blob_rm(app: &str, name: &str) -> Result<(), String> {
+    let args = vec![app.to_string(), name.to_string()];
+    print_command_outcome(crate::dispatch("blob.rm", &args)?);
+    Ok(())
+}
+
+pub fn run_blob_verify(rest: &[&str]) -> Result<(), String> {
+    let core = crate::open()?;
+    let hashes = blob_hashes_for_args(core.state(), rest)?;
+    let health =
+        crate::blob_store::verify_hashes(&crate::home_dir(), hashes).map_err(|e| e.to_string())?;
+    let mut ok = true;
+    for item in health {
+        match item {
+            crate::blob_store::BlobHealth::Ok { hash, size } => {
+                println!("ok {hash} {size} bytes");
+            }
+            crate::blob_store::BlobHealth::Missing { hash } => {
+                ok = false;
+                println!("missing {hash}");
+            }
+            crate::blob_store::BlobHealth::Corrupt { hash, reason } => {
+                ok = false;
+                println!("corrupt {hash}: {reason}");
+            }
+        }
+    }
+    if ok {
+        Ok(())
+    } else {
+        Err("blob verify failed".into())
+    }
+}
+
+pub fn run_blob_gc(rest: &[&str]) -> Result<(), String> {
+    let dry_run = match rest {
+        [] | ["--dry-run"] => true,
+        ["--yes"] => false,
+        _ => return Err("usage: terrane blob gc [--dry-run|--yes]".into()),
+    };
+    let core = crate::open()?;
+    let live: BTreeSet<String> = core
+        .state()
+        .blob
+        .refs
+        .iter()
+        .filter_map(|(hash, count)| (*count > 0).then_some(hash.clone()))
+        .collect();
+    let plan =
+        crate::blob_store::gc(&crate::home_dir(), &live, dry_run).map_err(|e| e.to_string())?;
+    if dry_run {
+        println!("would delete {} blob rows", plan.stale_hashes.len());
+    } else {
+        println!("deleted {} blob rows", plan.deleted);
+    }
+    for hash in plan.stale_hashes {
+        println!("{hash}");
+    }
+    Ok(())
+}
+
+fn blob_hashes_for_args(state: &terrane_core::State, rest: &[&str]) -> Result<Vec<String>, String> {
+    match rest {
+        [] => Ok(state
+            .blob
+            .refs
+            .iter()
+            .filter_map(|(hash, count)| (*count > 0).then_some(hash.clone()))
+            .collect()),
+        [app] => Ok(terrane_cap_blob::live_hashes_for_app(&state.blob, app)),
+        [app, name] => state
+            .blob
+            .blobs
+            .get(*app)
+            .and_then(|names| names.get(*name))
+            .map(|meta| vec![meta.hash.clone()])
+            .ok_or_else(|| format!("key not found: {app}/{name}")),
+        _ => Err("usage: terrane blob verify [app [name]]".into()),
+    }
+}
+
+fn escape_json(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `terrane i18n import <path>`: seed the public KV bucket from checked-in
 /// catalog files. Idempotent and replay-safe.
 pub fn run_i18n_import(path: &str) -> Result<(), String> {
@@ -608,6 +800,12 @@ pub fn print_help() {
          \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
          \x20 terrane kv storage clear (--default | --app <app>)\n\
          \x20 terrane kv storage status\n\
+         \x20 terrane blob put <app> <name> <mime> <path>     store file bytes in the blob CAS\n\
+         \x20 terrane blob get <app> <name> <path>            verify and write blob bytes to a file\n\
+         \x20 terrane blob ls <app> [prefix]                  list blob metadata\n\
+         \x20 terrane blob rm <app> <name>                    remove a blob name\n\
+         \x20 terrane blob verify [app [name]]                verify live blob hashes against the CAS\n\
+         \x20 terrane blob gc [--dry-run|--yes]               report or delete unreferenced CAS rows\n\
          \x20 terrane i18n import <path>                    seed the public KV bucket from i18n/system & apps/*/i18n catalogs\n\
          \x20 terrane i18n negotiate <accept-language>       resolve a header to the best supported code\n\
          \x20 terrane native observe-default                    record default host native support\n\

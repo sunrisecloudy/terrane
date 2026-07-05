@@ -9,6 +9,7 @@
 mod helpers;
 
 mod app;
+mod blob;
 mod host;
 mod i18n;
 mod kv;

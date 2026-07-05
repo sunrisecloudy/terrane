@@ -29,6 +29,7 @@ nanoserde = { workspace = true }
 # Hidden terminal input for `run … --ask`, so a master password never lands on
 # argv. Reads a line from stdin: no echo on a TTY, plain when piped.
 rpassword = "7"
+rusqlite.workspace = true
 serde_json = "1"
 # Edge HTTP(S) GET for the `net` effect (http:// and https://, TLS via rustls).
 ureq = { workspace = true }
@@ -37,6 +38,7 @@ terrane-api.workspace = true
 terrane-app-build.workspace = true
 terrane-cap-app.workspace = true
 terrane-cap-auth.workspace = true
+terrane-cap-blob.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-crdt.workspace = true
 terrane-cap-harness.workspace = true
@@ -53,6 +55,8 @@ terrane-core.workspace = true
 terrane-i18n.workspace = true
 terrane-local-llm = { workspace = true, optional = true }
 terrane-asr = { workspace = true, optional = true }
+base64 = "0.22"
+sha2 = "0.10"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -60,5 +64,4 @@ rocksdb = { workspace = true, optional = true }
 
 [dev-dependencies]
 hound.workspace = true
-rusqlite.workspace = true
 tempfile.workspace = true

@@ -57,11 +57,26 @@ impl HarnessStaging {
 #[derive(Default)]
 pub struct EdgeRunner {
     staging: HarnessStaging,
+    home: Option<PathBuf>,
 }
 
 impl EdgeRunner {
     pub fn with_staging(staging: HarnessStaging) -> Self {
-        Self { staging }
+        Self {
+            staging,
+            home: None,
+        }
+    }
+
+    pub fn with_home(mut self, home: impl Into<PathBuf>) -> Self {
+        self.home = Some(home.into());
+        self
+    }
+
+    fn home(&self) -> Result<&Path> {
+        self.home
+            .as_deref()
+            .ok_or_else(|| Error::Storage("blob CAS requires a Terrane home".into()))
     }
 }
 
@@ -115,6 +130,23 @@ impl EffectRunner for EdgeRunner {
                 storage_backend,
                 storage_path,
             } => import_app_bundle(source, storage_backend, storage_path, state),
+            Effect::BlobStore {
+                app,
+                name,
+                mime,
+                hash,
+                bytes,
+            } => {
+                crate::blob_store::insert_if_absent(self.home()?, hash, bytes)?;
+                Ok(vec![terrane_cap_blob::stored_event(
+                    app,
+                    name,
+                    hash,
+                    u64::try_from(bytes.len())
+                        .map_err(|_| Error::Storage("blob byte length overflow".into()))?,
+                    mime,
+                )?])
+            }
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
             Effect::LocalModelCall {
                 app,
@@ -175,7 +207,15 @@ impl EffectRunner for EdgeRunner {
 
 impl LiveHost for EdgeRunner {
     fn sample(&self, domain: &str, args: &[String]) -> Result<String> {
-        crate::metrics::sample(domain, args)
+        match domain {
+            "blob.get" => {
+                let hash = args
+                    .get(2)
+                    .ok_or_else(|| Error::InvalidInput("blob.get missing hash".into()))?;
+                crate::blob_store::read_verified_base64(self.home()?, hash)
+            }
+            _ => crate::metrics::sample(domain, args),
+        }
     }
 }
 
