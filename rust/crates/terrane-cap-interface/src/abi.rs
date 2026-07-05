@@ -178,6 +178,13 @@ pub enum Effect {
         storage_backend: Option<String>,
         storage_path: Option<String>,
     },
+    BlobStore {
+        app: String,
+        name: String,
+        mime: String,
+        hash: String,
+        bytes: Vec<u8>,
+    },
     NewReplicaId,
     LocalModelCall {
         app: String,

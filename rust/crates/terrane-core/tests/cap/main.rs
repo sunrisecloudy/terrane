@@ -8,6 +8,7 @@ mod actor;
 mod agent;
 mod app;
 mod auth;
+mod blob;
 mod builder;
 mod crdt;
 mod crypto;

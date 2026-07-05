@@ -1,0 +1,15 @@
+[package]
+name = "terrane-cap-blob"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_blob"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-interface.workspace = true
+borsh.workspace = true
+base64 = "0.22"
+sha2 = "0.10"
