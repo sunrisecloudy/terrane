@@ -182,6 +182,45 @@ pub unsafe extern "C" fn terrane_dispatch(
     finish(code, out_error)
 }
 
+/// Route a Terrane URL or file path through the deep-link host edge. On success
+/// writes a short human summary.
+///
+/// # Safety
+/// `target` must be a valid C string. `out_output`/`out_error` must be valid
+/// pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_open_target(
+    h: *mut TerraneHandle,
+    target: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let target = match read_str(target) {
+            Ok(target) => target,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::deep_links::open_target_on_core(&mut core, &target) {
+            Ok(outcome) => {
+                write_out(out_output, outcome.message());
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
 /// Create an in-memory App Builder preview from a JSON files payload. On success
 /// writes `{"id":"...","frameUrl":"terrane-preview://<id>/frame/"}`.
 ///

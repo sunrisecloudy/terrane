@@ -50,6 +50,7 @@ terrane-cap-crypto.workspace = true
 terrane-cap-document.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-history.workspace = true
+terrane-cap-interface.workspace = true
 terrane-cap-interop.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-kv.workspace = true

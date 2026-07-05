@@ -682,6 +682,18 @@ fn import_app_bundle(
         manifest.runtime,
         terrane_cap_app::normalize_interfaces(manifest.interfaces),
     )?);
+    for link in terrane_cap_app::default_scheme_links(&id) {
+        records.push(terrane_cap_app::link_registered_event(
+            &id, &link.kind, &link.spec,
+        )?);
+    }
+    let file_types = crate::manifest_file_types_arg(&manifest.file_types)
+        .map_err(Error::InvalidInput)?;
+    for spec in file_types.split(',').filter(|spec| !spec.is_empty()) {
+        records.push(terrane_cap_app::link_registered_event(
+            &id, "filetype", spec,
+        )?);
+    }
     for (path, value) in files {
         records.push(set_event(id.clone(), app_bundle_key(&path)?, value)?);
     }

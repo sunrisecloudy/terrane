@@ -20,10 +20,15 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
             commands: vec![
                 "app.add".to_string(),
                 "app.import".to_string(),
+                "app.link.deliver".to_string(),
                 "app.remove".to_string(),
             ],
             queries: vec!["app.exists".to_string()],
-            events: vec!["app.added".to_string(), "app.removed".to_string()],
+            events: vec![
+                "app.added".to_string(),
+                "app.link.registered".to_string(),
+                "app.removed".to_string(),
+            ],
             subscriptions: Vec::new(),
             resource_methods: Vec::new(),
         },
@@ -54,12 +59,16 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
         ],
         constraints: vec![
             "app.add validates id, name, and runtime before recording app.added.".to_string(),
+            "app.add records built-in terrane:// scheme routes and validated manifest filetype specs as app.link.registered facts."
+                .to_string(),
             "App ids under __terrane/ are reserved for platform-owned logical stores."
                 .to_string(),
             "app.import is effectful: the edge host reads a JS bundle directory, records app.added with a kv:// source, and stores bundle files under reserved cap-kv keys."
                 .to_string(),
+            "app.link.deliver is trusted-host only and can only call common.receive with link or blob payload kinds."
+                .to_string(),
             "app.remove only records app.removed for an existing app id.".to_string(),
-            "Replay rebuilds the catalog solely from app.added and app.removed events.".to_string(),
+            "Replay rebuilds the catalog solely from app.added, app.link.registered, and app.removed events.".to_string(),
             "app.exists is a derived query over folded AppState and is never recorded as an event."
                 .to_string(),
             "App removal cleanup is intentionally fan-out: each subscriber removes its own app-scoped state while folding app.removed."
@@ -154,6 +163,24 @@ fn app_commands() -> Vec<CommandDoc> {
                 .to_string(),
         }]),
         command_doc(
+            "app.link.deliver",
+            &[
+                param("target", "Target app id.", "app_id"),
+                param("kind", "common.receive payload kind: link or blob.", "string"),
+                param("payloadJson", "Payload JSON passed to common.receive.", "json"),
+            ],
+            "effect",
+            "Trusted host edge delivery for Terrane URLs, file associations, and share targets.",
+        )
+        .with_errors(&[
+            "requires trusted host authority",
+            "missing app",
+            "unsupported kind",
+            "payload exceeds 64 KiB",
+        ])
+        .with_emits(&["interop.called"])
+        .with_effects(&["runs target common.receive once at the edge"]),
+        command_doc(
             "app.remove",
             &[param("id", "Existing app id.", "app_id")],
             "commit",
@@ -194,6 +221,16 @@ fn app_events() -> Vec<EventDoc> {
             "Adds or replaces the folded catalog record for one app id.",
         )
         .with_effects(&["folds into AppState.apps"]),
+        event_doc(
+            "app.link.registered",
+            &[
+                param("app", "App id owning the route or file type.", "app_id"),
+                param("kind", "Registration kind: scheme-route or filetype.", "string"),
+                param("spec", "Route pattern or ext:mime filetype spec.", "string"),
+            ],
+            "Records a deterministic host-edge entry point advertised by the app catalog.",
+        )
+        .with_effects(&["folds into AppState.links and AppRecord.links"]),
         event_doc(
             "app.removed",
             &[param("id", "Removed app id.", "app_id")],

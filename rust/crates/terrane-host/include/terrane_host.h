@@ -40,6 +40,11 @@ int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,
 int terrane_dispatch(TerraneHandle *h, const char *name, size_t argc,
                      const char *const *argv, char **out_output, char **out_error);
 
+/* Route a Terrane URL or file path through the deep-link host edge. On success
+ * writes a short human summary. */
+int terrane_open_target(TerraneHandle *h, const char *target, char **out_output,
+                        char **out_error);
+
 /* Create an in-memory App Builder preview from JSON:
  * {"files":[{"path":"manifest.json","content":"..."}, ...]}.
  * On success writes {"id":"...","frameUrl":"terrane-preview://<id>/frame/"}.

@@ -23,6 +23,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["state"] => run_state(),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
+        ["open", target] => run_open(target),
         ["migrate-log"] => run_migrate_log(),
         ["cap", "list", rest @ ..] => run_cap_list(rest),
         ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
@@ -283,6 +284,11 @@ fn run_connection_stat(name: &str) -> Result<(), String> {
 fn run_connection_authorize(name: &str) -> Result<(), String> {
     let _ = terrane_cap_connection::validate_name(name).map_err(|e| e.to_string())?;
     Err("OAuth browser authorization is not wired in this host yet; use connection.mark_authorized after a trusted edge exchange".into())
+}
+
+pub fn run_open(target: &str) -> Result<(), String> {
+    println!("{}", crate::deep_links::open_target(target)?.message());
+    Ok(())
 }
 
 /// `terrane app remove <id>` — dispatches the core command and, on success,
@@ -1323,6 +1329,7 @@ pub fn print_help() {
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
          \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
          \x20 terrane run <app> <verb> [--ask] [args…]         run an app backend; --ask prompts (hidden) for the first arg\n\
+         \x20 terrane open <url-or-file>                       route terrane:// links or registered file types to common.receive\n\
          \x20 terrane js-runtime run <app> [input…]            run an app's JS backend\n\
          \x20 terrane wasm-runtime run <app> [input…]          run an app's WASM backend\n\n\
          Multi-user:\n\

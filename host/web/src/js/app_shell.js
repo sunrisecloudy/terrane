@@ -108,6 +108,8 @@
     }
   }
 
+  registerProtocolHandler();
+  if (consumeOpenHash()) return;
   if (!currentId && !isAdmin) {
     showError("No app selected");
     return;
@@ -213,6 +215,28 @@
   function currentAppId() {
     var match = window.location.pathname.match(/^\/apps\/([^/]+)/);
     return match ? decodeURIComponent(match[1]) : "";
+  }
+
+  function consumeOpenHash() {
+    var match = window.location.hash.match(/^#open\/([^/?#]+)/);
+    if (!match) return false;
+    var app = decodeURIComponent(match[1]);
+    if (!/^[A-Za-z0-9_-]+$/.test(app)) {
+      showError("Invalid app link");
+      return true;
+    }
+    window.location.replace("/apps/" + encodeURIComponent(app) + "/");
+    return true;
+  }
+
+  function registerProtocolHandler() {
+    if (!navigator.registerProtocolHandler) return;
+    try {
+      navigator.registerProtocolHandler(
+        "web+terrane",
+        window.location.origin + "/#open/%s"
+      );
+    } catch (_) {}
   }
 
   function renderCatalog(apps) {

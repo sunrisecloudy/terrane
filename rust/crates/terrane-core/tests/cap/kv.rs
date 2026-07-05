@@ -128,6 +128,7 @@ fn rocksdb_storage_requires_feature_before_commit() {
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
+    let before = core.log_lines().unwrap().len();
 
     assert_eq!(
         core.dispatch(req("kv.storage.set", &["app", "notes", "rocksdb"])),
@@ -135,7 +136,7 @@ fn rocksdb_storage_requires_feature_before_commit() {
             "kv storage backend rocksdb requires feature rocksdb-storage".into()
         ))
     );
-    assert_eq!(core.log_lines().unwrap().len(), 1);
+    assert_eq!(core.log_lines().unwrap().len(), before);
 }
 
 // ---- public bucket (kv.public.*) -------------------------------------------

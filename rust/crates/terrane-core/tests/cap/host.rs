@@ -661,6 +661,7 @@ fn memory_backend_run_returns_records_for_caller_owned_fold() {
             source: None,
             runtime: "js".to_string(),
             interfaces: terrane_cap_app::mandatory_interfaces(),
+            links: Vec::new(),
         },
     );
     let bundle = JsRuntimeBundle {

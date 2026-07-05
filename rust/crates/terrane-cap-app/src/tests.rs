@@ -48,7 +48,8 @@ fn parse_add_collects_multi_word_name_and_optional_source() {
             "Daily Calendar".into(),
             Some("/tmp/demo".into()),
             "js".into(),
-            mandatory_interfaces()
+            mandatory_interfaces(),
+            Vec::new()
         )
     );
 }
@@ -71,7 +72,8 @@ fn parse_add_accepts_explicit_runtime() {
             "Daily".into(),
             Some("/tmp/demo".into()),
             "wasm".into(),
-            mandatory_interfaces()
+            mandatory_interfaces(),
+            Vec::new()
         )
     );
 }
@@ -115,6 +117,10 @@ fn add_event_describes_and_folds_into_state() {
         "app.added demo \"Demo\" runtime=js"
     );
     cap.fold(&mut store, &events[0]).unwrap();
+    for event in &events[1..] {
+        cap.fold(&mut store, event).unwrap();
+    }
     assert_eq!(store.app.apps["demo"].name, "Demo");
     assert_eq!(store.app.apps["demo"].runtime, "js");
+    assert_eq!(store.app.apps["demo"].links.len(), 3);
 }

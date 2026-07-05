@@ -346,6 +346,15 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return hostRun(argv: [verb] + args)
   }
 
+  func openExternal(target: String) -> (Bool, String) {
+    target.withCString { targetC -> (Bool, String) in
+      var out: UnsafeMutablePointer<CChar>?
+      var err: UnsafeMutablePointer<CChar>?
+      let rc = terrane_open_target(handle, targetC, &out, &err)
+      return output(rc: rc, out: out, err: err, label: "terrane_open_target")
+    }
+  }
+
   func grant(app: String, namespace: String) -> (Bool, String) {
     dispatch(command: "auth.grant", argv: ["user:local-owner", app, namespace])
   }

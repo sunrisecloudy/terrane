@@ -31,6 +31,7 @@ pub mod edge;
 pub mod ffi;
 pub mod home;
 pub mod i18n;
+pub mod deep_links;
 mod local_llm;
 pub mod mcp;
 mod metrics;
@@ -564,19 +565,22 @@ pub fn install_app(path: &str) -> Result<InstallOutcome, String> {
         .to_string();
 
     let mut core = open()?;
-    match core.dispatch(Request::new(
-        "app.add",
-        vec![
-            id.clone(),
-            name,
-            "--source".into(),
-            source.clone(),
-            "--runtime".into(),
-            runtime,
-            "--interfaces".into(),
-            terrane_cap_app::normalize_interfaces(manifest.interfaces).join(","),
-        ],
-    )) {
+    let mut args = vec![
+        id.clone(),
+        name,
+        "--source".into(),
+        source.clone(),
+        "--runtime".into(),
+        runtime,
+        "--interfaces".into(),
+        terrane_cap_app::normalize_interfaces(manifest.interfaces).join(","),
+    ];
+    let file_types = manifest_file_types_arg(&manifest.file_types)?;
+    if !file_types.is_empty() {
+        args.push("--file-types".into());
+        args.push(file_types);
+    }
+    match core.dispatch(Request::new("app.add", args)) {
         Ok(_) => Ok(InstallOutcome::Installed { id, source }),
         Err(Error::AppExists(_)) => Ok(InstallOutcome::Refreshed { id }),
         Err(e) => Err(e.to_string()),
@@ -698,6 +702,24 @@ fn sync_blob_metadata(
     Ok(changed)
 }
 
+fn manifest_file_types_arg(file_types: &[FileTypeSpec]) -> Result<String, String> {
+    let mut specs = Vec::new();
+    for file_type in file_types {
+        let ext = file_type.ext.trim().trim_start_matches('.');
+        let mime = file_type.mime.trim();
+        if ext.is_empty() && mime.is_empty() {
+            continue;
+        }
+        let spec = format!("{ext}:{mime}");
+        terrane_cap_app::validate_link_registration("filetype", &spec)
+            .map_err(|e| e.to_string())?;
+        specs.push(spec);
+    }
+    specs.sort();
+    specs.dedup();
+    Ok(specs.join(","))
+}
+
 /// The public API surface assembled from `terrane-api` and `terrane-core`
 /// declarations, so it can't drift from the running system.
 pub fn contract_surface() -> terrane_api::PublicSurface {
@@ -778,8 +800,18 @@ pub struct BundleManifest {
     pub resources: Vec<String>,
     #[nserde(default)]
     pub interfaces: Vec<String>,
+    #[nserde(default, rename = "fileTypes")]
+    pub file_types: Vec<FileTypeSpec>,
     #[nserde(default)]
     pub browser_permissions: Vec<String>,
+}
+
+#[derive(Debug, Clone, DeJson)]
+pub struct FileTypeSpec {
+    #[nserde(default)]
+    pub ext: String,
+    #[nserde(default)]
+    pub mime: String,
 }
 
 pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest, Error> {
@@ -825,14 +857,15 @@ pub fn validate_common_api_bundle_source(
     let mut state = terrane_core::State::default();
     state.app.apps.insert(
         id.to_string(),
-        terrane_cap_app::AppRecord {
-            id: id.to_string(),
-            name,
-            source: None,
-            runtime: "js".to_string(),
-            interfaces: terrane_cap_app::mandatory_interfaces(),
-        },
-    );
+            terrane_cap_app::AppRecord {
+                id: id.to_string(),
+                name,
+                source: None,
+                runtime: "js".to_string(),
+                interfaces: terrane_cap_app::mandatory_interfaces(),
+                links: Vec::new(),
+            },
+        );
     let host = RuntimeHostHandle::new(Box::new(
         RuntimeResourceHost::new_with_temporary_resource_grants(
             id.to_string(),

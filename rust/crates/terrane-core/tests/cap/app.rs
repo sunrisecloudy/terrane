@@ -44,6 +44,37 @@ fn source_round_trips_through_the_log() {
 }
 
 #[test]
+fn link_registrations_fold_and_replay() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open(&log).unwrap();
+    core.dispatch(req(
+        "app.add",
+        &[
+            "viewer",
+            "Viewer",
+            "--source",
+            "apps/viewer",
+            "--file-types",
+            "txt:text/plain",
+        ],
+    ))
+    .unwrap();
+
+    let links = &core.state().app.apps["viewer"].links;
+    assert!(links
+        .iter()
+        .any(|link| link.kind == "scheme-route" && link.spec == "terrane://open/viewer"));
+    assert!(links
+        .iter()
+        .any(|link| link.kind == "filetype" && link.spec == "txt:text/plain"));
+    assert!(core.replay_matches().unwrap());
+
+    let reopened = Core::open(&log).unwrap();
+    assert_eq!(reopened.state(), core.state());
+}
+
+#[test]
 fn rejects_duplicate_missing_and_unknown() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
@@ -84,6 +115,22 @@ fn rejects_empty_fields() {
         core.dispatch(req("app.add", &["x"])),
         Err(Error::InvalidInput(_))
     ));
+}
+
+#[test]
+fn public_link_delivery_requires_trusted_host_authority() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+
+    let err = core
+        .dispatch(terrane_core::Request::new(
+            "app.link.deliver",
+            vec!["demo".into(), "link".into(), "{}".into()],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("trusted host authority"), "{err}");
 }
 
 #[test]

@@ -110,6 +110,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     terrane_local_model_shutdown()
   }
 
+  func application(_ application: NSApplication, open urls: [URL]) {
+    for url in urls {
+      handleExternalOpen(url.absoluteString)
+    }
+  }
+
+  func application(_ sender: NSApplication, openFiles filenames: [String]) {
+    for filename in filenames {
+      handleExternalOpen(filename)
+    }
+    sender.reply(toOpenOrPrint: .success)
+  }
+
+  private func handleExternalOpen(_ target: String) {
+    guard let bridge else { return }
+    let result = bridge.openExternal(target: target)
+    if !result.0 {
+      NSLog("terrane-host: cannot open external target \(target): \(result.1)")
+      return
+    }
+    apps = AppCatalog.discover(home: home)
+    renderAppSwitcher()
+    if let id = Self.appId(fromExternalTarget: target),
+      let app = apps.first(where: { $0.id == id })
+    {
+      select(app, confirmUnsaved: false)
+    }
+  }
+
+  private static func appId(fromExternalTarget target: String) -> String? {
+    guard let url = URL(string: target), url.scheme == "terrane" else { return nil }
+    if url.host == "open" || url.host == "send" {
+      return url.pathComponents.dropFirst().first
+    }
+    if url.host == "app" {
+      return url.pathComponents.dropFirst().first
+    }
+    return nil
+  }
+
   func webView(
     _ webView: WKWebView,
     decidePolicyFor navigationAction: WKNavigationAction,

@@ -77,6 +77,11 @@ from the runtime; custom `handle(input)` apps must implement and declare them in
 | `common.list` | `items` | yes | `(filterJson?)` returns a JSON array of `{id,title,kind}`. `[]` is valid for apps with no natural items. |
 | `common.get` | `items` | yes | `(id)` returns item JSON or typed not-found JSON: `{"ok":false,"error":{"code":"NotFound","id":"..."}}`. |
 
+Deep links, file associations, and share-sheet deliveries enter through
+`common.receive`; they cannot invoke arbitrary backend verbs. Item URIs deliver
+`common.receive("link", {"item":"<itemId>"})`. File imports are stored in the
+blob CAS and deliver `common.receive("blob", {"name","hash","size","mime"})`.
+
 Items are named by `terrane://app/<appId>/item/<itemId>`, where `itemId` is
 percent-encoded. The URI is a name, not a bearer token; resolving it still goes
 through interop authorization and the owning app's live `common.get`.
@@ -807,6 +812,7 @@ window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / 
 | `ui`        | string (optional) | UI entry file, e.g. `"index.html"`; omit for CLI-only apps          |
 | `resources` | string[]          | the resource namespaces the backend **requests** — default-deny; each still needs an admin grant before `ctx.resource.<ns>` appears (see the [permission handshake](#default-deny-resources--the-permission-handshake)) |
 | `interfaces` | string[]        | common interfaces the app advertises; `inbox` is implied and `items` is required |
+| `fileTypes` | `{ext,mime}[]`    | optional file associations; installing the app records `app.link.registered {kind:"filetype", spec:"ext:mime"}` and `terrane open <file>` imports matching files through blob before calling `common.receive("blob", ref)` |
 
 ```json
 {
@@ -817,7 +823,8 @@ window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / 
   "backend": "main.js",
   "ui": "index.html",
   "resources": ["kv"],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "fileTypes": [{ "ext": "txt", "mime": "text/plain" }]
 }
 ```
 

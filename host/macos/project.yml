@@ -42,6 +42,23 @@ targets:
         NSCameraUsageDescription: "Photobooth uses the camera only when you start the camera and take a picture."
         NSMicrophoneUsageDescription: "Terrane transcribes speech locally when you enable the microphone for ambient dictation."
         CFBundleName: Terrane
+        CFBundleURLTypes:
+          - CFBundleURLName: com.terrane.host.deep-links
+            CFBundleURLSchemes:
+              - terrane
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Terrane Text Import
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            CFBundleTypeExtensions:
+              - txt
+        NSServices:
+          - NSMenuItem:
+              default: Send to Terrane
+            NSMessage: openFiles
+            NSPortName: Terrane
+            NSSendFileTypes:
+              - public.data
         LSUIElement: false
     dependencies:
       - sdk: WebKit.framework

@@ -12,6 +12,7 @@ mod app;
 mod blob;
 mod browser;
 mod connection;
+mod deep_links;
 mod document;
 mod history;
 mod host;
