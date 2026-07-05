@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use tempfile::tempdir;
-use terrane_core::Core;
+use terrane_core::{Core, Effect, EffectRunner, Error, EventRecord, State};
 use terrane_core::Request;
 
 fn app_source_path(name: &str) -> PathBuf {
@@ -23,7 +23,7 @@ fn app_source(name: &str) -> String {
     app_source_path(name).to_str().unwrap().to_string()
 }
 
-fn install_from_source(core: &mut Core, id: &str, source: &Path) {
+fn install_from_source<R: EffectRunner>(core: &mut Core<R>, id: &str, source: &Path) {
     core.dispatch(Request::new(
         "app.add",
         vec![
@@ -36,7 +36,7 @@ fn install_from_source(core: &mut Core, id: &str, source: &Path) {
     .unwrap();
 }
 
-fn install(core: &mut Core, id: &str) {
+fn install<R: EffectRunner>(core: &mut Core<R>, id: &str) {
     core.dispatch(Request::new(
         "app.add",
         vec![id.into(), id.into(), "--source".into(), app_source(id)],
@@ -44,7 +44,7 @@ fn install(core: &mut Core, id: &str) {
     .unwrap();
 }
 
-fn install_named(core: &mut Core, id: &str, name: &str) {
+fn install_named<R: EffectRunner>(core: &mut Core<R>, id: &str, name: &str) {
     core.dispatch(Request::new(
         "app.add",
         vec![id.into(), name.into(), "--source".into(), app_source(id)],
@@ -52,7 +52,7 @@ fn install_named(core: &mut Core, id: &str, name: &str) {
     .unwrap();
 }
 
-fn grant_resource(core: &mut Core, app: &str, namespace: &str) {
+fn grant_resource<R: EffectRunner>(core: &mut Core<R>, app: &str, namespace: &str) {
     core.dispatch(Request::trusted_host(
         "auth.grant",
         vec!["user:local-owner".into(), app.into(), namespace.into()],
@@ -117,6 +117,68 @@ fn write_built_react_fixture(root: &Path) -> PathBuf {
     )
     .unwrap();
     app_dir
+}
+
+fn write_webhook_fixture(root: &Path) -> PathBuf {
+    let app_dir = root.join("webhook-receiver");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(
+        app_dir.join("manifest.json"),
+        r#"{"id":"receiver","name":"Receiver","runtime":"js","backend":"main.js","resources":["kv"]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        app_dir.join("main.js"),
+        r#"
+function handle(input) {
+  if (input[0] === "receive") {
+    ctx.resource.kv.set("last", input[1]);
+    return "ok";
+  }
+  if (input[0] === "read") {
+    return ctx.resource.kv.get("last") || "";
+  }
+  return "?";
+}
+"#,
+    )
+    .unwrap();
+    app_dir
+}
+
+#[derive(Clone, Copy)]
+struct WebhookTestRunner;
+
+impl EffectRunner for WebhookTestRunner {
+    fn run(&self, effect: &Effect, state: &State) -> terrane_core::Result<Vec<EventRecord>> {
+        match effect {
+            Effect::WebhookRegister { app, name, verb } => {
+                let existing = state
+                    .webhook
+                    .routes
+                    .get(app)
+                    .and_then(|routes| routes.get(name))
+                    .is_some();
+                let event = if existing {
+                    terrane_cap_webhook::rotated_event(
+                        app,
+                        name,
+                        verb,
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    )?
+                } else {
+                    terrane_cap_webhook::registered_event(
+                        app,
+                        name,
+                        verb,
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    )?
+                };
+                Ok(vec![event])
+            }
+            other => Err(Error::Runtime(format!("unexpected effect: {other:?}"))),
+        }
+    }
 }
 
 /// Minimal blocking HTTP/1.0 client (Connection: close → read to EOF).
@@ -447,6 +509,74 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
 
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[test]
+fn webhook_loopback_post_records_event_and_invokes_backend() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let source = write_webhook_fixture(dir.path());
+    {
+        let mut core = Core::open_with(home.join("log.bin"), WebhookTestRunner).unwrap();
+        install_from_source(&mut core, "receiver", &source);
+        grant_resource(&mut core, "receiver", "kv");
+        core.dispatch(Request::trusted_host(
+            "webhook.register",
+            vec!["receiver".into(), "github".into(), "receive".into()],
+        ))
+        .unwrap();
+    }
+
+    let (mut child, addr) = spawn_web(home);
+    let path = "/hook/receiver/github/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let (status, body) = http_with_headers(
+        &addr,
+        "POST",
+        path,
+        Some(r#"{"sender":"forge","id":1}"#),
+        &[
+            ("Authorization", "Bearer should-redact"),
+            ("X-Hub-Signature-256", "sha256=abc"),
+        ],
+    );
+    assert_eq!(status, 202, "webhook post body: {body}");
+
+    let (status, body) = http(
+        &addr,
+        "POST",
+        "/apps/receiver/invoke",
+        Some(r#"{"verb":"read","args":[]}"#),
+    );
+    assert_eq!(status, 200, "read invoke body: {body}");
+    assert!(body.contains(r#"\"authorization\":\"«redacted»"#), "body: {body}");
+    assert!(
+        body.contains(r#"\"x-hub-signature-256\":\"sha256=abc\""#),
+        "body: {body}"
+    );
+    assert!(body.contains(r#"\"body_hash\":\""#), "body: {body}");
+    assert!(!body.contains("should-redact"), "body: {body}");
+
+    let (status, _) = http(
+        &addr,
+        "POST",
+        "/hook/receiver/github/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+        Some("{}"),
+    );
+    assert_eq!(status, 404);
+
+    let too_large = "x".repeat(terrane_cap_webhook::BODY_HARD_LIMIT + 1);
+    let (status, _) = http(&addr, "POST", path, Some(&too_large));
+    assert_eq!(status, 413);
+
+    for _ in 0..57 {
+        let (status, body) = http(&addr, "POST", path, Some("{}"));
+        assert_eq!(status, 202, "rate warmup body: {body}");
+    }
+    let (status, _) = http(&addr, "POST", path, Some("{}"));
+    assert_eq!(status, 429);
+
+    child.kill().unwrap();
+    child.wait().unwrap();
 }
 
 #[test]

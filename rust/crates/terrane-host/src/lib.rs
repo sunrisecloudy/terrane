@@ -82,6 +82,27 @@ pub struct CommandDryRunOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookIngestOutcome {
+    pub app: String,
+    pub name: String,
+    pub verb: String,
+    pub delivery_json: String,
+    pub body_kind: String,
+    pub body_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WebhookIngestRequest {
+    pub app: String,
+    pub name: String,
+    pub token: String,
+    pub method: String,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+    pub body_mime: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallOutcome {
     Installed { id: String, source: String },
     Refreshed { id: String },
@@ -227,6 +248,119 @@ pub fn dispatch_on_core(
 ) -> Result<CommandOutcome, String> {
     ensure_identity(core)?;
     dispatch_request_on_core(core, Request::trusted_host(command, args.to_vec()))
+}
+
+pub fn ingest_webhook_on_core(
+    core: &mut HostCore,
+    request: WebhookIngestRequest,
+) -> Result<WebhookIngestOutcome, String> {
+    ensure_identity(core)?;
+    let WebhookIngestRequest {
+        app,
+        name,
+        token,
+        method,
+        headers,
+        body,
+        body_mime,
+    } = request;
+    let meta = core
+        .state()
+        .webhook
+        .routes
+        .get(&app)
+        .and_then(|routes| routes.get(&name))
+        .cloned()
+        .ok_or_else(|| "not found".to_string())?;
+    if !terrane_cap_webhook::route_matches(&meta, &token) {
+        return Err("not found".to_string());
+    }
+    let received_at = current_epoch_ms()?;
+    let header_json = headers
+        .into_iter()
+        .map(|(key, value)| (key, serde_json::Value::String(value)))
+        .collect::<serde_json::Map<_, _>>();
+    let body_hash = terrane_cap_net::request::sha256_hex(&body);
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("app".to_string(), serde_json::Value::String(app.clone()));
+    envelope.insert("name".to_string(), serde_json::Value::String(name.clone()));
+    envelope.insert("token".to_string(), serde_json::Value::String(token));
+    envelope.insert("method".to_string(), serde_json::Value::String(method));
+    envelope.insert("headers".to_string(), serde_json::Value::Object(header_json));
+    envelope.insert(
+        "received_at".to_string(),
+        serde_json::Value::Number(serde_json::Number::from(received_at)),
+    );
+    if let Some(mime) = body_mime {
+        envelope.insert("body_mime".to_string(), serde_json::Value::String(mime));
+    }
+    match std::str::from_utf8(&body) {
+        Ok(text) => {
+            envelope.insert("body".to_string(), serde_json::Value::String(text.to_string()));
+        }
+        Err(_) => {
+            use base64::Engine as _;
+            envelope.insert(
+                "body_base64".to_string(),
+                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(&body)),
+            );
+        }
+    }
+    let raw = serde_json::Value::Object(envelope).to_string();
+    let outcome = dispatch_request_on_core(
+        core,
+        Request::trusted_host("webhook.ingest", vec![raw]),
+    )?;
+    let received = outcome
+        .records
+        .iter()
+        .find(|record| record.kind == "webhook.received")
+        .ok_or_else(|| "webhook.ingest produced no webhook.received event".to_string())?;
+    let delivery = terrane_cap_webhook::decode_delivery(received).map_err(|e| e.to_string())?;
+    if delivery.body_kind == "blob" {
+        blob_store::insert_if_absent(&home_dir(), &delivery.body_hash, &body)
+            .map_err(|e| e.to_string())?;
+        let args = vec![
+            delivery.app.clone(),
+            delivery.body.clone(),
+            delivery.body_hash.clone(),
+            delivery.body_size.to_string(),
+            delivery.body_mime.clone(),
+        ];
+        dispatch_request_on_core(core, Request::trusted_host("blob.link", args))?;
+    }
+    let delivery_json = serde_json::to_string(&serde_json::json!({
+        "app": delivery.app,
+        "name": delivery.name,
+        "method": delivery.method,
+        "headers": delivery.headers,
+        "body_kind": delivery.body_kind,
+        "body": delivery.body,
+        "body_is_base64": delivery.body_is_base64,
+        "body_hash": delivery.body_hash,
+        "body_size": delivery.body_size,
+        "body_mime": delivery.body_mime,
+        "received_at": delivery.received_at,
+    }))
+    .map_err(|e| e.to_string())?;
+    Ok(WebhookIngestOutcome {
+        app,
+        name,
+        verb: meta.verb,
+        delivery_json,
+        body_kind: delivery.body_kind,
+        body_hash,
+    })
+}
+
+fn current_epoch_ms() -> Result<u64, String> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "wall clock reads before the Unix epoch".to_string())
+        .and_then(|duration| {
+            u64::try_from(duration.as_millis())
+                .map_err(|_| "wall clock epoch milliseconds overflow".to_string())
+        })
 }
 
 pub fn dispatch_public_on_core(

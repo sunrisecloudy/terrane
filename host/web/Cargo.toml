@@ -19,6 +19,7 @@ terrane-core.workspace = true
 terrane-host.workspace = true
 terrane-cap-agent.workspace = true
 terrane-cap-auth.workspace = true
+terrane-cap-webhook.workspace = true
 nanoserde.workspace = true
 tiny_http = "0.12"
 tungstenite = "0.26"

@@ -93,7 +93,8 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "sysinfo",
             "telemetry",
             "time",
-            "tts"
+            "tts",
+            "webhook"
         ])
     );
 

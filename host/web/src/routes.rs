@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use nanoserde::{DeJson, SerJson};
 use terrane_api::{HealthResponse, InvokeRequest, InvokeResponse, CONTRACT_VERSION};
@@ -108,12 +111,16 @@ pub fn route(
     } = config;
     let method = request.method().clone();
     let path = request.url().split('?').next().unwrap_or("").to_string();
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+
+    if let (Method::Post, ["hook", app, name, token]) = (&method, segs.as_slice()) {
+        return webhook(core, app, name, token, request, admin_base_url);
+    }
 
     if require_auth && !authorized(request, token) {
         return json_error(401, "unauthorized");
     }
 
-    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     if is_admin_control_route(&method, segs.as_slice()) && !admin_authorized(request) {
         return json_error(403, "admin header required");
     }
@@ -297,6 +304,85 @@ pub fn route(
         }
         _ => json_error(404, "not found"),
     }
+}
+
+type WebhookRateMap = BTreeMap<(String, String), (u64, u32)>;
+
+fn webhook_rates() -> &'static Mutex<WebhookRateMap> {
+    static RATES: OnceLock<Mutex<WebhookRateMap>> = OnceLock::new();
+    RATES.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn webhook(
+    core: &mut terrane_host::HostCore,
+    app: &str,
+    name: &str,
+    token: &str,
+    request: &mut Request,
+    admin_base_url: &str,
+) -> Resp {
+    if !rate_allows(app, name) {
+        return json_error(429, "rate limit exceeded");
+    }
+    let mut body = Vec::new();
+    if request.as_reader().read_to_end(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    if body.len() > terrane_cap_webhook::BODY_HARD_LIMIT {
+        return json_error(413, "webhook body too large");
+    }
+    let headers = request
+        .headers()
+        .iter()
+        .map(|header| (header.field.to_string(), header.value.as_str().to_string()))
+        .collect::<Vec<_>>();
+    let body_mime = header_value(request, "Content-Type").map(ToString::to_string);
+    let outcome = match terrane_host::ingest_webhook_on_core(
+        core,
+        terrane_host::WebhookIngestRequest {
+            app: app.to_string(),
+            name: name.to_string(),
+            token: token.to_string(),
+            method: request.method().as_str().to_string(),
+            headers,
+            body,
+            body_mime,
+        },
+    ) {
+        Ok(outcome) => outcome,
+        Err(e) if e == "not found" => return json_error(404, "not found"),
+        Err(e) if e.contains("headers must be <=") => return json_error(431, &e),
+        Err(e) if e.contains("body must be <=") => return json_error(413, &e),
+        Err(e) => return json_error(400, &e),
+    };
+    let input = vec![outcome.verb.clone(), outcome.delivery_json];
+    let _ = terrane_host::invoke_app_input_checked_with_admin_base_and_source(
+        core,
+        &outcome.app,
+        &input,
+        admin_base_url,
+        "webhook",
+    );
+    Response::from_string("").with_status_code(202)
+}
+
+fn rate_allows(app: &str, name: &str) -> bool {
+    let minute = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_secs() / 60,
+        Err(_) => 0,
+    };
+    let mut rates = webhook_rates().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = rates
+        .entry((app.to_string(), name.to_string()))
+        .or_insert((minute, 0));
+    if entry.0 != minute {
+        *entry = (minute, 0);
+    }
+    if entry.1 >= terrane_cap_webhook::RATE_LIMIT_PER_MINUTE {
+        return false;
+    }
+    entry.1 += 1;
+    true
 }
 
 /// The catalog plus any dev-scanned apps not yet cataloged (`--apps <dir>`).

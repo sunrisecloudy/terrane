@@ -201,6 +201,11 @@ pub enum Effect {
         hash: String,
         bytes: Vec<u8>,
     },
+    WebhookRegister {
+        app: String,
+        name: String,
+        verb: String,
+    },
     ChannelSend {
         app: String,
         channel: String,
