@@ -358,7 +358,10 @@ fn validate_peer(peer: &str) -> Result<String> {
 }
 
 fn allowlisted_kind(kind: &str) -> bool {
-    matches!(kind, "kv.set" | "kv.deleted")
+    matches!(
+        kind,
+        "kv.set" | "kv.deleted" | "push.subscribed" | "push.unsubscribed"
+    )
 }
 
 fn validate_app_payload(app: &str, envelope: &SyncEnvelope) -> Result<()> {
@@ -393,6 +396,36 @@ fn validate_app_payload(app: &str, envelope: &SyncEnvelope) -> Result<()> {
                 ))
             }
         }
+        "push.subscribed" => {
+            let record = EventRecord {
+                kind: envelope.kind.clone(),
+                payload: envelope.payload.clone(),
+                actor: String::new(),
+            };
+            let payload: PushSubscribed = decode_event(&record)?;
+            if payload.app == app {
+                Ok(())
+            } else {
+                Err(Error::InvalidInput(
+                    "sync push.subscribed payload app does not match command app".into(),
+                ))
+            }
+        }
+        "push.unsubscribed" => {
+            let record = EventRecord {
+                kind: envelope.kind.clone(),
+                payload: envelope.payload.clone(),
+                actor: String::new(),
+            };
+            let payload: PushUnsubscribed = decode_event(&record)?;
+            if payload.app == app {
+                Ok(())
+            } else {
+                Err(Error::InvalidInput(
+                    "sync push.unsubscribed payload app does not match command app".into(),
+                ))
+            }
+        }
         _ => Err(Error::InvalidInput(format!(
             "sync event kind is not allowlisted: {}",
             envelope.kind
@@ -411,6 +444,20 @@ struct KvSet {
 struct KvDeleted {
     app: String,
     _key: String,
+}
+
+#[derive(BorshDeserialize)]
+struct PushSubscribed {
+    app: String,
+    _sub_id: String,
+    _event_pattern: String,
+    _template: String,
+}
+
+#[derive(BorshDeserialize)]
+struct PushUnsubscribed {
+    app: String,
+    _sub_id: String,
 }
 
 fn peers_json(state: &SyncState) -> String {

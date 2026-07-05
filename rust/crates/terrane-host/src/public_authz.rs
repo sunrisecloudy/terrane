@@ -199,6 +199,13 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "net",
             app_arg_index: 0,
         },
+        "push.subscribe" | "push.unsubscribe" => PublicCommandDisposition::GrantGated {
+            namespace: "push",
+            app_arg_index: 0,
+        },
+        "push.record-delivery" => PublicCommandDisposition::Refuse {
+            reason: "push delivery outcomes are host-edge-only",
+        },
         "browser.render" => PublicCommandDisposition::GrantGated {
             namespace: "browser",
             app_arg_index: 0,

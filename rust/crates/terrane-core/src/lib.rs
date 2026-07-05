@@ -88,6 +88,7 @@ use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
 use terrane_cap_person::PersonState;
+use terrane_cap_push::PushState;
 use terrane_cap_publish::PublishState;
 use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
@@ -132,6 +133,7 @@ pub struct State {
     pub mcp: McpClientState,
     pub native: NativeState,
     pub person: PersonState,
+    pub push: PushState,
     pub publish: PublishState,
     pub scheduler: SchedulerState,
     pub stt: SttState,
@@ -174,6 +176,7 @@ impl StateStore for State {
             "mcp" => Some(&self.mcp),
             "native" => Some(&self.native),
             "person" => Some(&self.person),
+            "push" => Some(&self.push),
             "publish" => Some(&self.publish),
             "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
@@ -217,6 +220,7 @@ impl StateStore for State {
             "mcp" => Some(&mut self.mcp),
             "native" => Some(&mut self.native),
             "person" => Some(&mut self.person),
+            "push" => Some(&mut self.push),
             "publish" => Some(&mut self.publish),
             "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
@@ -559,6 +563,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_mcp_client::McpClientCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_person::PersonCapability));
+    registry.register(Box::new(terrane_cap_push::PushCapability));
     registry.register(Box::new(terrane_cap_publish::PublishCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
@@ -942,11 +947,6 @@ impl RuntimeHost for RuntimeResourceHost {
         method: &str,
         args: &[String],
     ) -> Result<ReadValue> {
-        let Some(runner) = self.runner.clone() else {
-            return Err(Error::Runtime(format!(
-                "{namespace}.{method}: resource calls are not available in this runtime host"
-            )));
-        };
         let name = format!("{namespace}.{method}");
         let mut scoped_args = Vec::with_capacity(args.len() + 1);
         scoped_args.push(self.app.clone());
@@ -968,6 +968,11 @@ impl RuntimeHost for RuntimeResourceHost {
             // The one place effects are legal inside a runtime: run once now;
             // replay folds the recorded events without re-running the app.
             Decision::Effect(effect) => {
+                let Some(runner) = self.runner.clone() else {
+                    return Err(Error::Runtime(format!(
+                        "{namespace}.{method}: resource calls are not available in this runtime host"
+                    )));
+                };
                 enforce_recorded_call_per_run_limit(
                     &mut self.recorded_call_counts,
                     namespace,
@@ -981,6 +986,11 @@ impl RuntimeHost for RuntimeResourceHost {
             // transient reads (e.g. net.get) whose response must never touch the
             // event log.
             Decision::TransientEffect(effect) => {
+                let Some(runner) = self.runner.clone() else {
+                    return Err(Error::Runtime(format!(
+                        "{namespace}.{method}: resource calls are not available in this runtime host"
+                    )));
+                };
                 let records = runner.run(&effect, &self.state)?;
                 return self.registry.get(namespace)?.resource_call_output(
                     &self.state,

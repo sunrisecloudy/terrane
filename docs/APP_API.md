@@ -445,6 +445,14 @@ macOS TCC/Accessibility prompts may still deny individual runs.
 | `ctx.resource.net.get(url)` | call |
 | `ctx.resource.net.call(request_json)` | call |
 
+#### `ctx.resource.push`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.push.subscribe(pattern, template)` | call |
+| `ctx.resource.push.unsubscribe(subId)` | call |
+| `ctx.resource.push.list()` | read |
+
 #### `ctx.resource.query`
 
 | Method | Kind |

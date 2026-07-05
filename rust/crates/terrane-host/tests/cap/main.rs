@@ -35,6 +35,7 @@ mod native;
 mod net;
 mod password_manager;
 mod person;
+mod push;
 mod publish;
 mod query;
 mod scheduler;

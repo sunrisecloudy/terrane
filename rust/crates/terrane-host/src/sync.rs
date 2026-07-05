@@ -326,8 +326,9 @@ pub fn apply_event_batch(
     if batch.count == 0 {
         return Ok(false);
     }
-    let records = core
-        .dispatch(Request::new(
+    let outcome = crate::dispatch_request_on_core(
+        core,
+        Request::new(
             "sync.apply",
             vec![
                 batch.peer_hex.clone(),
@@ -336,9 +337,9 @@ pub fn apply_event_batch(
                 batch.to_seq.to_string(),
                 batch.batch_hex.clone(),
             ],
-        ))
-        .map_err(|e| e.to_string())?;
-    Ok(!records.is_empty())
+        ),
+    )?;
+    Ok(!outcome.records.is_empty())
 }
 
 pub fn blob_bytes(core: &HostCore, hash: &str) -> Result<Vec<u8>, String> {
@@ -417,6 +418,28 @@ fn is_sync_event_for_app(record: &terrane_core::EventRecord, app: &str) -> Resul
                 .and_then(|v| v.get("app").and_then(|app| app.as_str()).map(str::to_string))
                 .as_deref()
                 == Some(app))
+        }
+        "push.subscribed" => {
+            #[derive(borsh::BorshDeserialize)]
+            struct PushSubscribed {
+                app: String,
+                _sub_id: String,
+                _event_pattern: String,
+                _template: String,
+            }
+            let value: PushSubscribed =
+                terrane_cap_interface::decode_event(record).map_err(|e| e.to_string())?;
+            Ok(value.app == app)
+        }
+        "push.unsubscribed" => {
+            #[derive(borsh::BorshDeserialize)]
+            struct PushUnsubscribed {
+                app: String,
+                _sub_id: String,
+            }
+            let value: PushUnsubscribed =
+                terrane_cap_interface::decode_event(record).map_err(|e| e.to_string())?;
+            Ok(value.app == app)
         }
         _ => Ok(false),
     }

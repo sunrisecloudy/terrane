@@ -4152,6 +4152,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-push"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "terrane-cap-interface",
+ "terrane-cap-kv",
+]
+
+[[package]]
 name = "terrane-cap-query"
 version = "0.1.0"
 dependencies = [
@@ -4334,6 +4346,7 @@ dependencies = [
  "terrane-cap-net",
  "terrane-cap-person",
  "terrane-cap-publish",
+ "terrane-cap-push",
  "terrane-cap-query",
  "terrane-cap-relational-db",
  "terrane-cap-replica",
@@ -4406,6 +4419,7 @@ dependencies = [
  "terrane-cap-net",
  "terrane-cap-person",
  "terrane-cap-publish",
+ "terrane-cap-push",
  "terrane-cap-replica",
  "terrane-cap-scheduler",
  "terrane-cap-stream",
