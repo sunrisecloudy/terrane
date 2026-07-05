@@ -75,6 +75,10 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 app_arg_index: 0,
             }
         }
+        "history.revert" => PublicCommandDisposition::GrantGated {
+            namespace: "history",
+            app_arg_index: 0,
+        },
         "native.clipboard.write-text"
         | "native.external.open-url"
         | "native.notification.show"

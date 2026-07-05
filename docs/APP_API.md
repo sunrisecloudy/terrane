@@ -191,6 +191,14 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.crypto.sha1Hex(text)` | read |
 | `ctx.resource.crypto.randomId()` | read |
 
+#### `ctx.resource.history`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.history.list(filter, before, limit)` | read |
+| `ctx.resource.history.key(key, limit)` | read |
+| `ctx.resource.history.at(key, seq)` | read |
+
 #### `ctx.resource.kv`
 
 | Method | Kind |

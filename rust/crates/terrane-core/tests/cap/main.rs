@@ -16,6 +16,7 @@ mod grant_resources;
 mod grant_spec_inventory;
 mod grant_verbs_match_specs;
 mod harness;
+mod history;
 mod host;
 mod interface;
 mod kv;
