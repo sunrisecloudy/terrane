@@ -63,6 +63,7 @@ struct LegacyEventRecord {
 use terrane_cap_agent::AgentState;
 use terrane_cap_app::AppState;
 use terrane_cap_auth::AuthState;
+use terrane_cap_automation::AutomationState;
 use terrane_cap_blob::BlobState;
 use terrane_cap_browser::BrowserState;
 use terrane_cap_builder::BuilderState;
@@ -103,6 +104,7 @@ pub struct State {
     pub agent: AgentState,
     pub app: AppState,
     pub auth: AuthState,
+    pub automation: AutomationState,
     pub blob: BlobState,
     pub webhook: WebhookState,
     pub browser: BrowserState,
@@ -138,6 +140,7 @@ impl StateStore for State {
             "agent" => Some(&self.agent),
             "app" => Some(&self.app),
             "auth" => Some(&self.auth),
+            "automation" => Some(&self.automation),
             "blob" => Some(&self.blob),
             "webhook" => Some(&self.webhook),
             "browser" => Some(&self.browser),
@@ -174,6 +177,7 @@ impl StateStore for State {
             "agent" => Some(&mut self.agent),
             "app" => Some(&mut self.app),
             "auth" => Some(&mut self.auth),
+            "automation" => Some(&mut self.automation),
             "blob" => Some(&mut self.blob),
             "webhook" => Some(&mut self.webhook),
             "browser" => Some(&mut self.browser),
@@ -465,6 +469,21 @@ impl CapBus for RegistryBus<'_> {
         capability.query(ctx, name, args)
     }
 
+    fn event_kind_matches(&self, pattern: &str) -> bool {
+        self.registry.caps.values().any(|capability| {
+            capability.manifest().events.iter().any(|event| {
+                if let Some(prefix) = pattern.strip_suffix(".*") {
+                    event
+                        .kind
+                        .strip_prefix(prefix)
+                        .is_some_and(|rest| rest.starts_with('.'))
+                } else {
+                    event.kind == pattern
+                }
+            })
+        })
+    }
+
     fn grant_resource_spec(
         &self,
         namespace: &str,
@@ -485,6 +504,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_agent::AgentCapability));
     registry.register(Box::new(terrane_cap_app::AppCapability));
     registry.register(Box::new(terrane_cap_auth::AuthCapability));
+    registry.register(Box::new(terrane_cap_automation::AutomationCapability));
     registry.register(Box::new(terrane_cap_blob::BlobCapability));
     registry.register(Box::new(terrane_cap_webhook::WebhookCapability));
     registry.register(Box::new(terrane_cap_browser::BrowserCapability));
@@ -1527,6 +1547,10 @@ impl<R: EffectRunner + 'static> Core<R> {
         Ok(lines)
     }
 
+    pub fn log_records(&self) -> Result<Vec<EventRecord>> {
+        read_log(&self.log_path)
+    }
+
     /// True if replaying the log reproduces the in-memory State — the
     /// determinism contract, checkable at any time.
     pub fn replay_matches(&self) -> Result<bool> {
@@ -1622,6 +1646,8 @@ fn admit_command(request: &Request) -> Result<()> {
     // - the host-owned edge of `stream` (message ingest, reconnect markers,
     //   and host closes). Apps declare desired state with stream.open/close.
     let trusted_only = request.name.starts_with("auth.")
+        || request.name == "automation.fire"
+        || request.name == "automation.suppress"
         || request.name.starts_with("kv.public.")
         || request.name == "app.link.deliver"
         || request.name == "scheduler.fire"

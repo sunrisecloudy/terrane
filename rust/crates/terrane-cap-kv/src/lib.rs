@@ -31,7 +31,7 @@ pub(crate) const MAX_SCAN_LIMIT: usize = 500;
 /// can own or cascade-remove it (see `validate_app_id`).
 pub const PUBLIC_BUCKET_APP_ID: &str = "__terrane/public";
 
-pub use events::{delete_event, set_event, storage_configured_event};
+pub use events::{delete_event, event_payload_json, set_event, storage_configured_event};
 pub use storage::{sync_full_storage, sync_logical_store, sync_storage_after_commit};
 pub(crate) use types::bounded_limit;
 pub use types::{

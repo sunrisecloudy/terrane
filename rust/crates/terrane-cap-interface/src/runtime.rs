@@ -17,6 +17,11 @@ pub enum QueryValue {
 pub trait CapBus {
     fn query(&self, cap: &str, name: &str, args: &[String]) -> Result<QueryValue>;
 
+    fn event_kind_matches(&self, pattern: &str) -> bool {
+        let _ = pattern;
+        false
+    }
+
     fn grant_resource_spec(
         &self,
         namespace: &str,

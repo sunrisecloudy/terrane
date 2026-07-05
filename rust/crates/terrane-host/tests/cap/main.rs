@@ -9,6 +9,7 @@
 mod helpers;
 
 mod app;
+mod automation;
 mod blob;
 mod browser;
 mod common;

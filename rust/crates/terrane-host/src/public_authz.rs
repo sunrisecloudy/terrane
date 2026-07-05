@@ -137,6 +137,15 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 app_arg_index: 0,
             }
         }
+        "automation.set" | "automation.rm" => {
+            PublicCommandDisposition::GrantGated {
+                namespace: "automation",
+                app_arg_index: 0,
+            }
+        }
+        "automation.fire" | "automation.suppress" => PublicCommandDisposition::Refuse {
+            reason: "automation fire/suppress facts are trusted-host-only",
+        },
         "scheduler.fire" => {
             PublicCommandDisposition::Refuse {
                 reason: "scheduler.fire is trusted-host-only",

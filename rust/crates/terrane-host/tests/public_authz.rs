@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        126,
+        130,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        67,
+        69,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 57, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 59, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -67,6 +67,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
     assert_eq!(
         grantable,
         BTreeSet::from([
+            "automation",
             "blob",
             "browser",
             "build",
@@ -126,6 +127,8 @@ fn public_query_inventory_covers_every_registered_query() {
         queries,
         vec![
             "app.exists",
+            "automation.list",
+            "automation.stat",
             "common.channels",
             "geo.supports",
             "history.at",
@@ -146,6 +149,8 @@ fn public_query_inventory_covers_every_registered_query() {
                 | "history.at"
                 | "history.key"
                 | "history.list"
+                | "automation.list"
+                | "automation.stat"
                 | "query.jmespath"
                 | "scheduler.due"
         ) {
@@ -275,6 +280,8 @@ fn dangerous_and_effect_commands_are_refused() {
         "native.complete",
         "native.fail",
         "native.cancel",
+        "automation.fire",
+        "automation.suppress",
         "scheduler.fire",
     ] {
         assert!(

@@ -8,6 +8,7 @@ mod actor;
 mod agent;
 mod app;
 mod auth;
+mod automation;
 mod blob;
 mod browser;
 mod builder;

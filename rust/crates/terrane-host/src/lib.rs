@@ -23,6 +23,7 @@ use terrane_core::{
 };
 
 pub mod app_log;
+pub mod automation;
 pub mod asr;
 pub mod blob_store;
 pub mod cap_doc;
