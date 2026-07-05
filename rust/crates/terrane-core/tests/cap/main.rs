@@ -29,6 +29,7 @@ mod kv;
 mod local_model;
 mod log;
 mod media;
+mod migration;
 mod mcp;
 mod model;
 mod native;

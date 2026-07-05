@@ -118,6 +118,10 @@ pub trait RuntimeHost {
     }
 
     fn take_records(&mut self) -> Vec<EventRecord>;
+
+    fn record_count(&self) -> usize {
+        0
+    }
 }
 
 /// Shareable runtime host handle. Runtime engines capture this inside guest-code
@@ -182,6 +186,10 @@ impl RuntimeHostHandle {
 
     pub fn take_records(&self) -> Vec<EventRecord> {
         self.inner.borrow_mut().take_records()
+    }
+
+    pub fn record_count(&self) -> usize {
+        self.inner.borrow().record_count()
     }
 }
 

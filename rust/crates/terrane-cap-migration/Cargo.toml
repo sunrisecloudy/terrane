@@ -1,0 +1,16 @@
+[package]
+name = "terrane-cap-migration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_migration"
+path = "src/lib.rs"
+
+[dependencies]
+borsh.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+terrane-cap-interface.workspace = true
+terrane-cap-js-runtime.workspace = true

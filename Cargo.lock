@@ -3936,6 +3936,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-migration"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "sha2",
+ "terrane-cap-interface",
+ "terrane-cap-js-runtime",
+]
+
+[[package]]
 name = "terrane-cap-model"
 version = "0.1.0"
 dependencies = [
@@ -4127,6 +4138,7 @@ dependencies = [
  "terrane-cap-local-model",
  "terrane-cap-mcp-client",
  "terrane-cap-media",
+ "terrane-cap-migration",
  "terrane-cap-model",
  "terrane-cap-native",
  "terrane-cap-net",
@@ -4188,6 +4200,7 @@ dependencies = [
  "terrane-cap-local-model",
  "terrane-cap-mcp-client",
  "terrane-cap-media",
+ "terrane-cap-migration",
  "terrane-cap-model",
  "terrane-cap-native",
  "terrane-cap-net",

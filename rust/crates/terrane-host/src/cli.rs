@@ -6,7 +6,7 @@
 //! Catalog lives at `$TERRANE_HOME/log.bin` (default `./.terrane/`).
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
@@ -24,6 +24,8 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["log"] => run_log(),
         ["replay"] => run_replay(),
         ["open", target] => run_open(target),
+        ["migrate", "status", app] => run_migrate_status(app),
+        ["migrate", app] => run_migrate(app),
         ["migrate-log"] => run_migrate_log(),
         ["cap", "list", rest @ ..] => run_cap_list(rest),
         ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
@@ -738,6 +740,153 @@ pub fn run_migrate_log() -> Result<(), String> {
     let count = terrane_core::migrate_log(&crate::log_path()).map_err(|e| e.to_string())?;
     println!("migrated {count} events; backup kept at log.bin.pre-actor");
     Ok(())
+}
+
+pub fn run_migrate_status(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let state_version = terrane_cap_migration::version(core.state(), app).map_err(|e| e.to_string())?;
+    let bundle = migration_bundle(core.state(), app)?;
+    let manifest_version = crate::manifest_data_version(&bundle.manifest);
+    let pending: Vec<u64> = bundle
+        .manifest
+        .migrations
+        .iter()
+        .filter(|step| step.to > state_version)
+        .map(|step| step.to)
+        .collect();
+    println!(
+        "{}",
+        serde_json::json!({
+            "app": app,
+            "stateVersion": state_version,
+            "manifestVersion": manifest_version,
+            "pending": pending,
+        })
+    );
+    Ok(())
+}
+
+pub fn run_migrate(app: &str) -> Result<(), String> {
+    let mut core = crate::open()?;
+    let bundle = migration_bundle(core.state(), app)?;
+    let manifest_version = crate::manifest_data_version(&bundle.manifest);
+    let mut current =
+        terrane_cap_migration::version(core.state(), app).map_err(|e| e.to_string())?;
+    if current > manifest_version {
+        return Err(format!(
+            "app {app} data version is {current}, but this bundle expects {manifest_version}; restore a newer app bundle or a pre-migration backup"
+        ));
+    }
+    if current == manifest_version {
+        println!("{app} already at data version {current}");
+        return Ok(());
+    }
+    while current < manifest_version {
+        let next = current + 1;
+        let step = bundle
+            .manifest
+            .migrations
+            .iter()
+            .find(|step| step.to == next)
+            .ok_or_else(|| format!("manifest is missing migration step to {next}"))?;
+        let script = bundle.script_source(&step.script)?;
+        let outcome = crate::dispatch_on_core(
+            &mut core,
+            "migration.apply",
+            &[app.to_string(), next.to_string(), script],
+        )?;
+        println!(
+            "migrated {app} {current} -> {next} ({} events)",
+            outcome.records.len()
+        );
+        current = terrane_cap_migration::version(core.state(), app).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+struct MigrationBundle {
+    base: Option<PathBuf>,
+    files: Option<std::collections::BTreeMap<String, String>>,
+    manifest: crate::BundleManifest,
+}
+
+impl MigrationBundle {
+    fn script_source(&self, script: &str) -> Result<String, String> {
+        if let Some(files) = &self.files {
+            return files
+                .get(script)
+                .cloned()
+                .ok_or_else(|| format!("migration script missing from kv bundle: {script}"));
+        }
+        let base = self
+            .base
+            .as_ref()
+            .ok_or_else(|| "app source is not a bundle directory".to_string())?;
+        std::fs::read_to_string(base.join(script))
+            .map_err(|e| format!("read migration script {script}: {e}"))
+    }
+}
+
+fn migration_bundle(state: &terrane_core::State, app: &str) -> Result<MigrationBundle, String> {
+    let app_record = state
+        .app
+        .apps
+        .get(app)
+        .ok_or_else(|| format!("app not found: {app}"))?;
+    let source = app_record
+        .source
+        .as_deref()
+        .ok_or_else(|| format!("app {app} has no --source bundle"))?;
+    if let Some(source_app) = terrane_cap_kv::app_bundle_app_id(source) {
+        if source_app != app {
+            return Err(format!(
+                "app {app} points at kv bundle for different app {source_app}"
+            ));
+        }
+        let files = terrane_cap_kv::app_bundle_files(state, app).map_err(|e| e.to_string())?;
+        let manifest =
+            terrane_cap_js_runtime::read_manifest_from_files(&files).map_err(|e| e.to_string())?;
+        return Ok(MigrationBundle {
+            base: None,
+            files: Some(files),
+            manifest: host_manifest_from_runtime(manifest),
+        });
+    }
+    let path = Path::new(source);
+    let manifest = crate::read_manifest(path).map_err(|e| e.to_string())?;
+    Ok(MigrationBundle {
+        base: Some(path.to_path_buf()),
+        files: None,
+        manifest,
+    })
+}
+
+fn host_manifest_from_runtime(
+    manifest: terrane_cap_js_runtime::BundleManifest,
+) -> crate::BundleManifest {
+    crate::BundleManifest {
+        id: manifest.id,
+        name: manifest.name,
+        runtime: manifest.runtime,
+        backend: manifest.backend,
+        module: String::new(),
+        entry: String::new(),
+        ui: String::new(),
+        icon: String::new(),
+        resources: manifest.resources,
+        interfaces: manifest.interfaces,
+        file_types: Vec::new(),
+        browser_permissions: Vec::new(),
+        data_version: manifest.data_version,
+        migrations: manifest
+            .migrations
+            .into_iter()
+            .map(|step| crate::MigrationSpec {
+                to: step.to,
+                script: step.script,
+            })
+            .collect(),
+    }
 }
 
 pub fn run_kv_storage_set(rest: &[&str]) -> Result<(), String> {
@@ -1797,6 +1946,8 @@ pub fn print_help() {
          \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
          \x20 terrane kv storage clear (--default | --app <app>)\n\
          \x20 terrane kv storage status\n\
+         \x20 terrane migrate status <app>                      show app data migration status\n\
+         \x20 terrane migrate <app>                             apply pending manifest migrations\n\
          \x20 terrane scheduler tick [--now-ms <epoch-ms>]     fire due schedules and run backend verbs\n\
          \x20 terrane scheduler ls <app>                       list folded scheduler state\n\
          \x20 terrane history <app> [--key k] [--at seq] [--filter f] [--before seq] [--limit n]\n\

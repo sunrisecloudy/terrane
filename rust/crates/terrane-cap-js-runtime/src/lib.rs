@@ -13,8 +13,11 @@ mod bundle;
 mod doc;
 mod sandbox;
 
-pub use bundle::{bundle_from_files, read_manifest, BundleManifest, JsRuntimeBundle};
-pub use sandbox::{js_script_syntax_error, run_js_bundle};
+pub use bundle::{
+    bundle_from_files, manifest_data_version, read_manifest, read_manifest_from_files,
+    BundleManifest, JsRuntimeBundle, MigrationSpec,
+};
+pub use sandbox::{js_script_syntax_error, run_js_bundle, run_js_migration};
 
 pub struct JsRuntimeCapability;
 

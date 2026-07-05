@@ -152,6 +152,45 @@ on replay; **reads** are not recorded.
 > ctx.resource.kv.set("greeting", "hi");
 > ```
 
+### App data migrations
+
+JS app bundles may declare the data shape their backend expects:
+
+```json
+{
+  "id": "todo",
+  "runtime": "js",
+  "backend": "main.js",
+  "resources": ["kv"],
+  "dataVersion": 3,
+  "migrations": [
+    { "to": 2, "script": "migrations/002-split-title.js" },
+    { "to": 3, "script": "migrations/003-add-done-flag.js" }
+  ]
+}
+```
+
+Omitted `dataVersion` means version 1. Migration steps must be consecutive,
+start at 2, and end at `dataVersion`.
+
+When folded app data is older than the manifest, Terrane refuses backend runs
+with a typed error telling the owner to run `terrane migrate <app>`. When folded
+data is newer than the manifest, Terrane refuses the older code outright;
+forward-only recovery is restoring a pre-migration backup or installing the
+newer app bundle.
+
+A migration script defines global `migrate(ctx)` and uses the same app-scoped
+resource surface as the backend, such as `ctx.resource.kv` or
+`ctx.resource.relational_db`. It does not get `ctx.resource.migration`, and
+effectful resources such as network/model/browser calls are refused. The script
+runs once; Terrane records its ordinary data writes plus `migration.applied` in
+one batch. Replay folds those recorded events and never re-runs the script.
+
+App-builder recipe: if generated code changes the persistent KV/relational data
+shape, add a migration script and bump `dataVersion` in the same app update.
+Do not silently reinterpret old keys from the new backend without a recorded
+migration path.
+
 ### Backend logging
 
 JS backends always get a global `console` shim. `console.log` and

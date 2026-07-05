@@ -68,6 +68,34 @@ pub fn run_js_bundle(
     output
 }
 
+pub fn run_js_migration(
+    app: &str,
+    script_source: &str,
+    resources: &[String],
+    host: RuntimeHostHandle,
+) -> Result<String> {
+    let first_error = Rc::new(RefCell::new(None));
+    let output = execute_migration_js(
+        script_source,
+        resources,
+        host.clone(),
+        first_error.clone(),
+        app,
+    );
+    if let Some(e) = first_error.borrow_mut().take() {
+        let _ = host.app_log(
+            "error",
+            &e.to_string(),
+            "{}",
+            terrane_cap_telemetry::SOURCE_FIRST_ERROR,
+            "",
+            true,
+        );
+        return Err(e);
+    }
+    output
+}
+
 fn backend_budget() -> std::time::Duration {
     let ms = std::env::var("TERRANE_BACKEND_BUDGET_MS")
         .ok()
@@ -127,6 +155,70 @@ fn execute_js(
                 ))
             })
     })
+}
+
+fn execute_migration_js(
+    script_source: &str,
+    resources: &[String],
+    host: RuntimeHostHandle,
+    first_error: Rc<RefCell<Option<Error>>>,
+    app_id: &str,
+) -> Result<String> {
+    let rt = Runtime::new().map_err(js_err)?;
+    rt.set_max_stack_size(512 * 1024);
+    rt.set_memory_limit(64 * 1024 * 1024);
+    let deadline = std::time::Instant::now() + backend_budget();
+    rt.set_interrupt_handler(Some(Box::new(move || {
+        std::time::Instant::now() >= deadline
+    })));
+    let ctx = Context::full(&rt).map_err(js_err)?;
+
+    ctx.with(|ctx| -> Result<String> {
+        let resources = migration_resources(resources)?;
+        install_resources(&ctx, &resources, host.clone(), first_error)?;
+        install_app_globals(&ctx, app_id, app_id)?;
+        ctx.eval::<(), _>(script_source.as_bytes())
+            .catch(&ctx)
+            .map_err(|e| caught_to_err(&host, &[], e))?;
+        let migrate: Function = ctx.globals().get("migrate").map_err(|_| {
+            Error::Runtime("migration script must define migrate(ctx)".into())
+        })?;
+        let ctx_obj: Object = ctx.globals().get("ctx").map_err(js_err)?;
+        let result: Value = migrate
+            .call((ctx_obj,))
+            .catch(&ctx)
+            .map_err(|e| caught_to_err(&host, &[], e))?;
+        if result.is_undefined() || result.is_null() {
+            Ok(String::new())
+        } else {
+            result
+                .as_string()
+                .and_then(|s| s.to_string().ok())
+                .ok_or_else(|| {
+                    Error::Runtime(format!(
+                        "migrate() must return a string, null, or undefined, got {}",
+                        result.type_name()
+                    ))
+                })
+        }
+    })
+}
+
+fn migration_resources(bundle_resources: &[String]) -> Result<Vec<String>> {
+    let mut resources = Vec::new();
+    for resource in bundle_resources {
+        let ns = resource
+            .split_once(':')
+            .map(|(ns, _)| ns)
+            .unwrap_or(resource.as_str());
+        if matches!(ns, "net" | "model" | "local-model" | "browser" | "media" | "tts" | "time" | "geo" | "mcp") {
+            return Err(Error::Runtime(format!(
+                "migration scripts cannot use effectful resource {ns}"
+            )));
+        }
+        resources.push(resource.clone());
+    }
+    Ok(resources)
 }
 
 /// Compile `source` as a plain-script function body without executing it.

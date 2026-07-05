@@ -38,6 +38,21 @@ pub struct BundleManifest {
     /// Common API interfaces this app advertises.
     #[nserde(default)]
     pub interfaces: Vec<String>,
+    /// App data version expected by this bundle. Empty/omitted manifests default
+    /// to version 1.
+    #[nserde(default, rename = "dataVersion")]
+    pub data_version: u64,
+    /// Forward migration scripts, sorted by target version.
+    #[nserde(default)]
+    pub migrations: Vec<MigrationSpec>,
+}
+
+#[derive(Debug, Clone, DeJson)]
+pub struct MigrationSpec {
+    #[nserde(default)]
+    pub to: u64,
+    #[nserde(default)]
+    pub script: String,
 }
 
 /// Load the bundle for an app whose `source` is either the bundle directory
@@ -46,6 +61,7 @@ pub(crate) fn load_bundle(source: &str) -> Result<JsRuntimeBundle> {
     let path = Path::new(source);
     if path.is_dir() {
         let manifest = read_manifest(path)?;
+        validate_manifest_migrations(&manifest, Some(path))?;
         if !manifest.runtime.is_empty() && manifest.runtime != "js" {
             return Err(Error::Runtime(format!(
                 "manifest runtime {:?} is not js",
@@ -72,11 +88,7 @@ pub(crate) fn load_bundle(source: &str) -> Result<JsRuntimeBundle> {
 }
 
 pub fn bundle_from_files(files: &BTreeMap<String, String>) -> Result<JsRuntimeBundle> {
-    let manifest_text = files
-        .get("manifest.json")
-        .ok_or_else(|| Error::Runtime("kv app bundle is missing manifest.json".into()))?;
-    let manifest = BundleManifest::deserialize_json(manifest_text)
-        .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
+    let manifest = read_manifest_from_files(files)?;
     if !manifest.runtime.is_empty() && manifest.runtime != "js" {
         return Err(Error::Runtime(format!(
             "manifest runtime {:?} is not js",
@@ -99,6 +111,16 @@ pub fn bundle_from_files(files: &BTreeMap<String, String>) -> Result<JsRuntimeBu
     })
 }
 
+pub fn read_manifest_from_files(files: &BTreeMap<String, String>) -> Result<BundleManifest> {
+    let manifest_text = files
+        .get("manifest.json")
+        .ok_or_else(|| Error::Runtime("kv app bundle is missing manifest.json".into()))?;
+    let manifest = BundleManifest::deserialize_json(manifest_text)
+        .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
+    validate_manifest_migrations(&manifest, None)?;
+    Ok(manifest)
+}
+
 pub(crate) fn load_bundle_files(files: &BTreeMap<String, String>) -> Result<JsRuntimeBundle> {
     bundle_from_files(files)
 }
@@ -107,6 +129,62 @@ pub(crate) fn load_bundle_files(files: &BTreeMap<String, String>) -> Result<JsRu
 pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest> {
     let text = std::fs::read_to_string(bundle_dir.join("manifest.json"))
         .map_err(|e| Error::Runtime(format!("read manifest.json: {e}")))?;
-    BundleManifest::deserialize_json(&text)
-        .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))
+    let manifest = BundleManifest::deserialize_json(&text)
+        .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
+    validate_manifest_migrations(&manifest, Some(bundle_dir))?;
+    Ok(manifest)
+}
+
+pub fn manifest_data_version(manifest: &BundleManifest) -> u64 {
+    if manifest.data_version == 0 {
+        1
+    } else {
+        manifest.data_version
+    }
+}
+
+pub fn validate_manifest_migrations(
+    manifest: &BundleManifest,
+    bundle_dir: Option<&Path>,
+) -> Result<()> {
+    let data_version = manifest_data_version(manifest);
+    if data_version == 1 && manifest.migrations.is_empty() {
+        return Ok(());
+    }
+    if data_version < 1 {
+        return Err(Error::InvalidInput(
+            "manifest dataVersion must be at least 1".into(),
+        ));
+    }
+    let mut expected = 2u64;
+    for step in &manifest.migrations {
+        if step.to != expected {
+            return Err(Error::InvalidInput(format!(
+                "manifest migrations must be consecutive: expected to={expected}, got {}",
+                step.to
+            )));
+        }
+        if step.script.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "manifest migration script must not be empty".into(),
+            ));
+        }
+        if let Some(dir) = bundle_dir {
+            let script_path = dir.join(&step.script);
+            if !script_path.is_file() {
+                return Err(Error::InvalidInput(format!(
+                    "manifest migration script does not exist: {}",
+                    step.script
+                )));
+            }
+        }
+        expected += 1;
+    }
+    if expected - 1 != data_version {
+        return Err(Error::InvalidInput(format!(
+            "manifest migrations end at {}, but dataVersion is {data_version}",
+            expected - 1
+        )));
+    }
+    Ok(())
 }
