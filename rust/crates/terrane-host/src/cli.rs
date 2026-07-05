@@ -354,6 +354,19 @@ pub fn run_state() -> Result<(), String> {
         }
     }
 
+    println!("browser renders:");
+    if state.browser.renders.is_empty() {
+        println!("  (none)");
+    }
+    for (app, renders) in &state.browser.renders {
+        for (request_key, render) in renders {
+            println!(
+                "  {app} render {request_key} -> {} {} {} ({} bytes)",
+                render.status, render.output, render.body_kind, render.size
+            );
+        }
+    }
+
     println!("model:");
     if state.model.turns.is_empty() {
         println!("  (none)");
@@ -1158,6 +1171,7 @@ pub fn print_help() {
          \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane net request <app> <request-json>          full HTTP request; record redacted request + response\n\
+         \x20 terrane browser render <app> <request-json>       headless render; record redacted request + result\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane local-model pull [<id> <hf-repo> [<file>]] [--backend gguf|mlx] [options…]  fetch + register (bare = recommended model)\n\
          \x20 terrane local-model register <id> <llama_cpp|mlx> <path-or-repo> [--context N] [--template T] [--max-tokens N] [--temp F]\n\

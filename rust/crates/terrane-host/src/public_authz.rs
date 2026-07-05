@@ -132,6 +132,10 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "net",
             app_arg_index: 0,
         },
+        "browser.render" => PublicCommandDisposition::GrantGated {
+            namespace: "browser",
+            app_arg_index: 0,
+        },
         "net.fetch" => PublicCommandDisposition::Refuse {
             reason: "net.fetch is not available through untrusted capability_command",
         },

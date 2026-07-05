@@ -190,6 +190,13 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.blob.list(prefix)` | read |
 | `ctx.resource.blob.rm(name)` | write |
 
+#### `ctx.resource.browser`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.browser.render(request_json)` | call |
+| `ctx.resource.browser.peek(request_json)` | call |
+
 #### `ctx.resource.build`
 
 | Method | Kind |

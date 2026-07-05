@@ -167,6 +167,10 @@ pub enum Effect {
         app: String,
         request: String,
     },
+    BrowserRender {
+        app: String,
+        request: String,
+    },
     ModelCall {
         app: String,
         agent: String,

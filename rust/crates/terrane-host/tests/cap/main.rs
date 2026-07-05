@@ -10,6 +10,7 @@ mod helpers;
 
 mod app;
 mod blob;
+mod browser;
 mod document;
 mod history;
 mod host;

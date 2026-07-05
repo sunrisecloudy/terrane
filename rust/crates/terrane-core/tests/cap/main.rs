@@ -9,6 +9,7 @@ mod agent;
 mod app;
 mod auth;
 mod blob;
+mod browser;
 mod builder;
 mod crdt;
 mod crypto;
