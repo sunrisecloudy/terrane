@@ -9,15 +9,21 @@ use crate::events::{
 use crate::operations::{
     default_supported_operations, operation_for_command, result_size_for_operation, CANCEL,
     COMPLETE, DIALOG_OPEN_FILE, DIALOG_SAVE_FILE, EXTERNAL_OPEN_URL, FAIL, MAX_TRAY_ITEMS,
-    MAX_TRAY_LABEL_CHARS, NOTIFICATION_SHOW, OP_CLIPBOARD_READ_TEXT, OP_DIALOG_SAVE_FILE,
-    OP_SCREEN_CAPTURE, OP_SHORTCUT_REGISTER_GLOBAL, OP_TRAY_SET_MENU, OP_WINDOW_CONTROL,
-    PLATFORM_OBSERVE, RESOURCE_CLIPBOARD_READ_TEXT, RESOURCE_CLIPBOARD_WRITE_TEXT,
+    MAX_TRAY_LABEL_CHARS, NOTIFICATION_SHOW, OP_AUDIO_RECORD, OP_CAMERA_CAPTURE_PHOTO,
+    OP_CLIPBOARD_READ_TEXT, OP_DIALOG_SAVE_FILE, OP_SCREEN_CAPTURE, OP_SHORTCUT_REGISTER_GLOBAL,
+    OP_TRAY_SET_MENU, OP_WINDOW_CONTROL, PLATFORM_OBSERVE, RESOURCE_AUDIO_RECORD,
+    RESOURCE_CAMERA_CAPTURE_PHOTO, RESOURCE_CLIPBOARD_READ_TEXT, RESOURCE_CLIPBOARD_WRITE_TEXT,
     RESOURCE_DIALOG_OPEN_FILE, RESOURCE_DIALOG_SAVE_FILE, RESOURCE_EXTERNAL_OPEN_URL,
     RESOURCE_NOTIFICATION_SHOW, RESOURCE_SCREEN_CAPTURE, RESOURCE_SHORTCUT_REGISTER_GLOBAL,
     RESOURCE_TRAY_SET_MENU, RESOURCE_WINDOW_CONTROL, RETENTION_KEEP_LAST, SCREEN_CAPTURE,
     SHORTCUT_REGISTER_GLOBAL, TRAY_SET_MENU, WINDOW_CONTROL,
 };
 use crate::types::{NativeRequestRecord, NativeRequestStatus, NativeState};
+
+const MAX_CAPTURE_AUDIO_DURATION_MS: u64 = 300_000;
+const MAX_CAPTURE_SAMPLE_RATE_HZ: u64 = 192_000;
+const MAX_CAPTURE_PHOTO_EDGE_PX: u64 = 4096;
+const MAX_CAPTURE_BLOB_SIZE: u64 = 64 * 1024 * 1024;
 
 pub(crate) fn decide(ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
     match name {
@@ -219,6 +225,16 @@ fn input_json(command: &str, args: &[String]) -> Result<String> {
             })
             .to_string())
         }
+        crate::operations::CAMERA_CAPTURE_PHOTO | RESOURCE_CAMERA_CAPTURE_PHOTO => {
+            let input = valid_json(arg(args, 2, "input json")?, "input json")?;
+            validate_camera_capture_input(&input)?;
+            Ok(input)
+        }
+        crate::operations::AUDIO_RECORD | RESOURCE_AUDIO_RECORD => {
+            let input = valid_json(arg(args, 2, "input json")?, "input json")?;
+            validate_audio_record_input(&input)?;
+            Ok(input)
+        }
         SCREEN_CAPTURE | RESOURCE_SCREEN_CAPTURE => {
             let target = args.get(2).cloned().unwrap_or_else(|| "screen".to_string());
             match target.as_str() {
@@ -365,6 +381,18 @@ fn validate_completion_result(operation_id: &str, raw: &str) -> Result<()> {
                 ));
             }
         }
+        OP_CAMERA_CAPTURE_PHOTO => validate_capture_blob_result(
+            &value,
+            "camera.capturePhoto",
+            "image/jpeg",
+            &["width", "height"],
+        )?,
+        OP_AUDIO_RECORD => validate_capture_blob_result(
+            &value,
+            "audio.record",
+            "audio/wav",
+            &["durationMs", "sampleRateHz"],
+        )?,
         OP_SCREEN_CAPTURE => validate_screen_capture_result(&value)?,
         OP_TRAY_SET_MENU => require_bool(&value, "installed", "tray.setMenu")?,
         OP_SHORTCUT_REGISTER_GLOBAL => {
@@ -377,25 +405,115 @@ fn validate_completion_result(operation_id: &str, raw: &str) -> Result<()> {
 }
 
 fn validate_screen_capture_result(value: &serde_json::Value) -> Result<()> {
+    validate_capture_blob_result(value, "screen.capture", "image/png", &["width", "height"])
+}
+
+fn validate_capture_blob_result(
+    value: &serde_json::Value,
+    label: &str,
+    expected_mime: &str,
+    numeric_fields: &[&str],
+) -> Result<()> {
     let object = value
         .as_object()
-        .ok_or_else(|| Error::InvalidInput("screen.capture result must be an object".into()))?;
+        .ok_or_else(|| Error::InvalidInput(format!("{label} result must be an object")))?;
     for field in ["hash", "mime", "blobName"] {
         if object.get(field).and_then(|value| value.as_str()).is_none() {
             return Err(Error::InvalidInput(format!(
-                "screen.capture result {field} string is required"
+                "{label} result {field} string is required"
             )));
         }
     }
-    if object.get("mime").and_then(|value| value.as_str()) != Some("image/png") {
-        return Err(Error::InvalidInput(
-            "screen.capture result mime must be image/png".into(),
-        ));
+    if object.get("mime").and_then(|value| value.as_str()) != Some(expected_mime) {
+        return Err(Error::InvalidInput(format!(
+            "{label} result mime must be {expected_mime}"
+        )));
     }
-    for field in ["size", "width", "height"] {
+    let blob_name = object
+        .get("blobName")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    if !blob_name.starts_with("__capture__/") {
+        return Err(Error::InvalidInput(format!(
+            "{label} result blobName must start with __capture__/"
+        )));
+    }
+    let size = object
+        .get("size")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| Error::InvalidInput(format!("{label} result size number is required")))?;
+    if size > MAX_CAPTURE_BLOB_SIZE {
+        return Err(Error::InvalidInput(format!(
+            "{label} result size must be at most {MAX_CAPTURE_BLOB_SIZE} bytes"
+        )));
+    }
+    for &field in numeric_fields {
         if object.get(field).and_then(|value| value.as_u64()).is_none() {
             return Err(Error::InvalidInput(format!(
-                "screen.capture result {field} number is required"
+                "{label} result {field} number is required"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_camera_capture_input(raw: &str) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| Error::InvalidInput(format!("camera input must be valid JSON: {e}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| Error::InvalidInput("camera.capturePhoto input must be an object".into()))?;
+    if let Some(facing) = object.get("facing") {
+        match facing.as_str() {
+            Some("user" | "environment") => {}
+            _ => {
+                return Err(Error::InvalidInput(
+                    "camera.capturePhoto facing must be user or environment".into(),
+                ))
+            }
+        }
+    }
+    if let Some(max_width) = object.get("maxWidth") {
+        let Some(width) = max_width.as_u64() else {
+            return Err(Error::InvalidInput(
+                "camera.capturePhoto maxWidth must be a positive integer".into(),
+            ));
+        };
+        if width == 0 || width > MAX_CAPTURE_PHOTO_EDGE_PX {
+            return Err(Error::InvalidInput(format!(
+                "camera.capturePhoto maxWidth must be between 1 and {MAX_CAPTURE_PHOTO_EDGE_PX}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_audio_record_input(raw: &str) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| Error::InvalidInput(format!("audio input must be valid JSON: {e}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| Error::InvalidInput("audio.record input must be an object".into()))?;
+    let duration = object
+        .get("maxDurationMs")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| {
+            Error::InvalidInput("audio.record maxDurationMs positive integer is required".into())
+        })?;
+    if duration == 0 || duration > MAX_CAPTURE_AUDIO_DURATION_MS {
+        return Err(Error::InvalidInput(format!(
+            "audio.record maxDurationMs must be between 1 and {MAX_CAPTURE_AUDIO_DURATION_MS}"
+        )));
+    }
+    if let Some(sample_rate) = object.get("sampleRateHz") {
+        let Some(rate) = sample_rate.as_u64() else {
+            return Err(Error::InvalidInput(
+                "audio.record sampleRateHz must be a positive integer".into(),
+            ));
+        };
+        if rate == 0 || rate > MAX_CAPTURE_SAMPLE_RATE_HZ {
+            return Err(Error::InvalidInput(format!(
+                "audio.record sampleRateHz must be between 1 and {MAX_CAPTURE_SAMPLE_RATE_HZ}"
             )));
         }
     }

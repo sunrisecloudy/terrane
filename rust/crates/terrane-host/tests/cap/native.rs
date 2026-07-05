@@ -5,6 +5,9 @@ use tempfile::tempdir;
 
 use crate::helpers::terrane;
 
+const PHOTO_HASH: &str = "42f114e0f62e883f51ee40aba3670315c6fefcb88f36b4058e5a99eab2c5f534";
+const AUDIO_HASH: &str = "466dd61c5174cf1e25dd16cb8414f31bd47d362fca18cf78bed812d2a499042c";
+
 #[test]
 fn native_cli_records_request_and_trusted_completion() {
     let dir = tempdir().unwrap();
@@ -74,6 +77,164 @@ fn native_cli_exposes_explicit_host_drain_service() {
 }
 
 #[test]
+fn native_cli_observe_default_rejects_capture_on_unsupported_host() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    let (ok, _, err) = terrane(home, &["app", "add", "demo", "Demo"]);
+    assert!(ok, "app add failed: {err}");
+    let (ok, out, err) = terrane(home, &["native", "observe-default"]);
+    assert!(ok, "observe default failed: {err}");
+    assert!(out.contains("native.platform.observed"), "out: {out}");
+
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "native",
+            "camera.capture-photo",
+            "demo",
+            "photo-1",
+            r#"{"facing":"user"}"#,
+        ],
+    );
+    assert!(!ok, "unsupported camera request should fail: {out}");
+    assert!(
+        err.contains("native operation is not supported on this host: camera.capturePhoto"),
+        "stderr: {err}"
+    );
+
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "native",
+            "audio.record",
+            "demo",
+            "audio-1",
+            r#"{"maxDurationMs":1000}"#,
+        ],
+    );
+    assert!(!ok, "unsupported audio request should fail: {out}");
+    assert!(
+        err.contains("native operation is not supported on this host: audio.record"),
+        "stderr: {err}"
+    );
+}
+
+#[test]
+fn native_capture_stub_executor_links_blobs_and_completes() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let mut core = terrane_host::open_at_home(home).unwrap();
+
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "app.add",
+        &["demo".into(), "Demo".into()],
+    )
+    .unwrap();
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "native.platform.observe",
+        &[
+            "stub".into(),
+            "test".into(),
+            "capture-test-1".into(),
+            "camera.capturePhoto".into(),
+            "audio.record".into(),
+        ],
+    )
+    .unwrap();
+
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "native.camera.capture-photo",
+        &[
+            "demo".into(),
+            "photo-1".into(),
+            r#"{"facing":"environment","maxWidth":640}"#.into(),
+        ],
+    )
+    .unwrap();
+    terrane_host::blob_store::insert_if_absent(home, PHOTO_HASH, b"fake-jpeg").unwrap();
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "blob.link",
+        &[
+            "demo".into(),
+            "__capture__/photo-1".into(),
+            PHOTO_HASH.into(),
+            "9".into(),
+            "image/jpeg".into(),
+        ],
+    )
+    .unwrap();
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "native.complete",
+        &[
+            "demo".into(),
+            "photo-1".into(),
+            format!(
+                r#"{{"hash":"{PHOTO_HASH}","size":9,"mime":"image/jpeg","width":1,"height":1,"blobName":"__capture__/photo-1"}}"#
+            ),
+        ],
+    )
+    .unwrap();
+
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "native.audio.record",
+        &[
+            "demo".into(),
+            "audio-1".into(),
+            r#"{"maxDurationMs":1000,"sampleRateHz":16000}"#.into(),
+        ],
+    )
+    .unwrap();
+    terrane_host::blob_store::insert_if_absent(home, AUDIO_HASH, b"fake-wav").unwrap();
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "blob.link",
+        &[
+            "demo".into(),
+            "__capture__/audio-1".into(),
+            AUDIO_HASH.into(),
+            "8".into(),
+            "audio/wav".into(),
+        ],
+    )
+    .unwrap();
+    terrane_host::dispatch_on_core(
+        &mut core,
+        "native.complete",
+        &[
+            "demo".into(),
+            "audio-1".into(),
+            format!(
+                r#"{{"hash":"{AUDIO_HASH}","size":8,"mime":"audio/wav","durationMs":1000,"sampleRateHz":16000,"blobName":"__capture__/audio-1"}}"#
+            ),
+        ],
+    )
+    .unwrap();
+
+    let photo = &core.state().native.requests["demo"]["photo-1"];
+    assert_eq!(photo.status.as_str(), "completed");
+    assert!(photo.result_json.as_deref().unwrap().contains(PHOTO_HASH));
+    let audio = &core.state().native.requests["demo"]["audio-1"];
+    assert_eq!(audio.status.as_str(), "completed");
+    assert!(audio.result_json.as_deref().unwrap().contains(AUDIO_HASH));
+    assert_eq!(
+        core.state().blob.blobs["demo"]["__capture__/photo-1"].mime,
+        "image/jpeg"
+    );
+    assert_eq!(
+        core.state().blob.blobs["demo"]["__capture__/audio-1"].mime,
+        "audio/wav"
+    );
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
 fn native_cli_records_v2_requests_and_stub_completion() {
     let dir = tempdir().unwrap();
     let home = dir.path();
@@ -137,5 +298,5 @@ fn native_cli_records_v2_requests_and_stub_completion() {
 }
 
 #[test]
-#[ignore = "drives real macOS chrome/TCC; connector implementation lives at the host edge"]
-fn native_real_macos_v2_operations_are_host_edge_cases() {}
+#[ignore = "requires real camera/microphone hardware plus macOS TCC or browser getUserMedia consent"]
+fn native_real_capture_operations_require_hardware_and_tcc() {}

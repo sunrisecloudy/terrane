@@ -1,7 +1,7 @@
 use super::{
-    OperationCatalogEntry, OP_CLIPBOARD_READ_TEXT, OP_CLIPBOARD_WRITE_TEXT, OP_DIALOG_OPEN_FILE,
-    OP_DIALOG_SAVE_FILE, OP_EXTERNAL_OPEN_URL, OP_NOTIFICATION_SHOW, RESULT_SIZE_INLINE_SMALL,
-    RESULT_SIZE_NONE,
+    OperationCatalogEntry, OP_AUDIO_RECORD, OP_CAMERA_CAPTURE_PHOTO, OP_CLIPBOARD_READ_TEXT,
+    OP_CLIPBOARD_WRITE_TEXT, OP_DIALOG_OPEN_FILE, OP_DIALOG_SAVE_FILE, OP_EXTERNAL_OPEN_URL,
+    OP_NOTIFICATION_SHOW, RESULT_SIZE_BLOB_REF, RESULT_SIZE_INLINE_SMALL, RESULT_SIZE_NONE,
 };
 
 pub const GROUP: &str = "common";
@@ -60,6 +60,24 @@ pub const CATALOG: &[OperationCatalogEntry] = &[
         policy: "grant-gated",
         result_size: RESULT_SIZE_INLINE_SMALL,
         summary: "Ask the host to save a named blob through a user-mediated save dialog.",
+    },
+    OperationCatalogEntry {
+        id: OP_CAMERA_CAPTURE_PHOTO,
+        group: GROUP,
+        status: "v1",
+        safety: "sensitive",
+        policy: "refuse-until-selector",
+        result_size: RESULT_SIZE_BLOB_REF,
+        summary: "Capture a still photo at the trusted host edge and complete with a blob CAS reference.",
+    },
+    OperationCatalogEntry {
+        id: OP_AUDIO_RECORD,
+        group: GROUP,
+        status: "v1",
+        safety: "sensitive",
+        policy: "refuse-until-selector",
+        result_size: RESULT_SIZE_BLOB_REF,
+        summary: "Record bounded microphone audio at the trusted host edge and complete with a blob CAS reference.",
     },
     OperationCatalogEntry {
         id: "secureStorage.get",

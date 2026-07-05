@@ -13,6 +13,8 @@ pub const EXTERNAL_OPEN_URL: &str = "native.external.open-url";
 pub const NOTIFICATION_SHOW: &str = "native.notification.show";
 pub const DIALOG_OPEN_FILE: &str = "native.dialog.open-file";
 pub const DIALOG_SAVE_FILE: &str = "native.dialog.save-file";
+pub const CAMERA_CAPTURE_PHOTO: &str = "native.camera.capture-photo";
+pub const AUDIO_RECORD: &str = "native.audio.record";
 pub const SCREEN_CAPTURE: &str = "native.screen.capture";
 pub const TRAY_SET_MENU: &str = "native.tray.set-menu";
 pub const SHORTCUT_REGISTER_GLOBAL: &str = "native.shortcut.register-global";
@@ -24,6 +26,8 @@ pub const RESOURCE_EXTERNAL_OPEN_URL: &str = "native.externalOpenUrl";
 pub const RESOURCE_NOTIFICATION_SHOW: &str = "native.notificationShow";
 pub const RESOURCE_DIALOG_OPEN_FILE: &str = "native.dialogOpenFile";
 pub const RESOURCE_DIALOG_SAVE_FILE: &str = "native.dialogSaveFile";
+pub const RESOURCE_CAMERA_CAPTURE_PHOTO: &str = "native.cameraCapturePhoto";
+pub const RESOURCE_AUDIO_RECORD: &str = "native.audioRecord";
 pub const RESOURCE_SCREEN_CAPTURE: &str = "native.screenCapture";
 pub const RESOURCE_TRAY_SET_MENU: &str = "native.traySetMenu";
 pub const RESOURCE_SHORTCUT_REGISTER_GLOBAL: &str = "native.shortcutRegisterGlobal";
@@ -35,6 +39,8 @@ pub const OP_EXTERNAL_OPEN_URL: &str = "external.openUrl";
 pub const OP_NOTIFICATION_SHOW: &str = "notification.show";
 pub const OP_DIALOG_OPEN_FILE: &str = "dialog.openFile";
 pub const OP_DIALOG_SAVE_FILE: &str = "dialog.saveFile";
+pub const OP_CAMERA_CAPTURE_PHOTO: &str = "camera.capturePhoto";
+pub const OP_AUDIO_RECORD: &str = "audio.record";
 pub const OP_SCREEN_CAPTURE: &str = "screen.capture";
 pub const OP_TRAY_SET_MENU: &str = "tray.setMenu";
 pub const OP_SHORTCUT_REGISTER_GLOBAL: &str = "shortcut.registerGlobal";
@@ -81,6 +87,8 @@ pub fn app_callable_commands() -> &'static [&'static str] {
         NOTIFICATION_SHOW,
         DIALOG_OPEN_FILE,
         DIALOG_SAVE_FILE,
+        CAMERA_CAPTURE_PHOTO,
+        AUDIO_RECORD,
         SCREEN_CAPTURE,
         TRAY_SET_MENU,
         SHORTCUT_REGISTER_GLOBAL,
@@ -91,6 +99,8 @@ pub fn app_callable_commands() -> &'static [&'static str] {
         RESOURCE_NOTIFICATION_SHOW,
         RESOURCE_DIALOG_OPEN_FILE,
         RESOURCE_DIALOG_SAVE_FILE,
+        RESOURCE_CAMERA_CAPTURE_PHOTO,
+        RESOURCE_AUDIO_RECORD,
         RESOURCE_SCREEN_CAPTURE,
         RESOURCE_TRAY_SET_MENU,
         RESOURCE_SHORTCUT_REGISTER_GLOBAL,
@@ -110,6 +120,8 @@ pub fn operation_for_command(name: &str) -> Option<&'static str> {
         NOTIFICATION_SHOW | RESOURCE_NOTIFICATION_SHOW => Some(OP_NOTIFICATION_SHOW),
         DIALOG_OPEN_FILE | RESOURCE_DIALOG_OPEN_FILE => Some(OP_DIALOG_OPEN_FILE),
         DIALOG_SAVE_FILE | RESOURCE_DIALOG_SAVE_FILE => Some(OP_DIALOG_SAVE_FILE),
+        CAMERA_CAPTURE_PHOTO | RESOURCE_CAMERA_CAPTURE_PHOTO => Some(OP_CAMERA_CAPTURE_PHOTO),
+        AUDIO_RECORD | RESOURCE_AUDIO_RECORD => Some(OP_AUDIO_RECORD),
         SCREEN_CAPTURE | RESOURCE_SCREEN_CAPTURE => Some(OP_SCREEN_CAPTURE),
         TRAY_SET_MENU | RESOURCE_TRAY_SET_MENU => Some(OP_TRAY_SET_MENU),
         SHORTCUT_REGISTER_GLOBAL | RESOURCE_SHORTCUT_REGISTER_GLOBAL => {
@@ -123,7 +135,7 @@ pub fn operation_for_command(name: &str) -> Option<&'static str> {
 pub fn result_size_for_operation(operation_id: &str) -> &'static str {
     match operation_id {
         OP_CLIPBOARD_WRITE_TEXT | OP_EXTERNAL_OPEN_URL | OP_NOTIFICATION_SHOW => RESULT_SIZE_NONE,
-        OP_SCREEN_CAPTURE => RESULT_SIZE_BLOB_REF,
+        OP_CAMERA_CAPTURE_PHOTO | OP_AUDIO_RECORD | OP_SCREEN_CAPTURE => RESULT_SIZE_BLOB_REF,
         OP_DIALOG_OPEN_FILE
         | OP_CLIPBOARD_READ_TEXT
         | OP_DIALOG_SAVE_FILE

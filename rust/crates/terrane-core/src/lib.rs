@@ -1077,6 +1077,8 @@ fn sensitive_native_resource_id(namespace: &str, method: &str) -> Option<&'stati
     }
     match method {
         "clipboardReadText" => Some("native:clipboard.readText"),
+        "cameraCapturePhoto" => Some("native:camera.capturePhoto"),
+        "audioRecord" => Some("native:audio.record"),
         "screenCapture" => Some("native:screen.capture"),
         _ => None,
     }

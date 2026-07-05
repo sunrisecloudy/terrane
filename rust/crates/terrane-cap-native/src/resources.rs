@@ -31,6 +31,14 @@ pub(crate) fn resource_methods() -> Vec<ResourceMethod> {
             params: &["requestId", "suggestedName", "blobName"],
         },
         ResourceMethod::Write {
+            name: "cameraCapturePhoto",
+            params: &["requestId", "inputJson"],
+        },
+        ResourceMethod::Write {
+            name: "audioRecord",
+            params: &["requestId", "inputJson"],
+        },
+        ResourceMethod::Write {
             name: "screenCapture",
             params: &["requestId", "target"],
         },

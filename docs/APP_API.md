@@ -371,6 +371,8 @@ is live discovery and records nothing.
 | `ctx.resource.native.notificationShow(requestId, title, body)` | write |
 | `ctx.resource.native.dialogOpenFile(requestId, optionsJson)` | write |
 | `ctx.resource.native.dialogSaveFile(requestId, suggestedName, blobName)` | write |
+| `ctx.resource.native.cameraCapturePhoto(requestId, inputJson)` | write |
+| `ctx.resource.native.audioRecord(requestId, inputJson)` | write |
 | `ctx.resource.native.screenCapture(requestId, target)` | write |
 | `ctx.resource.native.traySetMenu(requestId, title, itemsJson)` | write |
 | `ctx.resource.native.shortcutRegisterGlobal(requestId, accelerator, verb)` | write |
