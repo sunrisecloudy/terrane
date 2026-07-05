@@ -272,6 +272,7 @@ pub fn route(
         (Method::Post, ["apps", id, "invoke"]) => {
             invoke(core, dev_apps, id, request, admin_base_url)
         }
+        (Method::Get, ["apps", id, "blob", rest @ ..]) => serve_blob(core, id, &rest.join("/")),
         (Method::Get, ["apps", id]) => {
             let exists = core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
             let locale = negotiate_locale(request);
@@ -820,6 +821,43 @@ fn invoke(
     }
 }
 
+/// `GET /apps/{id}/blob/{name}` — serve verified CAS bytes for `<img src>`.
+fn serve_blob(core: &terrane_host::HostCore, id: &str, encoded_name: &str) -> Resp {
+    let name = match percent_decode(encoded_name) {
+        Ok(name) => name,
+        Err(e) => return json_error(400, &e),
+    };
+    let granted = terrane_cap_auth::namespace_granted(
+        core.state(),
+        &terrane_core::ExecutionPrincipal::local_owner(),
+        id,
+        "blob",
+    )
+    .map_err(|e| e.to_string());
+    match granted {
+        Ok(true) => {}
+        Ok(false) => return json_error(403, "permission required for blob"),
+        Err(e) => return json_error(500, &e),
+    }
+    let Some(meta) = core
+        .state()
+        .blob
+        .blobs
+        .get(id)
+        .and_then(|names| names.get(&name))
+    else {
+        return json_error(404, "blob not found");
+    };
+    let bytes = match terrane_host::blob_store::read_verified(&terrane_host::home_dir(), &meta.hash)
+    {
+        Ok(bytes) => bytes,
+        Err(e) => return json_error(500, &e.to_string()),
+    };
+    Response::from_data(bytes)
+        .with_header(header("Content-Type", &meta.mime))
+        .with_header(header("ETag", &meta.hash))
+}
+
 /// `GET /apps/{id}/…` — serve the app's UI (with the invoke shim injected) or a
 /// bundle asset. `rel` is the path under the bundle dir (empty = the UI entry).
 fn serve_ui(
@@ -1002,4 +1040,37 @@ fn host_without_port(authority: &str) -> Option<&str> {
 fn is_loopback_host(host: &str) -> bool {
     let host = host.trim_matches(|c| c == '[' || c == ']');
     matches!(host, "::1" | "localhost") || host.starts_with("127.")
+}
+
+fn percent_decode(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                if i + 2 >= bytes.len() {
+                    return Err("bad percent escape".into());
+                }
+                let high = hex(bytes[i + 1]).ok_or_else(|| "bad percent escape".to_string())?;
+                let low = hex(bytes[i + 2]).ok_or_else(|| "bad percent escape".to_string())?;
+                out.push((high << 4) | low);
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).map_err(|_| "blob name must be utf-8".to_string())
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }

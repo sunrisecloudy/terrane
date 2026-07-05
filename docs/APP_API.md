@@ -142,6 +142,16 @@ json|markdown|skill`, or the MCP tools `capabilities_list` and
 internal notes hidden unless `includeInternal=true`.
 
 <!-- generated:resource-api:start -->
+#### `ctx.resource.blob`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.blob.put(name, base64, mime)` | call |
+| `ctx.resource.blob.get(name)` | read |
+| `ctx.resource.blob.stat(name)` | read |
+| `ctx.resource.blob.list(prefix)` | read |
+| `ctx.resource.blob.rm(name)` | write |
+
 #### `ctx.resource.build`
 
 | Method | Kind |

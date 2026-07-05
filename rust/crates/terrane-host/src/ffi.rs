@@ -20,6 +20,8 @@ use std::path::PathBuf;
 use std::ptr;
 use std::sync::Mutex;
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use terrane_core::Request;
 
 pub const TERRANE_OK: c_int = 0;
@@ -33,6 +35,7 @@ pub const TERRANE_ERR_INTERNAL: c_int = 5;
 pub struct TerraneHandle {
     pub(crate) inner: Mutex<crate::HostCore>,
     previews: Mutex<crate::PreviewStore>,
+    home: PathBuf,
 }
 
 /// Dispatch a trusted host command against an open handle. Used by the native
@@ -61,30 +64,35 @@ pub(crate) unsafe fn dispatch_on_terrane_handle(
 #[no_mangle]
 pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle {
     let result = catch_unwind(AssertUnwindSafe(|| -> Option<*mut TerraneHandle> {
-        let log_path = if home.is_null() {
-            return crate::open().ok().map(|core| {
+        let open_home = if home.is_null() {
+            let home = crate::home_dir();
+            return crate::open_at_home(&home).ok().map(|core| {
                 Box::into_raw(Box::new(TerraneHandle {
                     inner: Mutex::new(core),
                     previews: Mutex::new(crate::PreviewStore::new()),
+                    home,
                 }))
             });
         } else {
             let s = CStr::from_ptr(home).to_str().ok()?; // bad UTF-8 → fail
             if s.is_empty() {
-                return crate::open().ok().map(|core| {
+                let home = crate::home_dir();
+                return crate::open_at_home(&home).ok().map(|core| {
                     Box::into_raw(Box::new(TerraneHandle {
                         inner: Mutex::new(core),
                         previews: Mutex::new(crate::PreviewStore::new()),
+                        home,
                     }))
                 });
             } else {
-                s
+                PathBuf::from(s)
             }
         };
-        let core = crate::open_at_home(log_path).ok()?;
+        let core = crate::open_at_home(&open_home).ok()?;
         Some(Box::into_raw(Box::new(TerraneHandle {
             inner: Mutex::new(core),
             previews: Mutex::new(crate::PreviewStore::new()),
+            home: open_home,
         })))
     }));
     result.ok().flatten().unwrap_or(ptr::null_mut())
@@ -255,6 +263,87 @@ pub unsafe extern "C" fn terrane_preview_read_asset(
             }
             Err(e) => {
                 write_out(out_error, e);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
+/// Read verified blob bytes for a macOS/iOS custom-scheme response. On success
+/// writes JSON with base64 data, contentType, and hash.
+///
+/// # Safety
+/// `app` and `name` must be valid C strings. `out_output`/`out_error` must be
+/// valid pointers to write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_blob_read(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    name: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let app = match read_str(app) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let name = match read_str(name) {
+            Ok(s) => s,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let granted = terrane_cap_auth::namespace_granted(
+            core.state(),
+            &terrane_core::ExecutionPrincipal::local_owner(),
+            &app,
+            "blob",
+        );
+        match granted {
+            Ok(true) => {}
+            Ok(false) => {
+                write_out(out_error, "permission required for blob".to_string());
+                return TERRANE_ERR_DISPATCH;
+            }
+            Err(e) => {
+                write_out(out_error, e.to_string());
+                return TERRANE_ERR_DISPATCH;
+            }
+        }
+        let meta = match core
+            .state()
+            .blob
+            .blobs
+            .get(&app)
+            .and_then(|names| names.get(&name))
+        {
+            Some(meta) => meta.clone(),
+            None => {
+                write_out(out_error, format!("key not found: {app}/{name}"));
+                return TERRANE_ERR_DISPATCH;
+            }
+        };
+        drop(core);
+        match crate::blob_store::read_verified(&handle.home, &meta.hash) {
+            Ok(bytes) => {
+                let json = format!(
+                    "{{\"content\":\"{}\",\"contentType\":\"{}\",\"hash\":\"{}\"}}",
+                    B64.encode(bytes),
+                    json_string_content(&meta.mime),
+                    meta.hash
+                );
+                write_out(out_output, json);
+                TERRANE_OK
+            }
+            Err(e) => {
+                write_out(out_error, e.to_string());
                 TERRANE_ERR_DISPATCH
             }
         }
@@ -762,8 +851,8 @@ pub unsafe extern "C" fn terrane_i18n_supported(
     null_out(out_output);
     null_out(out_error);
     let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
-        let json = serde_json::to_string(terrane_i18n::SUPPORTED)
-            .unwrap_or_else(|_| "[]".to_string());
+        let json =
+            serde_json::to_string(terrane_i18n::SUPPORTED).unwrap_or_else(|_| "[]".to_string());
         write_out(out_output, json);
         TERRANE_OK
     }));

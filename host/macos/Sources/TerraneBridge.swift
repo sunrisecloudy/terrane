@@ -320,6 +320,25 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return .success(PreviewAsset(content: content, contentType: contentType))
   }
 
+  func blobAsset(appId: String, name: String) -> AppAssetResult {
+    let (ok, payload) = appId.withCString { appC in
+      name.withCString { nameC in
+        callBlobRead(appId: appC, name: nameC)
+      }
+    }
+    guard ok else {
+      return .failure(payload)
+    }
+    guard let object = Self.jsonObject(from: payload),
+      let content = object["content"] as? String,
+      let data = Data(base64Encoded: content)
+    else {
+      return .failure("terrane_blob_read returned malformed JSON")
+    }
+    let contentType = (object["contentType"] as? String) ?? "application/octet-stream"
+    return .success(AppAsset(data: data, contentType: contentType))
+  }
+
   func invokeSelectedApp(verb: String, args: [String]) -> (Bool, String) {
     guard !appId.isEmpty else {
       return (false, "terrane: no app selected")
@@ -547,6 +566,16 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return output(rc: rc, out: out, err: err, label: "terrane_preview_read_asset")
   }
 
+  private func callBlobRead(
+    appId: UnsafePointer<CChar>,
+    name: UnsafePointer<CChar>
+  ) -> (Bool, String) {
+    var out: UnsafeMutablePointer<CChar>?
+    var err: UnsafeMutablePointer<CChar>?
+    let rc = terrane_blob_read(handle, appId, name, &out, &err)
+    return output(rc: rc, out: out, err: err, label: "terrane_blob_read")
+  }
+
   private func callBuilderGenerate(
     appId: UnsafePointer<CChar>,
     name: UnsafePointer<CChar>,
@@ -692,6 +721,10 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
             });
           }
           return post({ kind: "invoke", verb: String(verb), args: args });
+        },
+        blobUrl: function (name) {
+          var app = window.location.host || "";
+          return "terrane-app://" + app + "/blob/" + encodeURIComponent(String(name == null ? "" : name));
         },
         preview: function (files) {
           return post({ kind: "preview", files: files });

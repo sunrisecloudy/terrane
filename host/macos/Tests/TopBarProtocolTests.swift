@@ -26,6 +26,7 @@ final class TopBarProtocolTests: XCTestCase {
 
     for needle in [
       "getDocument:",
+      "blobUrl:",
       "setDocument:",
       "onDocument:",
       "getTheme:",

@@ -65,7 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       }
     }
     bridge.install(into: config.userContentController)
-    let appSchemeHandler = AppSchemeHandler { [weak self] in self?.apps ?? [] }
+    let appSchemeHandler = AppSchemeHandler(bridge: bridge) { [weak self] in self?.apps ?? [] }
     self.appSchemeHandler = appSchemeHandler
     config.setURLSchemeHandler(appSchemeHandler, forURLScheme: AppSchemeHandler.scheme)
     let previewSchemeHandler = PreviewSchemeHandler(bridge: bridge)

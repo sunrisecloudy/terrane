@@ -37,6 +37,7 @@ enum AppAssetResult {
 enum AppAssetBase {
   case uiDirectory
   case appRoot
+  case blob
 }
 
 enum AppAssetStore {
@@ -106,8 +107,10 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler {
   static let scheme = "terrane-app"
 
   private let apps: () -> [TerraneApp]
+  private weak var bridge: TerraneBridge?
 
-  init(apps: @escaping () -> [TerraneApp]) {
+  init(bridge: TerraneBridge, apps: @escaping () -> [TerraneApp]) {
+    self.bridge = bridge
     self.apps = apps
     super.init()
   }
@@ -143,13 +146,24 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler {
       return
     }
 
-    switch AppAssetStore.asset(
-      apps: apps(), appId: request.appId, relPath: request.relPath, base: request.base
-    ) {
-    case .success(let asset):
-      respond(to: urlSchemeTask, asset: asset)
-    case .failure(let status, let message):
-      respond(to: urlSchemeTask, status: status, message: message)
+    if request.base == .blob {
+      switch bridge?.blobAsset(appId: request.appId, name: request.relPath) {
+      case .success(let asset):
+        respond(to: urlSchemeTask, asset: asset)
+      case .failure(let message):
+        respond(to: urlSchemeTask, status: 404, message: message)
+      case .none:
+        respond(to: urlSchemeTask, status: 500, message: "terrane bridge is closed")
+      }
+    } else {
+      switch AppAssetStore.asset(
+        apps: apps(), appId: request.appId, relPath: request.relPath, base: request.base
+      ) {
+      case .success(let asset):
+        respond(to: urlSchemeTask, asset: asset)
+      case .failure(let status, let message):
+        respond(to: urlSchemeTask, status: status, message: message)
+      }
     }
   }
 
@@ -247,6 +261,13 @@ private struct AppAssetRequest {
       }
       resolvedRelPath = rawRelPath.removingPercentEncoding ?? rawRelPath
       base = .appRoot
+    } else if path.hasPrefix("/blob/") {
+      let rawRelPath = String(path.dropFirst("/blob/".count))
+      guard !rawRelPath.isEmpty else {
+        return nil
+      }
+      resolvedRelPath = rawRelPath.removingPercentEncoding ?? rawRelPath
+      base = .blob
     } else {
       return nil
     }

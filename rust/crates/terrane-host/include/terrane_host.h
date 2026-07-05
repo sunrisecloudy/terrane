@@ -57,6 +57,11 @@ int terrane_preview_asset(TerraneHandle *h, const char *preview_id,
                           const char *path, char **out_output,
                           char **out_error);
 
+/* Read a verified blob for custom-scheme serving. On success writes JSON with
+ * base64 content, contentType, and hash. */
+int terrane_blob_read(TerraneHandle *h, const char *app, const char *name,
+                      char **out_output, char **out_error);
+
 /* Invoke a preview backend verb with string args. On success writes the
  * backend's returned output string. */
 int terrane_preview_invoke(TerraneHandle *h, const char *preview_id,

@@ -265,6 +265,10 @@
         return j.output;
       });
     },
+    blobUrl: function (name) {
+      return "/apps/" + encodeURIComponent(String(window.APP_ID || "")) +
+        "/blob/" + encodeURIComponent(String(name == null ? "" : name));
+    },
 
     // --- Top-bar document/theme (host chrome) ---
     // The host owns the top bar; these let an app read and drive its own
