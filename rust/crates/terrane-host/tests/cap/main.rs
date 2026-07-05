@@ -19,6 +19,7 @@ mod i18n;
 mod interop;
 mod kv;
 mod local_model;
+mod media;
 mod model;
 mod native;
 mod net;

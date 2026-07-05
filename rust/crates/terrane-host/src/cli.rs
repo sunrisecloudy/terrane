@@ -61,6 +61,14 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["blob", "rm", app, name] => run_blob_rm(app, name),
         ["blob", "verify", rest @ ..] => run_blob_verify(rest),
         ["blob", "gc", rest @ ..] => run_blob_gc(rest),
+        ["media", "info", app, name] => run_media_info(app, name),
+        ["media", "transform", app, source, ops_json, dest] => {
+            run_media_transform(app, source, ops_json, dest)
+        }
+        ["media", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane media (info <app> <name> | transform <app> <source> <ops-json> <dest>)".into())
+        }
         ["document", "ls", app] => run_document_ls(app),
         ["document", "get", app, id] => run_document_get(app, id),
         ["document", "rm", app, id] => run_document_rm(app, id),
@@ -806,6 +814,40 @@ pub fn run_blob_gc(rest: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_media_info(app: &str, name: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let meta = core
+        .state()
+        .blob
+        .blobs
+        .get(app)
+        .and_then(|names| names.get(name))
+        .ok_or_else(|| format!("key not found: {app}/{name}"))?;
+    let bytes = crate::blob_store::read_verified(&crate::home_dir(), &meta.hash)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "{}",
+        crate::media_edge::info(&bytes, &meta.mime).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+pub fn run_media_transform(
+    app: &str,
+    source: &str,
+    ops_json: &str,
+    dest: &str,
+) -> Result<(), String> {
+    let args = vec![
+        app.to_string(),
+        source.to_string(),
+        ops_json.to_string(),
+        dest.to_string(),
+    ];
+    print_command_outcome(crate::dispatch("media.transform", &args)?);
+    Ok(())
+}
+
 pub fn run_document_ls(app: &str) -> Result<(), String> {
     let core = crate::open()?;
     println!(
@@ -1256,6 +1298,8 @@ pub fn print_help() {
          \x20 terrane blob rm <app> <name>                    remove a blob name\n\
          \x20 terrane blob verify [app [name]]                verify live blob hashes against the CAS\n\
          \x20 terrane blob gc [--dry-run|--yes]               report or delete unreferenced CAS rows\n\
+         \x20 terrane media info <app> <name>                 probe media metadata for a stored blob\n\
+         \x20 terrane media transform <app> <source> <ops-json> <dest>  transform media into a new blob\n\
          \x20 terrane document ls <app>                       list document summaries as JSON\n\
          \x20 terrane document get <app> <id>                 print one document as JSON or null\n\
          \x20 terrane document rm <app> <id>                  delete one document\n\

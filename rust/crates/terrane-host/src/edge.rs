@@ -161,6 +161,20 @@ impl EffectRunner for EdgeRunner {
                     mime,
                 )?])
             }
+            Effect::MediaTransform {
+                app,
+                source_hash,
+                source_mime,
+                ops_json,
+                dest_name,
+            } => crate::media_edge::transform_with_home(
+                self.home()?,
+                app,
+                source_hash,
+                source_mime,
+                ops_json,
+                dest_name,
+            ),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
             Effect::LocalModelCall {
                 app,
@@ -408,6 +422,16 @@ impl LiveHost for EdgeRunner {
                     .get(2)
                     .ok_or_else(|| Error::InvalidInput("blob.get missing hash".into()))?;
                 crate::blob_store::read_verified_base64(self.home()?, hash)
+            }
+            "media.info" => {
+                let hash = args
+                    .get(2)
+                    .ok_or_else(|| Error::InvalidInput("media.info missing hash".into()))?;
+                let mime = args
+                    .get(4)
+                    .ok_or_else(|| Error::InvalidInput("media.info missing mime".into()))?;
+                let bytes = crate::blob_store::read_verified(self.home()?, hash)?;
+                crate::media_edge::info(&bytes, mime)
             }
             "telemetry.read" => {
                 let app = args

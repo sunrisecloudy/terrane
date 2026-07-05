@@ -78,6 +78,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "interop",
             "kv",
             "local-model",
+            "media",
             "native",
             "net",
             "query",
