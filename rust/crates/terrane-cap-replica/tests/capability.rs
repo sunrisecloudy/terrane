@@ -93,7 +93,10 @@ fn replica_doc_covers_stable_identity_and_effect_boundary() {
     let doc = ReplicaCapability.doc(false);
 
     assert_eq!(doc.namespace, "replica");
-    assert_eq!(doc.manifest.commands, vec!["replica.init".to_string()]);
+    assert_eq!(
+        doc.manifest.commands,
+        vec!["replica.init".to_string(), "replica.rotate".to_string()]
+    );
     assert_eq!(doc.manifest.queries, vec!["replica.peer".to_string()]);
     assert_eq!(doc.manifest.events, vec!["replica.initialized".to_string()]);
     assert!(doc

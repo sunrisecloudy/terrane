@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        149,
+        150,
         "registered commands changed: {commands:?}"
     );
 
@@ -55,7 +55,7 @@ fn public_command_inventory_covers_every_registered_command() {
         74,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 73, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 74, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 

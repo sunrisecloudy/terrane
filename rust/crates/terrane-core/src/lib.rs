@@ -1299,6 +1299,10 @@ fn write_new_log(log_path: &Path, records: &[EventRecord]) -> Result<()> {
     write_record_frames(&mut file, records)
 }
 
+pub fn write_log(log_path: &Path, records: &[EventRecord]) -> Result<()> {
+    write_new_log(log_path, records)
+}
+
 fn write_record_frames(file: &mut std::fs::File, records: &[EventRecord]) -> Result<()> {
     let mut frame = Vec::new();
     for record in records {
@@ -1585,6 +1589,13 @@ impl<R: EffectRunner + 'static> Core<R> {
         read_log(&self.log_path)
     }
 
+    pub fn app_of_record(&self, record: &EventRecord) -> Option<String> {
+        namespace_of(&record.kind)
+            .ok()
+            .and_then(|ns| self.registry.get(ns).ok())
+            .and_then(|cap| cap.app_of(record))
+    }
+
     /// True if replaying the log reproduces the in-memory State — the
     /// determinism contract, checkable at any time.
     pub fn replay_matches(&self) -> Result<bool> {
@@ -1593,6 +1604,32 @@ impl<R: EffectRunner + 'static> Core<R> {
             apply(&self.registry, &mut fresh, &record)?;
         }
         Ok(fresh == self.state)
+    }
+
+    /// Append records that already carry their recorded actor. This is reserved
+    /// for host-level restore/import flows that move log facts across homes;
+    /// normal commands must go through [`Core::dispatch`].
+    pub fn append_recorded(&mut self, records: Vec<EventRecord>) -> Result<Vec<EventRecord>> {
+        let before_kv = self.state.kv.clone();
+        let before_auth = self.state.auth.clone();
+        self.append(&records)?;
+        for record in &records {
+            apply(&self.registry, &mut self.state, record)?;
+        }
+        self.kv_storage_plan = terrane_cap_kv::storage_plan(&self.state)?;
+        let home = storage_home(&self.log_path);
+        terrane_cap_kv::sync_storage_after_commit(&home, &before_kv, &self.state.kv)?;
+        let before_auth_binding = before_kv.storage.binding_for(None);
+        let after_auth_binding = self.state.kv.storage.binding_for(None);
+        if before_auth != self.state.auth || before_auth_binding != after_auth_binding {
+            terrane_cap_auth::sync_reserved_projection_after_commit(
+                &home,
+                &before_auth_binding,
+                &after_auth_binding,
+                &self.state.auth,
+            )?;
+        }
+        Ok(records)
     }
 
     /// Persist records to the log, then fold them into State.

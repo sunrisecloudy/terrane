@@ -269,6 +269,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "app.link.deliver" => PublicCommandDisposition::Refuse {
             reason: "app.link.deliver routes host-observed OS payloads and is trusted-host-only",
         },
+        "replica.rotate" => PublicCommandDisposition::Refuse {
+            reason: "replica.rotate is clone/restore identity repair and trusted-host-only",
+        },
         "app.add" | "replica.init" => PublicCommandDisposition::Allow,
         // App-callable stt surface: record a selection / stop a session. Both
         // take the app id at arg 0 and are gated by the stt grant.

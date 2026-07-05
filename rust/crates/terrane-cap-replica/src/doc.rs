@@ -17,7 +17,7 @@ pub fn replica_doc(include_internal: bool) -> CapabilityDoc {
             "host-implementer".to_string(),
         ],
         manifest: CapabilityManifestDoc {
-            commands: vec!["replica.init".to_string()],
+            commands: vec!["replica.init".to_string(), "replica.rotate".to_string()],
             queries: vec!["replica.peer".to_string()],
             events: vec!["replica.initialized".to_string()],
             subscriptions: Vec::new(),
@@ -75,7 +75,8 @@ pub fn replica_doc(include_internal: bool) -> CapabilityDoc {
 }
 
 fn replica_commands() -> Vec<CommandDoc> {
-    vec![command_doc(
+    vec![
+        command_doc(
         "replica.init",
         &[],
         "effect|commit; records:0 is a successful no-op when already initialized",
@@ -99,7 +100,20 @@ capability_query {"capability":"replica","query":"peer","args":[]}"#
             expected: "replica.peer returns a u64. If init reports records:0, the peer was already present."
                 .to_string(),
         },
-    ])]
+    ]),
+        command_doc(
+            "replica.rotate",
+            &[],
+            "effect",
+            "Mint a fresh peer id for a cloned restored home while preserving older recorded CRDT authors.",
+        )
+        .with_effects(&["NewReplicaId"])
+        .with_emits(&["replica.initialized"])
+        .with_errors(&[
+            "edge runner unavailable when a new peer id must be minted",
+            "storage failure while recording replica.initialized",
+        ]),
+    ]
 }
 
 fn replica_queries() -> Vec<QueryDoc> {

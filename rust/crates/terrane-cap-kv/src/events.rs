@@ -184,3 +184,17 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
         _ => None,
     }
 }
+
+pub(crate) fn app_of(record: &EventRecord) -> Option<String> {
+    match record.kind.as_str() {
+        "kv.set" => decode_event::<Set>(record).ok().map(|e| e.app),
+        "kv.deleted" => decode_event::<Deleted>(record).ok().map(|e| e.app),
+        "kv.storage.configured" => decode_event::<StorageConfigured>(record)
+            .ok()
+            .and_then(|e| e.app),
+        "kv.storage.cleared" => decode_event::<StorageCleared>(record)
+            .ok()
+            .and_then(|e| e.app),
+        _ => None,
+    }
+}

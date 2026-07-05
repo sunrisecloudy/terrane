@@ -38,6 +38,14 @@ pub trait Capability {
         None
     }
 
+    /// Return the app that owns this record, when the capability can identify
+    /// one from its private payload. Host import/export uses this to slice logs
+    /// without centralizing event schemas.
+    fn app_of(&self, record: &EventRecord) -> Option<String> {
+        let _ = record;
+        None
+    }
+
     fn query(&self, ctx: QueryCtx<'_>, name: &str, args: &[String]) -> Result<QueryValue> {
         let _ = ctx;
         let _ = args;
