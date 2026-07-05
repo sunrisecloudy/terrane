@@ -177,6 +177,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "interop",
             "kv",
             "local-model",
+            "mcp",
             "media",
             "native",
             "net",

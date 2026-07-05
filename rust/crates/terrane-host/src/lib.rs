@@ -36,6 +36,7 @@ mod local_llm;
 pub mod mcp;
 mod metrics;
 mod media_edge;
+pub mod mcp_client;
 pub mod native;
 pub mod permission;
 pub mod preview;

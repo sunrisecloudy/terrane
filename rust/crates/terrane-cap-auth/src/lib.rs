@@ -935,6 +935,23 @@ pub fn resource_granted(
         .contains_key(&key))
 }
 
+pub fn any_resource_granted_in_namespace(
+    state: &dyn StateStore,
+    principal: &ExecutionPrincipal,
+    app: &str,
+    namespace: &str,
+) -> Result<bool> {
+    if principal.subject.starts_with("agent:") && !agent_is_active(state, &principal.subject)? {
+        return Ok(false);
+    }
+    Ok(state_ref::<AuthState>(state, "auth")?.grants.values().any(|grant| {
+        grant.org == principal.org
+            && grant.subject == principal.subject
+            && grant.app == app
+            && grant.namespace == namespace
+    }))
+}
+
 pub fn namespace_resource_id(namespace: &str) -> String {
     namespace.to_string()
 }
@@ -1292,6 +1309,18 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
                 json_string(channel)
             ),
             resource_id: raw.to_string(),
+        });
+    }
+    if let Some(name) = raw.strip_prefix("mcp:") {
+        let name = terrane_cap_connection::validate_name(name)?;
+        return Ok(GrantTarget {
+            namespace: "mcp".to_string(),
+            selector_id: name.clone(),
+            selector_json: format!(
+                r#"{{"namespace":"mcp","name":"{}"}}"#,
+                json_string(&name)
+            ),
+            resource_id: format!("mcp:{name}"),
         });
     }
     Ok(GrantTarget {

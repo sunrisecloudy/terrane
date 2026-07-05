@@ -1,0 +1,20 @@
+[package]
+name = "terrane-cap-mcp-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_mcp_client"
+path = "src/lib.rs"
+
+[dependencies]
+borsh.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+terrane-cap-auth.workspace = true
+terrane-cap-connection.workspace = true
+terrane-cap-interface.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -76,6 +76,7 @@ use terrane_cap_interop::InteropState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_local_model::LocalModelState;
 use terrane_cap_media::MediaState;
+use terrane_cap_mcp_client::McpClientState;
 use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
@@ -111,6 +112,7 @@ pub struct State {
     pub model: ModelState,
     pub local_model: LocalModelState,
     pub media: MediaState,
+    pub mcp: McpClientState,
     pub native: NativeState,
     pub scheduler: SchedulerState,
     pub stt: SttState,
@@ -141,6 +143,7 @@ impl StateStore for State {
             "model" => Some(&self.model),
             "local-model" => Some(&self.local_model),
             "media" => Some(&self.media),
+            "mcp" => Some(&self.mcp),
             "native" => Some(&self.native),
             "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
@@ -172,6 +175,7 @@ impl StateStore for State {
             "model" => Some(&mut self.model),
             "local-model" => Some(&mut self.local_model),
             "media" => Some(&mut self.media),
+            "mcp" => Some(&mut self.mcp),
             "native" => Some(&mut self.native),
             "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
@@ -486,6 +490,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_model::ModelCapability));
     registry.register(Box::new(terrane_cap_local_model::LocalModelCapability));
     registry.register(Box::new(terrane_cap_media::MediaCapability));
+    registry.register(Box::new(terrane_cap_mcp_client::McpClientCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
@@ -781,6 +786,12 @@ impl RuntimeHost for RuntimeResourceHost {
         if self.temporary_allowed_resources.contains(namespace)
             || dev_allow_requested_resources()
             || terrane_cap_auth::namespace_granted(
+                &self.state,
+                &self.principal,
+                &self.app,
+                namespace,
+            )?
+            || terrane_cap_auth::any_resource_granted_in_namespace(
                 &self.state,
                 &self.principal,
                 &self.app,
