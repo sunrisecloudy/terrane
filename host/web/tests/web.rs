@@ -1633,8 +1633,14 @@ fn serves_catalog_ui_and_invoke_over_http() {
     assert!(
         body.contains("setDocument")
             && body.contains("onDocument")
-            && body.contains("onTheme"),
-        "top-bar document/theme API missing from shim: {body}"
+            && body.contains("onTheme")
+            && body.contains("onPresence")
+            && body.contains("publishPresence"),
+        "top-bar document/theme/presence API missing from shim: {body}"
+    );
+    assert!(
+        body.contains("presencePublish"),
+        "presence bridge wiring missing from shim: {body}"
     );
     // Frame-nav hardening: the shim reads the per-load nonce and carries it on
     // every app->shell message so a navigated-to page cannot drive the bridge.

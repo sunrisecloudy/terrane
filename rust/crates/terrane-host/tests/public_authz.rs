@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        154,
+        157,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        74,
+        76,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 78, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 79, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -88,6 +88,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "model",
             "native",
             "net",
+            "presence",
             "query",
             "relational_db",
             "search",
@@ -304,6 +305,7 @@ fn dangerous_and_effect_commands_are_refused() {
         "js-runtime.run",
         "wasm-runtime.run",
         "net.fetch",
+        "presence.publish",
         "model.ask",
         "local-model.register",
         "local-model.pull",

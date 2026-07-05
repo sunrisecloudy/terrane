@@ -33,6 +33,12 @@ struct BuilderStatusRequest {
     id: String,
 }
 
+#[derive(DeJson)]
+struct PresencePublishRequest {
+    channel: String,
+    payload: String,
+}
+
 #[derive(SerJson)]
 struct BuilderJobStatus {
     id: String,
@@ -294,6 +300,7 @@ pub fn route(
         (Method::Post, ["apps", id, "invoke"]) => {
             invoke(core, dev_apps, id, request, admin_base_url)
         }
+        (Method::Post, ["apps", id, "presence"]) => presence_publish(core, id, request),
         (Method::Get, ["apps", id, "blob", rest @ ..]) => serve_blob(core, id, &rest.join("/")),
         (Method::Get, ["apps", id]) => {
             let exists = core.state().app.apps.contains_key(*id) || dev_apps.find(id).is_some();
@@ -1054,6 +1061,34 @@ fn invoke(
             json_error(404, &e)
         }
         Err(terrane_host::InvokeFailure::Other(e)) => json_error(500, &e),
+    }
+}
+
+fn presence_publish(
+    core: &mut terrane_host::HostCore,
+    id: &str,
+    request: &mut Request,
+) -> Resp {
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed: PresencePublishRequest = match DeJson::deserialize_json(&body) {
+        Ok(req) => req,
+        Err(e) => return json_error(400, &format!("bad presence body: {e}")),
+    };
+    if !core.state().app.apps.contains_key(id) {
+        return json_error(404, &format!("no such app: {id}"));
+    }
+    let principal = terrane_core::ExecutionPrincipal::local_owner();
+    match terrane_cap_auth::namespace_granted(core.state(), &principal, id, "presence") {
+        Ok(true) => {}
+        Ok(false) => return json_error(403, "presence grant required"),
+        Err(e) => return json_error(500, &e.to_string()),
+    }
+    match terrane_host::presence::publish(core.state(), id, &parsed.channel, &parsed.payload) {
+        Ok(_) => json_ok(&InvokeResponse { output: "ok".into() }),
+        Err(e) => json_error(400, &e.to_string()),
     }
 }
 
