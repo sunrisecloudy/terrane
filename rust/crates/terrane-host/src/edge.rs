@@ -25,6 +25,7 @@ use terrane_cap_kv::{
 use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
 use terrane_cap_net::request::{RedirectPolicy, RequestBody, RequestValue, ResponseBodyMode};
+use terrane_cap_browser::request::RenderOutput;
 use terrane_cap_replica::initialized_event;
 use terrane_core::{Effect, EffectRunner, LiveHost};
 use terrane_core::{Error, EventRecord, Result};
@@ -113,6 +114,9 @@ impl EffectRunner for EdgeRunner {
                 Ok(vec![fetched_event(app, url, status, body)?])
             }
             Effect::HttpRequest { app, request } => http_request(self.home()?, state, app, request),
+            Effect::BrowserRender { app, request } => {
+                browser_render(self.home()?, app, request)
+            }
             Effect::ModelCall { app, agent, prompt } => {
                 let (response, exit_code) = run_agent(agent, prompt)?;
                 Ok(vec![responded_event(
@@ -1006,6 +1010,360 @@ fn http_request(home: &Path, state: &terrane_core::State, app: &str, request: &s
         recorded_body,
     )?);
     Ok(records)
+}
+
+fn browser_render(home: &Path, app: &str, request: &str) -> Result<Vec<EventRecord>> {
+    let prepared = terrane_cap_browser::request::prepare_render(request)?;
+    validate_browser_target(&prepared.url, &prepared.allowed_hosts)?;
+    let capture = run_chromium_render(&prepared)?;
+    let hash = terrane_cap_browser::request::sha256_hex(&capture.bytes);
+    let size = u64::try_from(capture.bytes.len())
+        .map_err(|_| Error::Storage("browser capture length overflow".into()))?;
+    let body = choose_browser_body(&prepared.output, &capture.bytes, &hash, size)?;
+
+    let mut records = Vec::new();
+    if body.kind == "blob" {
+        crate::blob_store::insert_if_absent(home, &hash, &capture.bytes)?;
+        records.push(terrane_cap_blob::stored_event(
+            app,
+            format!("__browser__/{}", prepared.request_key),
+            &hash,
+            size,
+            prepared.output.mime(),
+        )?);
+    }
+    records.push(terrane_cap_browser::rendered_event(
+        terrane_cap_browser::RenderedEvent {
+            app: app.to_string(),
+            request_key: prepared.request_key,
+            request_json_redacted: prepared.redacted_json,
+            url: prepared.url,
+            output: prepared.output.as_str().to_string(),
+            status: capture.status,
+            body,
+            title: capture.title,
+        },
+    )?);
+    Ok(records)
+}
+
+struct BrowserCapture {
+    status: u16,
+    title: String,
+    bytes: Vec<u8>,
+}
+
+struct EphemeralProfile {
+    path: PathBuf,
+}
+
+impl EphemeralProfile {
+    fn new() -> Result<Self> {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "terrane-browser-{}-{}",
+            std::process::id(),
+            unix_nanos()
+        ));
+        std::fs::create_dir(&path)
+            .map_err(|e| Error::Storage(format!("create browser profile {}: {e}", path.display())))?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for EphemeralProfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+fn unix_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0)
+}
+
+fn run_chromium_render(
+    prepared: &terrane_cap_browser::request::PreparedRender,
+) -> Result<BrowserCapture> {
+    let chrome = find_chromium().ok_or_else(|| {
+        Error::Storage(
+            "BrowserUnavailable: no system Chrome/Chromium found for browser.render".into(),
+        )
+    })?;
+    let profile = EphemeralProfile::new()?;
+    let output_file = match prepared.output {
+        RenderOutput::Screenshot | RenderOutput::Pdf => {
+            let mut path = profile.path.clone();
+            path.push(if prepared.output == RenderOutput::Pdf {
+                "capture.pdf"
+            } else {
+                "capture.png"
+            });
+            Some(path)
+        }
+        RenderOutput::Text | RenderOutput::Html => None,
+    };
+    let mut args = vec![
+        "--headless=new".to_string(),
+        "--disable-gpu".to_string(),
+        "--disable-dev-shm-usage".to_string(),
+        "--no-sandbox".to_string(),
+        "--no-first-run".to_string(),
+        "--no-default-browser-check".to_string(),
+        format!("--user-data-dir={}", profile.path.display()),
+        format!("--window-size={},{}", prepared.viewport_w, prepared.viewport_h),
+        format!("--virtual-time-budget={}", prepared.wait_ms),
+    ];
+    match (&prepared.output, &output_file) {
+        (RenderOutput::Screenshot, Some(path)) => {
+            args.push(format!("--screenshot={}", path.display()));
+        }
+        (RenderOutput::Pdf, Some(path)) => {
+            args.push(format!("--print-to-pdf={}", path.display()));
+            args.push("--no-pdf-header-footer".to_string());
+        }
+        (RenderOutput::Text | RenderOutput::Html, None) => {
+            args.push("--dump-dom".to_string());
+        }
+        _ => return Err(Error::Runtime("invalid browser render output path state".into())),
+    }
+    args.push(prepared.url.clone());
+
+    let mut output = run_command_with_timeout(&chrome, &args, Duration::from_millis(
+        terrane_cap_browser::request::TOTAL_TIMEOUT_MS,
+    ))?;
+    if !output.status.success() {
+        let mut legacy_args = args.clone();
+        if let Some(headless) = legacy_args.iter_mut().find(|arg| arg.as_str() == "--headless=new") {
+            *headless = "--headless".to_string();
+            output = run_command_with_timeout(&chrome, &legacy_args, Duration::from_millis(
+                terrane_cap_browser::request::TOTAL_TIMEOUT_MS,
+            ))?;
+        }
+    }
+    if !output.status.success() {
+        return Err(Error::Storage(format!(
+            "browser render failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    let html = if matches!(prepared.output, RenderOutput::Text | RenderOutput::Html) {
+        String::from_utf8(output.stdout)
+            .map_err(|e| Error::Storage(format!("browser DOM output was not UTF-8: {e}")))?
+    } else {
+        String::new()
+    };
+    let bytes = match (&prepared.output, output_file) {
+        (RenderOutput::Text, None) => html_to_text(&html).into_bytes(),
+        (RenderOutput::Html, None) => html.into_bytes(),
+        (RenderOutput::Screenshot | RenderOutput::Pdf, Some(path)) => std::fs::read(&path)
+            .map_err(|e| Error::Storage(format!("read browser capture {}: {e}", path.display())))?,
+        _ => return Err(Error::Runtime("invalid browser capture state".into())),
+    };
+    if bytes.len() > terrane_cap_browser::request::BODY_HARD_LIMIT {
+        return Err(Error::Storage(format!(
+            "browser capture exceeds {} bytes",
+            terrane_cap_browser::request::BODY_HARD_LIMIT
+        )));
+    }
+    Ok(BrowserCapture {
+        status: 200,
+        title: extract_html_title(&String::from_utf8_lossy(&bytes)),
+        bytes,
+    })
+}
+
+fn find_chromium() -> Option<String> {
+    let candidates = [
+        std::env::var("TERRANE_CHROME").ok(),
+        Some("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string()),
+        Some("/Applications/Chromium.app/Contents/MacOS/Chromium".to_string()),
+        Some("google-chrome".to_string()),
+        Some("google-chrome-stable".to_string()),
+        Some("chromium".to_string()),
+        Some("chromium-browser".to_string()),
+        Some("chrome".to_string()),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.contains('/') {
+            if Path::new(&candidate).exists() {
+                return Some(candidate);
+            }
+        } else if command_exists(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn command_exists(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn run_command_with_timeout(
+    command: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<std::process::Output> {
+    let mut child = Command::new(command)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Storage(format!("spawn browser engine {command}: {e}")))?;
+    let start = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .map_err(|e| Error::Storage(format!("poll browser engine: {e}")))?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .map_err(|e| Error::Storage(format!("collect browser output: {e}")));
+        }
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(Error::Storage(format!(
+                "browser render exceeded {} ms",
+                timeout.as_millis()
+            )));
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn choose_browser_body(
+    output: &RenderOutput,
+    bytes: &[u8],
+    hash: &str,
+    size: u64,
+) -> Result<terrane_cap_browser::RecordedBody> {
+    let inline = match output {
+        RenderOutput::Text | RenderOutput::Html => {
+            bytes.len() <= terrane_cap_browser::request::INLINE_AUTO_LIMIT
+        }
+        RenderOutput::Screenshot | RenderOutput::Pdf => false,
+    };
+    if inline {
+        let body = String::from_utf8(bytes.to_vec())
+            .map_err(|e| Error::Storage(format!("browser text/html capture was not UTF-8: {e}")))?;
+        return Ok(terrane_cap_browser::RecordedBody {
+            kind: "inline".to_string(),
+            body,
+            hash: hash.to_string(),
+            size,
+            mime: output.mime().to_string(),
+        });
+    }
+    Ok(terrane_cap_browser::RecordedBody {
+        kind: "blob".to_string(),
+        body: String::new(),
+        hash: hash.to_string(),
+        size,
+        mime: output.mime().to_string(),
+    })
+}
+
+fn html_to_text(html: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    let mut last_space = true;
+    for ch in html.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => {
+                in_tag = false;
+                if !last_space {
+                    out.push(' ');
+                    last_space = true;
+                }
+            }
+            _ if in_tag => {}
+            _ if ch.is_whitespace() => {
+                if !last_space {
+                    out.push(' ');
+                    last_space = true;
+                }
+            }
+            _ => {
+                out.push(ch);
+                last_space = false;
+            }
+        }
+    }
+    out.trim().to_string()
+}
+
+fn extract_html_title(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let Some(start) = lower.find("<title>") else {
+        return String::new();
+    };
+    let body_start = start + "<title>".len();
+    let Some(end_rel) = lower[body_start..].find("</title>") else {
+        return String::new();
+    };
+    html[body_start..body_start + end_rel].trim().to_string()
+}
+
+fn validate_browser_target(
+    url: &str,
+    allowed_hosts: &[String],
+) -> Result<()> {
+    let (scheme, rest) = split_url_scheme(url)?;
+    if !matches!(scheme, "http" | "https") {
+        return Err(Error::InvalidInput(format!(
+            "browser render URL scheme must be http or https: {scheme}"
+        )));
+    }
+    let host_port = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Error::InvalidInput("browser render URL missing host".into()))?;
+    let (host, port) = split_host_port(host_port, scheme)?;
+    if !allowed_hosts.is_empty() && !allowed_hosts.iter().any(|allowed| allowed == &host) {
+        return Err(Error::InvalidInput(format!(
+            "browser render host {host} is not in allowedHosts"
+        )));
+    }
+    if host == "169.254.169.254" {
+        return Err(Error::InvalidInput(
+            "browser render to cloud metadata address 169.254.169.254 is denied".into(),
+        ));
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        deny_browser_metadata_ip(ip)?;
+        return Ok(());
+    }
+    for addr in (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| Error::Storage(format!("resolve {host}: {e}")))?
+    {
+        deny_browser_metadata_ip(addr.ip())?;
+    }
+    Ok(())
+}
+
+fn deny_browser_metadata_ip(ip: IpAddr) -> Result<()> {
+    if ip == IpAddr::from([169, 254, 169, 254]) {
+        return Err(Error::InvalidInput(
+            "browser render to cloud metadata address 169.254.169.254 is denied".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn perform_http_request(

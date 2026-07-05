@@ -52,7 +52,7 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        50,
+        51,
         "grant-gated commands: {grant_gated:?}"
     );
     assert_eq!(refused.len(), 46, "refused commands: {refused:?}");
@@ -68,6 +68,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
         grantable,
         BTreeSet::from([
             "blob",
+            "browser",
             "build",
             "connection",
             "crdt",
@@ -203,6 +204,29 @@ fn net_request_is_grant_gated_for_public_callers() {
     grant(&mut core, "demo", "net");
     assert_eq!(
         authorize_public_command(&core, "net.request", &["demo".into(), request]).unwrap(),
+        PublicCommandAuthz::Allow
+    );
+}
+
+#[test]
+fn browser_render_is_grant_gated_for_public_callers() {
+    let dir = tempdir().unwrap();
+    let mut core = terrane_host::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    app(&mut core, "demo");
+    let request = r#"{"url":"http://127.0.0.1/","output":"text"}"#.to_string();
+
+    assert_eq!(
+        authorize_public_command(&core, "browser.render", &["demo".into(), request.clone()])
+            .unwrap(),
+        PublicCommandAuthz::NeedsGrant {
+            app: "demo".into(),
+            namespace: "browser".into()
+        }
+    );
+
+    grant(&mut core, "demo", "browser");
+    assert_eq!(
+        authorize_public_command(&core, "browser.render", &["demo".into(), request]).unwrap(),
         PublicCommandAuthz::Allow
     );
 }
