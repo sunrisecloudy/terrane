@@ -171,6 +171,14 @@ pub enum Effect {
         app: String,
         request: String,
     },
+    AppleScriptRun {
+        app: String,
+        script: String,
+    },
+    AppleScriptCheck {
+        app: String,
+        script: String,
+    },
     ModelCall {
         app: String,
         agent: String,

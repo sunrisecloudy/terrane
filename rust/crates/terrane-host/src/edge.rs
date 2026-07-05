@@ -118,6 +118,27 @@ impl EffectRunner for EdgeRunner {
             Effect::BrowserRender { app, request } => {
                 browser_render(self.home()?, app, request)
             }
+            Effect::AppleScriptRun { app, script } => {
+                let outcome = crate::applescript::run(script)?;
+                Ok(vec![terrane_cap_applescript::ran_event(
+                    app,
+                    script,
+                    outcome.ok,
+                    &outcome.output,
+                    &outcome.error,
+                    outcome.exit_code,
+                    outcome.duration_ms,
+                )?])
+            }
+            Effect::AppleScriptCheck { app, script } => {
+                let outcome = crate::applescript::check(script)?;
+                Ok(vec![terrane_cap_applescript::checked_event(
+                    app,
+                    script,
+                    outcome.ok,
+                    &outcome.error,
+                )?])
+            }
             Effect::ModelCall {
                 app,
                 agent,

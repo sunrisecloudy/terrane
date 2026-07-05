@@ -62,6 +62,7 @@ struct LegacyEventRecord {
 
 use terrane_cap_agent::AgentState;
 use terrane_cap_app::AppState;
+use terrane_cap_applescript::AppleScriptState;
 use terrane_cap_auth::AuthState;
 use terrane_cap_automation::AutomationState;
 use terrane_cap_blob::BlobState;
@@ -105,6 +106,7 @@ use terrane_cap_tts::TtsState;
 pub struct State {
     pub agent: AgentState,
     pub app: AppState,
+    pub applescript: AppleScriptState,
     pub auth: AuthState,
     pub automation: AutomationState,
     pub blob: BlobState,
@@ -143,6 +145,7 @@ impl StateStore for State {
         match namespace {
             "agent" => Some(&self.agent),
             "app" => Some(&self.app),
+            "applescript" => Some(&self.applescript),
             "auth" => Some(&self.auth),
             "automation" => Some(&self.automation),
             "blob" => Some(&self.blob),
@@ -182,6 +185,7 @@ impl StateStore for State {
         match namespace {
             "agent" => Some(&mut self.agent),
             "app" => Some(&mut self.app),
+            "applescript" => Some(&mut self.applescript),
             "auth" => Some(&mut self.auth),
             "automation" => Some(&mut self.automation),
             "blob" => Some(&mut self.blob),
@@ -511,6 +515,7 @@ pub fn default_registry() -> Registry {
     let mut registry = Registry::new();
     registry.register(Box::new(terrane_cap_agent::AgentCapability));
     registry.register(Box::new(terrane_cap_app::AppCapability));
+    registry.register(Box::new(terrane_cap_applescript::AppleScriptCapability));
     registry.register(Box::new(terrane_cap_auth::AuthCapability));
     registry.register(Box::new(terrane_cap_automation::AutomationCapability));
     registry.register(Box::new(terrane_cap_blob::BlobCapability));

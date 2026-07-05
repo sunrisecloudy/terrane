@@ -6,6 +6,7 @@ mod helpers;
 
 mod actor;
 mod agent;
+mod applescript;
 mod app;
 mod auth;
 mod automation;

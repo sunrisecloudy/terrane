@@ -23,6 +23,7 @@ use terrane_core::{
 };
 
 pub mod app_log;
+pub mod applescript;
 pub mod automation;
 pub mod asr;
 pub mod blob_store;

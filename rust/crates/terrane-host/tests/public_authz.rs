@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        143,
+        144,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,7 +52,7 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        72,
+        74,
         "grant-gated commands: {grant_gated:?}"
     );
     assert_eq!(refused.len(), 69, "refused commands: {refused:?}");
@@ -68,6 +68,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
         grantable,
         BTreeSet::from([
             "automation",
+            "applescript",
             "blob",
             "browser",
             "build",
@@ -254,6 +255,29 @@ fn browser_render_is_grant_gated_for_public_callers() {
     grant(&mut core, "demo", "browser");
     assert_eq!(
         authorize_public_command(&core, "browser.render", &["demo".into(), request]).unwrap(),
+        PublicCommandAuthz::Allow
+    );
+}
+
+#[test]
+fn applescript_commands_are_grant_gated_for_public_callers() {
+    let dir = tempdir().unwrap();
+    let mut core = terrane_host::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    app(&mut core, "demo");
+
+    assert_eq!(
+        authorize_public_command(&core, "applescript.run", &["demo".into(), "return 1".into()])
+            .unwrap(),
+        PublicCommandAuthz::NeedsGrant {
+            app: "demo".into(),
+            namespace: "applescript".into()
+        }
+    );
+
+    grant(&mut core, "demo", "applescript");
+    assert_eq!(
+        authorize_public_command(&core, "applescript.check", &["demo".into(), "return 1".into()])
+            .unwrap(),
         PublicCommandAuthz::Allow
     );
 }

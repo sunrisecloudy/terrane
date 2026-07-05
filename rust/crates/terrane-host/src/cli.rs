@@ -604,6 +604,19 @@ pub fn run_state() -> Result<(), String> {
         }
     }
 
+    println!("applescript runs:");
+    if state.applescript.runs.is_empty() {
+        println!("  (none)");
+    }
+    for (app, runs) in &state.applescript.runs {
+        for run in runs {
+            println!(
+                "  {app} ok={} exit={} ({} ms)",
+                run.ok, run.exit_code, run.duration_ms
+            );
+        }
+    }
+
     println!("mcp connections:");
     if state.mcp.connections.is_empty() {
         println!("  (none)");
@@ -2230,6 +2243,7 @@ pub fn print_help() {
          \x20 terrane stream ingest-text <app> <name> <text…>   record one observed stream message and invoke its verb\n\
          \x20 terrane stream close|list|reopened …              manage folded stream state from the host edge\n\
          \x20 terrane browser render <app> <request-json>       headless render; record redacted request + result\n\
+         \x20 terrane applescript run|check <app> <script…>     macOS AppleScript edge effect; record result\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane local-model pull [<id> <hf-repo> [<file>]] [--backend gguf|mlx] [options…]  fetch + register (bare = recommended model)\n\
          \x20 terrane local-model register <id> <llama_cpp|mlx> <path-or-repo> [--context N] [--template T] [--max-tokens N] [--temp F]\n\

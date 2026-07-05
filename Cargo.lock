@@ -3729,6 +3729,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-applescript"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-auth"
 version = "0.1.0"
 dependencies = [
@@ -4144,6 +4152,7 @@ dependencies = [
  "tempfile",
  "terrane-cap-agent",
  "terrane-cap-app",
+ "terrane-cap-applescript",
  "terrane-cap-auth",
  "terrane-cap-automation",
  "terrane-cap-blob",
@@ -4209,6 +4218,7 @@ dependencies = [
  "terrane-app-build",
  "terrane-asr",
  "terrane-cap-app",
+ "terrane-cap-applescript",
  "terrane-cap-auth",
  "terrane-cap-automation",
  "terrane-cap-blob",
