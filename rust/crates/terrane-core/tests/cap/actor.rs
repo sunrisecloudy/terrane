@@ -95,9 +95,18 @@ fn commit_stamps_actor_for_user_agent_and_app_principals() {
     assert_eq!(app[0].actor, "app:calendar");
 
     let stored = read_log(&log).unwrap();
-    assert_eq!(stored[0].actor, "user:local-owner");
-    assert_eq!(stored[1].actor, "agent:user-1:agent-7");
-    assert_eq!(stored[2].actor, "app:calendar");
+    assert!(stored
+        .iter()
+        .filter(|record| record.kind == "app.added")
+        .any(|record| record.actor == "user:local-owner"));
+    assert!(stored
+        .iter()
+        .filter(|record| record.kind == "app.added")
+        .any(|record| record.actor == "agent:user-1:agent-7"));
+    assert!(stored
+        .iter()
+        .filter(|record| record.kind == "app.added")
+        .any(|record| record.actor == "app:calendar"));
 }
 
 #[test]
@@ -117,7 +126,10 @@ fn capability_supplied_actor_is_overwritten_at_commit() {
 
     assert_eq!(records[0].kind, "net.fetched");
     assert_eq!(records[0].actor, "agent:owner:truth");
-    assert_eq!(read_log(&log).unwrap()[1].actor, "agent:owner:truth");
+    assert!(read_log(&log)
+        .unwrap()
+        .iter()
+        .any(|record| record.kind == "net.fetched" && record.actor == "agent:owner:truth"));
 }
 
 #[test]

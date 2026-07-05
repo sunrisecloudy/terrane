@@ -143,6 +143,7 @@ impl PreviewStore {
                 source: None,
                 runtime: "js".to_string(),
                 interfaces: terrane_cap_app::normalize_interfaces(manifest.interfaces.clone()),
+                links: Vec::new(),
             },
         );
         let bundle = JsRuntimeBundle {

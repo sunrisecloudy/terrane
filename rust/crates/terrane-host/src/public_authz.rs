@@ -164,6 +164,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "app.import" => PublicCommandDisposition::Refuse {
             reason: "app.import installs bundles and can configure storage; use app_register/app_register_inline or a trusted path",
         },
+        "app.link.deliver" => PublicCommandDisposition::Refuse {
+            reason: "app.link.deliver routes host-observed OS payloads and is trusted-host-only",
+        },
         "app.add" | "replica.init" => PublicCommandDisposition::Allow,
         // App-callable stt surface: record a selection / stop a session. Both
         // take the app id at arg 0 and are gated by the stt grant.

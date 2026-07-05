@@ -23,6 +23,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["state"] => run_state(),
         ["log"] => run_log(),
         ["replay"] => run_replay(),
+        ["open", target] => run_open(target),
         ["migrate-log"] => run_migrate_log(),
         ["cap", "list", rest @ ..] => run_cap_list(rest),
         ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
@@ -180,6 +181,11 @@ pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result
 
 pub fn run_install(path: &str) -> Result<(), String> {
     println!("{}", crate::install_app(path)?.message());
+    Ok(())
+}
+
+pub fn run_open(target: &str) -> Result<(), String> {
+    println!("{}", crate::deep_links::open_target(target)?.message());
     Ok(())
 }
 
@@ -1169,6 +1175,7 @@ pub fn print_help() {
          \x20 terrane harness generate-app [--harness <codex|claude-code|opencode>] <draft> <app> <name> <prompt…>\n\
          \x20 terrane harness run-js [--harness <codex|claude-code|opencode>] <run> <app> <prompt…>\n\
          \x20 terrane run <app> <verb> [--ask] [args…]         run an app backend; --ask prompts (hidden) for the first arg\n\
+         \x20 terrane open <url-or-file>                       route terrane:// links or registered file types to common.receive\n\
          \x20 terrane js-runtime run <app> [input…]            run an app's JS backend\n\
          \x20 terrane wasm-runtime run <app> [input…]          run an app's WASM backend\n\n\
          Multi-user:\n\

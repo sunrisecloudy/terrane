@@ -64,12 +64,22 @@ fn app_capability_adds_queries_and_removes_apps() {
         panic!("app.add should commit");
     };
     assert_eq!(add_events[0].kind, "app.added");
+    assert!(add_events
+        .iter()
+        .any(|event| event.kind == "app.link.registered"));
     cap.fold(&mut store, &add_events[0]).unwrap();
+    for event in &add_events[1..] {
+        cap.fold(&mut store, event).unwrap();
+    }
 
     assert_eq!(
         store.app.apps["calendar"].source.as_deref(),
         Some("/tmp/calendar")
     );
+    assert!(store.app.apps["calendar"]
+        .links
+        .iter()
+        .any(|link| link.kind == "scheme-route"));
     assert_eq!(
         cap.query(
             QueryCtx {
@@ -98,6 +108,129 @@ fn app_capability_adds_queries_and_removes_apps() {
     };
     cap.fold(&mut store, &remove_events[0]).unwrap();
     assert!(store.app.apps.is_empty());
+    assert!(store.app.links.is_empty());
+}
+
+#[test]
+fn app_add_registers_filetypes_and_rejects_bad_link_specs() {
+    let cap = AppCapability;
+    let bus = NoBus;
+    let store = Store::default();
+
+    let Decision::Commit(events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.add",
+            &[
+                "viewer".into(),
+                "Viewer".into(),
+                "--file-types".into(),
+                "txt:text/plain,md:text/markdown".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("app.add should commit");
+    };
+    assert_eq!(events[0].kind, "app.added");
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.kind == "app.link.registered")
+            .count(),
+        5
+    );
+
+    assert!(matches!(
+        cap.decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.add",
+            &[
+                "bad".into(),
+                "Bad".into(),
+                "--file-types".into(),
+                "../txt:text/plain".into(),
+            ],
+        ),
+        Err(Error::InvalidInput(_))
+    ));
+}
+
+#[test]
+fn app_link_deliver_validates_target_kind_and_size() {
+    let cap = AppCapability;
+    let bus = NoBus;
+    let mut store = Store::default();
+
+    let Decision::Commit(events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.add",
+            &["inbox".into(), "Inbox".into()],
+        )
+        .unwrap()
+    else {
+        panic!("app.add should commit");
+    };
+    for event in &events {
+        cap.fold(&mut store, event).unwrap();
+    }
+
+    let Decision::Effect(Effect::AppCall {
+        chain,
+        target,
+        verb,
+        args,
+    }) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.link.deliver",
+            &["inbox".into(), "link".into(), "{}".into()],
+        )
+        .unwrap()
+    else {
+        panic!("app.link.deliver should request an app call effect");
+    };
+    assert_eq!(chain, vec!["terrane-host".to_string()]);
+    assert_eq!(target, "inbox");
+    assert_eq!(verb, "common.receive");
+    assert_eq!(args, vec!["link".to_string(), "{}".to_string()]);
+
+    assert!(matches!(
+        cap.decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.link.deliver",
+            &["inbox".into(), "kv.set".into(), "{}".into()],
+        ),
+        Err(Error::InvalidInput(_))
+    ));
+    assert_eq!(
+        cap.decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.link.deliver",
+            &["missing".into(), "link".into(), "{}".into()],
+        )
+        .unwrap_err(),
+        Error::AppNotFound("missing".into())
+    );
 }
 
 #[test]
@@ -191,13 +324,18 @@ fn app_doc_covers_manifest_and_removal_cleanup_boundary() {
         vec![
             "app.add".to_string(),
             "app.import".to_string(),
+            "app.link.deliver".to_string(),
             "app.remove".to_string()
         ]
     );
     assert_eq!(doc.manifest.queries, vec!["app.exists".to_string()]);
     assert_eq!(
         doc.manifest.events,
-        vec!["app.added".to_string(), "app.removed".to_string()]
+        vec![
+            "app.added".to_string(),
+            "app.link.registered".to_string(),
+            "app.removed".to_string()
+        ]
     );
     assert!(doc.manifest.resource_methods.is_empty());
     assert!(doc

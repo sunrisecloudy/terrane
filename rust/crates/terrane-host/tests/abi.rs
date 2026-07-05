@@ -10,6 +10,9 @@ use tempfile::tempdir;
 use terrane_core::{read_log, Core};
 use terrane_host::ffi::*;
 
+const APP_ADD_WITH_LINKS: &str =
+    "app.added\napp.link.registered\napp.link.registered\napp.link.registered";
+
 /// A backend exposing `set` and an `items` verb that returns JSON.
 const BACKEND: &str = r#"
 var kv = ctx.resource.kv;
@@ -203,7 +206,7 @@ fn open_host_run_output_free_round_trip() {
             &["demo", "Demo", "--source", &src],
         );
         assert_eq!(code, TERRANE_OK, "app.add err: {err:?}");
-        assert_eq!(out.as_deref(), Some("app.added"));
+        assert_eq!(out.as_deref(), Some(APP_ADD_WITH_LINKS));
         let (code, _, err) = call(
             terrane_dispatch,
             h,
@@ -263,7 +266,7 @@ fn open_mints_stable_replica_identity_for_crdt_host_writes() {
             &["crdt_demo", "CRDT Demo", "--source", &src],
         );
         assert_eq!(code, TERRANE_OK, "app.add err: {err:?}");
-        assert_eq!(out.as_deref(), Some("app.added"));
+        assert_eq!(out.as_deref(), Some(APP_ADD_WITH_LINKS));
         let (code, _, err) = call(
             terrane_dispatch,
             h,

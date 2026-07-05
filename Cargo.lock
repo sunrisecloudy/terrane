@@ -3823,6 +3823,7 @@ dependencies = [
  "terrane-cap-document",
  "terrane-cap-harness",
  "terrane-cap-history",
+ "terrane-cap-interface",
  "terrane-cap-interop",
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
