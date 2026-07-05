@@ -53,6 +53,11 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "webhook.ingest" => PublicCommandDisposition::Refuse {
             reason: "webhook.ingest is trusted-host-only; inbound HTTP must be observed by a listening host",
         },
+        "web-publish.enable" | "web-publish.disable" | "web-publish.domain.set" => {
+            PublicCommandDisposition::Refuse {
+                reason: "web-publish commands are Premium-owner relay configuration and trusted-host-only",
+            }
+        }
         "crdt.mapSet"
         | "crdt.mapDel"
         | "crdt.listPush"

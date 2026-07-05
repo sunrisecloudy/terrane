@@ -4044,6 +4044,7 @@ dependencies = [
  "tempfile",
  "terrane-cap-interface",
  "terrane-cap-telemetry",
+ "terrane-cap-web-publish",
 ]
 
 [[package]]
@@ -4282,6 +4283,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-web-publish"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-webhook"
 version = "0.1.0"
 dependencies = [
@@ -4347,6 +4357,7 @@ dependencies = [
  "terrane-cap-time",
  "terrane-cap-tts",
  "terrane-cap-wasm-runtime",
+ "terrane-cap-web-publish",
  "terrane-cap-webhook",
  "wat",
 ]
@@ -4414,6 +4425,7 @@ dependencies = [
  "terrane-cap-time",
  "terrane-cap-tts",
  "terrane-cap-wasm-runtime",
+ "terrane-cap-web-publish",
  "terrane-cap-webhook",
  "terrane-core",
  "terrane-i18n",

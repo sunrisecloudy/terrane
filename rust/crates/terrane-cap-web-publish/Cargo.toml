@@ -1,0 +1,14 @@
+[package]
+name = "terrane-cap-web-publish"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_web_publish"
+path = "src/lib.rs"
+
+[dependencies]
+borsh.workspace = true
+serde_json.workspace = true
+terrane-cap-interface.workspace = true

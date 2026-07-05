@@ -1356,6 +1356,7 @@ pub(crate) fn manifest_from_files(
         icon: String::new(),
         resources: manifest.resources,
         interfaces: manifest.interfaces,
+        public_verbs: manifest.public_verbs,
         file_types: Vec::new(),
         browser_permissions: Vec::new(),
         data_version: manifest.data_version,

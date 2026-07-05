@@ -982,6 +982,8 @@ pub struct BundleManifest {
     pub resources: Vec<String>,
     #[nserde(default)]
     pub interfaces: Vec<String>,
+    #[nserde(default, rename = "publicVerbs")]
+    pub public_verbs: Vec<String>,
     #[nserde(default, rename = "fileTypes")]
     pub file_types: Vec<FileTypeSpec>,
     #[nserde(default)]
@@ -1039,6 +1041,7 @@ pub fn validate_manifest_migrations(
     manifest: &BundleManifest,
     bundle_dir: Option<&Path>,
 ) -> Result<(), Error> {
+    terrane_cap_web_publish::validate_public_verbs(&manifest.public_verbs)?;
     let data_version = manifest_data_version(manifest);
     if data_version == 1 && manifest.migrations.is_empty() {
         return Ok(());
