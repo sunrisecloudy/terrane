@@ -39,6 +39,7 @@ mod model;
 mod native;
 mod net;
 mod person;
+mod presence;
 mod publish;
 mod query;
 mod relational_db;

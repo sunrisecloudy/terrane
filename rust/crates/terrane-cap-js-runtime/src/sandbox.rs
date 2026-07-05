@@ -468,7 +468,7 @@ fn js_resource_arg(v: &Value, param: &str) -> std::result::Result<String, &'stat
     if let Ok(s) = js_string_arg(v) {
         return Ok(s);
     }
-    if matches!(param, "payload" | "payloadJson" | "dataJson")
+    if matches!(param, "payload" | "payloadJson" | "dataJson" | "json")
         && (v.is_object() || v.is_array() || v.is_bool() || v.is_number() || v.is_null())
     {
         let ctx = v.ctx();

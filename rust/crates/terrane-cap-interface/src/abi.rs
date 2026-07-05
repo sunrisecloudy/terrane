@@ -227,6 +227,14 @@ pub enum Effect {
         channel: String,
         message: String,
     },
+    /// Publish one live presence frame. This effect is transient-only: the edge
+    /// fans it out to connected peers and returns no records, so payloads never
+    /// enter the event log, folded state, snapshots, or replay.
+    PresencePublish {
+        app: String,
+        channel: String,
+        payload: String,
+    },
     TtsSpeak {
         app: String,
         text: String,
