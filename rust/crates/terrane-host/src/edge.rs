@@ -256,6 +256,10 @@ Effect::LocalModelEmbed {
                     terrane_cap_time::system_time_to_epoch_ms(std::time::SystemTime::now())?;
                 Ok(vec![terrane_cap_time::observed_event(app, epoch_ms)?])
             }
+            Effect::GeoLocate { app: _, precision: _ } => Err(Error::Runtime(
+                "geo.locate is not supported by the CLI host edge; use a host with OS/browser geolocation"
+                    .into(),
+            )),
             Effect::AppLog { app, level, msg, data } => {
                 let home = self.home()?;
                 crate::app_log::append(home, app, level, msg, data)?;

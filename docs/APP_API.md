@@ -273,6 +273,14 @@ is live discovery and records nothing.
 | `ctx.resource.document.list()` | read |
 | `ctx.resource.document.exportMarkdown(id)` | read |
 
+#### `ctx.resource.geo`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.geo.current(precision)` | call |
+| `ctx.resource.geo.peek(precision)` | call |
+| `ctx.resource.geo.last()` | read |
+
 #### `ctx.resource.history`
 
 | Method | Kind |
@@ -453,6 +461,11 @@ is live discovery and records nothing.
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as
 `null`/`undefined` — test it with `== null` (which matches both):
+
+For `geo`: `precision` is `"exact"` or `"coarse"`; coarse fixes are rounded
+before the `geo.observed` event is written, so replay never contains finer
+coordinates than the app asked the edge to record. `current()` records and
+replays the fix; `peek()` is transient and records nothing.
 
 For `net`: `ctx.resource.net.call(request_json)` accepts the same request JSON
 as `net.request`: `method`, `url`, `headers`, optional string or `$base64`

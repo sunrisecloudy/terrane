@@ -75,6 +75,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "crdt",
             "crypto",
             "document",
+            "geo",
             "history",
             "interop",
             "kv",
@@ -124,6 +125,7 @@ fn public_query_inventory_covers_every_registered_query() {
         vec![
             "app.exists",
             "common.channels",
+            "geo.supports",
             "history.at",
             "history.key",
             "history.list",

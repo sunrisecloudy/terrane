@@ -3835,6 +3835,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-geo"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-harness"
 version = "0.1.0"
 dependencies = [
@@ -4087,6 +4095,7 @@ dependencies = [
  "terrane-cap-crdt",
  "terrane-cap-crypto",
  "terrane-cap-document",
+ "terrane-cap-geo",
  "terrane-cap-harness",
  "terrane-cap-history",
  "terrane-cap-interface",
@@ -4145,6 +4154,7 @@ dependencies = [
  "terrane-cap-crdt",
  "terrane-cap-crypto",
  "terrane-cap-document",
+ "terrane-cap-geo",
  "terrane-cap-harness",
  "terrane-cap-history",
  "terrane-cap-interface",

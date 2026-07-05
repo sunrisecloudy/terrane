@@ -16,6 +16,7 @@ mod connection;
 mod crdt;
 mod crypto;
 mod document;
+mod geo;
 mod grant_resources;
 mod grant_spec_inventory;
 mod grant_verbs_match_specs;
