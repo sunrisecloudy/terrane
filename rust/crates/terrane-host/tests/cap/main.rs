@@ -19,3 +19,4 @@ mod net;
 mod password_manager;
 mod search;
 mod sysinfo;
+mod time;

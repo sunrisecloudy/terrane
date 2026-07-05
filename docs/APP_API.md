@@ -289,6 +289,14 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.sysinfo.battery()` | read |
 | `ctx.resource.sysinfo.system()` | read |
 | `ctx.resource.sysinfo.processes(sortBy, limit)` | read |
+
+#### `ctx.resource.time`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.time.now()` | call |
+| `ctx.resource.time.live()` | call |
+| `ctx.resource.time.last()` | read |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as

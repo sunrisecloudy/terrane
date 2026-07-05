@@ -176,7 +176,8 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "scheduler",
             "search",
             "stt",
-            "sysinfo"
+            "sysinfo",
+            "time"
         ]
     );
 }

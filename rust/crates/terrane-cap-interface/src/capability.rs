@@ -4,6 +4,21 @@ use crate::manifest::{CapManifest, GrantResourceSpec, ResourceMethod};
 use crate::runtime::{CommandCtx, QueryCtx, QueryValue, ReadValue, ResourceReadCtx, RuntimeCtx};
 use crate::state::StateStore;
 
+/// A per-backend-run cap on recorded `Decision::Effect` calls for one resource
+/// method. Capabilities whose recorded effect should not run unbounded in a
+/// single backend run (e.g. replayed wall-clock observations) declare one via
+/// [`Capability::recorded_call_per_run_limit`]. The runtime host refuses the
+/// call that would exceed `limit`, returning a typed [`Error`] whose message
+/// names `escape_hint` (owned by the capability) so app authors know the
+/// unrecorded fallback. The transient variant (and any non-recorded call) is
+/// never gated. `None` (the default) means uncapped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordedCallCap {
+    pub limit: usize,
+    /// Hint appended to the rejection error (e.g. an unrecorded escape hatch).
+    pub escape_hint: &'static str,
+}
+
 /// A self-contained slice of engine behaviour.
 pub trait Capability {
     fn namespace(&self) -> &'static str;
@@ -74,5 +89,14 @@ pub trait Capability {
             "{} is not a runtime capability",
             self.namespace()
         )))
+    }
+
+    /// Per-backend-run cap, if any, on recorded `Decision::Effect` calls to the
+    /// given resource method. `None` (the default) = uncapped. Enforced by the
+    /// runtime host: a single backend run may make at most `limit` recorded
+    /// calls; the (limit+1)-th is rejected with a typed error naming
+    /// `escape_hint`. Transient (unrecorded) calls are never gated.
+    fn recorded_call_per_run_limit(&self, _method: &str) -> Option<RecordedCallCap> {
+        None
     }
 }
