@@ -228,7 +228,20 @@ For external MCP servers, declare exact resources in the manifest as
 `call` is checked against the exact `mcp:<name>` grant at decide-time; `tools`
 is live discovery and records nothing.
 
+AppleScript is especially sensitive: granting `applescript` allows full
+automation of this Mac. Runs and compile checks execute only at the host edge,
+replay folds recorded `applescript.*` events without spawning `osascript`, and
+macOS TCC/Accessibility prompts may still deny individual runs.
+
 <!-- generated:resource-api:start -->
+#### `ctx.resource.applescript`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.applescript.run(script)` | call |
+| `ctx.resource.applescript.check(script)` | call |
+| `ctx.resource.applescript.runs()` | read |
+
 #### `ctx.resource.automation`
 
 | Method | Kind |

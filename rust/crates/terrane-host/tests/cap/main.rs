@@ -9,6 +9,7 @@
 mod helpers;
 
 mod app;
+mod applescript;
 mod automation;
 mod blob;
 mod browser;

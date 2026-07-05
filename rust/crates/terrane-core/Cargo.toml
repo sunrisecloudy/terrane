@@ -18,6 +18,7 @@ terrane-cap-agent.workspace = true
 terrane-cap-app.workspace = true
 terrane-cap-auth.workspace = true
 terrane-cap-automation.workspace = true
+terrane-cap-applescript.workspace = true
 terrane-cap-build.workspace = true
 terrane-cap-builder.workspace = true
 terrane-cap-browser.workspace = true
