@@ -263,6 +263,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "app.import" => PublicCommandDisposition::Refuse {
             reason: "app.import installs bundles and can configure storage; use app_register/app_register_inline or a trusted path",
         },
+        "publish.install" => PublicCommandDisposition::Refuse {
+            reason: "publish.install installs signed bundles and is trusted-admin-only",
+        },
         "app.upgrade" => PublicCommandDisposition::Refuse {
             reason: "app.upgrade swaps installed bundle code and is trusted-admin-only",
         },

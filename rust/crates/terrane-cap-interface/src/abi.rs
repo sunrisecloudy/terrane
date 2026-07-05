@@ -207,6 +207,9 @@ pub enum Effect {
         id: String,
         source: String,
     },
+    InstallSignedBundle {
+        source: String,
+    },
     BlobStore {
         app: String,
         name: String,

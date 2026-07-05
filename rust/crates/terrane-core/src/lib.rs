@@ -87,6 +87,7 @@ use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
 use terrane_cap_person::PersonState;
+use terrane_cap_publish::PublishState;
 use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
@@ -130,6 +131,7 @@ pub struct State {
     pub mcp: McpClientState,
     pub native: NativeState,
     pub person: PersonState,
+    pub publish: PublishState,
     pub scheduler: SchedulerState,
     pub stt: SttState,
     pub sync: SyncState,
@@ -171,6 +173,7 @@ impl StateStore for State {
             "mcp" => Some(&self.mcp),
             "native" => Some(&self.native),
             "person" => Some(&self.person),
+            "publish" => Some(&self.publish),
             "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
             "sync" => Some(&self.sync),
@@ -213,6 +216,7 @@ impl StateStore for State {
             "mcp" => Some(&mut self.mcp),
             "native" => Some(&mut self.native),
             "person" => Some(&mut self.person),
+            "publish" => Some(&mut self.publish),
             "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
             "sync" => Some(&mut self.sync),
@@ -554,6 +558,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_mcp_client::McpClientCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_person::PersonCapability));
+    registry.register(Box::new(terrane_cap_publish::PublishCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
     registry.register(Box::new(terrane_cap_sync::SyncCapability));

@@ -43,6 +43,7 @@ pub mod mcp_client;
 pub mod native;
 pub mod permission;
 pub mod preview;
+pub mod publish;
 pub mod public_authz;
 pub mod scheduler;
 pub mod secret_store;
@@ -792,6 +793,14 @@ pub fn install_app_to_kv(
         Err(Error::AppExists(_)) => Ok(InstallOutcome::Refreshed { id }),
         Err(e) => Err(e.to_string()),
     }
+}
+
+pub fn export_app_archive(
+    app: &str,
+    output: Option<&Path>,
+) -> Result<publish::ExportOutcome, String> {
+    let core = open()?;
+    publish::export_app_archive(&core, app, output).map_err(|e| e.to_string())
 }
 
 /// `sync <app> --from <home>`: pull another replica's edits for one app and
