@@ -32,5 +32,6 @@ mod replica;
 mod scheduler;
 mod search;
 mod stt;
+mod telemetry;
 mod time;
 mod wasm_runtime;

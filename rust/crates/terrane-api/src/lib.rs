@@ -110,6 +110,8 @@ pub const TOOL_LIST_APPS: &str = "list_apps";
 pub const TOOL_APP_ACTIONS: &str = "app_actions";
 /// MCP tool: run a verb on an app (so an agent can *act* on it).
 pub const TOOL_INVOKE: &str = "invoke";
+/// MCP tool: read an app's local backend log buffer for self-debugging.
+pub const TOOL_APP_LOGS: &str = "app_logs";
 /// MCP tool: check the status of a permission request.
 pub const TOOL_PERMISSION_CHECK: &str = "permission_check";
 /// MCP tool: cancel a pending permission request created by this host.
@@ -314,6 +316,12 @@ pub fn mcp_tools() -> Vec<ToolDef> {
                           grantCommands or approve adminUrl, poll status with permission_check, then retry \
                           the same invoke call.",
             input_schema: r#"{"type":"object","properties":{"app":{"type":"string"},"verb":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["app","verb"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_LOGS,
+            description: "Read an app's local backend log buffer for self-debugging after invoke/app build failures. \
+                          Returns newest-last JSON lines from $TERRANE_HOME/logs/<app>/; logs are local-only and not exported.",
+            input_schema: r#"{"type":"object","properties":{"app":{"type":"string"},"level":{"type":"string","enum":["debug","info","warn","error"]},"tail":{"type":"integer","minimum":1}},"required":["app"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_PERMISSION_CHECK,
@@ -853,6 +861,11 @@ pub fn host_contract() -> HostContract {
                 "POST",
                 "/apps/{id}/invoke",
                 "Run a verb on an app's backend.",
+            ),
+            route(
+                "GET",
+                "/apps/{id}/logs",
+                "Read an app's local backend log buffer.",
             ),
         ],
         mcp_tools: mcp_tools()

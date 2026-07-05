@@ -232,6 +232,18 @@ pub enum Effect {
     ObserveTime {
         app: String,
     },
+    /// Append one structured log line to the per-app ring buffer
+    /// (`$TERRANE_HOME/logs/<app>/current.jsonl`). Transient when emitted as a
+    /// `debug`/`info`/`warn` write — recorded NOTHING — and recorded (an error
+    /// line) when emitted as an `error` call, where the edge also returns the
+    /// `telemetry.error` event so crash facts fold into State on replay. The
+    /// core never opens the buffer; only the host edge does, like `blobs.sqlite3`.
+    AppLog {
+        app: String,
+        level: String,
+        msg: String,
+        data: String,
+    },
 }
 
 /// Encode a capability's typed event into a name-tagged [`EventRecord`].

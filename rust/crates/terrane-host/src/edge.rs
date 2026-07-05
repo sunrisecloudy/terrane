@@ -205,6 +205,23 @@ Effect::LocalModelEmbed {
                     terrane_cap_time::system_time_to_epoch_ms(std::time::SystemTime::now())?;
                 Ok(vec![terrane_cap_time::observed_event(app, epoch_ms)?])
             }
+            Effect::AppLog { app, level, msg, data } => {
+                let home = self.home()?;
+                crate::app_log::append(home, app, level, msg, data)?;
+                if level == "error" {
+                    Ok(vec![terrane_cap_telemetry::error_event(
+                        app,
+                        terrane_cap_telemetry::SOURCE_EXPLICIT,
+                        msg,
+                        "",
+                        data,
+                    )?])
+                } else {
+                    // Transient calls reach here too (the same `Effect::AppLog`
+                    // payload); they record nothing per the plan.
+                    Ok(Vec::new())
+                }
+            }
         }
     }
 
@@ -223,6 +240,17 @@ impl LiveHost for EdgeRunner {
                     .get(2)
                     .ok_or_else(|| Error::InvalidInput("blob.get missing hash".into()))?;
                 crate::blob_store::read_verified_base64(self.home()?, hash)
+            }
+            "telemetry.read" => {
+                let app = args
+                    .first()
+                    .ok_or_else(|| Error::InvalidInput("telemetry.read missing app".into()))?;
+                let level = args.get(1).cloned().unwrap_or_default();
+                let tail = args
+                    .get(2)
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .unwrap_or(200);
+                crate::app_log::read_tail(self.home()?, app, &level, tail)
             }
             _ => crate::metrics::sample(domain, args),
         }

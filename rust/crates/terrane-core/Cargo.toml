@@ -39,6 +39,7 @@ terrane-cap-time.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-replica.workspace = true
 terrane-cap-sysinfo.workspace = true
+terrane-cap-telemetry.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 borsh.workspace = true
 

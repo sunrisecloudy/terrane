@@ -100,6 +100,23 @@ pub trait RuntimeHost {
         )))
     }
 
+    /// Runtime-only app telemetry hook. The JS sandbox uses this for `console.*`
+    /// and exception mirroring so logging can still reach the local edge buffer
+    /// even when `ctx.resource.telemetry` is not installed. Implementations may
+    /// record an event for error-class facts when policy allows it.
+    fn app_log(
+        &mut self,
+        level: &str,
+        msg: &str,
+        data: &str,
+        source: &str,
+        stack: &str,
+        record_error: bool,
+    ) -> Result<()> {
+        let _ = (level, msg, data, source, stack, record_error);
+        Ok(())
+    }
+
     fn take_records(&mut self) -> Vec<EventRecord>;
 }
 
@@ -147,6 +164,20 @@ impl RuntimeHostHandle {
         self.inner
             .borrow_mut()
             .call_resource(namespace, method, args)
+    }
+
+    pub fn app_log(
+        &self,
+        level: &str,
+        msg: &str,
+        data: &str,
+        source: &str,
+        stack: &str,
+        record_error: bool,
+    ) -> Result<()> {
+        self.inner
+            .borrow_mut()
+            .app_log(level, msg, data, source, stack, record_error)
     }
 
     pub fn take_records(&self) -> Vec<EventRecord> {

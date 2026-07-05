@@ -58,6 +58,26 @@ fn top_level_parser_ignores_nested_ids() {
 }
 
 #[test]
+fn app_logs_tool_reads_local_app_buffer() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    crate::app_log::append(dir.path(), "demo", "warn", "careful", "{}").unwrap();
+
+    let raw = handle_json_rpc(
+        &mut core,
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"app_logs","arguments":{"app":"demo","level":"warn","tail":5}}}"#,
+    )
+    .unwrap();
+    let content = structured_content(&raw);
+
+    assert_eq!(content["lines"][0]["level"], "warn");
+    assert_eq!(content["lines"][0]["msg"], "careful");
+    assert!(raw.contains(r#""isError":false"#), "app_logs: {raw}");
+}
+
+#[test]
 fn capability_doc_tools_return_public_and_internal_views() {
     let dir = tempfile::tempdir().unwrap();
     let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();

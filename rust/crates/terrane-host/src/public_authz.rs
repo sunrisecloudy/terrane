@@ -139,6 +139,10 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "time",
             app_arg_index: 0,
         },
+        "telemetry.error" => PublicCommandDisposition::GrantGated {
+            namespace: "telemetry",
+            app_arg_index: 0,
+        },
         "local-model.register" | "local-model.pull" | "local-model.rm" | "local-model.default" => {
             PublicCommandDisposition::Refuse {
                 reason: "local model specs configure machine-local weights and are trusted-admin-only",
