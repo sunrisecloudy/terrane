@@ -21,9 +21,28 @@ where
     let handle = thread::spawn(move || {
         for stream in listener.incoming().take(requests) {
             let mut stream = stream.unwrap();
-            let mut buf = [0; 4096];
-            let n = stream.read(&mut buf).unwrap();
-            let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let mut buf = Vec::new();
+            let mut chunk = [0; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap();
+                buf.extend_from_slice(&chunk[..n]);
+                let request = String::from_utf8_lossy(&buf);
+                if let Some((headers, body)) = request.split_once("\r\n\r\n") {
+                    let content_len = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if body.len() >= content_len {
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8_lossy(&buf).into_owned();
             handler(request, stream);
         }
     });

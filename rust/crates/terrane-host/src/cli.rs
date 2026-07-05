@@ -278,6 +278,10 @@ pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result
 }
 
 pub fn run_install(path: &str) -> Result<(), String> {
+    if Path::new(path).is_dir() {
+        println!("{}", crate::install_app(path)?.message());
+        return Ok(());
+    }
     let args = vec![path.to_string()];
     print_command_outcome(crate::dispatch("publish.install", &args)?);
     Ok(())
@@ -2244,7 +2248,7 @@ pub fn print_help() {
          Commands are <namespace> <verb> [args…], routed to the capability that\n\
          owns that namespace. Built-in capabilities:\n\n\
          \x20 terrane app export <id> [-o path]                write a signed .terrane app archive\n\
-         \x20 terrane app install <path|url>                   verify a signed .terrane archive & install it\n\
+         \x20 terrane app install <archive|url|bundle-dir>     verify signed archives; local dirs use dev install\n\
          \x20 terrane app install-kv <path> [--storage <backend>] [--path <path>]\n\
          \x20                                                  store a JS bundle in reserved cap-kv keys\n\
          \x20 terrane app upgrade <id> <bundle|--to-version v|--from-draft d>\n\
