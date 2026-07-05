@@ -29,6 +29,7 @@ mod native;
 mod net;
 mod password_manager;
 mod query;
+mod scheduler;
 mod search;
 mod sysinfo;
 mod telemetry;

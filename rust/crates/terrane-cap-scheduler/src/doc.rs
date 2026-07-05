@@ -1,82 +1,48 @@
 use terrane_cap_interface::{
-    command_doc, event_doc, limit, param, resource_method, CapabilityDoc, CapabilityManifestDoc,
-    CommandDoc, EventDoc, ExampleDoc, InternalNote, ResourceDoc, ResourceMethodDoc, SchemaDoc,
+    command_doc, event_doc, limit, param, query_doc, resource_method, CapabilityDoc,
+    CapabilityManifestDoc, CommandDoc, EventDoc, ExampleDoc, InternalNote, QueryDoc, ResourceDoc,
+    ResourceMethodDoc, SchemaDoc,
 };
 
 fn scheduler_resource_methods() -> Vec<ResourceMethodDoc> {
-    let mut create = resource_method(
-        "create",
+    let mut set = resource_method(
+        "set",
         "write",
         &[
-            param("id", "Stable schedule id within the app.", "scheduler_id"),
-            param("cron", "Five-field cron expression.", "cron"),
-            param(
-                "timezone",
-                "IANA-style timezone such as Asia/Bangkok.",
-                "timezone",
-            ),
-            param("action", "App backend action verb to invoke.", "action"),
-            param("payload", "JSON payload for the scheduled action.", "json"),
+            param("name", "Stable schedule name within the app.", "scheduler_name"),
+            param("specJson", "Canonical one-shot or cron schedule JSON.", "json"),
         ],
-        "Create one app-owned schedule.",
+        "Create or replace one app-owned schedule.",
     );
-    create.returns = "records scheduler.created".to_string();
+    set.returns = "records scheduler.set".to_string();
 
-    let mut list = resource_method(
-        "list",
+    let mut clear = resource_method(
+        "clear",
+        "write",
+        &[param("name", "Schedule name.", "scheduler_name")],
+        "Clear one schedule.",
+    );
+    clear.returns = "records scheduler.cleared when the schedule exists".to_string();
+
+    let mut list = resource_method("list", "read", &[], "List this app's schedules.");
+    list.returns = "map of schedule name to JSON schedule object".to_string();
+
+    let mut stat = resource_method(
+        "stat",
         "read",
-        &[],
-        "List this app's schedules as id-to-JSON.",
+        &[param("name", "Schedule name.", "scheduler_name")],
+        "Return one schedule's folded state.",
     );
-    list.returns = "map of schedule id to JSON schedule object".to_string();
+    stat.returns = "JSON schedule object or null".to_string();
 
-    let mut pause = resource_method(
-        "pause",
-        "write",
-        &[param("id", "Schedule id.", "scheduler_id")],
-        "Pause one schedule.",
-    );
-    pause.returns = "records scheduler.paused".to_string();
-
-    let mut resume = resource_method(
-        "resume",
-        "write",
-        &[param("id", "Schedule id.", "scheduler_id")],
-        "Resume one schedule.",
-    );
-    resume.returns = "records scheduler.resumed".to_string();
-
-    let mut remove = resource_method(
-        "remove",
-        "write",
-        &[param("id", "Schedule id.", "scheduler_id")],
-        "Remove one schedule that has no active run.",
-    );
-    remove.returns = "records scheduler.removed".to_string();
-
-    let mut history = resource_method(
-        "history",
-        "read",
-        &[
-            param(
-                "id",
-                "Schedule id, or empty for all schedules.",
-                "scheduler_id",
-            ),
-            param("limit", "Maximum number of recent runs.", "integer"),
-        ],
-        "Return recent scheduler runs as JSON strings.",
-    );
-    history.returns = "list of JSON run objects, newest first".to_string();
-
-    vec![create, list, pause, resume, remove, history]
+    vec![set, clear, list, stat]
 }
 
 pub fn scheduler_doc(include_internal: bool) -> CapabilityDoc {
     CapabilityDoc {
         namespace: "scheduler".to_string(),
-        title: "App Scheduler".to_string(),
-        summary: "Deterministic schedule definitions plus host-recorded QuickJS action run history."
+        title: "Scheduler".to_string(),
+        summary: "Deterministic schedule definitions plus host-recorded firing facts."
             .to_string(),
         status: "experimental".to_string(),
         version: "0.1.0".to_string(),
@@ -87,69 +53,56 @@ pub fn scheduler_doc(include_internal: bool) -> CapabilityDoc {
         ],
         manifest: CapabilityManifestDoc {
             commands: vec![
-                "scheduler.create".to_string(),
-                "scheduler.pause".to_string(),
-                "scheduler.resume".to_string(),
-                "scheduler.remove".to_string(),
-                "scheduler.run.start".to_string(),
-                "scheduler.run.complete".to_string(),
-                "scheduler.run.fail".to_string(),
+                "scheduler.set".to_string(),
+                "scheduler.clear".to_string(),
+                "scheduler.fire".to_string(),
             ],
-            queries: Vec::new(),
+            queries: vec!["scheduler.due".to_string()],
             events: vec![
-                "scheduler.created".to_string(),
-                "scheduler.paused".to_string(),
-                "scheduler.resumed".to_string(),
-                "scheduler.removed".to_string(),
-                "scheduler.run.started".to_string(),
-                "scheduler.run.completed".to_string(),
-                "scheduler.run.failed".to_string(),
+                "scheduler.set".to_string(),
+                "scheduler.cleared".to_string(),
+                "scheduler.fired".to_string(),
             ],
             subscriptions: vec!["app.removed".to_string()],
             resource_methods: scheduler_resource_methods(),
         },
         commands: scheduler_commands(),
-        queries: Vec::new(),
+        queries: scheduler_queries(),
         events: scheduler_events(),
         resources: vec![ResourceDoc {
             namespace: "scheduler".to_string(),
-            summary: "App-scoped schedule management and run-history reads.".to_string(),
+            summary: "App-scoped schedule management and state reads.".to_string(),
             methods: scheduler_resource_methods(),
         }],
         schemas: Vec::<SchemaDoc>::new(),
         examples: vec![ExampleDoc {
-            title: "Create an every-minute action".to_string(),
-            summary: "Create the QuickJS ops proof heartbeat schedule from an app backend.".to_string(),
+            title: "Schedule a daily backend verb".to_string(),
+            summary: "Create a UTC cron wake-up from an app backend.".to_string(),
             language: "js".to_string(),
-            code: "await ctx.resource.scheduler.create('quickjs-ops-heartbeat', '* * * * *', 'Asia/Bangkok', 'opsHeartbeat', { source: 'premium-ops-proof' });".to_string(),
-            expected: "records scheduler.created; host ticks later record scheduler.run.* facts".to_string(),
+            code: "await ctx.resource.scheduler.set('daily', JSON.stringify({ cron: '0 9 * * *', verb: 'on_timer', args: ['daily-digest'] }));".to_string(),
+            expected: "records scheduler.set; host ticks later record scheduler.fired then invoke the backend verb".to_string(),
         }],
         constraints: vec![
-            "Schedule definitions are deterministic event-log state.".to_string(),
-            "Clock ticks are host input; replay folds scheduler.run.* facts and never re-runs timers or JavaScript.".to_string(),
-            "Host-owned run commands are trusted-host-only so apps cannot forge execution facts.".to_string(),
-            "The scheduler invokes app backend actions through the app's runtime, not shell commands or raw JS strings.".to_string(),
+            "The core never reads a clock; due checks take now_ms as an argument.".to_string(),
+            "Replay folds scheduler.set/scheduler.cleared/scheduler.fired and never re-derives firings.".to_string(),
+            "scheduler.fire is trusted-host-only so apps cannot forge timer facts.".to_string(),
+            "The host records scheduler.fired before invoking the app backend.".to_string(),
         ],
         limits: vec![
-            limit(
-                "cron",
-                "minute forms",
-                "The initial host due calculator supports '* * * * *', '*/n * * * *', and 'm * * * *'.",
-            ),
-            limit(
-                "payload",
-                "JSON",
-                "Payloads are stored as JSON facts and passed to the action as one JSON argument.",
-            ),
+            limit("schedules", "32 per app", "Create or replace within the app limit."),
+            limit("name", "128 bytes", "ASCII token: letters, digits, '.', '-' and '_'."),
+            limit("specJson", "4 KiB", "Validated and canonicalized during decide."),
+            limit("cron", "5-field UTC", "Minute-granularity standard cron fields."),
+            limit("args", "16 strings", "Passed after name and scheduled_for."),
         ],
         compatibility: vec![
-            "Terminal run events carry the next due time, so old logs replay without asking the wall clock.".to_string(),
-            "The public contract exposes ctx.resource.scheduler; Premium should consume that surface instead of private host semantics.".to_string(),
+            "A fired one-shot is removed by fold.".to_string(),
+            "Recurring catch-up emits one fire for the newest missed occurrence with skipped older occurrences counted.".to_string(),
         ],
         internal: if include_internal {
             vec![InternalNote {
-                title: "Trusted host boundary".to_string(),
-                body: "scheduler.run.start/complete/fail are for host scheduler loops only; public capability_command refuses them."
+                title: "Host follow-up".to_string(),
+                body: "After scheduler.fire commits, the host invokes handle([verb, name, scheduledFor, ...args]); run errors are logged by the host and do not change scheduler state."
                     .to_string(),
             }]
         } else {
@@ -158,197 +111,87 @@ pub fn scheduler_doc(include_internal: bool) -> CapabilityDoc {
     }
 }
 
+fn scheduler_queries() -> Vec<QueryDoc> {
+    vec![query_doc(
+        "scheduler.due",
+        &[param("now_ms", "Caller-supplied epoch milliseconds.", "epoch_ms")],
+        "JSON array of due {app,name,scheduled_for,skipped} objects",
+        "Pure host query for schedules due at the supplied time.",
+    )
+    .with_errors(&["now_ms must be an unsigned integer", "invalid folded schedule spec"])]
+}
+
 fn scheduler_commands() -> Vec<CommandDoc> {
     vec![
         command_doc(
-            "scheduler.create",
+            "scheduler.set",
             &[
                 param("app", "Existing app id.", "app_id"),
-                param("id", "Schedule id.", "scheduler_id"),
-                param("cron", "Five-field cron expression.", "cron"),
-                param("timezone", "IANA-style timezone.", "timezone"),
-                param("action", "Backend action verb.", "action"),
-                param("payloadJson", "JSON payload.", "json"),
+                param("name", "Schedule name.", "scheduler_name"),
+                param("specJson", "Schedule spec JSON.", "json"),
             ],
             "commit",
-            "Create one app-owned schedule.",
+            "Create or replace one app-owned schedule.",
         )
-        .with_errors(&[
-            "app not found",
-            "duplicate schedule",
-            "invalid cron",
-            "invalid timezone",
-            "invalid JSON",
-        ])
-        .with_emits(&["scheduler.created"]),
+        .with_errors(&["app not found", "invalid spec", "too many schedules"])
+        .with_emits(&["scheduler.set"]),
         command_doc(
-            "scheduler.pause",
+            "scheduler.clear",
             &[
                 param("app", "Existing app id.", "app_id"),
-                param("id", "Schedule id.", "scheduler_id"),
+                param("name", "Schedule name.", "scheduler_name"),
             ],
             "commit",
-            "Pause one schedule.",
+            "Clear one schedule when it exists.",
         )
-        .with_errors(&["unknown schedule"])
-        .with_emits(&["scheduler.paused"]),
+        .with_errors(&["invalid name"])
+        .with_emits(&["scheduler.cleared"]),
         command_doc(
-            "scheduler.resume",
+            "scheduler.fire",
             &[
                 param("app", "Existing app id.", "app_id"),
-                param("id", "Schedule id.", "scheduler_id"),
+                param("name", "Schedule name.", "scheduler_name"),
+                param("scheduled_for", "Observed due epoch milliseconds.", "epoch_ms"),
+                param("fired_at", "Observed fire epoch milliseconds.", "epoch_ms"),
+                param("skipped", "Older missed occurrences collapsed into this fire.", "integer"),
             ],
             "commit",
-            "Resume one schedule.",
+            "Trusted host fact for one timer firing.",
         )
-        .with_errors(&["unknown schedule"])
-        .with_emits(&["scheduler.resumed"]),
-        command_doc(
-            "scheduler.remove",
-            &[
-                param("app", "Existing app id.", "app_id"),
-                param("id", "Schedule id.", "scheduler_id"),
-            ],
-            "commit",
-            "Remove one inactive schedule.",
-        )
-        .with_errors(&["unknown schedule", "active run"])
-        .with_emits(&["scheduler.removed"]),
-        command_doc(
-            "scheduler.run.start",
-            &[
-                param("app", "Existing app id.", "app_id"),
-                param("id", "Schedule id.", "scheduler_id"),
-                param("runId", "Host-generated run id.", "scheduler_run_id"),
-                param("now", "Host clock epoch seconds.", "epoch_seconds"),
-            ],
-            "commit",
-            "Trusted host claim for one due schedule run.",
-        )
-        .with_errors(&[
-            "unknown schedule",
-            "paused schedule",
-            "not due",
-            "active run",
-            "duplicate run",
-        ])
-        .with_emits(&["scheduler.run.started"]),
-        command_doc(
-            "scheduler.run.complete",
-            &[
-                param("app", "Existing app id.", "app_id"),
-                param("id", "Schedule id.", "scheduler_id"),
-                param("runId", "Run id.", "scheduler_run_id"),
-                param("finishedAt", "Host clock epoch seconds.", "epoch_seconds"),
-                param("outputJson", "JSON output summary.", "json"),
-            ],
-            "commit",
-            "Trusted host success fact for a claimed run.",
-        )
-        .with_errors(&[
-            "unknown schedule",
-            "unknown run",
-            "run is not active",
-            "invalid JSON",
-        ])
-        .with_emits(&["scheduler.run.completed"]),
-        command_doc(
-            "scheduler.run.fail",
-            &[
-                param("app", "Existing app id.", "app_id"),
-                param("id", "Schedule id.", "scheduler_id"),
-                param("runId", "Run id.", "scheduler_run_id"),
-                param("finishedAt", "Host clock epoch seconds.", "epoch_seconds"),
-                param("errorJson", "JSON error summary.", "json"),
-            ],
-            "commit",
-            "Trusted host failure fact for a claimed run.",
-        )
-        .with_errors(&[
-            "unknown schedule",
-            "unknown run",
-            "run is not active",
-            "invalid JSON",
-        ])
-        .with_emits(&["scheduler.run.failed"]),
+        .with_errors(&["unknown schedule", "requires trusted host authority"])
+        .with_emits(&["scheduler.fired"]),
     ]
 }
 
 fn scheduler_events() -> Vec<EventDoc> {
     vec![
         event_doc(
-            "scheduler.created",
+            "scheduler.set",
             &[
                 param("app", "Owning app id.", "app_id"),
-                param("id", "Schedule id within the app.", "scheduler_id"),
-                param("cron", "Five-field cron expression.", "cron"),
-                param("timezone", "IANA-style timezone.", "timezone"),
-                param("action", "Backend action verb.", "action"),
-                param("payloadJson", "JSON payload for the action.", "json"),
-                param("nextDueAt", "Next due epoch seconds.", "epoch_seconds"),
+                param("name", "Schedule name within the app.", "scheduler_name"),
+                param("specJson", "Canonical schedule spec JSON.", "json"),
             ],
-            "Records one app-owned schedule definition.",
+            "Records one schedule definition.",
         ),
         event_doc(
-            "scheduler.paused",
+            "scheduler.cleared",
             &[
                 param("app", "Owning app id.", "app_id"),
-                param("id", "Schedule id within the app.", "scheduler_id"),
-            ],
-            "Marks one schedule paused.",
-        ),
-        event_doc(
-            "scheduler.resumed",
-            &[
-                param("app", "Owning app id.", "app_id"),
-                param("id", "Schedule id within the app.", "scheduler_id"),
-            ],
-            "Marks one schedule active.",
-        ),
-        event_doc(
-            "scheduler.removed",
-            &[
-                param("app", "Owning app id.", "app_id"),
-                param("id", "Schedule id within the app.", "scheduler_id"),
+                param("name", "Schedule name within the app.", "scheduler_name"),
             ],
             "Removes one schedule definition.",
         ),
         event_doc(
-            "scheduler.run.started",
+            "scheduler.fired",
             &[
                 param("app", "Owning app id.", "app_id"),
-                param("id", "Schedule id within the app.", "scheduler_id"),
-                param("runId", "Host-generated run id.", "scheduler_run_id"),
-                param("action", "Backend action verb.", "action"),
-                param("payloadJson", "JSON payload for the action.", "json"),
-                param("dueAt", "Due epoch seconds.", "epoch_seconds"),
-                param("startedAt", "Host clock epoch seconds.", "epoch_seconds"),
+                param("name", "Schedule name within the app.", "scheduler_name"),
+                param("scheduled_for", "Observed due epoch milliseconds.", "epoch_ms"),
+                param("fired_at", "Observed fire epoch milliseconds.", "epoch_ms"),
+                param("skipped", "Older missed occurrences.", "integer"),
             ],
-            "Claims one due run for host execution.",
-        ),
-        event_doc(
-            "scheduler.run.completed",
-            &[
-                param("app", "Owning app id.", "app_id"),
-                param("id", "Schedule id within the app.", "scheduler_id"),
-                param("runId", "Run id.", "scheduler_run_id"),
-                param("finishedAt", "Host clock epoch seconds.", "epoch_seconds"),
-                param("nextDueAt", "Next due epoch seconds.", "epoch_seconds"),
-                param("outputJson", "JSON output summary.", "json"),
-            ],
-            "Records a successful app action run.",
-        ),
-        event_doc(
-            "scheduler.run.failed",
-            &[
-                param("app", "Owning app id.", "app_id"),
-                param("id", "Schedule id within the app.", "scheduler_id"),
-                param("runId", "Run id.", "scheduler_run_id"),
-                param("finishedAt", "Host clock epoch seconds.", "epoch_seconds"),
-                param("nextDueAt", "Next due epoch seconds.", "epoch_seconds"),
-                param("errorJson", "JSON error summary.", "json"),
-            ],
-            "Records a failed app action run.",
+            "Records one host-observed firing fact.",
         ),
     ]
 }

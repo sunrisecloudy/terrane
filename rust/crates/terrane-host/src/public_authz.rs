@@ -108,15 +108,15 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 reason: "native connector and terminal commands are trusted-host-only",
             }
         }
-        "scheduler.create" | "scheduler.pause" | "scheduler.resume" | "scheduler.remove" => {
+        "scheduler.set" | "scheduler.clear" => {
             PublicCommandDisposition::GrantGated {
                 namespace: "scheduler",
                 app_arg_index: 0,
             }
         }
-        "scheduler.run.start" | "scheduler.run.complete" | "scheduler.run.fail" => {
+        "scheduler.fire" => {
             PublicCommandDisposition::Refuse {
-                reason: "scheduler run commands are trusted-host-only",
+                reason: "scheduler.fire is trusted-host-only",
             }
         }
         "kv.storage.set" | "kv.storage.clear" => PublicCommandDisposition::Refuse {

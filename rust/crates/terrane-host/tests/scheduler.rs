@@ -3,26 +3,25 @@ use std::fs;
 use tempfile::tempdir;
 
 #[test]
-fn scheduler_due_loop_invokes_quickjs_action_and_records_history() {
+fn scheduler_due_loop_invokes_backend_after_recording_fire() {
     let dir = tempdir().unwrap();
     let bundle = dir.path().join("ops-app");
     fs::create_dir(&bundle).unwrap();
     fs::write(
         bundle.join("manifest.json"),
-        r#"{"id":"ops","name":"Ops","runtime":"js","backend":"main.js","resources":["scheduler"]}"#,
+        r#"{"id":"ops","name":"Ops","runtime":"js","backend":"main.js","resources":["kv"]}"#,
     )
     .unwrap();
     fs::write(
         bundle.join("main.js"),
         r#"
-        var actions = {
-          opsHeartbeat: {
-            run: function (args) {
-              var payload = JSON.parse(args[0]);
-              return JSON.stringify({ ok: true, source: payload.source });
-            }
+        function handle(input) {
+          if (input[0] === "opsHeartbeat") {
+            ctx.resource.kv.set("heartbeat", input.join("|"));
+            return JSON.stringify({ ok: true, name: input[1], scheduledFor: input[2], arg: input[3] });
           }
-        };
+          return "unknown";
+        }
         "#,
     )
     .unwrap();
@@ -41,54 +40,43 @@ fn scheduler_due_loop_invokes_quickjs_action_and_records_history() {
     .unwrap();
     terrane_host::dispatch_on_core(
         &mut core,
-        "scheduler.create",
+        "auth.grant",
         &[
+            terrane_host::LOCAL_OWNER_SUBJECT.into(),
             "ops".into(),
-            "quickjs-ops-heartbeat".into(),
-            "* * * * *".into(),
-            "Asia/Bangkok".into(),
-            "opsHeartbeat".into(),
-            r#"{"source":"premium-ops-proof"}"#.into(),
+            "kv".into(),
         ],
     )
     .unwrap();
     terrane_host::dispatch_on_core(
         &mut core,
-        "auth.grant",
+        "scheduler.set",
         &[
-            terrane_host::LOCAL_OWNER_SUBJECT.into(),
             "ops".into(),
-            "scheduler".into(),
+            "quickjs-ops-heartbeat".into(),
+            r#"{"at":60000,"verb":"opsHeartbeat","args":["premium-ops-proof"]}"#.into(),
         ],
     )
     .unwrap();
 
-    let outcomes = terrane_host::scheduler::run_due_at(&mut core, 60).unwrap();
+    let outcomes = terrane_host::scheduler::run_due_at(&mut core, 60_000).unwrap();
     assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].status, "completed", "{outcomes:?}");
+    assert_eq!(outcomes[0].error, None, "{outcomes:?}");
     assert_eq!(
         outcomes[0].output.as_deref(),
-        Some(r#"{"ok":true,"source":"premium-ops-proof"}"#)
+        Some(r#"{"ok":true,"name":"quickjs-ops-heartbeat","scheduledFor":"60000","arg":"premium-ops-proof"}"#)
     );
 
-    let schedule = &core.state().scheduler.schedules["ops"]["quickjs-ops-heartbeat"];
-    assert_eq!(schedule.active_run_id, None);
-    assert!(schedule.next_due_at > 60);
-    let run = core
-        .state()
-        .scheduler
-        .runs
-        .get("ops")
-        .unwrap()
-        .values()
-        .next()
-        .unwrap();
-    assert_eq!(run.status.as_str(), "completed");
-    assert_eq!(run.action, "opsHeartbeat");
+    assert!(!core.state().scheduler.schedules["ops"].contains_key("quickjs-ops-heartbeat"));
+    assert_eq!(
+        core.state().kv.data["ops"]["heartbeat"],
+        "opsHeartbeat|quickjs-ops-heartbeat|60000|premium-ops-proof"
+    );
+    assert!(core.replay_matches().unwrap());
 }
 
 #[test]
-fn scheduler_due_loop_records_failure_when_action_fails() {
+fn scheduler_due_loop_keeps_fire_fact_when_backend_fails() {
     let dir = tempdir().unwrap();
     let bundle = dir.path().join("ops-app");
     fs::create_dir(&bundle).unwrap();
@@ -99,7 +87,7 @@ fn scheduler_due_loop_records_failure_when_action_fails() {
     .unwrap();
     fs::write(
         bundle.join("main.js"),
-        r#"var actions = { opsHeartbeat: { run: function () { throw new Error("boom"); } } };"#,
+        r#"function handle(input) { if (input[0] === "opsHeartbeat") { throw new Error("boom"); } return "unknown"; }"#,
     )
     .unwrap();
 
@@ -117,30 +105,21 @@ fn scheduler_due_loop_records_failure_when_action_fails() {
     .unwrap();
     terrane_host::dispatch_on_core(
         &mut core,
-        "scheduler.create",
+        "scheduler.set",
         &[
             "ops".into(),
             "quickjs-ops-heartbeat".into(),
-            "* * * * *".into(),
-            "Asia/Bangkok".into(),
-            "opsHeartbeat".into(),
-            r#"{"source":"premium-ops-proof"}"#.into(),
+            r#"{"at":60000,"verb":"opsHeartbeat"}"#.into(),
         ],
     )
     .unwrap();
 
-    let outcomes = terrane_host::scheduler::run_due_at(&mut core, 60).unwrap();
+    let outcomes = terrane_host::scheduler::run_due_at(&mut core, 60_000).unwrap();
     assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].status, "failed");
-    let run = core
-        .state()
-        .scheduler
-        .runs
-        .get("ops")
-        .unwrap()
-        .values()
-        .next()
-        .unwrap();
-    assert_eq!(run.status.as_str(), "failed");
-    assert!(run.error_json.as_deref().unwrap().contains("boom"));
+    assert!(
+        outcomes[0].error.as_deref().unwrap_or_default().contains("boom"),
+        "{outcomes:?}"
+    );
+    assert!(!core.state().scheduler.schedules["ops"].contains_key("quickjs-ops-heartbeat"));
+    assert!(core.replay_matches().unwrap());
 }

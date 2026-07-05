@@ -66,6 +66,13 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["kv", "storage", "status"] => run_kv_storage_status(),
         ["history", app, rest @ ..] => run_history(app, rest),
         ["revert", app, rest @ ..] => run_revert(app, rest),
+        ["scheduler", "tick"] => run_scheduler_tick(None),
+        ["scheduler", "tick", "--now-ms", now_ms] => run_scheduler_tick(Some(now_ms)),
+        ["scheduler", "ls", app] | ["scheduler", "list", app] => run_scheduler_ls(app),
+        ["scheduler", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane scheduler (tick [--now-ms <epoch-ms>] | ls <app>)".into())
+        }
         ["blob", "put", app, name, mime, path] => run_blob_put(app, name, mime, path),
         ["blob", "get", app, name, path] => run_blob_get(app, name, path),
         ["blob", "stat", app, name] => run_blob_stat(app, name),
@@ -890,6 +897,69 @@ pub fn run_kv_storage_status() -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_scheduler_tick(now_ms: Option<&str>) -> Result<(), String> {
+    let mut core = crate::open()?;
+    crate::ensure_identity(&mut core)?;
+    let outcomes = match now_ms {
+        Some(raw) => {
+            let now = raw
+                .parse::<u64>()
+                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?;
+            crate::scheduler::run_due_at(&mut core, now)?
+        }
+        None => crate::scheduler::run_due(&mut core)?,
+    };
+    if outcomes.is_empty() {
+        println!("scheduler tick: no due schedules");
+    } else {
+        for outcome in outcomes {
+            let status = if outcome.error.is_some() {
+                "run_failed"
+            } else {
+                "ran"
+            };
+            println!(
+                "{} {}/{} scheduled_for={} skipped={} verb={}",
+                status,
+                outcome.app,
+                outcome.name,
+                outcome.scheduled_for,
+                outcome.skipped,
+                outcome.verb
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn run_scheduler_ls(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let schedules = core
+        .state()
+        .scheduler
+        .schedules
+        .get(app)
+        .cloned()
+        .unwrap_or_default();
+    for (name, schedule) in schedules {
+        println!(
+            "{} last_scheduled_for={} last_fired_at={} skipped_total={} spec={}",
+            name,
+            schedule
+                .last_scheduled_for
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            schedule
+                .last_fired_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            schedule.skipped_total,
+            schedule.spec.spec_json
+        );
+    }
+    Ok(())
+}
+
 pub fn run_history(app: &str, rest: &[&str]) -> Result<(), String> {
     let core = crate::open()?;
     let args = parse_history_args(app, rest)?;
@@ -1545,6 +1615,8 @@ pub fn print_help() {
          \x20 terrane kv storage set --app <app> <backend> [--path <path>]\n\
          \x20 terrane kv storage clear (--default | --app <app>)\n\
          \x20 terrane kv storage status\n\
+         \x20 terrane scheduler tick [--now-ms <epoch-ms>]     fire due schedules and run backend verbs\n\
+         \x20 terrane scheduler ls <app>                       list folded scheduler state\n\
          \x20 terrane history <app> [--key k] [--at seq] [--filter f] [--before seq] [--limit n]\n\
          \x20 terrane revert <app> --to <seq> [--key k | --prefix p | --scope app] [--actor actor] [--yes]\n\
          \x20 terrane blob put <app> <name> <mime> <path>     store file bytes in the blob CAS\n\

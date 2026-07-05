@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        109,
+        105,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        56,
+        54,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 51, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 49, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -133,13 +133,19 @@ fn public_query_inventory_covers_every_registered_query() {
             "native.supports",
             "query.jmespath",
             "replica.peer",
+            "scheduler.due",
             "tts.supports"
         ]
     );
     for query in queries {
         let expected = if matches!(
             query,
-            "common.channels" | "history.at" | "history.key" | "history.list" | "query.jmespath"
+            "common.channels"
+                | "history.at"
+                | "history.key"
+                | "history.list"
+                | "query.jmespath"
+                | "scheduler.due"
         ) {
             PublicQueryDisposition::Unclassified
         } else {
@@ -267,9 +273,7 @@ fn dangerous_and_effect_commands_are_refused() {
         "native.complete",
         "native.fail",
         "native.cancel",
-        "scheduler.run.start",
-        "scheduler.run.complete",
-        "scheduler.run.fail",
+        "scheduler.fire",
     ] {
         assert!(
             matches!(

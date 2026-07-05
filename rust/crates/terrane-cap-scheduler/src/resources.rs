@@ -1,34 +1,28 @@
+use serde_json::json;
 use terrane_cap_interface::{
     Error, ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
-use crate::types::{RunRecord, ScheduleRecord, SchedulerState};
+use crate::cron::{latest_at_or_before, missed_since};
+use crate::types::{DueSchedule, ScheduleEntry, ScheduleKind, SchedulerState};
 
 pub(crate) fn resource_methods() -> Vec<ResourceMethod> {
     vec![
         ResourceMethod::Write {
-            name: "create",
-            params: &["id", "cron", "timezone", "action", "payload"],
+            name: "set",
+            params: &["name", "specJson"],
+        },
+        ResourceMethod::Write {
+            name: "clear",
+            params: &["name"],
         },
         ResourceMethod::Read {
             name: "list",
             params: &[],
         },
-        ResourceMethod::Write {
-            name: "pause",
-            params: &["id"],
-        },
-        ResourceMethod::Write {
-            name: "resume",
-            params: &["id"],
-        },
-        ResourceMethod::Write {
-            name: "remove",
-            params: &["id"],
-        },
         ResourceMethod::Read {
-            name: "history",
-            params: &["id", "limit"],
+            name: "stat",
+            params: &["name"],
         },
     ]
 }
@@ -36,10 +30,72 @@ pub(crate) fn resource_methods() -> Vec<ResourceMethod> {
 pub(crate) fn read(ctx: ResourceReadCtx<'_>, name: &str, args: &[String]) -> Result<ReadValue> {
     match name {
         "list" => read_list(ctx.state, ctx.app),
-        "history" => read_history(ctx.state, ctx.app, args),
+        "stat" => {
+            let name = args.first().map(String::as_str).unwrap_or_default();
+            read_stat(ctx.state, ctx.app, name)
+        }
         other => Err(Error::InvalidInput(format!(
             "unknown resource read: scheduler.{other}"
         ))),
+    }
+}
+
+pub fn schedules_due_at(state: &SchedulerState, now_epoch_ms: u64) -> Result<Vec<DueSchedule>> {
+    let mut due = Vec::new();
+    for schedules in state.schedules.values() {
+        for schedule in schedules.values() {
+            if let Some(item) = due_for_schedule(schedule, now_epoch_ms)? {
+                due.push(item);
+            }
+        }
+    }
+    due.sort_by(|a, b| {
+        a.scheduled_for
+            .cmp(&b.scheduled_for)
+            .then_with(|| a.app.cmp(&b.app))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    Ok(due)
+}
+
+fn due_for_schedule(schedule: &ScheduleEntry, now_epoch_ms: u64) -> Result<Option<DueSchedule>> {
+    match &schedule.spec.kind {
+        ScheduleKind::At(at) => {
+            if schedule.last_scheduled_for.is_none() && *at <= now_epoch_ms {
+                Ok(Some(due(schedule, *at, 0)))
+            } else {
+                Ok(None)
+            }
+        }
+        ScheduleKind::Cron(expr) => {
+            if let Some(last) = schedule.last_scheduled_for {
+                let missed = missed_since(expr, last, now_epoch_ms)?;
+                if let Some(scheduled_for) = missed.last().copied() {
+                    Ok(Some(due(
+                        schedule,
+                        scheduled_for,
+                        missed.len().saturating_sub(1) as u64,
+                    )))
+                } else {
+                    Ok(None)
+                }
+            } else if let Some(scheduled_for) = latest_at_or_before(expr, now_epoch_ms)? {
+                Ok(Some(due(schedule, scheduled_for, 0)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn due(schedule: &ScheduleEntry, scheduled_for: u64, skipped: u64) -> DueSchedule {
+    DueSchedule {
+        app: schedule.app.clone(),
+        name: schedule.name.clone(),
+        scheduled_for,
+        skipped,
+        verb: schedule.spec.verb.clone(),
+        args: schedule.spec.args.clone(),
     }
 }
 
@@ -52,93 +108,29 @@ fn read_list(state: &dyn StateStore, app: &str) -> Result<ReadValue> {
     Ok(ReadValue::StringMap(
         schedules
             .into_iter()
-            .map(|(id, schedule)| (id, schedule_json(&schedule)))
+            .map(|(name, schedule)| (name, schedule_json(&schedule)))
             .collect(),
     ))
 }
 
-fn read_history(state: &dyn StateStore, app: &str, args: &[String]) -> Result<ReadValue> {
-    let schedule_id = args.first().map(String::as_str).unwrap_or_default();
-    let limit = args
-        .get(1)
-        .map(|raw| parse_limit(raw))
-        .transpose()?
-        .unwrap_or(20);
-    let mut runs: Vec<_> = terrane_cap_interface::state_ref::<SchedulerState>(state, "scheduler")?
-        .runs
+fn read_stat(state: &dyn StateStore, app: &str, name: &str) -> Result<ReadValue> {
+    let value = terrane_cap_interface::state_ref::<SchedulerState>(state, "scheduler")?
+        .schedules
         .get(app)
-        .map(|runs| {
-            runs.values()
-                .filter(|run| schedule_id.is_empty() || run.schedule_id == schedule_id)
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-    runs.sort_by_key(|run: &RunRecord| std::cmp::Reverse(run.started_at));
-    Ok(ReadValue::StringList(
-        runs.into_iter()
-            .take(limit)
-            .map(|run| run_json(&run))
-            .collect(),
-    ))
+        .and_then(|schedules| schedules.get(name))
+        .map(schedule_json);
+    Ok(ReadValue::OptString(value))
 }
 
-pub fn schedules_due_at(state: &SchedulerState, now_epoch_secs: u64) -> Vec<ScheduleRecord> {
-    let mut due = Vec::new();
-    for schedules in state.schedules.values() {
-        for schedule in schedules.values() {
-            if !schedule.paused
-                && schedule.active_run_id.is_none()
-                && schedule.next_due_at <= now_epoch_secs
-            {
-                due.push(schedule.clone());
-            }
-        }
-    }
-    due.sort_by(|a, b| {
-        a.next_due_at
-            .cmp(&b.next_due_at)
-            .then_with(|| a.app.cmp(&b.app))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    due
-}
-
-fn schedule_json(schedule: &ScheduleRecord) -> String {
-    serde_json::json!({
-        "id": schedule.id,
+fn schedule_json(schedule: &ScheduleEntry) -> String {
+    json!({
         "app": schedule.app,
-        "cron": schedule.cron,
-        "timezone": schedule.timezone,
-        "action": schedule.action,
-        "payload": serde_json::from_str::<serde_json::Value>(&schedule.payload_json).unwrap_or(serde_json::Value::Null),
-        "paused": schedule.paused,
-        "nextDueAt": schedule.next_due_at,
-        "activeRunId": schedule.active_run_id,
+        "name": schedule.name,
+        "spec": serde_json::from_str::<serde_json::Value>(&schedule.spec.spec_json)
+            .unwrap_or(serde_json::Value::Null),
+        "last_scheduled_for": schedule.last_scheduled_for,
+        "last_fired_at": schedule.last_fired_at,
+        "skipped_total": schedule.skipped_total,
     })
     .to_string()
-}
-
-fn run_json(run: &RunRecord) -> String {
-    serde_json::json!({
-        "runId": run.run_id,
-        "scheduleId": run.schedule_id,
-        "app": run.app,
-        "action": run.action,
-        "payload": serde_json::from_str::<serde_json::Value>(&run.payload_json).unwrap_or(serde_json::Value::Null),
-        "status": run.status.as_str(),
-        "dueAt": run.due_at,
-        "startedAt": run.started_at,
-        "finishedAt": run.finished_at,
-        "output": run.output_json.as_deref().and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok()),
-        "error": run.error_json.as_deref().and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok()),
-    })
-    .to_string()
-}
-
-fn parse_limit(raw: &str) -> Result<usize> {
-    let value = raw
-        .parse::<usize>()
-        .map_err(|_| Error::InvalidInput(format!("history limit must be numeric, got {raw:?}")))?;
-    Ok(value.clamp(1, 100))
 }

@@ -1580,6 +1580,7 @@ fn admit_command(request: &Request) -> Result<()> {
     let trusted_only = request.name.starts_with("auth.")
         || request.name.starts_with("kv.public.")
         || request.name == "app.link.deliver"
+        || request.name == "scheduler.fire"
         || request.name == "stt.session.open"
         || request.name == "stt.segment.append"
         || request.name == "stt.session.close-host"

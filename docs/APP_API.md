@@ -387,12 +387,10 @@ is live discovery and records nothing.
 
 | Method | Kind |
 | --- | --- |
-| `ctx.resource.scheduler.create(id, cron, timezone, action, payload)` | write |
+| `ctx.resource.scheduler.set(name, specJson)` | write |
+| `ctx.resource.scheduler.clear(name)` | write |
 | `ctx.resource.scheduler.list()` | read |
-| `ctx.resource.scheduler.pause(id)` | write |
-| `ctx.resource.scheduler.resume(id)` | write |
-| `ctx.resource.scheduler.remove(id)` | write |
-| `ctx.resource.scheduler.history(id, limit)` | read |
+| `ctx.resource.scheduler.stat(name)` | read |
 
 #### `ctx.resource.search`
 

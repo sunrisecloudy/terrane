@@ -6,12 +6,10 @@ use crate::helpers::req;
 fn scheduler_resource_surface_is_registered() {
     let surface = terrane_core::declared_resource_surface();
     for method in [
-        "ctx.resource.scheduler.create",
+        "ctx.resource.scheduler.set",
+        "ctx.resource.scheduler.clear",
         "ctx.resource.scheduler.list",
-        "ctx.resource.scheduler.pause",
-        "ctx.resource.scheduler.resume",
-        "ctx.resource.scheduler.remove",
-        "ctx.resource.scheduler.history",
+        "ctx.resource.scheduler.stat",
     ] {
         assert!(surface.contains(method), "missing {method}");
     }
@@ -23,41 +21,51 @@ fn scheduler_public_state_replays_and_cleanup_on_app_remove() {
     let mut core = terrane_core::Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["ops", "Ops"])).unwrap();
     core.dispatch(req(
-        "scheduler.create",
+        "scheduler.set",
         &[
             "ops",
             "quickjs-ops-heartbeat",
-            "* * * * *",
-            "Asia/Bangkok",
-            "opsHeartbeat",
-            r#"{"source":"premium-ops-proof"}"#,
+            r#"{"at":1000,"verb":"on_timer","args":["payload"]}"#,
         ],
     ))
     .unwrap();
+    let public_err = core
+        .dispatch(Request::new(
+            "scheduler.fire",
+            vec![
+                "ops".into(),
+                "quickjs-ops-heartbeat".into(),
+                "1000".into(),
+                "1001".into(),
+                "0".into(),
+            ],
+        ))
+        .unwrap_err();
+    assert!(
+        public_err
+            .to_string()
+            .contains("requires trusted host authority"),
+        "{public_err}"
+    );
+
     core.dispatch(Request::trusted_host(
-        "scheduler.run.start",
+        "scheduler.fire",
         vec![
             "ops".into(),
             "quickjs-ops-heartbeat".into(),
-            "run-1".into(),
-            "60".into(),
-        ],
-    ))
-    .unwrap();
-    core.dispatch(Request::trusted_host(
-        "scheduler.run.complete",
-        vec![
-            "ops".into(),
-            "quickjs-ops-heartbeat".into(),
-            "run-1".into(),
-            "61".into(),
-            r#"{"ok":true}"#.into(),
+            "1000".into(),
+            "1001".into(),
+            "0".into(),
         ],
     ))
     .unwrap();
     assert!(core.replay_matches().unwrap());
-    assert_eq!(
-        core.state().scheduler.runs["ops"]["run-1"].status.as_str(),
-        "completed"
-    );
+    assert!(!core.state().scheduler.schedules["ops"].contains_key("quickjs-ops-heartbeat"));
+
+    core.dispatch(Request::trusted_host(
+        "app.remove",
+        vec!["ops".into()],
+    ))
+    .unwrap();
+    assert!(!core.state().scheduler.schedules.contains_key("ops"));
 }
