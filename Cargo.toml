@@ -25,6 +25,7 @@ members = [
   "rust/crates/terrane-cap-net",
   "rust/crates/terrane-cap-replica",
   "rust/crates/terrane-cap-sysinfo",
+  "rust/crates/terrane-cap-telemetry",
   "rust/crates/terrane-cap-wasm-runtime",
   "rust/crates/terrane-core",
   "rust/crates/terrane-host",
@@ -69,6 +70,7 @@ terrane-cap-time = { path = "rust/crates/terrane-cap-time" }
 terrane-cap-net = { path = "rust/crates/terrane-cap-net" }
 terrane-cap-replica = { path = "rust/crates/terrane-cap-replica" }
 terrane-cap-sysinfo = { path = "rust/crates/terrane-cap-sysinfo" }
+terrane-cap-telemetry = { path = "rust/crates/terrane-cap-telemetry" }
 terrane-cap-wasm-runtime = { path = "rust/crates/terrane-cap-wasm-runtime" }
 terrane-host = { path = "rust/crates/terrane-host" }
 terrane-api = { path = "rust/crates/terrane-api" }

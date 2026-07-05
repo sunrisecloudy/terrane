@@ -33,6 +33,12 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["app", "install", path] => run_install(path),
         ["app", "install-kv", path, rest @ ..] => run_install_kv(path, rest),
         ["app", "build", dir] => run_app_build(dir),
+        ["app", "remove", app] => run_app_remove(app),
+        ["logs", app, rest @ ..] => run_logs(app, rest),
+        ["logs", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane logs <app> [--level warn] [--tail 200] [--follow]".into())
+        }
         ["contract", "export"] => run_contract_export(),
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
@@ -165,6 +171,58 @@ pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result
 
 pub fn run_install(path: &str) -> Result<(), String> {
     println!("{}", crate::install_app(path)?.message());
+    Ok(())
+}
+
+/// `terrane app remove <id>` — dispatches the core command and, on success,
+/// prunes the app's per-app log buffer directory. The fold already cleared the
+/// telemetry state slice; the buffer is a host-edge artifact, deleted here.
+pub fn run_app_remove(app: &str) -> Result<(), String> {
+    let outcome = crate::dispatch("app.remove", &[app.to_string()])?;
+    print_command_outcome(outcome);
+    let _ = crate::app_log::delete_app_logs(&crate::home_dir(), app);
+    Ok(())
+}
+
+/// `terrane logs <app> [--level warn] [--tail 200] [--follow]` — read this
+/// app's per-app ring buffer back, newest last. `--follow` (best-effort here;
+/// the CLI does not long-poll) currently behaves like a tail of the last 1000.
+pub fn run_logs(app: &str, rest: &[&str]) -> Result<(), String> {
+    let mut level = String::new();
+    let mut tail = 200usize;
+    let mut follow = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--level" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--level requires a value".into());
+                };
+                level = (*value).to_string();
+                i += 2;
+            }
+            "--tail" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--tail requires a value".into());
+                };
+                tail = value
+                    .parse::<usize>()
+                    .map_err(|_| format!("--tail must be a non-negative integer, got {value:?}"))?;
+                i += 2;
+            }
+            "--follow" => {
+                follow = true;
+                i += 1;
+            }
+            other => return Err(format!("unknown logs option: {other}")),
+        }
+    }
+    if follow {
+        tail = tail.max(1000);
+    }
+    let json = crate::app_log::read_tail(&crate::home_dir(), app, &level, tail)
+        .map_err(|e| e.to_string())?;
+    println!("{json}");
     Ok(())
 }
 
@@ -814,7 +872,7 @@ pub fn print_help() {
          \x20                                                  store a JS bundle in reserved cap-kv keys\n\
          \x20 terrane app build <dir>                          build an app frontend (terrane-app-build) into dist/\n\
          \x20 terrane app add <id> <name…> [--source <path>]   catalog an app by path (dev)\n\
-         \x20 terrane app remove <id>                          remove an app\n\
+         \x20 terrane app remove <id>                          remove an app (also prunes its log buffer)\n\
          \x20 terrane kv set <app> <key> <value…>              store a value\n\
          \x20 terrane kv rm <app> <key>                        delete a value\n\
          \x20 terrane kv storage set --default <backend> [--path <path>]\n\
@@ -852,6 +910,7 @@ pub fn print_help() {
          Reads & meta:\n\
          \x20 terrane state                  print the whole world\n\
          \x20 terrane log                    print the event log (decoded)\n\
+         \x20 terrane logs <app> [--level warn] [--tail 200]  read an app's local backend log buffer\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
          \x20 terrane migrate-log            upgrade a pre-actor log and keep log.bin.pre-actor\n\
          \x20 terrane query jmespath <app> <sourceJson> <expression>  read folded state with JMESPath\n\

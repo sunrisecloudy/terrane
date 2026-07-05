@@ -21,4 +21,5 @@ mod password_manager;
 mod query;
 mod search;
 mod sysinfo;
+mod telemetry;
 mod time;

@@ -262,6 +262,7 @@ pub fn route(
         (Method::Get, ["apps", id, "__terrane", "live-version"]) if live_reload => {
             crate::live_reload::response(app_source(core, dev_apps, id), id)
         }
+        (Method::Get, ["apps", id, "logs"]) => app_logs(id, request),
         (Method::Get, ["apps", id, "__terrane", "frame"]) => {
             serve_ui(core, dev_apps, id, "", live_reload)
         }
@@ -530,6 +531,32 @@ fn preview_decision_request(request: &mut Request) -> Result<PreviewDecisionRequ
     }
     PreviewDecisionRequest::deserialize_json(&body)
         .map_err(|e| json_error(400, &format!("bad decision body: {e}")))
+}
+
+/// `GET /apps/{id}/logs?level=&tail=` — owner/local host surface for backend
+/// telemetry jsonl. The app frame itself does not call this route.
+fn app_logs(id: &str, request: &Request) -> Resp {
+    let query = request.url().split_once('?').map(|(_, q)| q).unwrap_or("");
+    let level = query_value(query, "level").unwrap_or_default();
+    let tail = query_value(query, "tail")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(200);
+    match terrane_host::app_log::read_tail(&terrane_host::home_dir(), id, &level, tail) {
+        Ok(json) => Response::from_data(json.into_bytes())
+            .with_header(header("Content-Type", "application/json")),
+        Err(e) => json_error(500, &e.to_string()),
+    }
+}
+
+fn query_value(query: &str, key: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == key {
+            percent_decode(v).ok()
+        } else {
+            None
+        }
+    })
 }
 
 fn is_admin_control_route(method: &Method, segs: &[&str]) -> bool {

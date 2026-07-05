@@ -14,9 +14,10 @@ use terrane_api::{
     mcp_prompts, mcp_resource_templates, mcp_resources, mcp_tools, MCP_PROTOCOL_VERSION,
     MCP_SERVER_INSTRUCTIONS, TOOL_APP_ACTIONS, TOOL_APP_BUILD_COMMIT, TOOL_APP_BUILD_DISCARD,
     TOOL_APP_BUILD_GET, TOOL_APP_BUILD_LIST, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
-    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER,
-    TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND,
-    TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS,
+    TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_LOGS, TOOL_APP_RECIPE,
+    TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST,
+    TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY, TOOL_INVOKE,
+    TOOL_LIST_APPS,
     TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
     TOOL_WORKFLOW_INFO,
 };
@@ -941,6 +942,28 @@ fn tool_call(
                 Err(crate::InvokeFailure::Other(e)) => tool_text(id, &e, true),
             }
         }
+        TOOL_APP_LOGS => {
+            let args = match args_object(TOOL_APP_LOGS, &params.arguments) {
+                Ok(args) => args,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let app = match required_string(args, "app", TOOL_APP_LOGS) {
+                Ok(app) => app,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let level = match optional_string(args, "level", TOOL_APP_LOGS) {
+                Ok(level) => level,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            let tail = match optional_usize(args, "tail", TOOL_APP_LOGS, 200) {
+                Ok(tail) => tail,
+                Err(e) => return tool_text(id, &e, true),
+            };
+            match crate::app_log::read_tail(&crate::home_dir(), &app, &level, tail) {
+                Ok(output) => tool_json(id, &output, false),
+                Err(e) => tool_text(id, &e.to_string(), true),
+            }
+        }
         TOOL_PERMISSION_CHECK => {
             let args = match args_object(TOOL_PERMISSION_CHECK, &params.arguments) {
                 Ok(args) => args,
@@ -1287,6 +1310,35 @@ fn optional_bool(args: &Map<String, Value>, field: &str, tool: &str) -> Result<b
             tool_call_example(tool)
         )),
         None => Ok(false),
+    }
+}
+
+fn optional_usize(
+    args: &Map<String, Value>,
+    field: &str,
+    tool: &str,
+    fallback: usize,
+) -> Result<usize, String> {
+    match args.get(field) {
+        Some(Value::Number(value)) => {
+            let Some(raw) = value.as_u64() else {
+                return Err(format!(
+                    "{tool} requires non-negative integer '{field}'. Try: {}",
+                    tool_call_example(tool)
+                ));
+            };
+            usize::try_from(raw).map_err(|_| {
+                format!(
+                    "{tool} integer '{field}' is too large. Try: {}",
+                    tool_call_example(tool)
+                )
+            })
+        }
+        Some(_) => Err(format!(
+            "{tool} requires integer '{field}'. Try: {}",
+            tool_call_example(tool)
+        )),
+        None => Ok(fallback),
     }
 }
 
@@ -3812,6 +3864,7 @@ fn tool_call_example(tool: &str) -> String {
         TOOL_APP_REGISTER => json!({"source": "/path/to/bundle", "dryRun": true}),
         TOOL_APP_ACTIONS => json!({"app": "APP_ID"}),
         TOOL_INVOKE => json!({"app": "APP_ID", "verb": "read", "args": []}),
+        TOOL_APP_LOGS => json!({"app": "APP_ID", "level": "warn", "tail": 200}),
         TOOL_PERMISSION_CHECK => json!({"requestId": "REQUEST_ID"}),
         TOOL_PERMISSION_CANCEL => json!({"requestId": "REQUEST_ID", "reason": "not needed"}),
         TOOL_PERMISSION_REQUESTS => json!({}),

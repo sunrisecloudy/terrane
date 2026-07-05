@@ -3572,6 +3572,7 @@ dependencies = [
  "rquickjs",
  "tempfile",
  "terrane-cap-interface",
+ "terrane-cap-telemetry",
 ]
 
 [[package]]
@@ -3691,6 +3692,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-telemetry"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "sha2",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-time"
 version = "0.1.0"
 dependencies = [
@@ -3742,6 +3752,7 @@ dependencies = [
  "terrane-cap-search",
  "terrane-cap-stt",
  "terrane-cap-sysinfo",
+ "terrane-cap-telemetry",
  "terrane-cap-time",
  "terrane-cap-wasm-runtime",
  "wat",
@@ -3780,6 +3791,7 @@ dependencies = [
  "terrane-cap-net",
  "terrane-cap-replica",
  "terrane-cap-scheduler",
+ "terrane-cap-telemetry",
  "terrane-cap-time",
  "terrane-cap-wasm-runtime",
  "terrane-core",

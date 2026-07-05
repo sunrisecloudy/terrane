@@ -48,13 +48,21 @@ pub fn run_js_bundle(
         &bundle.source,
         &bundle.resources,
         input,
-        host,
+        host.clone(),
         first_error.clone(),
         app,
         &bundle.name,
     );
 
     if let Some(e) = first_error.borrow_mut().take() {
+        let _ = host.app_log(
+            "error",
+            &e.to_string(),
+            &run_data(input),
+            terrane_cap_telemetry::SOURCE_FIRST_ERROR,
+            "",
+            true,
+        );
         return Err(e);
     }
     output
@@ -90,22 +98,25 @@ fn execute_js(
     let ctx = Context::full(&rt).map_err(js_err)?;
 
     ctx.with(|ctx| -> Result<String> {
-        install_resources(&ctx, resources, host, first_error.clone())?;
+        install_resources(&ctx, resources, host.clone(), first_error.clone())?;
         install_app_globals(&ctx, app_id, app_name)?;
 
         ctx.eval::<(), _>(backend_src.as_bytes())
             .catch(&ctx)
-            .map_err(caught_to_err)?;
+            .map_err(|e| caught_to_err(&host, input, e))?;
         ctx.eval::<(), _>(APP_RUNTIME.as_bytes())
             .catch(&ctx)
-            .map_err(caught_to_err)?;
+            .map_err(|e| caught_to_err(&host, input, e))?;
 
         let handle: Function = ctx.globals().get("handle").map_err(|_| {
             Error::Runtime(
                 "backend defines neither a `handle` function nor an `actions` table".into(),
             )
         })?;
-        let result: Value = handle.call((input,)).catch(&ctx).map_err(caught_to_err)?;
+        let result: Value = handle
+            .call((input,))
+            .catch(&ctx)
+            .map_err(|e| caught_to_err(&host, input, e))?;
         result
             .as_string()
             .and_then(|s| s.to_string().ok())
@@ -179,7 +190,37 @@ fn install_resources(
 
     let ctx_obj = Object::new(ctx.clone()).map_err(js_err)?;
     ctx_obj.set("resource", resource).map_err(js_err)?;
-    ctx.globals().set("ctx", ctx_obj).map_err(js_err)
+    ctx.globals().set("ctx", ctx_obj).map_err(js_err)?;
+    install_console(ctx, install_ctx.host)
+}
+
+fn install_console(ctx: &Ctx<'_>, host: RuntimeHostHandle) -> Result<()> {
+    let console = Object::new(ctx.clone()).map_err(js_err)?;
+    for (name, level) in [
+        ("debug", "debug"),
+        ("log", "info"),
+        ("info", "info"),
+        ("warn", "warn"),
+        ("error", "error"),
+    ] {
+        let level = level.to_string();
+        let host = host.clone();
+        let f = Function::new(ctx.clone(), move |args: Rest<Value>| {
+            let msg = console_message(&args.0);
+            let record_error = level == "error";
+            let _ = host.app_log(
+                &level,
+                &msg,
+                "{}",
+                terrane_cap_telemetry::SOURCE_EXPLICIT,
+                "",
+                record_error,
+            );
+        })
+        .map_err(js_err)?;
+        console.set(name, f).map_err(js_err)?;
+    }
+    ctx.globals().set("console", console).map_err(js_err)
 }
 
 fn install_write<'js>(
@@ -334,7 +375,7 @@ fn js_resource_arg(v: &Value, param: &str) -> std::result::Result<String, &'stat
     if let Ok(s) = js_string_arg(v) {
         return Ok(s);
     }
-    if matches!(param, "payload" | "payloadJson")
+    if matches!(param, "payload" | "payloadJson" | "dataJson")
         && (v.is_object() || v.is_array() || v.is_bool() || v.is_number() || v.is_null())
     {
         let ctx = v.ctx();
@@ -347,6 +388,66 @@ fn js_resource_arg(v: &Value, param: &str) -> std::result::Result<String, &'stat
 }
 
 /// Fold a caught JS exception/value into our typed Runtime error.
-fn caught_to_err(e: CaughtError<'_>) -> Error {
-    Error::Runtime(e.to_string())
+fn caught_to_err(host: &RuntimeHostHandle, input: &[String], e: CaughtError<'_>) -> Error {
+    let message = e.to_string();
+    let source = if message.to_ascii_lowercase().contains("interrupted") {
+        terrane_cap_telemetry::SOURCE_TIMEOUT
+    } else {
+        terrane_cap_telemetry::SOURCE_EXCEPTION
+    };
+    let _ = host.app_log("error", &message, &run_data(input), source, &message, true);
+    Error::Runtime(message)
+}
+
+fn console_message(vals: &[Value]) -> String {
+    vals.iter()
+        .map(js_log_arg)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn js_log_arg(v: &Value) -> String {
+    if let Ok(s) = js_string_arg(v) {
+        return s;
+    }
+    if v.is_object() || v.is_array() || v.is_bool() || v.is_number() || v.is_null() {
+        let ctx = v.ctx();
+        let encoded = ctx
+            .globals()
+            .get::<_, Object>("JSON")
+            .and_then(|json| json.get::<_, Function>("stringify"))
+            .and_then(|stringify| stringify.call::<_, Value>((v.clone(),)));
+        if let Ok(encoded) = encoded {
+            if let Ok(s) = js_string_arg(&encoded) {
+                return s;
+            }
+        }
+    }
+    format!("[{}]", v.type_name())
+}
+
+fn run_data(input: &[String]) -> String {
+    let args = input
+        .iter()
+        .map(|v| format!("\"{}\"", json_escape(v)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let verb = input.first().map(|v| v.as_str()).unwrap_or("");
+    format!("{{\"verb\":\"{}\",\"input\":[{}]}}", json_escape(verb), args)
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }

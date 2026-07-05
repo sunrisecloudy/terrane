@@ -131,6 +131,28 @@ on replay; **reads** are not recorded.
 > ctx.resource.kv.set("greeting", "hi");
 > ```
 
+### Backend logging
+
+JS backends always get a global `console` shim. `console.log` and
+`console.info` write `info` entries, `console.warn` writes `warn`, and
+`console.error` writes `error` into the local per-app ring buffer under
+`$TERRANE_HOME/logs/<app>/`. Console logging is available even when the app has
+not requested or been granted the `telemetry` resource, so diagnostics do not
+trigger a permission prompt.
+
+Apps that request and receive the `telemetry` grant can also call
+`ctx.resource.telemetry.debug(msg, dataJson?)`, `.info(...)`, `.warn(...)`,
+`.error(...)`, and `.read(level?, tail?)`. Debug/info/warn entries are local
+buffer lines only; `error` also records one `telemetry.error` event so replay
+rebuilds the app's error count and last error facts. The optional `dataJson`
+payload stays in the local jsonl buffer; only its SHA-256 digest enters the
+event log.
+
+Thrown backend exceptions are mirrored to the local buffer with the caught error
+rendering and, when telemetry is granted, one `telemetry.error` event. Logs are
+not exported over the network; local owners and agents can inspect them with
+`terrane logs <app> [--level warn] [--tail 200]` or the MCP `app_logs` tool.
+
 The tables below are **generated** from the capabilities' declared resource
 APIs. Don't hand-edit between the markers — a test regenerates them and fails if
 they drift from the runtime.
@@ -310,6 +332,16 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.sysinfo.battery()` | read |
 | `ctx.resource.sysinfo.system()` | read |
 | `ctx.resource.sysinfo.processes(sortBy, limit)` | read |
+
+#### `ctx.resource.telemetry`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.telemetry.debug(msg, dataJson?)` | call |
+| `ctx.resource.telemetry.info(msg, dataJson?)` | call |
+| `ctx.resource.telemetry.warn(msg, dataJson?)` | call |
+| `ctx.resource.telemetry.error(msg, dataJson?)` | call |
+| `ctx.resource.telemetry.read(level?, tail?)` | read |
 
 #### `ctx.resource.time`
 

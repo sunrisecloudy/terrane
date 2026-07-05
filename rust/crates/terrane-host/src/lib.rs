@@ -18,6 +18,7 @@ use terrane_core::Core;
 pub use terrane_core::EventRecord;
 use terrane_core::{Decision, Error, QueryValue, Request};
 
+pub mod app_log;
 pub mod asr;
 pub mod blob_store;
 pub mod cap_doc;

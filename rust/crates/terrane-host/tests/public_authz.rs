@@ -81,6 +81,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "scheduler",
             "stt",
             "sysinfo",
+            "telemetry",
             "time"
         ])
     );

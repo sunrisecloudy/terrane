@@ -77,6 +77,7 @@ use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_stt::SttState;
 use terrane_cap_time::TimeState;
+use terrane_cap_telemetry::TelemetryState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -104,6 +105,7 @@ pub struct State {
     pub crdt: CrdtState,
     pub replica: ReplicaState,
     pub time: TimeState,
+    pub telemetry: TelemetryState,
 }
 
 impl StateStore for State {
@@ -126,6 +128,7 @@ impl StateStore for State {
             "crdt" => Some(&self.crdt),
             "replica" => Some(&self.replica),
             "time" => Some(&self.time),
+            "telemetry" => Some(&self.telemetry),
             _ => None,
         }
     }
@@ -149,6 +152,7 @@ impl StateStore for State {
             "crdt" => Some(&mut self.crdt),
             "replica" => Some(&mut self.replica),
             "time" => Some(&mut self.time),
+            "telemetry" => Some(&mut self.telemetry),
             _ => None,
         }
     }
@@ -452,6 +456,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_stt::SttCapability));
     registry.register(Box::new(terrane_cap_time::TimeCapability));
     registry.register(Box::new(terrane_cap_sysinfo::SysinfoCapability));
+    registry.register(Box::new(terrane_cap_telemetry::TelemetryCapability));
     registry.register(Box::new(terrane_cap_js_runtime::JsRuntimeCapability));
     registry.register(Box::new(terrane_cap_wasm_runtime::WasmRuntimeCapability));
     registry
@@ -881,8 +886,66 @@ impl RuntimeHost for RuntimeResourceHost {
         Ok(output)
     }
 
+    fn app_log(
+        &mut self,
+        level: &str,
+        msg: &str,
+        data: &str,
+        source: &str,
+        stack: &str,
+        record_error: bool,
+    ) -> Result<()> {
+        let Some(runner) = self.runner.clone() else {
+            return Ok(());
+        };
+        let effect = Effect::AppLog {
+            app: self.app.clone(),
+            level: level.to_string(),
+            msg: terrane_cap_interface::truncate(msg, terrane_cap_telemetry::MAX_MSG_BYTES),
+            data: terrane_cap_telemetry::data_arg(&[data.to_string()], 0)?,
+        };
+        let _ = runner.run(&effect, &self.state)?;
+        if level == "error" && record_error && self.telemetry_granted()? {
+            enforce_recorded_call_per_run_limit(
+                &mut self.recorded_call_counts,
+                "telemetry",
+                "error",
+                self.registry
+                    .get("telemetry")?
+                    .recorded_call_per_run_limit("error"),
+            )?;
+            let record = terrane_cap_telemetry::error_event(
+                &self.app,
+                source,
+                msg,
+                stack,
+                data,
+            )?;
+            apply(&self.registry, &mut self.state, &record)?;
+            self.recorded.push(RecordedWrite {
+                record,
+                coalesce_key: None,
+                is_set: false,
+            });
+        }
+        Ok(())
+    }
+
     fn take_records(&mut self) -> Vec<EventRecord> {
         coalesce(std::mem::take(&mut self.recorded))
+    }
+}
+
+impl RuntimeResourceHost {
+    fn telemetry_granted(&self) -> Result<bool> {
+        Ok(self.temporary_allowed_resources.contains("telemetry")
+            || dev_allow_requested_resources()
+            || terrane_cap_auth::namespace_granted(
+                &self.state,
+                &self.principal,
+                &self.app,
+                "telemetry",
+            )?)
     }
 }
 
@@ -1314,10 +1377,24 @@ impl<R: EffectRunner + 'static> Core<R> {
             app_name: app.name.clone(),
             host: host.clone(),
         };
-        let result = self.registry.get(namespace)?.run_runtime(ctx, request)?;
-        let records = self.commit(host.take_records(), &principal)?;
-        self.last_output = Some(result.output);
-        Ok(records)
+        match self.registry.get(namespace)?.run_runtime(ctx, request) {
+            Ok(result) => {
+                let records = self.commit(host.take_records(), &principal)?;
+                self.last_output = Some(result.output);
+                Ok(records)
+            }
+            Err(err) => {
+                let error_facts = host
+                    .take_records()
+                    .into_iter()
+                    .filter(|record| record.kind == "telemetry.error")
+                    .collect::<Vec<_>>();
+                if !error_facts.is_empty() {
+                    let _ = self.commit(error_facts, &principal)?;
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Take the string printed by the most recent runtime run (if any). Not part

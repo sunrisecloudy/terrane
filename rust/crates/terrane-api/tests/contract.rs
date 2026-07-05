@@ -11,7 +11,7 @@ use terrane_api::{
     TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START, TOOL_APP_BUILD_VALIDATE,
     TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE,
     TOOL_APP_SCAFFOLD, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO,
-    TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL,
+    TOOL_CAPABILITY_QUERY, TOOL_APP_LOGS, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL,
     TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
 };
 
@@ -104,6 +104,7 @@ fn mcp_tool_surface_is_the_documented_set_with_valid_schemas() {
             TOOL_LIST_APPS,
             TOOL_APP_ACTIONS,
             TOOL_INVOKE,
+            TOOL_APP_LOGS,
             TOOL_PERMISSION_CHECK,
             TOOL_PERMISSION_CANCEL,
             TOOL_PERMISSION_REQUESTS,
@@ -321,6 +322,7 @@ fn host_contract_lists_the_v1_subset() {
             ("POST", "/mcp"),
             ("GET", "/apps/{id}/"),
             ("POST", "/apps/{id}/invoke"),
+            ("GET", "/apps/{id}/logs"),
         ]
     );
 
@@ -345,6 +347,7 @@ fn host_contract_lists_the_v1_subset() {
             TOOL_LIST_APPS,
             TOOL_APP_ACTIONS,
             TOOL_INVOKE,
+            TOOL_APP_LOGS,
             TOOL_PERMISSION_CHECK,
             TOOL_PERMISSION_CANCEL,
             TOOL_PERMISSION_REQUESTS,
