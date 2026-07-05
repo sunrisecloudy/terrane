@@ -55,6 +55,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     bridge.onDocumentSet = { [weak self] name in
       DispatchQueue.main.async { self?.applyDocumentFromApp(name) }
     }
+    bridge.onPermissionRequired = { [weak self, weak bridge] prompt, completion in
+      DispatchQueue.main.async {
+        guard let self, let bridge else {
+          completion(false)
+          return
+        }
+        self.presentPermissionPrompt(prompt, bridge: bridge, completion: completion)
+      }
+    }
     bridge.install(into: config.userContentController)
     let appSchemeHandler = AppSchemeHandler { [weak self] in self?.apps ?? [] }
     self.appSchemeHandler = appSchemeHandler
@@ -502,6 +511,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     try reloadAppFromDisk(id: app.id, preferredSourcePath: file.relativePath)
     return SourceEditorSaveResult(message: "Saved and reloaded.")
+  }
+
+  private func presentPermissionPrompt(
+    _ prompt: PermissionRequiredPrompt,
+    bridge: TerraneBridge,
+    completion: @escaping (Bool) -> Void
+  ) {
+    let alert = NSAlert()
+    alert.messageText = "Allow \(prompt.appName) to access resources?"
+    alert.informativeText =
+      "The app is requesting: \(prompt.missingResources.joined(separator: ", "))."
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "Allow")
+    alert.addButton(withTitle: "Deny")
+
+    let handleDecision: (NSApplication.ModalResponse) -> Void = { [weak self, weak bridge] response in
+      guard response == .alertFirstButtonReturn else {
+        completion(false)
+        return
+      }
+      guard let bridge else {
+        completion(false)
+        return
+      }
+      for namespace in prompt.missingResources {
+        let result = bridge.grant(app: prompt.appId, namespace: namespace)
+        guard result.0 else {
+          self?.presentGrantFailure(namespace: namespace, detail: result.1)
+          completion(false)
+          return
+        }
+      }
+      completion(true)
+    }
+
+    if let window {
+      alert.beginSheetModal(for: window, completionHandler: handleDecision)
+    } else {
+      handleDecision(alert.runModal())
+    }
+  }
+
+  private func presentGrantFailure(namespace: String, detail: String) {
+    let alert = NSAlert()
+    alert.messageText = "Permission grant failed"
+    alert.informativeText = "Could not grant \(namespace): \(detail)"
+    alert.alertStyle = .critical
+    if let window {
+      alert.beginSheetModal(for: window)
+    } else {
+      alert.runModal()
+    }
   }
 
   private func reloadAppFromDisk(id: String, preferredSourcePath: String?) throws {

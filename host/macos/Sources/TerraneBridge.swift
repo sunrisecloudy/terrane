@@ -1,6 +1,31 @@
 import Foundation
 import WebKit
 
+struct PermissionRequiredPrompt: Equatable {
+  let appId: String
+  let appName: String
+  let missingResources: [String]
+  let message: String
+
+  static func parse(error: String, appId: String, appName: String) -> PermissionRequiredPrompt? {
+    let prefix = "permission required for app \(appId): grant "
+    guard error.hasPrefix(prefix) else { return nil }
+    let tail = String(error.dropFirst(prefix.count))
+    let resourcesPart = tail.split(separator: ";", maxSplits: 1).first.map(String.init) ?? tail
+    let resources = resourcesPart
+      .split(separator: ",")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    guard !resources.isEmpty else { return nil }
+    return PermissionRequiredPrompt(
+      appId: appId,
+      appName: appName.isEmpty ? appId : appName,
+      missingResources: resources,
+      message: error
+    )
+  }
+}
+
 /// Bridges the app UI to terrane-core over the Terrane host C ABI.
 ///
 /// The selected app path calls `terrane.invoke(verb, ...args)` and the App
@@ -18,6 +43,7 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// Called when a page renames its document via `terrane.setDocument(...)`.
   /// The host owns the top bar, so it updates the breadcrumb (and persists).
   var onDocumentSet: ((String) -> Void)?
+  var onPermissionRequired: ((PermissionRequiredPrompt, @escaping (Bool) -> Void) -> Void)?
 
   var terraneHandle: OpaquePointer { handle }
 
@@ -72,8 +98,8 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         replyHandler(nil, "terrane: malformed invoke message")
         return
       }
-      replyString(
-        invokeSelectedApp(verb: verb, args: Self.stringArgs(from: body["args"])), replyHandler)
+      replyInvokingSelectedApp(
+        verb: verb, args: Self.stringArgs(from: body["args"]), replyHandler)
     case "preview":
       guard let files = body["files"] else {
         replyHandler(nil, "terrane: malformed preview message")
@@ -303,6 +329,34 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
 
   func grant(app: String, namespace: String) -> (Bool, String) {
     dispatch(command: "auth.grant", argv: ["user:local-owner", app, namespace])
+  }
+
+  private func replyInvokingSelectedApp(
+    verb: String,
+    args: [String],
+    _ replyHandler: @escaping (Any?, String?) -> Void
+  ) {
+    let result = invokeSelectedApp(verb: verb, args: args)
+    guard !result.0,
+      let prompt = PermissionRequiredPrompt.parse(
+        error: result.1, appId: appId, appName: appName),
+      let onPermissionRequired
+    else {
+      replyString(result, replyHandler)
+      return
+    }
+
+    onPermissionRequired(prompt) { [weak self] approved in
+      guard let self else {
+        replyHandler(nil, result.1)
+        return
+      }
+      guard approved else {
+        replyHandler(nil, result.1)
+        return
+      }
+      self.replyString(self.invokeSelectedApp(verb: verb, args: args), replyHandler)
+    }
   }
 
   private func createPreview(files: Any) -> (Bool, Any) {

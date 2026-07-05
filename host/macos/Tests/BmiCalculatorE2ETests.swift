@@ -3,6 +3,27 @@ import WebKit
 import XCTest
 
 final class BmiCalculatorE2ETests: XCTestCase {
+  func testPermissionRequiredPromptParsesHostMessage() throws {
+    let prompt = try XCTUnwrap(
+      PermissionRequiredPrompt.parse(
+        error:
+          "permission required for app chat: grant kv, local-model; open http://127.0.0.1:8780/__terrane/admin/requests/local-chat-user-local-owner-kv_local-model",
+        appId: "chat",
+        appName: "Chat"
+      )
+    )
+    XCTAssertEqual(prompt.appId, "chat")
+    XCTAssertEqual(prompt.appName, "Chat")
+    XCTAssertEqual(prompt.missingResources, ["kv", "local-model"])
+
+    XCTAssertNil(
+      PermissionRequiredPrompt.parse(
+        error: "permission required for app other: grant kv; open http://127.0.0.1:8780",
+        appId: "chat",
+        appName: "Chat"
+      ))
+  }
+
   func testBmiCalculatorCatalogAssetsShimAndBridgeInvoke() throws {
     let fixture = try BmiFixture()
     defer { fixture.cleanUp() }
@@ -355,6 +376,24 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(appDelegate.contains("decisionHandler(.download)"), appDelegate)
     XCTAssertTrue(appDelegate.contains("download.delegate = self"), appDelegate)
     XCTAssertTrue(appDelegate.contains("NSSavePanel"), appDelegate)
+  }
+
+  func testMacHostPromptsForTerranePermissionGrantsAndRetries() throws {
+    let root = repoRoot()
+    let bridge = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/TerraneBridge.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(bridge.contains("onPermissionRequired"), bridge)
+    XCTAssertTrue(bridge.contains("PermissionRequiredPrompt.parse"), bridge)
+    XCTAssertTrue(bridge.contains("self.invokeSelectedApp(verb: verb, args: args)"), bridge)
+
+    let appDelegate = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/AppDelegate.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(appDelegate.contains("Allow \\(prompt.appName) to access resources?"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("bridge.grant(app: prompt.appId, namespace: namespace)"), appDelegate)
   }
 
   func testSourceSyntaxHighlighterColorsCodeTokens() throws {
