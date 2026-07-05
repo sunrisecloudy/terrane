@@ -16,6 +16,10 @@ Already shipped, so no plan needed: `search` (hybrid search, merged),
 `local-model.embed` (merged with search). Deliberately skipped for now:
 payments.
 
+The roadmap was audited against Sandstorm, Urbit, Val Town, Tauri, Jazz/DXOS,
+the ChatGPT Apps SDK, and Cloudflare Workers — source notes and the coverage
+matrix live in [research/](research/README.md).
+
 ## Index
 
 ### Foundation — data & core surface
