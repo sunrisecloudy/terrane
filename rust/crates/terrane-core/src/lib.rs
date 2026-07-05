@@ -69,6 +69,7 @@ use terrane_cap_crdt::CrdtState;
 use terrane_cap_document::DocumentState;
 use terrane_cap_harness::HarnessState;
 use terrane_cap_history::HistoryState;
+use terrane_cap_interop::InteropState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_local_model::LocalModelState;
 use terrane_cap_model::ModelState;
@@ -97,6 +98,7 @@ pub struct State {
     pub builder: BuilderState,
     pub harness: HarnessState,
     pub history: HistoryState,
+    pub interop: InteropState,
     pub kv: KvState,
     pub query: QueryState,
     pub net: NetState,
@@ -122,6 +124,7 @@ impl StateStore for State {
             "builder" => Some(&self.builder),
             "harness" => Some(&self.harness),
             "history" => Some(&self.history),
+            "interop" => Some(&self.interop),
             "kv" => Some(&self.kv),
             "query" => Some(&self.query),
             "net" => Some(&self.net),
@@ -148,6 +151,7 @@ impl StateStore for State {
             "builder" => Some(&mut self.builder),
             "harness" => Some(&mut self.harness),
             "history" => Some(&mut self.history),
+            "interop" => Some(&mut self.interop),
             "kv" => Some(&mut self.kv),
             "query" => Some(&mut self.query),
             "net" => Some(&mut self.net),
@@ -450,6 +454,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_history::HistoryCapability));
+    registry.register(Box::new(terrane_cap_interop::InteropCapability));
     registry.register(Box::new(terrane_cap_kv::KvCapability));
     registry.register(Box::new(terrane_cap_query::QueryCapability));
     registry.register(Box::new(terrane_cap_relational_db::RelationalDbCapability));
@@ -685,6 +690,7 @@ pub struct RuntimeResourceHost {
     /// is fresh per backend run, so this is naturally per-run scoped and never
     /// persisted or replayed.
     recorded_call_counts: BTreeMap<String, usize>,
+    interop_chain: Vec<String>,
     /// Runs `Decision::Effect` from `ResourceMethod::Call` invocations; calls
     /// are refused when the host was built without one.
     runner: Option<std::sync::Arc<dyn EffectRunner>>,
@@ -708,6 +714,7 @@ impl RuntimeResourceHost {
             temporary_allowed_resources: BTreeSet::new(),
             recorded: Vec::new(),
             recorded_call_counts: BTreeMap::new(),
+            interop_chain: Vec::new(),
             runner: None,
         }
     }
@@ -716,6 +723,11 @@ impl RuntimeResourceHost {
     /// their effects (recorded like any write).
     pub fn with_runner(mut self, runner: std::sync::Arc<dyn EffectRunner>) -> Self {
         self.runner = Some(runner);
+        self
+    }
+
+    pub fn with_interop_chain(mut self, chain: Vec<String>) -> Self {
+        self.interop_chain = chain;
         self
     }
 
@@ -836,6 +848,9 @@ impl RuntimeHost for RuntimeResourceHost {
         let mut scoped_args = Vec::with_capacity(args.len() + 1);
         scoped_args.push(self.app.clone());
         scoped_args.extend(args.iter().cloned());
+        if namespace == "interop" && method == "call" {
+            scoped_args.insert(3, self.interop_chain.join(">"));
+        }
 
         let bus = RegistryBus::new(&self.registry, &self.state);
         let ctx = CommandCtx {

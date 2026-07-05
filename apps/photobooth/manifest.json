@@ -7,5 +7,6 @@
   "ui": "index.html",
   "icon": "icon.svg",
   "resources": [],
+  "interfaces": ["items"],
   "browser_permissions": ["camera"]
 }

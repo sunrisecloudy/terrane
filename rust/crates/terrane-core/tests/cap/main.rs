@@ -19,6 +19,7 @@ mod grant_verbs_match_specs;
 mod harness;
 mod history;
 mod host;
+mod interop;
 mod interface;
 mod kv;
 mod local_model;

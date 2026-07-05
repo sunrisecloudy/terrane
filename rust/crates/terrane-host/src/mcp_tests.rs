@@ -495,11 +495,17 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
   if (verb === "__actions__") {
     return JSON.stringify({app:"weak-demo",actions:[
       {verb:"write",args:[{name:"text",required:true}],returns:"stored"},
-      {verb:"read",args:[],returns:"text"}
+      {verb:"read",args:[],returns:"text"},
+      {verb:"common.receive",args:[{name:"kind",required:false},{name:"payloadJson",required:false}],returns:"JSON status"},
+      {verb:"common.list",args:[],returns:"JSON array"},
+      {verb:"common.get",args:[{name:"id",required:true}],returns:"JSON item or typed not found"}
     ]});
   }
   if (verb === "write") { kv.set("note", input.slice(1).join(" ")); return "stored"; }
   if (verb === "read") { var note = kv.get("note"); return note == null ? "(empty)" : note; }
+  if (verb === "common.receive") { kv.set("inbox/latest", input[2] || ""); return JSON.stringify({ok:true}); }
+  if (verb === "common.list") { return JSON.stringify([]); }
+  if (verb === "common.get") { return JSON.stringify({error:{code:"NotFound",message:"item not found"}}); }
   return "unknown";
 }"#,
     )
@@ -707,11 +713,17 @@ fn app_build_staged_tools_validate_and_commit_without_resending_files() {
   if (verb === "__actions__") {
     return JSON.stringify({app:"staged-demo",actions:[
       {verb:"write",args:[{name:"text",required:true}],returns:"stored"},
-      {verb:"read",args:[],returns:"text"}
+      {verb:"read",args:[],returns:"text"},
+      {verb:"common.receive",args:[{name:"kind",required:false},{name:"payloadJson",required:false}],returns:"JSON status"},
+      {verb:"common.list",args:[],returns:"JSON array"},
+      {verb:"common.get",args:[{name:"id",required:true}],returns:"JSON item or typed not found"}
     ]});
   }
   if (verb === "write") { kv.set("note", input.slice(1).join(" ")); return "stored"; }
   if (verb === "read") { try { return kv.get("note"); } catch (err) { return "(empty)"; } }
+  if (verb === "common.receive") { kv.set("inbox/latest", input[2] || ""); return JSON.stringify({ok:true}); }
+  if (verb === "common.list") { return JSON.stringify([]); }
+  if (verb === "common.get") { return JSON.stringify({error:{code:"NotFound",message:"item not found"}}); }
   return "unknown";
 }"#;
     let put = handle_json_rpc(
@@ -792,7 +804,7 @@ fn app_register_inline_dry_run_can_commit_by_draft_id() {
         },
         {
             "path": "main.js",
-            "content": "function handle(input){if((input[0]||'')==='__actions__'){return JSON.stringify({app:'inline-draft',actions:[{verb:'read',args:[],returns:'ok'}]});}return 'ok';}"
+            "content": "function handle(input){var verb=input[0]||'';if(verb==='__actions__'){return JSON.stringify({app:'inline-draft',actions:[{verb:'read',args:[],returns:'ok'},{verb:'common.receive',args:[],returns:'JSON status'},{verb:'common.list',args:[],returns:'JSON array'},{verb:'common.get',args:[{name:'id',required:true}],returns:'JSON item or typed not found'}]});}if(verb==='common.receive'){return JSON.stringify({ok:true});}if(verb==='common.list'){return JSON.stringify([]);}if(verb==='common.get'){return JSON.stringify({error:{code:'NotFound',message:'item not found'}});}return 'ok';}"
         }
     ]);
     let dry_run = handle_json_rpc(
@@ -941,7 +953,7 @@ fn app_build_validate_rejects_runtime_incompatible_backends() {
     // Object-style dispatch is a warning with the positional contract spelled out.
     put_main(
         &mut core,
-        "function handle(input) { var action = input.action || 'list'; return String(action); }",
+        "function handle(input) { var action = input.action || 'list'; var verb = input[0] || ''; if (verb === '__actions__') { return JSON.stringify({actions:[{verb:'common.receive',args:[],returns:'JSON status'},{verb:'common.list',args:[],returns:'JSON array'},{verb:'common.get',args:[{name:'id',required:true}],returns:'JSON item or typed not found'}]}); } if (verb === 'common.receive') { return JSON.stringify({ok:true}); } if (verb === 'common.list') { return JSON.stringify([]); } if (verb === 'common.get') { return JSON.stringify({error:{code:'NotFound',message:'item not found'}}); } return String(action); }",
     );
     let object_style = validate(&mut core);
     assert_eq!(object_style["valid"], true, "object style: {object_style}");
@@ -1257,7 +1269,7 @@ fn app_build_put_file_batch_writes_all_or_nothing() {
     let good = handle_json_rpc(
         &mut core,
         &format!(
-            r#"{{"jsonrpc":"2.0","id":"good","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"files":[{{"path":"main.js","content":"function handle(input){{var verb=input[0]||'';return 'ok:'+verb;}}"}},{{"path":"notes.txt","content":"hello"}}]}}}}}}"#,
+            r#"{{"jsonrpc":"2.0","id":"good","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"files":[{{"path":"main.js","content":"function handle(input){{var verb=input[0]||'';if(verb==='__actions__'){{return JSON.stringify({{actions:[{{verb:'common.receive',args:[],returns:'JSON status'}},{{verb:'common.list',args:[],returns:'JSON array'}},{{verb:'common.get',args:[{{name:'id',required:true}}],returns:'JSON item or typed not found'}}]}});}}if(verb==='common.receive'){{return JSON.stringify({{ok:true}});}}if(verb==='common.list'){{return JSON.stringify([]);}}if(verb==='common.get'){{return JSON.stringify({{error:{{code:'NotFound',message:'item not found'}}}});}}return 'ok:'+verb;}}"}},{{"path":"notes.txt","content":"hello"}}]}}}}}}"#,
             super::json_str(&draft_id)
         ),
     )

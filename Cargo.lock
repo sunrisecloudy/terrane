@@ -3584,6 +3584,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-interop"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "sha2",
+ "terrane-cap-app",
+ "terrane-cap-auth",
+ "terrane-cap-blob",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-js-runtime"
 version = "0.1.0"
 dependencies = [
@@ -3763,6 +3776,7 @@ dependencies = [
  "terrane-cap-harness",
  "terrane-cap-history",
  "terrane-cap-interface",
+ "terrane-cap-interop",
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-local-model",
@@ -3809,6 +3823,7 @@ dependencies = [
  "terrane-cap-document",
  "terrane-cap-harness",
  "terrane-cap-history",
+ "terrane-cap-interop",
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-local-model",

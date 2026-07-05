@@ -1,8 +1,9 @@
 use std::any::Any;
 
 use terrane_cap_interface::{
-    app_exists, encode_event, ensure_app_exists, extract_json_object, namespace_of, replica_peer,
-    state_mut, state_ref, CapBus, Error, QueryValue, StateStore,
+    app_exists, encode_event, ensure_app_exists, extract_json_object, format_item_uri,
+    namespace_of, parse_item_uri, replica_peer, state_mut, state_ref, CapBus, Error, QueryValue,
+    StateStore,
 };
 
 #[derive(Default)]
@@ -88,4 +89,15 @@ fn encode_event_leaves_actor_empty_for_engine_stamping() {
     assert_eq!(record.kind, "sample.changed");
     assert_eq!(record.actor, "");
     assert!(!record.payload.is_empty());
+}
+
+#[test]
+fn item_uri_round_trips_percent_encoded_item_ids() {
+    let uri = format_item_uri("todo", "folder/a b/#1");
+    assert_eq!(uri, "terrane://app/todo/item/folder%2Fa%20b%2F%231");
+
+    let parsed = parse_item_uri(&uri).unwrap();
+    assert_eq!(parsed.app, "todo");
+    assert_eq!(parsed.item, "folder/a b/#1");
+    assert!(parse_item_uri("https://example.test").is_err());
 }

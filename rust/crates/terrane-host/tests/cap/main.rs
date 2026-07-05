@@ -14,6 +14,7 @@ mod document;
 mod history;
 mod host;
 mod i18n;
+mod interop;
 mod kv;
 mod local_model;
 mod model;

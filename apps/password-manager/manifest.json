@@ -6,5 +6,6 @@
   "backend": "main.js",
   "ui": "index.html",
   "icon": "icon.svg",
-  "resources": ["kv", "crypto", "net", "crdt"]
+  "resources": ["kv", "crypto", "net", "crdt"],
+  "interfaces": ["items"]
 }

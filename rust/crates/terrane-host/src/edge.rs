@@ -19,7 +19,8 @@ use terrane_cap_builder as builder;
 use terrane_cap_harness as harness;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
 use terrane_cap_kv::{
-    app_bundle_key, app_bundle_source, set_event, storage_configured_event, KvStorageBackend,
+    app_bundle_app_id, app_bundle_files, app_bundle_key, app_bundle_source, set_event,
+    storage_configured_event, KvStorageBackend,
 };
 use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
@@ -58,7 +59,7 @@ impl HarnessStaging {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct EdgeRunner {
     staging: HarnessStaging,
     home: Option<PathBuf>,
@@ -81,6 +82,10 @@ impl EdgeRunner {
         self.home
             .as_deref()
             .ok_or_else(|| Error::Storage("blob CAS requires a Terrane home".into()))
+    }
+
+    fn clone_for_nested(&self) -> Self {
+        self.clone()
     }
 }
 
@@ -222,6 +227,12 @@ Effect::LocalModelEmbed {
                     Ok(Vec::new())
                 }
             }
+            Effect::AppCall {
+                chain,
+                target,
+                verb,
+                args,
+            } => run_app_call(self, chain, target, verb, args, state),
         }
     }
 
@@ -230,6 +241,159 @@ Effect::LocalModelEmbed {
     fn live(&self) -> Option<&dyn LiveHost> {
         Some(self)
     }
+}
+
+fn run_app_call(
+    runner: &EdgeRunner,
+    chain: &[String],
+    target: &str,
+    verb: &str,
+    args: &[String],
+    state: &terrane_core::State,
+) -> Result<Vec<EventRecord>> {
+    let target_app = state
+        .app
+        .apps
+        .get(target)
+        .ok_or_else(|| Error::AppNotFound(target.to_string()))?;
+    if target_app.runtime != "js" {
+        return Err(Error::InvalidInput(format!(
+            "interop currently supports js targets only, got {}",
+            target_app.runtime
+        )));
+    }
+    let source = target_app
+        .source
+        .as_deref()
+        .ok_or_else(|| Error::Runtime(format!("app {target} has no --source bundle")))?;
+    let bundle = load_app_call_bundle(target, source, state)?;
+    let mut input = Vec::with_capacity(args.len() + 1);
+    input.push(verb.to_string());
+    input.extend(args.iter().cloned());
+    let principal = ExecutionPrincipal::app_caller(
+        chain
+            .last()
+            .cloned()
+            .unwrap_or_else(|| "unknown".to_string()),
+    );
+    let host = RuntimeHostHandle::new(Box::new(
+        RuntimeResourceHost::new_with_temporary_resource_grants(
+            target.to_string(),
+            state.clone(),
+            principal,
+            bundle.resources.clone(),
+        )
+            .with_runner(std::sync::Arc::new(runner.clone_for_nested()))
+            .with_interop_chain({
+                let mut next = chain.to_vec();
+                next.push(target.to_string());
+                next
+            }),
+    ));
+    let result = run_js_bundle(target, &input, &bundle, host.clone());
+    let mut records = host.take_records();
+    let caller = chain.last().map(String::as_str).unwrap_or("");
+    match result {
+        Ok(reply) => {
+            records.extend(interop_reply_records(runner, caller, target, verb, args, &reply, true)?);
+            Ok(records)
+        }
+        Err(err) => {
+            let reply = err.to_string();
+            records.extend(interop_reply_records(
+                runner, caller, target, verb, args, &reply, false,
+            )?);
+            Ok(records)
+        }
+    }
+}
+
+fn load_app_call_bundle(
+    target: &str,
+    source: &str,
+    state: &terrane_core::State,
+) -> Result<JsRuntimeBundle> {
+    if let Some(source_app) = app_bundle_app_id(source) {
+        if source_app != target {
+            return Err(Error::Runtime(format!(
+                "app {target} points at kv bundle for different app {source_app}"
+            )));
+        }
+        return terrane_cap_js_runtime::bundle_from_files(&app_bundle_files(state, target)?);
+    }
+    let path = Path::new(source);
+    if path.is_dir() {
+        let manifest = terrane_cap_js_runtime::read_manifest(path)?;
+        let js_path = path.join(&manifest.backend);
+        let source = std::fs::read_to_string(&js_path)
+            .map_err(|e| Error::Runtime(format!("read backend {}: {e}", js_path.display())))?;
+        return Ok(JsRuntimeBundle {
+            source,
+            name: manifest.name,
+            resources: manifest.resources,
+        });
+    }
+    let source = std::fs::read_to_string(path)
+        .map_err(|e| Error::Runtime(format!("read backend {}: {e}", path.display())))?;
+    Ok(JsRuntimeBundle {
+        source,
+        name: String::new(),
+        resources: vec!["kv".to_string()],
+    })
+}
+
+fn interop_reply_records(
+    runner: &EdgeRunner,
+    caller: &str,
+    target: &str,
+    verb: &str,
+    args: &[String],
+    reply: &str,
+    ok: bool,
+) -> Result<Vec<EventRecord>> {
+    let bytes = reply.as_bytes();
+    if bytes.len() > terrane_cap_interop::BLOB_REPLY_LIMIT {
+        return Err(Error::InvalidInput(format!(
+            "interop reply exceeds {} bytes",
+            terrane_cap_interop::BLOB_REPLY_LIMIT
+        )));
+    }
+    let hash = terrane_cap_interop::sha256_hex(bytes);
+    if bytes.len() <= terrane_cap_interop::INLINE_REPLY_LIMIT {
+        return Ok(vec![terrane_cap_interop::called_event(
+            terrane_cap_interop::CalledEvent {
+                caller,
+                target,
+                verb,
+                args,
+                reply_kind: "inline",
+                reply,
+                reply_hash: &hash,
+                ok,
+            },
+        )?]);
+    }
+    crate::blob_store::insert_if_absent(runner.home()?, &hash, bytes)?;
+    Ok(vec![
+        terrane_cap_blob::stored_event(
+            caller,
+            format!("__interop__/{target}/{hash}"),
+            &hash,
+            u64::try_from(bytes.len())
+                .map_err(|_| Error::Storage("interop reply length overflow".into()))?,
+            "text/plain",
+        )?,
+        terrane_cap_interop::called_event(terrane_cap_interop::CalledEvent {
+            caller,
+            target,
+            verb,
+            args,
+            reply_kind: "blob",
+            reply: "",
+            reply_hash: &hash,
+            ok,
+        })?,
+    ])
 }
 
 impl LiveHost for EdgeRunner {
@@ -453,6 +617,7 @@ fn import_app_bundle(
     let id = manifest.id.trim().to_string();
     crate::validate_bundle_id(source, &id).map_err(Error::InvalidInput)?;
     crate::validate_runtime(source, &manifest.runtime).map_err(Error::InvalidInput)?;
+    crate::validate_common_api_bundle(src).map_err(Error::InvalidInput)?;
     if manifest.runtime != "js" {
         return Err(Error::InvalidInput(
             "app.import currently supports js text bundles only".into(),
@@ -482,11 +647,12 @@ fn import_app_bundle(
         ));
     }
 
-    records.push(terrane_cap_app::added_event(
+    records.push(terrane_cap_app::added_event_with_interfaces(
         id.clone(),
         name,
         Some(app_bundle_source(&id)),
         manifest.runtime,
+        terrane_cap_app::normalize_interfaces(manifest.interfaces),
     )?);
     for (path, value) in files {
         records.push(set_event(id.clone(), app_bundle_key(&path)?, value)?);

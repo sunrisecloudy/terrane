@@ -686,6 +686,27 @@ fn granted_event(event: Granted) -> Result<EventRecord> {
     encode_event("auth.granted", &event)
 }
 
+pub fn granted_namespace_event(
+    principal: &ExecutionPrincipal,
+    app: &str,
+    namespace: &str,
+    source: &str,
+) -> Result<EventRecord> {
+    granted_event(Granted {
+        org: principal.org.clone(),
+        subject: principal.subject.clone(),
+        app: app.to_string(),
+        namespace: namespace.to_string(),
+        selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
+        selector_id: String::new(),
+        selector_json: format!(r#"{{"namespace":"{}"}}"#, json_string(namespace)),
+        resource_id: namespace_resource_id(namespace),
+        verbs: vec!["call".to_string(), "read".to_string(), "write".to_string()],
+        granted_by: LOCAL_OWNER_SUBJECT.to_string(),
+        source: source.to_string(),
+    })
+}
+
 fn member_added_event(event: MemberAdded) -> Result<EventRecord> {
     encode_event("auth.member.added", &event)
 }

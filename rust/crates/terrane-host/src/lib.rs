@@ -13,10 +13,14 @@ use nanoserde::DeJson;
 use terrane_api::{AppSummary, AppsResponse};
 use terrane_cap_builder::draft_json;
 use terrane_cap_crdt::crdt_export_hex;
+use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
 use terrane_cap_kv::app_bundle_source;
 use terrane_core::Core;
 pub use terrane_core::EventRecord;
-use terrane_core::{Decision, Error, QueryValue, Request};
+use terrane_core::{
+    Decision, Error, ExecutionPrincipal, QueryValue, Request, RuntimeHostHandle,
+    RuntimeResourceHost,
+};
 
 pub mod app_log;
 pub mod asr;
@@ -534,6 +538,7 @@ pub fn install_app(path: &str) -> Result<InstallOutcome, String> {
     let id = manifest.id.trim().to_string();
     validate_bundle_id(path, &id)?;
     validate_runtime(path, &manifest.runtime)?;
+    validate_common_api_bundle(src)?;
     let name = match manifest.name.trim() {
         "" => id.clone(),
         name => name.to_string(),
@@ -566,6 +571,8 @@ pub fn install_app(path: &str) -> Result<InstallOutcome, String> {
             source.clone(),
             "--runtime".into(),
             runtime,
+            "--interfaces".into(),
+            terrane_cap_app::normalize_interfaces(manifest.interfaces).join(","),
         ],
     )) {
         Ok(_) => Ok(InstallOutcome::Installed { id, source }),
@@ -587,6 +594,7 @@ pub fn install_app_to_kv(
     let id = manifest.id.trim().to_string();
     validate_bundle_id(path, &id)?;
     validate_runtime(path, &manifest.runtime)?;
+    validate_common_api_bundle(src)?;
     if manifest.runtime != "js" {
         return Err("app install-kv currently supports js text bundles only".into());
     }
@@ -767,6 +775,8 @@ pub struct BundleManifest {
     #[nserde(default)]
     pub resources: Vec<String>,
     #[nserde(default)]
+    pub interfaces: Vec<String>,
+    #[nserde(default)]
     pub browser_permissions: Vec<String>,
 }
 
@@ -779,6 +789,113 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest, Error> {
         runtime: non_empty_or(manifest.runtime, "js"),
         ..manifest
     })
+}
+
+pub fn validate_common_api_bundle(path: &Path) -> Result<(), String> {
+    let manifest = read_manifest(path).map_err(|e| e.to_string())?;
+    if manifest.runtime != "js" {
+        return Ok(());
+    }
+    let id = manifest.id.trim();
+    validate_bundle_id(&path.display().to_string(), id)?;
+    let backend = path.join(&manifest.backend);
+    let source = std::fs::read_to_string(&backend)
+        .map_err(|e| format!("read backend {}: {e}", backend.display()))?;
+    validate_common_api_bundle_source(
+        id,
+        non_empty_or(manifest.name.clone(), id),
+        source,
+        manifest.resources.clone(),
+    )
+}
+
+pub fn validate_common_api_bundle_source(
+    id: &str,
+    name: String,
+    source: String,
+    resources: Vec<String>,
+) -> Result<(), String> {
+    let bundle = JsRuntimeBundle {
+        source,
+        name: name.clone(),
+        resources: resources.clone(),
+    };
+    let mut state = terrane_core::State::default();
+    state.app.apps.insert(
+        id.to_string(),
+        terrane_cap_app::AppRecord {
+            id: id.to_string(),
+            name,
+            source: None,
+            runtime: "js".to_string(),
+            interfaces: terrane_cap_app::mandatory_interfaces(),
+        },
+    );
+    let host = RuntimeHostHandle::new(Box::new(
+        RuntimeResourceHost::new_with_temporary_resource_grants(
+            id.to_string(),
+            state,
+            ExecutionPrincipal::local_owner(),
+            resources,
+        ),
+    ));
+    let actions = run_js_bundle(id, &["__actions__".to_string()], &bundle, host.clone())
+        .map_err(|e| format!("common API __actions__ probe failed: {e}"))?;
+    require_common_actions(&actions)?;
+    let list = run_js_bundle(id, &["common.list".to_string()], &bundle, host.clone())
+        .map_err(|e| format!("common.list probe failed: {e}"))?;
+    let list_value: serde_json::Value =
+        serde_json::from_str(&list).map_err(|e| format!("common.list must return JSON: {e}"))?;
+    if !list_value.is_array() {
+        return Err("common.list must return a JSON array".to_string());
+    }
+    let bogus = "__terrane_validation_missing_item__";
+    let get = run_js_bundle(
+        id,
+        &["common.get".to_string(), bogus.to_string()],
+        &bundle,
+        host.clone(),
+    )
+    .map_err(|e| format!("common.get bogus-id probe failed: {e}"))?;
+    let get_value: serde_json::Value =
+        serde_json::from_str(&get).map_err(|e| format!("common.get not-found must be JSON: {e}"))?;
+    let code = get_value
+        .pointer("/error/code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if code != "NotFound" {
+        return Err("common.get bogus id must return typed NotFound JSON".to_string());
+    }
+    run_js_bundle(
+        id,
+        &[
+            "common.receive".to_string(),
+            "json".to_string(),
+            "{}".to_string(),
+        ],
+        &bundle,
+        host,
+    )
+    .map_err(|e| format!("common.receive probe failed: {e}"))?;
+    Ok(())
+}
+
+fn require_common_actions(actions: &str) -> Result<(), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(actions).map_err(|e| format!("__actions__ must return JSON: {e}"))?;
+    let verbs = value
+        .get("actions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "__actions__ must return an actions array".to_string())?;
+    for required in ["common.receive", "common.list", "common.get"] {
+        if !verbs
+            .iter()
+            .any(|entry| entry.get("verb").and_then(serde_json::Value::as_str) == Some(required))
+        {
+            return Err(format!("bundle must declare required verb {required}"));
+        }
+    }
+    Ok(())
 }
 
 /// App ids become directory names under `$TERRANE_HOME/apps`, so keep them as

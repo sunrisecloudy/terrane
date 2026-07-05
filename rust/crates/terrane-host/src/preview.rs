@@ -71,6 +71,8 @@ struct PreviewManifest {
     ui: String,
     #[nserde(default)]
     resources: Vec<String>,
+    #[nserde(default)]
+    interfaces: Vec<String>,
 }
 
 impl PreviewStore {
@@ -140,6 +142,7 @@ impl PreviewStore {
                 name: name.clone(),
                 source: None,
                 runtime: "js".to_string(),
+                interfaces: terrane_cap_app::normalize_interfaces(manifest.interfaces.clone()),
             },
         );
         let bundle = JsRuntimeBundle {

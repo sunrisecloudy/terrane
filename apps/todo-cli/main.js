@@ -87,4 +87,29 @@ var actions = {
       return "done #" + id;
     },
   },
+
+  "common.list": {
+    summary: "List todos as addressable items.",
+    args: [{ name: "filterJson", required: false }],
+    returns: "JSON array of {id,title,kind}",
+    run: function () {
+      return JSON.stringify(readItems().map(function (it) {
+        return { id: String(it.id), title: it.text, kind: "todo" };
+      }));
+    },
+  },
+
+  "common.get": {
+    summary: "Read one todo as an addressable item.",
+    args: [{ name: "id", required: true }],
+    returns: "todo JSON or typed not-found JSON",
+    run: function (args) {
+      var id = parseInt(args[0], 10);
+      var raw = isNaN(id) ? null : kv.get(ITEM_PREFIX + id);
+      if (raw == null) {
+        return JSON.stringify({ ok: false, error: { code: "NotFound", id: String(args[0] || "") } });
+      }
+      return JSON.stringify({ id: String(id), title: raw, kind: "todo", text: raw });
+    },
+  },
 };

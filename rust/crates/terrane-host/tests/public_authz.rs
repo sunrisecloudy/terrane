@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        92,
+        95,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        48,
+        50,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 42, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 43, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -73,6 +73,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "crypto",
             "document",
             "history",
+            "interop",
             "kv",
             "local-model",
             "native",
@@ -119,6 +120,7 @@ fn public_query_inventory_covers_every_registered_query() {
             "history.at",
             "history.key",
             "history.list",
+            "interop.apps",
             "native.supports",
             "query.jmespath",
             "replica.peer"

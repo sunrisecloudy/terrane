@@ -6,5 +6,6 @@
   "backend": "main.js",
   "ui": "index.html",
   "icon": "icon.svg",
-  "resources": ["kv"]
+  "resources": ["kv"],
+  "interfaces": ["items"]
 }

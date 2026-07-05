@@ -85,7 +85,10 @@ function handle(input) {
         { verb: "list", summary: "List all items.", args: [], returns: "JSON array of items" },
         { verb: "get", summary: "Read one item.", args: [{ name: "id", required: true, summary: "item id" }], returns: "item JSON or (missing)" },
         { verb: "remove", summary: "Delete one item.", args: [{ name: "id", required: true, summary: "item id" }], returns: "removed" },
-        { verb: "clear", summary: "Delete every item.", args: [], returns: "cleared" }
+        { verb: "clear", summary: "Delete every item.", args: [], returns: "cleared" },
+        { verb: "common.receive", summary: "Receive a common payload.", args: [{ name: "kind", required: true }, { name: "payloadJson", required: true }], returns: "JSON acknowledgement" },
+        { verb: "common.list", summary: "List addressable items.", args: [], returns: "JSON array of {id,title,kind}" },
+        { verb: "common.get", summary: "Read one addressable item.", args: [{ name: "id", required: true }], returns: "item JSON or typed not-found JSON" }
       ]
     });
   }
@@ -117,6 +120,34 @@ function handle(input) {
     }
     kvRmIfPresent(kv, "item_ids");
     return "cleared";
+  }
+
+  if (verb === "common.receive") {
+    var inboxId = nextId(kv);
+    kv.set("inbox/" + inboxId, JSON.stringify({
+      id: inboxId,
+      kind: input[1] || "json",
+      payload: input[2] || "{}"
+    }));
+    return JSON.stringify({ ok: true, id: inboxId });
+  }
+
+  if (verb === "common.list") {
+    return JSON.stringify(listItems(kv).map(function (item) {
+      return {
+        id: item.id,
+        title: String(item.title || item.text || item.id),
+        kind: String(item.kind || "item")
+      };
+    }));
+  }
+
+  if (verb === "common.get") {
+    var itemId = input[1] || "";
+    var item = kvGetOrNull(kv, "item:" + itemId);
+    return item == null
+      ? JSON.stringify({ ok: false, error: { code: "NotFound", id: itemId } })
+      : item;
   }
 
   /* ADD: more verbs above this line; document them in __actions__ too. */

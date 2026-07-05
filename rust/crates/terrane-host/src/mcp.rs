@@ -1921,7 +1921,10 @@ function handle(input) {{
       actions: [
         {{ verb: "write", summary: "Store a note.", args: [{{ name: "text", required: true, summary: "note text" }}], returns: "stored note text" }},
         {{ verb: "read", summary: "Read the current note.", args: [], returns: "note text or (empty)" }},
-        {{ verb: "clear", summary: "Delete the note.", args: [], returns: "cleared" }}
+        {{ verb: "clear", summary: "Delete the note.", args: [], returns: "cleared" }},
+        {{ verb: "common.receive", summary: "Receive an interop payload.", args: [{{ name: "kind", required: false }}, {{ name: "payloadJson", required: false }}], returns: "JSON status" }},
+        {{ verb: "common.list", summary: "List addressable items.", args: [], returns: "JSON array" }},
+        {{ verb: "common.get", summary: "Read one addressable item.", args: [{{ name: "id", required: true }}], returns: "JSON item or typed not found" }}
       ]
     }});
   }}
@@ -1940,6 +1943,28 @@ function handle(input) {{
   if (verb === "clear") {{
     kvRmIfPresent(kv, "note");
     return "cleared";
+  }}
+
+  if (verb === "common.receive") {{
+    var payload = input[2] || "";
+    kv.set("inbox/latest", payload);
+    return JSON.stringify({{ ok: true }});
+  }}
+
+  if (verb === "common.list") {{
+    var note = kvGetOrNull(kv, "note");
+    return JSON.stringify(note == null ? [] : [{{ id: "note", title: "Note", kind: "note" }}]);
+  }}
+
+  if (verb === "common.get") {{
+    var id = input[1] || "";
+    if (id === "note") {{
+      var current = kvGetOrNull(kv, "note");
+      if (current != null) {{
+        return JSON.stringify({{ id: "note", title: "Note", kind: "note", text: current }});
+      }}
+    }}
+    return JSON.stringify({{ error: {{ code: "NotFound", message: "item not found" }} }});
   }}
 
   return "unknown verb: " + verb;
@@ -2153,7 +2178,10 @@ function handle(input) {
       actions: [
         { verb: "seed", summary: "Write KV, CRDT, and relational_db state.", args: [{ name: "text", required: true, summary: "project title and note text" }], returns: "JSON summary" },
         { verb: "summary", summary: "Read KV, CRDT, and relational_db state.", args: [], returns: "JSON summary" },
-        { verb: "clearKv", summary: "Delete KV note keys while leaving CRDT and relational_db state.", args: [], returns: "JSON summary" }
+        { verb: "clearKv", summary: "Delete KV note keys while leaving CRDT and relational_db state.", args: [], returns: "JSON summary" },
+        { verb: "common.receive", summary: "Receive an interop payload.", args: [{ name: "kind", required: false }, { name: "payloadJson", required: false }], returns: "JSON status" },
+        { verb: "common.list", summary: "List addressable items.", args: [], returns: "JSON array" },
+        { verb: "common.get", summary: "Read one addressable item.", args: [{ name: "id", required: true }], returns: "JSON item or typed not found" }
       ]
     });
   }
@@ -2182,6 +2210,28 @@ function handle(input) {
     kvRmIfPresent(kv, "settings/theme");
     kvRmIfPresent(kv, "last-note");
     return readSummary();
+  }
+
+  if (verb === "common.receive") {
+    var payload = input[2] || "";
+    kv.set("inbox/latest", payload);
+    return JSON.stringify({ ok: true });
+  }
+
+  if (verb === "common.list") {
+    var note = kvGetOrNull(kv, "last-note");
+    return JSON.stringify(note == null ? [] : [{ id: "last-note", title: "Last note", kind: "note" }]);
+  }
+
+  if (verb === "common.get") {
+    var id = input[1] || "";
+    if (id === "last-note") {
+      var note = kvGetOrNull(kv, "last-note");
+      if (note != null) {
+        return JSON.stringify({ id: id, title: "Last note", kind: "note", text: note });
+      }
+    }
+    return JSON.stringify({ error: { code: "NotFound", message: "item not found" } });
   }
 
   return "unknown verb: " + verb;
@@ -2300,6 +2350,11 @@ fn inspect_app_bundle(path: &str) -> Result<BundleInfo, String> {
             "manifest.resources is empty; add resources such as \"kv\" when needed".to_string(),
         );
     }
+    if errors.is_empty() {
+        if let Err(e) = crate::validate_common_api_bundle(bundle) {
+            errors.push(e);
+        }
+    }
 
     Ok(BundleInfo {
         id,
@@ -2408,9 +2463,9 @@ fn app_build_start_json(
         .unwrap_or("js_kv_notes");
     let draft_id = create_build_draft(kind, &files)?;
     let manifest_example = if with_ui {
-        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": ["kv"]})
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": ["kv"], "interfaces": ["items"]})
     } else {
-        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "resources": ["kv"]})
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "resources": ["kv"], "interfaces": ["items"]})
     };
     let backend_contract = "main.js is ONE plain script: no top-level import/export, no require, no modules, no Deno/Node APIs. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data). Storage is ctx.resource.kv; wrap kv.get in try/catch because missing keys throw.";
     let manifest_rules = "manifest.ui is a string file path, never an object; scripts and styles are referenced from index.html, not listed in the manifest.";
@@ -3063,6 +3118,18 @@ fn inspect_inline_bundle(
             manifest.id, id
         ));
     }
+    if errors.is_empty() && runtime == "js" {
+        if let Some(file) = files.iter().find(|file| file.path == backend) {
+            if let Err(e) = crate::validate_common_api_bundle_source(
+                &id,
+                name.clone(),
+                file.content.clone(),
+                manifest.resources.clone(),
+            ) {
+                errors.push(e);
+            }
+        }
+    }
 
     Ok(BundleInfo {
         id,
@@ -3212,7 +3279,7 @@ fn check_ui_element_ids(
     }
 }
 
-const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}"#;
+const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"],"interfaces":["items"]}"#;
 
 /// A weak-model-friendly `BundleInfo` for a manifest.json that failed strict
 /// parsing: name the offending field types and show the exact accepted shape,

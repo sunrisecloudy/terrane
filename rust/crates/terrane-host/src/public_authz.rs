@@ -85,6 +85,13 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "history",
             app_arg_index: 0,
         },
+        "interop.call" | "interop.send" => PublicCommandDisposition::GrantGated {
+            namespace: "interop",
+            app_arg_index: 0,
+        },
+        "interop.pick" => PublicCommandDisposition::Refuse {
+            reason: "interop picker grants must go through the recorded picker approval flow",
+        },
         "native.clipboard.write-text"
         | "native.external.open-url"
         | "native.notification.show"
@@ -241,7 +248,9 @@ pub fn authorize_public_command(
 
 pub fn classify_public_query_name(name: &str) -> PublicQueryDisposition {
     match name {
-        "app.exists" | "native.supports" | "replica.peer" => PublicQueryDisposition::Allow,
+        "app.exists" | "interop.apps" | "native.supports" | "replica.peer" => {
+            PublicQueryDisposition::Allow
+        }
         _ => PublicQueryDisposition::Unclassified,
     }
 }

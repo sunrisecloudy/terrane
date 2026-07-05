@@ -21,6 +21,7 @@ pub struct AppRecord {
     pub name: String,
     pub source: Option<String>,
     pub runtime: String,
+    pub interfaces: Vec<String>,
 }
 
 /// This capability's slice of State.
@@ -29,8 +30,19 @@ pub struct AppState {
     pub apps: BTreeMap<AppId, AppRecord>,
 }
 
+type ParsedAdd = (String, String, Option<String>, String, Vec<String>);
+
 #[derive(BorshSerialize, BorshDeserialize)]
 struct Added {
+    id: String,
+    name: String,
+    source: Option<String>,
+    runtime: String,
+    interfaces: Vec<String>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct AddedV1 {
     id: String,
     name: String,
     source: Option<String>,
@@ -84,7 +96,7 @@ impl Capability for AppCapability {
                 }))
             }
             "app.add" => {
-                let (id, app_name, source, runtime) = parse_add(args)?;
+                let (id, app_name, source, runtime, interfaces) = parse_add(args)?;
                 if id.trim().is_empty() {
                     return Err(Error::InvalidInput("app id must not be empty".into()));
                 }
@@ -108,6 +120,7 @@ impl Capability for AppCapability {
                         name: app_name,
                         source,
                         runtime,
+                        interfaces,
                     },
                 )?]))
             }
@@ -145,7 +158,7 @@ impl Capability for AppCapability {
     fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         match record.kind.as_str() {
             "app.added" => {
-                let e: Added = decode_event(record)?;
+                let e = decode_added(record)?;
                 state_mut::<AppState>(state, "app")?.apps.insert(
                     e.id.clone(),
                     AppRecord {
@@ -153,6 +166,7 @@ impl Capability for AppCapability {
                         name: e.name,
                         source: e.source,
                         runtime: e.runtime,
+                        interfaces: normalize_interfaces(e.interfaces),
                     },
                 );
             }
@@ -168,7 +182,7 @@ impl Capability for AppCapability {
     fn describe(&self, record: &EventRecord) -> Option<String> {
         match record.kind.as_str() {
             "app.added" => {
-                let e: Added = decode_event(record).ok()?;
+                let e = decode_added(record).ok()?;
                 Some(match e.source {
                     Some(src) => format!(
                         "app.added {} \"{}\" runtime={} [{}]",
@@ -192,6 +206,16 @@ pub fn added_event(
     source: Option<String>,
     runtime: impl Into<String>,
 ) -> Result<EventRecord> {
+    added_event_with_interfaces(id, name, source, runtime, mandatory_interfaces())
+}
+
+pub fn added_event_with_interfaces(
+    id: impl Into<String>,
+    name: impl Into<String>,
+    source: Option<String>,
+    runtime: impl Into<String>,
+    interfaces: Vec<String>,
+) -> Result<EventRecord> {
     encode_event(
         "app.added",
         &Added {
@@ -199,16 +223,18 @@ pub fn added_event(
             name: name.into(),
             source,
             runtime: runtime.into(),
+            interfaces,
         },
     )
 }
 
 /// Parse `add` args: `<id> <name…> [--source <path>] [--runtime <name>]`.
-fn parse_add(args: &[String]) -> Result<(String, String, Option<String>, String)> {
+fn parse_add(args: &[String]) -> Result<ParsedAdd> {
     let id = arg(args, 0, "app id")?;
     let mut name_parts: Vec<&str> = Vec::new();
     let mut source = None;
     let mut runtime = "js".to_string();
+    let mut interfaces = Vec::new();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -226,6 +252,18 @@ fn parse_add(args: &[String]) -> Result<(String, String, Option<String>, String)
                 runtime = value.clone();
                 i += 2;
             }
+            "--interfaces" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| Error::InvalidInput("`--interfaces` needs a comma-separated list".into()))?;
+                interfaces = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|iface| !iface.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                i += 2;
+            }
             word => {
                 name_parts.push(word);
                 i += 1;
@@ -237,7 +275,41 @@ fn parse_add(args: &[String]) -> Result<(String, String, Option<String>, String)
             "usage: app add <id> <name…> [--source <path>] [--runtime <name>]".into(),
         ));
     }
-    Ok((id, name_parts.join(" "), source, runtime))
+    Ok((
+        id,
+        name_parts.join(" "),
+        source,
+        runtime,
+        normalize_interfaces(interfaces),
+    ))
+}
+
+fn decode_added(record: &EventRecord) -> Result<Added> {
+    match decode_event::<Added>(record) {
+        Ok(event) => Ok(event),
+        Err(_) => {
+            let old: AddedV1 = decode_event(record)?;
+            Ok(Added {
+                id: old.id,
+                name: old.name,
+                source: old.source,
+                runtime: old.runtime,
+                interfaces: mandatory_interfaces(),
+            })
+        }
+    }
+}
+
+pub fn normalize_interfaces(mut interfaces: Vec<String>) -> Vec<String> {
+    interfaces.push("inbox".to_string());
+    interfaces.push("items".to_string());
+    interfaces.sort();
+    interfaces.dedup();
+    interfaces
+}
+
+pub fn mandatory_interfaces() -> Vec<String> {
+    normalize_interfaces(Vec::new())
 }
 
 /// Parse `import` args: `<bundle> [--storage <backend>] [--path <path>]`.

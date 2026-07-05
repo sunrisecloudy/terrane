@@ -397,7 +397,7 @@ fn actions_table_backend_is_synthesized_and_self_describes() {
         .unwrap();
     assert_eq!(
         core.take_last_output().as_deref(),
-        Some("unknown verb: frob (try set | get)")
+        Some("unknown verb: frob (try set | get | common.receive | common.list | common.get)")
     );
 
     // __actions__ self-describes, with app id/name pulled from the manifest.
@@ -660,6 +660,7 @@ fn memory_backend_run_returns_records_for_caller_owned_fold() {
             name: "Preview Demo".to_string(),
             source: None,
             runtime: "js".to_string(),
+            interfaces: terrane_cap_app::mandatory_interfaces(),
         },
     );
     let bundle = JsRuntimeBundle {

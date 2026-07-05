@@ -65,6 +65,22 @@ var actions = {
   `description`,
   `actions: [{ verb, summary, args:[{ name, required, summary }], returns }]`).
 
+### Required common verbs and items
+
+Every JS bundle must expose these verbs. Action-table apps get scaffold defaults
+from the runtime; custom `handle(input)` apps must implement and declare them in
+`__actions__`.
+
+| Verb | Interface | Required | Contract |
+| --- | --- | --- | --- |
+| `common.receive` | `inbox` | yes | `(kind, payloadJson)` receives inbound text/json/link/blob-style payloads and returns a string reply. |
+| `common.list` | `items` | yes | `(filterJson?)` returns a JSON array of `{id,title,kind}`. `[]` is valid for apps with no natural items. |
+| `common.get` | `items` | yes | `(id)` returns item JSON or typed not-found JSON: `{"ok":false,"error":{"code":"NotFound","id":"..."}}`. |
+
+Items are named by `terrane://app/<appId>/item/<itemId>`, where `itemId` is
+percent-encoded. The URI is a name, not a bearer token; resolving it still goes
+through interop authorization and the owning app's live `common.get`.
+
 ### Low-level: define `handle` yourself
 
 If you'd rather control everything (or don't want self-description), define a
@@ -232,6 +248,14 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.history.list(filter, before, limit)` | read |
 | `ctx.resource.history.key(key, limit)` | read |
 | `ctx.resource.history.at(key, seq)` | read |
+
+#### `ctx.resource.interop`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.interop.call(target, verb, args)` | call |
+| `ctx.resource.interop.send(interface, kind, payloadJson)` | call |
+| `ctx.resource.interop.pick(interface)` | call |
 
 #### `ctx.resource.kv`
 
@@ -762,6 +786,7 @@ window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / 
 | `entry`     | string (optional) | WASM entry export; defaults to `"handle"`                            |
 | `ui`        | string (optional) | UI entry file, e.g. `"index.html"`; omit for CLI-only apps          |
 | `resources` | string[]          | the resource namespaces the backend **requests** — default-deny; each still needs an admin grant before `ctx.resource.<ns>` appears (see the [permission handshake](#default-deny-resources--the-permission-handshake)) |
+| `interfaces` | string[]        | common interfaces the app advertises; `inbox` is implied and `items` is required |
 
 ```json
 {
@@ -771,7 +796,8 @@ window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / 
   "runtime": "js",
   "backend": "main.js",
   "ui": "index.html",
-  "resources": ["kv"]
+  "resources": ["kv"],
+  "interfaces": ["items"]
 }
 ```
 

@@ -6,5 +6,6 @@
   "backend": "main.js",
   "ui": "index.html",
   "icon": "icon.svg",
-  "resources": ["sysinfo"]
+  "resources": ["sysinfo"],
+  "interfaces": ["items"]
 }

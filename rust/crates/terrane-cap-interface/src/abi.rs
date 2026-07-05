@@ -24,6 +24,14 @@ impl ExecutionPrincipal {
         }
     }
 
+    pub fn app_caller(app: impl Into<String>) -> Self {
+        Self {
+            org: LOCAL_ORG.to_string(),
+            subject: format!("app:{}", app.into()),
+            source: "interop".to_string(),
+        }
+    }
+
     pub fn actor(&self) -> String {
         self.subject.clone()
     }
@@ -244,6 +252,99 @@ pub enum Effect {
         msg: String,
         data: String,
     },
+    AppCall {
+        chain: Vec<String>,
+        target: String,
+        verb: String,
+        args: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemUri {
+    pub app: String,
+    pub item: String,
+}
+
+pub fn format_item_uri(app: &str, item: &str) -> String {
+    format!("terrane://app/{}/item/{}", app, percent_encode(item))
+}
+
+pub fn parse_item_uri(uri: &str) -> Result<ItemUri> {
+    let rest = uri
+        .strip_prefix("terrane://app/")
+        .ok_or_else(|| Error::InvalidInput(format!("not a Terrane app item URI: {uri}")))?;
+    let Some((app, encoded_item)) = rest.split_once("/item/") else {
+        return Err(Error::InvalidInput(format!(
+            "item URI must be terrane://app/<appId>/item/<itemId>: {uri}"
+        )));
+    };
+    if app.is_empty() {
+        return Err(Error::InvalidInput("item URI app id must not be empty".into()));
+    }
+    Ok(ItemUri {
+        app: app.to_string(),
+        item: percent_decode(encoded_item)?,
+    })
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            out.push(char::from(b));
+        } else {
+            out.push('%');
+            out.push(hex((b >> 4) & 0x0f));
+            out.push(hex(b & 0x0f));
+        }
+    }
+    out
+}
+
+fn percent_decode(value: &str) -> Result<String> {
+    let bytes = value.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let hi = *bytes.get(i + 1).ok_or_else(|| {
+                    Error::InvalidInput(format!("bad percent escape in item URI: {value}"))
+                })?;
+                let lo = *bytes.get(i + 2).ok_or_else(|| {
+                    Error::InvalidInput(format!("bad percent escape in item URI: {value}"))
+                })?;
+                out.push((from_hex(hi)? << 4) | from_hex(lo)?);
+                i += 3;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out)
+        .map_err(|e| Error::InvalidInput(format!("item URI is not valid UTF-8: {e}")))
+}
+
+fn hex(n: u8) -> char {
+    match n {
+        0..=9 => char::from(b'0' + n),
+        _ => char::from(b'A' + (n - 10)),
+    }
+}
+
+fn from_hex(b: u8) -> Result<u8> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(10 + b - b'a'),
+        b'A'..=b'F' => Ok(10 + b - b'A'),
+        _ => Err(Error::InvalidInput(format!(
+            "bad hex digit in item URI percent escape: {}",
+            char::from(b)
+        ))),
+    }
 }
 
 /// Encode a capability's typed event into a name-tagged [`EventRecord`].

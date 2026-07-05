@@ -35,6 +35,9 @@ pub struct BundleManifest {
     /// Resource namespaces the backend may reach (least privilege; empty default).
     #[nserde(default)]
     pub resources: Vec<String>,
+    /// Common API interfaces this app advertises.
+    #[nserde(default)]
+    pub interfaces: Vec<String>,
 }
 
 /// Load the bundle for an app whose `source` is either the bundle directory
@@ -68,7 +71,7 @@ pub(crate) fn load_bundle(source: &str) -> Result<JsRuntimeBundle> {
     }
 }
 
-pub(crate) fn load_bundle_files(files: &BTreeMap<String, String>) -> Result<JsRuntimeBundle> {
+pub fn bundle_from_files(files: &BTreeMap<String, String>) -> Result<JsRuntimeBundle> {
     let manifest_text = files
         .get("manifest.json")
         .ok_or_else(|| Error::Runtime("kv app bundle is missing manifest.json".into()))?;
@@ -94,6 +97,10 @@ pub(crate) fn load_bundle_files(files: &BTreeMap<String, String>) -> Result<JsRu
         name: manifest.name,
         resources: manifest.resources,
     })
+}
+
+pub(crate) fn load_bundle_files(files: &BTreeMap<String, String>) -> Result<JsRuntimeBundle> {
+    bundle_from_files(files)
 }
 
 /// Read and parse `<bundle_dir>/manifest.json`.

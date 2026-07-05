@@ -47,7 +47,8 @@ fn parse_add_collects_multi_word_name_and_optional_source() {
             "demo".into(),
             "Daily Calendar".into(),
             Some("/tmp/demo".into()),
-            "js".into()
+            "js".into(),
+            mandatory_interfaces()
         )
     );
 }
@@ -69,7 +70,8 @@ fn parse_add_accepts_explicit_runtime() {
             "demo".into(),
             "Daily".into(),
             Some("/tmp/demo".into()),
-            "wasm".into()
+            "wasm".into(),
+            mandatory_interfaces()
         )
     );
 }

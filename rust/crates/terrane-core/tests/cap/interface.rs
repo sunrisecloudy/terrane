@@ -171,6 +171,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "crypto",
             "document",
             "history",
+            "interop",
             "kv",
             "local-model",
             "native",
@@ -271,6 +272,7 @@ fn registry_bus_exposes_app_exists_and_replica_peer_queries() {
             name: "Demo".to_string(),
             source: None,
             runtime: "js".to_string(),
+            interfaces: terrane_cap_app::mandatory_interfaces(),
         },
     );
 

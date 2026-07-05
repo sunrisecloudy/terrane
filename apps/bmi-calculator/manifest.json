@@ -11,5 +11,6 @@
     "entry": "src/main.tsx",
     "styles": ["src/app.css"]
   },
-  "resources": ["kv"]
+  "resources": ["kv"],
+  "interfaces": ["items"]
 }
