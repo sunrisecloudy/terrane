@@ -123,6 +123,17 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane stt (open | append | close | trim | purge) …".into())
         }
+        ["stream", "open", app, name, verb, request_json] => {
+            run_stream_open(app, name, verb, request_json)
+        }
+        ["stream", "close", app, name] => run_stream_close(app, name),
+        ["stream", "ingest-text", app, name, rest @ ..] => run_stream_ingest_text(app, name, rest),
+        ["stream", "reopened", app, name, attempt] => run_stream_reopened(app, name, attempt),
+        ["stream", "list", app] => run_stream_list(app),
+        ["stream", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane stream (open <app> <name> <verb> <request-json> | close <app> <name> | ingest-text <app> <name> [--received-at ts] <text> | reopened <app> <name> <attempt> | list <app>)".into())
+        }
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
@@ -730,6 +741,101 @@ pub fn run_stt_dispatch(command: &str, rest: &[&str]) -> Result<(), String> {
     let args: Vec<String> = rest.iter().map(|s| s.to_string()).collect();
     print_command_outcome(crate::dispatch(command, &args)?);
     Ok(())
+}
+
+pub fn run_stream_open(app: &str, name: &str, verb: &str, request_json: &str) -> Result<(), String> {
+    let args = vec![
+        app.to_string(),
+        name.to_string(),
+        verb.to_string(),
+        request_json.to_string(),
+    ];
+    print_command_outcome(crate::dispatch("stream.open", &args)?);
+    println!("(CLI records desired state only; a long-running host must reconcile sockets)");
+    Ok(())
+}
+
+pub fn run_stream_close(app: &str, name: &str) -> Result<(), String> {
+    let args = vec![app.to_string(), name.to_string()];
+    print_command_outcome(crate::dispatch("stream.close", &args)?);
+    Ok(())
+}
+
+pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<(), String> {
+    let mut received_at = None;
+    let mut text = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--received-at" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--received-at requires a value".into());
+                };
+                received_at = Some((*value).to_string());
+                i += 2;
+            }
+            value => {
+                text.push(value);
+                i += 1;
+            }
+        }
+    }
+    if text.is_empty() {
+        return Err("usage: terrane stream ingest-text <app> <name> [--received-at ts] <text>".into());
+    }
+    let received_at = received_at.unwrap_or_else(now_unix_millis);
+    let mut core = crate::open()?;
+    let delivered = crate::stream_edge::deliver_text(
+        &crate::home_dir(),
+        &mut core,
+        app,
+        name,
+        &text.join(" "),
+        &received_at,
+    )?;
+    print_command_outcome(crate::CommandOutcome {
+        records: delivered.records,
+        output: delivered.backend_output,
+    });
+    Ok(())
+}
+
+pub fn run_stream_reopened(app: &str, name: &str, attempt: &str) -> Result<(), String> {
+    let attempt = attempt
+        .parse::<u64>()
+        .map_err(|_| format!("attempt must be a non-negative integer: {attempt}"))?;
+    let mut core = crate::open()?;
+    print_command_outcome(crate::stream_edge::reopen_on_core(
+        &mut core, app, name, attempt,
+    )?);
+    Ok(())
+}
+
+pub fn run_stream_list(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let mut rows = Vec::new();
+    if let Some(streams) = core.state().stream.streams.get(app) {
+        for (name, stream) in streams {
+            rows.push(serde_json::json!({
+                "name": name,
+                "kind": stream.kind.as_str(),
+                "verb": stream.verb,
+                "lastSeq": stream.last_seq,
+                "status": if stream.status == terrane_cap_stream::StreamStatus::Open { "open" } else { "closed" },
+            }));
+        }
+    }
+    println!("{}", serde_json::to_string(&rows).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+fn now_unix_millis() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().to_string())
+        .unwrap_or_else(|_| "0".to_string())
 }
 
 pub fn run_tts_speak(app: &str, rest: &[&str]) -> Result<(), String> {
@@ -1573,6 +1679,9 @@ pub fn print_help() {
          \x20 terrane mcp ls|rm                                  inspect or remove MCP connections\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane net request <app> <request-json>          full HTTP request; record redacted request + response\n\
+         \x20 terrane stream open <app> <name> <verb> <request-json>  record desired SSE/WebSocket state\n\
+         \x20 terrane stream ingest-text <app> <name> <text…>   record one observed stream message and invoke its verb\n\
+         \x20 terrane stream close|list|reopened …              manage folded stream state from the host edge\n\
          \x20 terrane browser render <app> <request-json>       headless render; record redacted request + result\n\
          \x20 terrane model ask <app> <claude|codex> <prompt…> ask an agent; record it\n\
          \x20 terrane local-model pull [<id> <hf-repo> [<file>]] [--backend gguf|mlx] [options…]  fetch + register (bare = recommended model)\n\

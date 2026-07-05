@@ -4020,6 +4020,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-stream"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "sha2",
+ "terrane-cap-interface",
+ "terrane-cap-net",
+]
+
+[[package]]
 name = "terrane-cap-stt"
 version = "0.1.0"
 dependencies = [
@@ -4113,6 +4124,7 @@ dependencies = [
  "terrane-cap-replica",
  "terrane-cap-scheduler",
  "terrane-cap-search",
+ "terrane-cap-stream",
  "terrane-cap-stt",
  "terrane-cap-sysinfo",
  "terrane-cap-telemetry",
@@ -4169,6 +4181,7 @@ dependencies = [
  "terrane-cap-net",
  "terrane-cap-replica",
  "terrane-cap-scheduler",
+ "terrane-cap-stream",
  "terrane-cap-telemetry",
  "terrane-cap-time",
  "terrane-cap-tts",

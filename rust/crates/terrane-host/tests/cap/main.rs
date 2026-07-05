@@ -31,6 +31,7 @@ mod password_manager;
 mod query;
 mod search;
 mod sysinfo;
+mod stream;
 mod telemetry;
 mod time;
 mod tts;

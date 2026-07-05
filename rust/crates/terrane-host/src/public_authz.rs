@@ -176,6 +176,15 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "tts",
             app_arg_index: 0,
         },
+        "stream.open" | "stream.close" => PublicCommandDisposition::GrantGated {
+            namespace: "stream",
+            app_arg_index: 0,
+        },
+        "stream.message" | "stream.reopened" | "stream.close-host" => {
+            PublicCommandDisposition::Refuse {
+                reason: "stream ingest and host lifecycle commands are trusted-host-only",
+            }
+        }
         "geo.locate" => PublicCommandDisposition::GrantGated {
             namespace: "geo",
             app_arg_index: 0,
