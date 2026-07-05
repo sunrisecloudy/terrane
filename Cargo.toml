@@ -33,6 +33,7 @@ members = [
   "rust/crates/terrane-cap-publish",
   "rust/crates/terrane-cap-relational-db",
   "rust/crates/terrane-cap-search",
+  "rust/crates/terrane-cap-share",
   "rust/crates/terrane-cap-scheduler",
   "rust/crates/terrane-cap-model",
   "rust/crates/terrane-cap-native",
@@ -97,6 +98,7 @@ terrane-cap-person = { path = "rust/crates/terrane-cap-person" }
 terrane-cap-publish = { path = "rust/crates/terrane-cap-publish" }
 terrane-cap-relational-db = { path = "rust/crates/terrane-cap-relational-db" }
 terrane-cap-search = { path = "rust/crates/terrane-cap-search" }
+terrane-cap-share = { path = "rust/crates/terrane-cap-share" }
 terrane-cap-scheduler = { path = "rust/crates/terrane-cap-scheduler" }
 terrane-cap-model = { path = "rust/crates/terrane-cap-model" }
 terrane-cap-native = { path = "rust/crates/terrane-cap-native" }

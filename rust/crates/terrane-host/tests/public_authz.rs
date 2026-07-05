@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        154,
+        157,
         "registered commands changed: {commands:?}"
     );
 
@@ -55,7 +55,7 @@ fn public_command_inventory_covers_every_registered_command() {
         74,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 78, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 81, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -146,6 +146,8 @@ fn public_query_inventory_covers_every_registered_query() {
             "query.jmespath",
             "replica.peer",
             "scheduler.due",
+            "share.invites",
+            "share.list",
             "sync.cursor",
             "sync.peers",
             "tts.supports"
@@ -166,6 +168,8 @@ fn public_query_inventory_covers_every_registered_query() {
                 | "person.whoami"
                 | "query.jmespath"
                 | "scheduler.due"
+                | "share.invites"
+                | "share.list"
                 | "sync.cursor"
                 | "sync.peers"
         ) {

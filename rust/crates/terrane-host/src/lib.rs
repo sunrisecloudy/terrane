@@ -48,6 +48,7 @@ pub mod publish;
 pub mod public_authz;
 pub mod scheduler;
 pub mod secret_store;
+pub mod share;
 mod stt_edge;
 pub mod stt_runner;
 pub mod stream_edge;

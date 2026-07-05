@@ -92,6 +92,7 @@ use terrane_cap_publish::PublishState;
 use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
+use terrane_cap_share::ShareState;
 use terrane_cap_stt::SttState;
 use terrane_cap_sync::SyncState;
 use terrane_cap_stream::StreamState;
@@ -134,6 +135,7 @@ pub struct State {
     pub person: PersonState,
     pub publish: PublishState,
     pub scheduler: SchedulerState,
+    pub share: ShareState,
     pub stt: SttState,
     pub sync: SyncState,
     pub stream: StreamState,
@@ -176,6 +178,7 @@ impl StateStore for State {
             "person" => Some(&self.person),
             "publish" => Some(&self.publish),
             "scheduler" => Some(&self.scheduler),
+            "share" => Some(&self.share),
             "stt" => Some(&self.stt),
             "sync" => Some(&self.sync),
             "stream" => Some(&self.stream),
@@ -219,6 +222,7 @@ impl StateStore for State {
             "person" => Some(&mut self.person),
             "publish" => Some(&mut self.publish),
             "scheduler" => Some(&mut self.scheduler),
+            "share" => Some(&mut self.share),
             "stt" => Some(&mut self.stt),
             "sync" => Some(&mut self.sync),
             "stream" => Some(&mut self.stream),
@@ -545,6 +549,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_query::QueryCapability));
     registry.register(Box::new(terrane_cap_relational_db::RelationalDbCapability));
     registry.register(Box::new(terrane_cap_search::SearchCapability));
+    registry.register(Box::new(terrane_cap_share::ShareCapability));
     registry.register(Box::new(terrane_cap_crdt::CrdtCapability));
     registry.register(Box::new(terrane_cap_crypto::CryptoCapability));
     registry.register(Box::new(terrane_cap_connection::ConnectionCapability));

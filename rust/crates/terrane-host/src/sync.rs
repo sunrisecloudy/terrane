@@ -195,15 +195,6 @@ pub fn run_pair_http(base_url: &str, code: &str) -> Result<(), String> {
 
 pub fn pair_request(core: &mut HostCore, request: PairRequest) -> Result<PairResponse, String> {
     pair_peer(core, &request.peer_hex, &request.display_name)?;
-    let subject = format!("replica:{}", request.peer_hex);
-    for app in core.state().app.apps.keys().cloned().collect::<Vec<_>>() {
-        for namespace in ["kv", "crdt", "blob"] {
-            let _ = core.dispatch(Request::trusted_host(
-                "auth.grant",
-                vec![subject.clone(), app.clone(), namespace.to_string()],
-            ));
-        }
-    }
     Ok(PairResponse {
         peer_hex: local_peer_hex(core)?,
         display_name: local_display_name(),
@@ -276,11 +267,31 @@ pub fn vv_response(core: &HostCore, app: &str, peer_vv: &[u8]) -> Result<VvRespo
     })
 }
 
+pub fn vv_response_for_grantee(
+    core: &HostCore,
+    app: &str,
+    grantee: &str,
+    peer_vv: &[u8],
+) -> Result<VvResponse, String> {
+    crate::share::ensure_read(core, app, grantee)?;
+    vv_response(core, app, peer_vv)
+}
+
 pub fn ingest_crdt_delta(core: &mut HostCore, app: &str, bytes: &[u8]) -> Result<bool, String> {
     if bytes.is_empty() {
         return Ok(false);
     }
     merge(core, app, bytes)
+}
+
+pub fn ingest_crdt_delta_for_grantee(
+    core: &mut HostCore,
+    app: &str,
+    grantee: &str,
+    bytes: &[u8],
+) -> Result<bool, String> {
+    crate::share::ensure_write(core, app, grantee)?;
+    ingest_crdt_delta(core, app, bytes)
 }
 
 pub fn event_batch_since(
@@ -318,6 +329,16 @@ pub fn event_batch_since(
     })
 }
 
+pub fn event_batch_since_for_grantee(
+    core: &HostCore,
+    app: &str,
+    grantee: &str,
+    cursor: u64,
+) -> Result<EventBatchResponse, String> {
+    crate::share::ensure_read(core, app, grantee)?;
+    event_batch_since(core, app, cursor)
+}
+
 pub fn apply_event_batch(
     core: &mut HostCore,
     app: &str,
@@ -339,6 +360,16 @@ pub fn apply_event_batch(
         ))
         .map_err(|e| e.to_string())?;
     Ok(!records.is_empty())
+}
+
+pub fn apply_event_batch_for_grantee(
+    core: &mut HostCore,
+    app: &str,
+    grantee: &str,
+    batch: &EventBatchResponse,
+) -> Result<bool, String> {
+    crate::share::ensure_write(core, app, grantee)?;
+    apply_event_batch(core, app, batch)
 }
 
 pub fn blob_bytes(core: &HostCore, hash: &str) -> Result<Vec<u8>, String> {
@@ -370,6 +401,11 @@ pub fn blob_refs(core: &HostCore, app: &str) -> Vec<BlobRef> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub fn blob_refs_for_grantee(core: &HostCore, app: &str, grantee: &str) -> Result<Vec<BlobRef>, String> {
+    crate::share::ensure_read(core, app, grantee)?;
+    Ok(blob_refs(core, app))
 }
 
 pub fn apply_blob_refs(core: &mut HostCore, app: &str, refs: &[BlobRef]) -> Result<bool, String> {

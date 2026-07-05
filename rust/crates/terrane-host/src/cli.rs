@@ -78,6 +78,15 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane person (create | whoami | get <person-id> | attest <person-id> <kind> <claim> | revoke-attestation <person-id> <kind> <claim> | rotate <person-id>)".into())
         }
+        ["share", "invite", app, rest @ ..] => run_share_invite(app, rest),
+        ["share", "redeem", app, token, grantee] => run_share_redeem(app, token, grantee),
+        ["share", "revoke", app, grantee] => run_share_revoke(app, grantee),
+        ["share", "ls", app] | ["share", "list", app] => run_share_ls(app),
+        ["share", "invites", app] => run_share_invites(app),
+        ["share", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane share (invite <app> --rights read|write [--note text] | redeem <app> <token> <grantee> | revoke <app> <grantee> | ls <app> | invites <app>)".into())
+        }
         ["pair", addr, "--code", code] => crate::sync::run_pair_http(addr, code),
         ["pair", rest @ ..] => {
             let _ = rest;
@@ -433,6 +442,71 @@ fn run_person_get(person_id: &str) -> Result<(), String> {
         other => return Err(format!("person.get returned unexpected value: {other:?}")),
     }
     Ok(())
+}
+
+fn run_share_invite(app: &str, rest: &[&str]) -> Result<(), String> {
+    let (rights, note) = parse_share_invite_options(rest)?;
+    let mut core = crate::open()?;
+    let invite = crate::share::invite(&mut core, app, &rights, &note)?;
+    println!("token {}", invite.token);
+    println!("token_hash {}", invite.token_hash);
+    Ok(())
+}
+
+fn run_share_redeem(app: &str, token: &str, grantee: &str) -> Result<(), String> {
+    let mut core = crate::open()?;
+    crate::share::redeem(&mut core, app, token, grantee)?;
+    println!("shared {app} with {grantee}");
+    Ok(())
+}
+
+fn run_share_revoke(app: &str, grantee: &str) -> Result<(), String> {
+    let mut core = crate::open()?;
+    crate::share::revoke(&mut core, app, grantee)?;
+    println!("revoked {app} from {grantee}");
+    Ok(())
+}
+
+fn run_share_ls(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    println!("{}", crate::share::list(&core, app)?);
+    Ok(())
+}
+
+fn run_share_invites(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    println!("{}", crate::share::invites(&core, app)?);
+    Ok(())
+}
+
+fn parse_share_invite_options(rest: &[&str]) -> Result<(String, String), String> {
+    let mut rights = None;
+    let mut note = String::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--rights" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--rights requires read or write".into());
+                };
+                rights = Some((*value).to_string());
+                i += 2;
+            }
+            "--note" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--note requires a value".into());
+                };
+                note = (*value).to_string();
+                i += 2;
+            }
+            other => return Err(format!("unknown share invite option: {other}")),
+        }
+    }
+    let rights = rights.ok_or_else(|| {
+        "usage: terrane share invite <app> --rights read|write [--note text]".to_string()
+    })?;
+    terrane_cap_share::validate_rights(&rights).map_err(|e| e.to_string())?;
+    Ok((rights, note))
 }
 
 fn run_connection_authorize(name: &str) -> Result<(), String> {
@@ -2468,6 +2542,8 @@ pub fn print_help() {
          \x20 terrane connection ls|stat|rm                     inspect or remove non-secret connection metadata\n\
          \x20 terrane person create|whoami                      ensure or inspect the local durable person\n\
          \x20 terrane person attest|rotate|revoke-attestation   attach, rotate, or revoke public identity facts\n\
+         \x20 terrane share invite <app> --rights read|write    mint a one-time app share token\n\
+         \x20 terrane share redeem|revoke|ls|invites …          accept, revoke, or inspect shares\n\
          \x20 terrane pair <url> --code <code>                  pair with a sync HTTP peer\n\
          \x20 terrane mcp connect <name> <transport-json>       record an external MCP server connection\n\
          \x20 terrane mcp call <app> <connection> <tool> <args-json>  call an external MCP tool; record the result\n\

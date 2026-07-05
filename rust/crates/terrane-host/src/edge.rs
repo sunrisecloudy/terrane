@@ -257,6 +257,16 @@ impl EffectRunner for EdgeRunner {
                 dest_name,
             ),
             Effect::NewReplicaId => Ok(vec![initialized_event(new_peer_id()?)?]),
+            Effect::NewInviteToken { app, rights, note } => {
+                let token = mint_invite_token()?;
+                let token_hash = sha256_hex(token.as_bytes());
+                Ok(vec![terrane_cap_share::invited_event(
+                    app,
+                    rights,
+                    &token_hash,
+                    note,
+                )?])
+            }
             Effect::LocalModelCall {
                 app,
                 model,
@@ -387,6 +397,23 @@ fn mint_webhook_token() -> Result<String> {
         let _ = write!(out, "{byte:02x}");
     }
     Ok(out)
+}
+
+pub fn mint_invite_token() -> Result<String> {
+    let mut bytes = [0u8; terrane_cap_share::INVITE_TOKEN_BYTES];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| Error::Runtime(format!("mint invite token: {e}")))?;
+    Ok(to_hex(&bytes))
+}
+
+fn to_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 fn person_secret_name(person_id: &str) -> Result<String> {

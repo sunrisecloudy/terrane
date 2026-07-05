@@ -45,6 +45,7 @@ mod relational_db;
 mod replica;
 mod scheduler;
 mod search;
+mod share;
 mod stt;
 mod sync;
 mod stream;

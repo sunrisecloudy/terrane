@@ -248,6 +248,11 @@ pub enum Effect {
         dest_name: String,
     },
     NewReplicaId,
+    NewInviteToken {
+        app: String,
+        rights: String,
+        note: String,
+    },
     LocalModelCall {
         app: String,
         model: String,

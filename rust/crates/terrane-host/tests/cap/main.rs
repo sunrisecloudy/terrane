@@ -39,6 +39,7 @@ mod publish;
 mod query;
 mod scheduler;
 mod search;
+mod share;
 mod sysinfo;
 mod sync;
 mod stream;

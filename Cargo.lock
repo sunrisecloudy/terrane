@@ -4208,6 +4208,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-share"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-stream"
 version = "0.1.0"
 dependencies = [
@@ -4339,6 +4347,7 @@ dependencies = [
  "terrane-cap-replica",
  "terrane-cap-scheduler",
  "terrane-cap-search",
+ "terrane-cap-share",
  "terrane-cap-stream",
  "terrane-cap-stt",
  "terrane-cap-sync",
@@ -4408,6 +4417,7 @@ dependencies = [
  "terrane-cap-publish",
  "terrane-cap-replica",
  "terrane-cap-scheduler",
+ "terrane-cap-share",
  "terrane-cap-stream",
  "terrane-cap-sync",
  "terrane-cap-telemetry",

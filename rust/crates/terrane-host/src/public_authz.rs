@@ -279,6 +279,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "sync.pair" | "sync.unpair" | "sync.apply" => PublicCommandDisposition::Refuse {
             reason: "sync commands are host-edge-only; pair and apply through the sync transport",
         },
+        "share.invite" | "share.redeem" | "share.revoke" => PublicCommandDisposition::Refuse {
+            reason: "share commands are owner sync-control actions and are trusted-host-only",
+        },
         // App-callable stt surface: record a selection / stop a session. Both
         // take the app id at arg 0 and are gated by the stt grant.
         "stt.select" | "stt.stop" => PublicCommandDisposition::GrantGated {
