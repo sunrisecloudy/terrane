@@ -44,6 +44,15 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             Err("usage: terrane logs <app> [--level warn] [--tail 200] [--follow]".into())
         }
         ["contract", "export"] => run_contract_export(),
+        ["backup", "create", path, rest @ ..] => run_backup_create(path, rest),
+        ["backup", "info", path] => run_backup_info(path),
+        ["backup", "restore", path, rest @ ..] => run_backup_restore(path, rest),
+        ["backup", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane backup (create <path.tzst> [--level n] | info <path.tzst> | restore <path.tzst> --into <home> [--clone])".into())
+        }
+        ["export", app, path, rest @ ..] => run_export(app, path, rest),
+        ["import", path] => run_import(path),
         ["connection", "set", name, rest @ ..] => run_connection_set(name, rest),
         ["connection", "rm", name] | ["connection", "remove", name] => run_connection_rm(name),
         ["connection", "ls"] | ["connection", "list"] => run_connection_ls(),
@@ -537,6 +546,107 @@ pub fn run_install_kv(path: &str, rest: &[&str]) -> Result<(), String> {
 pub fn run_sync(app: &str, from_home: &str) -> Result<(), String> {
     println!("{}", crate::sync_from_home(app, from_home)?.message());
     Ok(())
+}
+
+pub fn run_backup_create(path: &str, rest: &[&str]) -> Result<(), String> {
+    let level = parse_level(rest)?;
+    let outcome = crate::backup::create_backup(&crate::home_dir(), Path::new(path), level)?;
+    println!(
+        "backup created {} ({} records, {} files)",
+        path,
+        outcome.manifest.log_records,
+        outcome.manifest.files.len()
+    );
+    for file in outcome.manifest.files {
+        println!("{} {} bytes {}", file.path, file.bytes, file.sha256);
+    }
+    Ok(())
+}
+
+pub fn run_backup_info(path: &str) -> Result<(), String> {
+    let info = crate::backup::backup_info(Path::new(path))?;
+    println!(
+        "backup {} records={} peer={} files={}",
+        info.manifest.kind,
+        info.manifest.log_records,
+        info.manifest.peer.unwrap_or_else(|| "none".to_string()),
+        info.manifest.files.len()
+    );
+    if let Some(app) = info.manifest.app {
+        println!("app={app}");
+    }
+    Ok(())
+}
+
+pub fn run_backup_restore(path: &str, rest: &[&str]) -> Result<(), String> {
+    let mut into = None;
+    let mut clone_identity = false;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--into" => {
+                i += 1;
+                let Some(value) = rest.get(i) else {
+                    return Err("--into requires a home path".into());
+                };
+                into = Some(*value);
+            }
+            "--clone" => clone_identity = true,
+            other => return Err(format!("unknown backup restore option: {other}")),
+        }
+        i += 1;
+    }
+    let into = into.ok_or_else(|| {
+        "usage: terrane backup restore <path.tzst> --into <home> [--clone]".to_string()
+    })?;
+    let outcome = crate::backup::restore_backup(Path::new(path), Path::new(into), clone_identity)?;
+    println!(
+        "restored {} records into {} peer={} replay_matches={} mode={}",
+        outcome.manifest.log_records,
+        into,
+        outcome
+            .peer
+            .map(|peer| format!("{peer:016x}"))
+            .unwrap_or_else(|| "none".to_string()),
+        outcome.replay_matches,
+        if outcome.cloned { "clone" } else { "restore" }
+    );
+    if !outcome.cloned {
+        println!("warning: restored home keeps replica identity; use --clone for a second live copy");
+    }
+    Ok(())
+}
+
+pub fn run_export(app: &str, path: &str, rest: &[&str]) -> Result<(), String> {
+    let level = parse_level(rest)?;
+    let outcome = crate::backup::export_app(&crate::home_dir(), app, Path::new(path), level)?;
+    println!(
+        "exported {} to {} ({} records, {} files)",
+        app,
+        path,
+        outcome.manifest.log_records,
+        outcome.manifest.files.len()
+    );
+    Ok(())
+}
+
+pub fn run_import(path: &str) -> Result<(), String> {
+    let outcome = crate::backup::import_app(&crate::home_dir(), Path::new(path))?;
+    println!(
+        "imported {} from {} ({} records, {} blobs)",
+        outcome.app, path, outcome.records, outcome.blobs
+    );
+    Ok(())
+}
+
+fn parse_level(rest: &[&str]) -> Result<i32, String> {
+    match rest {
+        [] => Ok(3),
+        ["--level", level] => level
+            .parse::<i32>()
+            .map_err(|_| format!("invalid zstd level: {level}")),
+        _ => Err("usage: optional compression flag is --level <n>".into()),
+    }
 }
 
 pub fn run_cap_list(rest: &[&str]) -> Result<(), String> {
@@ -2261,6 +2371,11 @@ pub fn print_help() {
          \x20 terrane document rm <app> <id>                  delete one document\n\
          \x20 terrane i18n import <path>                    seed the public KV bucket from i18n/system & apps/*/i18n catalogs\n\
          \x20 terrane i18n negotiate <accept-language>       resolve a header to the best supported code\n\
+         \x20 terrane backup create <path.tzst> [--level n]  archive this home log, apps, and blob CAS\n\
+         \x20 terrane backup info <path.tzst>                print archive manifest summary\n\
+         \x20 terrane backup restore <path.tzst> --into <home> [--clone]\n\
+         \x20 terrane export <app> <path.tzst> [--level n]   export one app's log slice, bundle, and blobs\n\
+         \x20 terrane import <path.tzst>                     import one exported app into this home\n\
          \x20 terrane native observe-default                    record default host native support\n\
          \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane connection set <name> [--field key]       read a secret from stdin/prompt and record public metadata\n\
