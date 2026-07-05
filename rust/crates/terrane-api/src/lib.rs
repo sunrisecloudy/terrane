@@ -146,6 +146,8 @@ pub const TOOL_APP_BUNDLE_VALIDATE: &str = "app_bundle_validate";
 pub const TOOL_APP_REGISTER_INLINE: &str = "app_register_inline";
 /// MCP tool: register an app bundle through the core app.add command.
 pub const TOOL_APP_REGISTER: &str = "app_register";
+/// MCP tool: trusted local app bundle upgrade through app.upgrade.
+pub const TOOL_APP_UPGRADE: &str = "app_upgrade";
 /// MCP tool: list capability docs.
 pub const TOOL_CAPABILITIES_LIST: &str = "capabilities_list";
 /// MCP tool: return detailed capability docs for one namespace.
@@ -289,6 +291,11 @@ pub fn mcp_tools() -> Vec<ToolDef> {
             name: TOOL_APP_REGISTER,
             description: "Happy-path app registration for agents. Reads manifest.json from source, validates the bundle, then dispatches app.add through core. Use dryRun true before committing.",
             input_schema: r#"{"type":"object","properties":{"source":{"type":"string","description":"App bundle directory containing manifest.json."},"id":{"type":"string","description":"Optional id override; defaults to manifest.id."},"name":{"type":"string","description":"Optional display-name override; defaults to manifest.name or id."},"runtime":{"type":"string","description":"Optional runtime override; defaults to manifest.runtime or js."},"dryRun":{"type":"boolean","description":"Validate through app.add without committing. Defaults to false."}},"required":["source"],"additionalProperties":false}"#,
+        },
+        ToolDef {
+            name: TOOL_APP_UPGRADE,
+            description: "Trusted local upgrade for an existing app. Runs manifest migrations, archives outgoing and incoming bundles in blob CAS, records app.upgraded, and swaps kv bundle files atomically. Provide exactly one of source, toVersion, or fromDraft.",
+            input_schema: r#"{"type":"object","properties":{"app":{"type":"string","description":"Existing app id."},"source":{"type":"string","description":"Incoming bundle directory containing manifest.json."},"toVersion":{"type":"string","description":"Archived version to reinstall from blob CAS."},"fromDraft":{"type":"string","description":"Server-side app_build draft id to install."}},"required":["app"],"additionalProperties":false}"#,
         },
         ToolDef {
             name: TOOL_LIST_APPS,

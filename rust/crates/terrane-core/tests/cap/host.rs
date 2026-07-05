@@ -660,6 +660,8 @@ fn memory_backend_run_returns_records_for_caller_owned_fold() {
             name: "Preview Demo".to_string(),
             source: None,
             runtime: "js".to_string(),
+            version: terrane_cap_app::DEFAULT_VERSION.to_string(),
+            history: Vec::new(),
             interfaces: terrane_cap_app::mandatory_interfaces(),
             links: Vec::new(),
         },

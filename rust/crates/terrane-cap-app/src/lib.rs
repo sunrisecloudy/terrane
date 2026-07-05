@@ -23,8 +23,17 @@ pub struct AppRecord {
     pub name: String,
     pub source: Option<String>,
     pub runtime: String,
+    pub version: String,
+    pub history: Vec<VersionEntry>,
     pub interfaces: Vec<String>,
     pub links: Vec<LinkRegistration>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionEntry {
+    pub version: String,
+    pub bundle_hash: String,
+    pub seq: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -65,6 +74,14 @@ struct Removed {
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
+struct Upgraded {
+    id: String,
+    from_version: String,
+    to_version: String,
+    bundle_hash: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
 struct LinkRegistered {
     app: String,
     kind: String,
@@ -84,12 +101,18 @@ impl Capability for AppCapability {
                 CommandSpec { name: "app.add" },
                 CommandSpec { name: "app.import" },
                 CommandSpec {
+                    name: "app.upgrade",
+                },
+                CommandSpec {
                     name: "app.link.deliver",
                 },
                 CommandSpec { name: "app.remove" },
             ],
             events: vec![
                 EventSpec { kind: "app.added" },
+                EventSpec {
+                    kind: "app.upgraded",
+                },
                 EventSpec {
                     kind: "app.link.registered",
                 },
@@ -154,6 +177,16 @@ impl Capability for AppCapability {
                     events.push(link_registered_event(&id, &link.kind, &link.spec)?);
                 }
                 Ok(Decision::Commit(events))
+            }
+            "app.upgrade" => {
+                let (id, source) = parse_upgrade(args)?;
+                if !state_ref::<AppState>(ctx.state, "app")?
+                    .apps
+                    .contains_key(&id)
+                {
+                    return Err(Error::AppNotFound(id));
+                }
+                Ok(Decision::Effect(Effect::UpgradeAppBundle { id, source }))
             }
             "app.link.deliver" => {
                 let target = arg(args, 0, "target app")?;
@@ -224,10 +257,30 @@ impl Capability for AppCapability {
                         name: e.name,
                         source: e.source,
                         runtime: e.runtime,
+                        version: DEFAULT_VERSION.to_string(),
+                        history: Vec::new(),
                         interfaces: normalize_interfaces(e.interfaces),
                         links: Vec::new(),
                     },
                 );
+            }
+            "app.upgraded" => {
+                let e: Upgraded = decode_event(record)?;
+                let state = state_mut::<AppState>(state, "app")?;
+                let app = state
+                    .apps
+                    .get_mut(&e.id)
+                    .ok_or_else(|| Error::AppNotFound(e.id.clone()))?;
+                app.version = e.to_version.clone();
+                app.history.push(VersionEntry {
+                    version: e.to_version,
+                    bundle_hash: e.bundle_hash,
+                    seq: app.history.len() as u64 + 1,
+                });
+                if app.history.len() > MAX_VERSION_HISTORY {
+                    let excess = app.history.len() - MAX_VERSION_HISTORY;
+                    app.history.drain(0..excess);
+                }
             }
             "app.link.registered" => {
                 let e: LinkRegistered = decode_event(record)?;
@@ -269,6 +322,13 @@ impl Capability for AppCapability {
                     None => format!("app.added {} \"{}\" runtime={}", e.id, e.name, e.runtime),
                 })
             }
+            "app.upgraded" => {
+                let e: Upgraded = decode_event(record).ok()?;
+                Some(format!(
+                    "app.upgraded {} {} -> {} ({})",
+                    e.id, e.from_version, e.to_version, e.bundle_hash
+                ))
+            }
             "app.link.registered" => {
                 let e: LinkRegistered = decode_event(record).ok()?;
                 Some(format!("app.link.registered {} {} {}", e.app, e.kind, e.spec))
@@ -282,6 +342,10 @@ impl Capability for AppCapability {
     }
 }
 
+pub const DEFAULT_VERSION: &str = "0.0.0";
+pub const MAX_VERSION_LEN: usize = 64;
+pub const MAX_VERSION_HISTORY: usize = 100;
+
 pub fn added_event(
     id: impl Into<String>,
     name: impl Into<String>,
@@ -289,6 +353,29 @@ pub fn added_event(
     runtime: impl Into<String>,
 ) -> Result<EventRecord> {
     added_event_with_interfaces(id, name, source, runtime, mandatory_interfaces())
+}
+
+pub fn upgraded_event(
+    id: impl Into<String>,
+    from_version: impl Into<String>,
+    to_version: impl Into<String>,
+    bundle_hash: impl Into<String>,
+) -> Result<EventRecord> {
+    let id = id.into();
+    let from_version = from_version.into();
+    let to_version = to_version.into();
+    let bundle_hash = bundle_hash.into();
+    validate_version(&from_version)?;
+    validate_version(&to_version)?;
+    encode_event(
+        "app.upgraded",
+        &Upgraded {
+            id,
+            from_version,
+            to_version,
+            bundle_hash,
+        },
+    )
 }
 
 pub fn added_event_with_interfaces(
@@ -534,6 +621,44 @@ fn parse_import(args: &[String]) -> Result<(String, Option<String>, Option<Strin
     Ok((source, storage_backend, storage_path))
 }
 
+fn parse_upgrade(args: &[String]) -> Result<(String, String)> {
+    let id = arg(args, 0, "app id")?;
+    validate_app_id(&id)?;
+    if args.len() < 2 {
+        return Err(Error::InvalidInput(
+            "usage: app upgrade <id> <bundle path|--to-version version|--from-draft draftId>"
+                .into(),
+        ));
+    }
+    match args[1].as_str() {
+        "--to-version" => {
+            let version = args
+                .get(2)
+                .ok_or_else(|| Error::InvalidInput("`--to-version` needs a version".into()))?;
+            validate_version(version)?;
+            Ok((id, format!("version://{version}")))
+        }
+        "--from-draft" => {
+            let draft = args
+                .get(2)
+                .ok_or_else(|| Error::InvalidInput("`--from-draft` needs a draft id".into()))?;
+            if draft.trim().is_empty() || draft.contains('/') || draft.contains("..") {
+                return Err(Error::InvalidInput(format!("unsafe draft id: {draft:?}")));
+            }
+            Ok((id, format!("draft://{draft}")))
+        }
+        source => {
+            if args.len() != 2 {
+                return Err(Error::InvalidInput(format!(
+                    "unknown app.upgrade option: {}",
+                    args[2]
+                )));
+            }
+            Ok((id, source.to_string()))
+        }
+    }
+}
+
 fn validate_app_id(id: &str) -> Result<()> {
     if id.starts_with(RESERVED_PREFIX) {
         return Err(Error::InvalidInput(format!(
@@ -548,6 +673,46 @@ fn validate_app_id(id: &str) -> Result<()> {
             "app id is unsafe: {id:?}; use ASCII letters, digits, '-' or '_'"
         )));
     }
+    Ok(())
+}
+
+pub fn validate_version(version: &str) -> Result<()> {
+    if version.is_empty() || version.len() > MAX_VERSION_LEN {
+        return Err(Error::InvalidInput(format!(
+            "app version must be 1..={MAX_VERSION_LEN} bytes"
+        )));
+    }
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, pre)) => {
+            if pre.is_empty()
+                || !pre
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+            {
+                return Err(Error::InvalidInput(format!(
+                    "app version prerelease is invalid: {version:?}"
+                )));
+            }
+            (core, Some(pre))
+        }
+        None => (version, None),
+    };
+    if core.split('.').count() != 3 {
+        return Err(Error::InvalidInput(format!(
+            "app version must be semver X.Y.Z with optional prerelease, got {version:?}"
+        )));
+    }
+    for part in core.split('.') {
+        if part.is_empty()
+            || !part.bytes().all(|b| b.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return Err(Error::InvalidInput(format!(
+                "app version must be semver X.Y.Z with optional prerelease, got {version:?}"
+            )));
+        }
+    }
+    let _ = prerelease;
     Ok(())
 }
 

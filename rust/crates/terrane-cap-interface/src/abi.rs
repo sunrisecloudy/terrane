@@ -194,6 +194,10 @@ pub enum Effect {
         storage_backend: Option<String>,
         storage_path: Option<String>,
     },
+    UpgradeAppBundle {
+        id: String,
+        source: String,
+    },
     BlobStore {
         app: String,
         name: String,

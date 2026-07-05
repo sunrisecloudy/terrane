@@ -20,12 +20,14 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
             commands: vec![
                 "app.add".to_string(),
                 "app.import".to_string(),
+                "app.upgrade".to_string(),
                 "app.link.deliver".to_string(),
                 "app.remove".to_string(),
             ],
             queries: vec!["app.exists".to_string()],
             events: vec![
                 "app.added".to_string(),
+                "app.upgraded".to_string(),
                 "app.link.registered".to_string(),
                 "app.removed".to_string(),
             ],
@@ -65,6 +67,12 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
                 .to_string(),
             "app.import is effectful: the edge host reads a JS bundle directory, records app.added with a kv:// source, and stores bundle files under reserved cap-kv keys."
                 .to_string(),
+            "Bundle manifest.version defaults to 0.0.0 when omitted; app.upgrade requires semver X.Y.Z with optional prerelease and treats versions as immutable."
+                .to_string(),
+            "app.upgrade is forward-only and migration-gated: rollback is another upgrade to archived code and is only valid when dataVersion does not go backward."
+                .to_string(),
+            "app.upgrade is trusted-admin-only; apps cannot upgrade themselves or other apps through ctx.resource."
+                .to_string(),
             "app.link.deliver is trusted-host only and can only call common.receive with link or blob payload kinds."
                 .to_string(),
             "app.remove only records app.removed for an existing app id.".to_string(),
@@ -77,6 +85,8 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
         limits: vec![
             limit("defaultRuntime", "js", "Keeps older app.add calls deterministic."),
             limit("catalogScope", "home", "The catalog is local to the current TERRANE_HOME."),
+            limit("versionLength", "64", "Maximum manifest.version byte length."),
+            limit("versionHistory", "100", "Folded metadata entries retained per app."),
         ],
         compatibility: vec![
             "Other capabilities that store app-scoped data must subscribe to app.removed and treat it as their cleanup boundary."
@@ -163,6 +173,42 @@ fn app_commands() -> Vec<CommandDoc> {
                 .to_string(),
         }]),
         command_doc(
+            "app.upgrade",
+            &[
+                param("id", "Existing app id.", "app_id"),
+                param(
+                    "source",
+                    "Bundle directory, --to-version <version>, or --from-draft <draftId>.",
+                    "path_or_selector",
+                ),
+            ],
+            "effect",
+            "Upgrade an installed kv-backed app bundle atomically, running pending migrations before swapping bundle files.",
+        )
+        .with_errors(&[
+            "missing app",
+            "unsafe bundle id",
+            "same version and identical bundle",
+            "same version with different bytes",
+            "dataVersion downgrade",
+            "missing migration script",
+        ])
+        .with_emits(&["migration.applied", "blob.stored", "app.upgraded", "kv.set", "kv.deleted"])
+        .with_effects(&[
+            "reads and validates the incoming bundle at the host edge",
+            "archives outgoing and incoming bundle bytes in the blob CAS",
+            "runs manifest-declared migration scripts once before committing the upgrade batch",
+        ])
+        .with_examples(&[ExampleDoc {
+            title: "Upgrade a bundle".to_string(),
+            summary: "Run migrations, archive both versions, and replace changed bundle files in one event batch."
+                .to_string(),
+            language: "cli".to_string(),
+            code: "terrane app upgrade calendar /apps/calendar-v2".to_string(),
+            expected: "records migration facts if needed, blob.stored archives, app.upgraded, and kv bundle file diff events"
+                .to_string(),
+        }]),
+        command_doc(
             "app.link.deliver",
             &[
                 param("target", "Target app id.", "app_id"),
@@ -221,6 +267,20 @@ fn app_events() -> Vec<EventDoc> {
             "Adds or replaces the folded catalog record for one app id.",
         )
         .with_effects(&["folds into AppState.apps"]),
+        event_doc(
+            "app.upgraded",
+            &[
+                param("id", "App id whose bundle changed.", "app_id"),
+                param("from_version", "Previously folded manifest.version.", "semver"),
+                param("to_version", "Incoming manifest.version.", "semver"),
+                param("bundle_hash", "Stable SHA-256 hash of the canonical bundle archive.", "sha256"),
+            ],
+            "Records an atomic app bundle upgrade after any migration events in the same batch.",
+        )
+        .with_effects(&[
+            "updates AppRecord.version",
+            "appends folded version metadata, capped at 100 entries",
+        ]),
         event_doc(
             "app.link.registered",
             &[

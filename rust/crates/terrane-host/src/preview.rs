@@ -142,6 +142,8 @@ impl PreviewStore {
                 name: name.clone(),
                 source: None,
                 runtime: "js".to_string(),
+                version: terrane_cap_app::DEFAULT_VERSION.to_string(),
+                history: Vec::new(),
                 interfaces: terrane_cap_app::normalize_interfaces(manifest.interfaces.clone()),
                 links: Vec::new(),
             },

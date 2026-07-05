@@ -234,6 +234,87 @@ fn app_link_deliver_validates_target_kind_and_size() {
 }
 
 #[test]
+fn app_upgrade_decides_effect_and_folds_version_history() {
+    let cap = AppCapability;
+    let bus = NoBus;
+    let mut store = Store::default();
+
+    let Decision::Commit(events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.add",
+            &["demo".into(), "Demo".into()],
+        )
+        .unwrap()
+    else {
+        panic!("app.add should commit");
+    };
+    for event in &events {
+        cap.fold(&mut store, event).unwrap();
+    }
+
+    let Decision::Effect(Effect::UpgradeAppBundle { id, source }) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.upgrade",
+            &["demo".into(), "/tmp/demo-v2".into()],
+        )
+        .unwrap()
+    else {
+        panic!("app.upgrade should request an upgrade effect");
+    };
+    assert_eq!(id, "demo");
+    assert_eq!(source, "/tmp/demo-v2");
+
+    let event = terrane_cap_app::upgraded_event(
+        "demo",
+        terrane_cap_app::DEFAULT_VERSION,
+        "1.2.0",
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    )
+    .unwrap();
+    cap.fold(&mut store, &event).unwrap();
+    let app = &store.app.apps["demo"];
+    assert_eq!(app.version, "1.2.0");
+    assert_eq!(app.history.len(), 1);
+    assert_eq!(app.history[0].seq, 1);
+}
+
+#[test]
+fn app_upgrade_rejects_missing_apps_and_bad_versions() {
+    let cap = AppCapability;
+    let bus = NoBus;
+    let store = Store::default();
+
+    assert_eq!(
+        cap.decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.upgrade",
+            &["missing".into(), "/tmp/bundle".into()],
+        )
+        .unwrap_err(),
+        Error::AppNotFound("missing".into())
+    );
+    assert!(matches!(
+        terrane_cap_app::validate_version("01.0.0"),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(matches!(
+        terrane_cap_app::validate_version("1.0"),
+        Err(Error::InvalidInput(_))
+    ));
+}
+
+#[test]
 fn app_capability_rejects_duplicate_and_missing_removes() {
     let cap = AppCapability;
     let bus = NoBus;
@@ -324,6 +405,7 @@ fn app_doc_covers_manifest_and_removal_cleanup_boundary() {
         vec![
             "app.add".to_string(),
             "app.import".to_string(),
+            "app.upgrade".to_string(),
             "app.link.deliver".to_string(),
             "app.remove".to_string()
         ]
@@ -333,6 +415,7 @@ fn app_doc_covers_manifest_and_removal_cleanup_boundary() {
         doc.manifest.events,
         vec![
             "app.added".to_string(),
+            "app.upgraded".to_string(),
             "app.link.registered".to_string(),
             "app.removed".to_string()
         ]
