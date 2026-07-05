@@ -72,6 +72,7 @@ use terrane_cap_local_model::LocalModelState;
 use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
+use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_stt::SttState;
@@ -92,6 +93,7 @@ pub struct State {
     pub builder: BuilderState,
     pub harness: HarnessState,
     pub kv: KvState,
+    pub query: QueryState,
     pub net: NetState,
     pub model: ModelState,
     pub local_model: LocalModelState,
@@ -112,6 +114,7 @@ impl StateStore for State {
             "builder" => Some(&self.builder),
             "harness" => Some(&self.harness),
             "kv" => Some(&self.kv),
+            "query" => Some(&self.query),
             "net" => Some(&self.net),
             "model" => Some(&self.model),
             "local-model" => Some(&self.local_model),
@@ -133,6 +136,7 @@ impl StateStore for State {
             "builder" => Some(&mut self.builder),
             "harness" => Some(&mut self.harness),
             "kv" => Some(&mut self.kv),
+            "query" => Some(&mut self.query),
             "net" => Some(&mut self.net),
             "model" => Some(&mut self.model),
             "local-model" => Some(&mut self.local_model),
@@ -430,6 +434,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_kv::KvCapability));
+    registry.register(Box::new(terrane_cap_query::QueryCapability));
     registry.register(Box::new(terrane_cap_relational_db::RelationalDbCapability));
     registry.register(Box::new(terrane_cap_search::SearchCapability));
     registry.register(Box::new(terrane_cap_crdt::CrdtCapability));

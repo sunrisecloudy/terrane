@@ -18,5 +18,6 @@ mod model;
 mod native;
 mod net;
 mod password_manager;
+mod query;
 mod search;
 mod sysinfo;

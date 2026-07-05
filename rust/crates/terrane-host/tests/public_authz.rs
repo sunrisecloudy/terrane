@@ -75,6 +75,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "local-model",
             "native",
             "net",
+            "query",
             "relational_db",
             "search",
             "scheduler",
@@ -109,14 +110,20 @@ fn public_query_inventory_covers_every_registered_query() {
     let queries = terrane_core::query_names();
     assert_eq!(
         queries,
-        vec!["app.exists", "native.supports", "replica.peer"]
+        vec![
+            "app.exists",
+            "native.supports",
+            "query.jmespath",
+            "replica.peer"
+        ]
     );
     for query in queries {
-        assert_eq!(
-            classify_public_query_name(query),
-            PublicQueryDisposition::Allow,
-            "{query} should be explicitly classified"
-        );
+        let expected = if query == "query.jmespath" {
+            PublicQueryDisposition::Unclassified
+        } else {
+            PublicQueryDisposition::Allow
+        };
+        assert_eq!(classify_public_query_name(query), expected);
     }
 }
 

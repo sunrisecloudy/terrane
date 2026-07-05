@@ -10,6 +10,7 @@ use crate::manifest::GrantResourceSpec;
 pub enum QueryValue {
     Bool(bool),
     U64(Option<u64>),
+    Json(String),
 }
 
 /// Read-only access from one capability into another.
