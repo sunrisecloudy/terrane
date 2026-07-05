@@ -420,6 +420,15 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.time.now()` | call |
 | `ctx.resource.time.live()` | call |
 | `ctx.resource.time.last()` | read |
+
+#### `ctx.resource.tts`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.tts.speak(text, options)` | call |
+| `ctx.resource.tts.render(text, options)` | call |
+| `ctx.resource.tts.voices()` | read |
+| `ctx.resource.tts.renders()` | read |
 <!-- generated:resource-api:end -->
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as
@@ -436,6 +445,13 @@ has the `net` grant, or through the CLI as
 redacted before persistence for built-in sensitive names and app-declared
 `sensitiveHeaders`; `{"$secret":"name"}` is reserved for future host secret
 resolution and is rejected at the edge until that resolver exists.
+
+For `tts`: `ctx.resource.tts.speak(text)` is transient and records nothing, so
+replay never makes sound. `ctx.resource.tts.render(text, "--voice", voice,
+"--rate", "1000")` synthesizes at the edge, writes audio bytes to the blob CAS,
+and records `tts.rendered` plus `blob.stored`; read bytes later through the blob
+resource. `ctx.resource.tts.renders()` returns this app's folded render
+metadata as JSON.
 
 ```js
 var kv = ctx.resource.kv;
