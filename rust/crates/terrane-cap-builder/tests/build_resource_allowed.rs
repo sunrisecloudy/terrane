@@ -5,7 +5,14 @@
 
 use terrane_cap_builder::parse_generated_files;
 
-const ALLOWED: &[&str] = &["kv", "crdt", "relational_db", "build"];
+const ALLOWED: &[&str] = &[
+    "kv",
+    "crdt",
+    "relational_db",
+    "build",
+    "search",
+    "local-model",
+];
 
 /// Build a builder-output bundle whose manifest requests `resources_json`
 /// (e.g. `["build"]`). Mirrors the in-crate `generated_json` fixture shape.
@@ -36,6 +43,13 @@ fn generated_json(resources_json: &str) -> String {
 fn build_resource_is_accepted_by_allow_list() {
     let files =
         parse_generated_files(&generated_json(r#"["build"]"#), "demo", "Demo", ALLOWED).unwrap();
+    assert!(files.iter().any(|f| f.path == "manifest.json"));
+}
+
+#[test]
+fn search_resource_is_accepted_by_allow_list() {
+    let files =
+        parse_generated_files(&generated_json(r#"["search"]"#), "demo", "Demo", ALLOWED).unwrap();
     assert!(files.iter().any(|f| f.path == "manifest.json"));
 }
 

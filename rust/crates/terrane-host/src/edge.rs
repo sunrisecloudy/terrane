@@ -144,6 +144,7 @@ impl EffectRunner for EdgeRunner {
                 max_tokens,
                 temperature_milli,
                 draft_model,
+                embed_preset,
             } => crate::local_llm::pull(
                 id,
                 repo,
@@ -154,7 +155,14 @@ impl EffectRunner for EdgeRunner {
                 *max_tokens,
                 *temperature_milli,
                 draft_model.clone(),
+                embed_preset.as_deref(),
             ),
+            Effect::LocalModelEmbed {
+                app,
+                model,
+                texts,
+                query,
+            } => crate::local_llm::embed(app, model, texts, *query, state),
         }
     }
 
@@ -694,9 +702,9 @@ fn http_get(url: &str) -> Result<(u16, String)> {
             let body = resp.into_string().unwrap_or_default();
             Ok((code, body))
         }
-        Err(ureq::Error::Transport(transport)) => {
-            Err(Error::Storage(format!("HTTP GET {url} failed: {transport}")))
-        }
+        Err(ureq::Error::Transport(transport)) => Err(Error::Storage(format!(
+            "HTTP GET {url} failed: {transport}"
+        ))),
     }
 }
 

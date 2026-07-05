@@ -3,7 +3,40 @@ use terrane_cap_interface::{
     decode_app_removed, decode_event, encode_event, state_mut, EventRecord, Result, StateStore,
 };
 
-use crate::types::{LocalModelSpec, LocalModelState, LocalModelTurn};
+use crate::types::{EmbeddingConfig, LocalModelSpec, LocalModelState, LocalModelTurn};
+
+/// Borsh mirror of [`EmbeddingConfig`] so the public type stays free of the
+/// wire derive (the same split `LocalModelSpec`/`Registered` uses).
+#[derive(BorshSerialize, BorshDeserialize)]
+struct EmbeddingConfigWire {
+    pooling: String,
+    query_prefix: String,
+    document_prefix: String,
+    normalize: bool,
+    dim: Option<u32>,
+}
+
+impl EmbeddingConfigWire {
+    fn from_config(config: &EmbeddingConfig) -> Self {
+        EmbeddingConfigWire {
+            pooling: config.pooling.clone(),
+            query_prefix: config.query_prefix.clone(),
+            document_prefix: config.document_prefix.clone(),
+            normalize: config.normalize,
+            dim: config.dim,
+        }
+    }
+
+    fn into_config(self) -> EmbeddingConfig {
+        EmbeddingConfig {
+            pooling: self.pooling,
+            query_prefix: self.query_prefix,
+            document_prefix: self.document_prefix,
+            normalize: self.normalize,
+            dim: self.dim,
+        }
+    }
+}
 
 #[derive(BorshSerialize, BorshDeserialize)]
 struct Registered {
@@ -18,6 +51,17 @@ struct Registered {
     source: Option<String>,
     size_bytes: Option<u64>,
     draft_model: Option<String>,
+    embedding: Option<EmbeddingConfigWire>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct Embedded {
+    app: String,
+    model: String,
+    query: bool,
+    dim: u32,
+    vectors: Vec<Vec<f32>>,
+    duration_ms: u64,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -66,6 +110,21 @@ pub struct RespondedRecord {
     pub duration_ms: u64,
 }
 
+/// Everything one completed embedding run records; the effect runner fills it
+/// so the `"local-model.embedded"` payload shape stays owned by this crate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmbeddedRecord {
+    pub app: String,
+    pub model: String,
+    /// Whether the query prefix (vs the document prefix) was applied.
+    pub query: bool,
+    /// The dimension of each returned vector (after any truncation).
+    pub dim: u32,
+    /// One vector per input text, in order.
+    pub vectors: Vec<Vec<f32>>,
+    pub duration_ms: u64,
+}
+
 /// Build the recorded event for a registered (or re-registered) model spec.
 /// Also called by an `EffectRunner` once a pull has downloaded the weights, so
 /// the `"local-model.registered"` kind and payload shape stay owned here.
@@ -84,8 +143,41 @@ pub fn registered_event(id: &str, spec: &LocalModelSpec) -> Result<EventRecord> 
             source: spec.source.clone(),
             size_bytes: spec.size_bytes,
             draft_model: spec.draft_model.clone(),
+            embedding: spec
+                .embedding
+                .as_ref()
+                .map(EmbeddingConfigWire::from_config),
         },
     )
+}
+
+/// Build the recorded event for one completed embedding run. The pooled vectors
+/// are the recorded result so replay never re-runs inference — but `fold` does
+/// not keep them in `State` (floats aren't `Eq`); the caller consumes them at
+/// commit time via [`vectors_from_records`].
+pub fn embedded_event(record: &EmbeddedRecord) -> Result<EventRecord> {
+    encode_event(
+        "local-model.embedded",
+        &Embedded {
+            app: record.app.clone(),
+            model: record.model.clone(),
+            query: record.query,
+            dim: record.dim,
+            vectors: record.vectors.clone(),
+            duration_ms: record.duration_ms,
+        },
+    )
+}
+
+/// The vectors from a freshly committed embedding batch, for the `embed` call
+/// surface to hand back to the caller.
+pub(crate) fn vectors_from_records(records: &[EventRecord]) -> Option<Vec<Vec<f32>>> {
+    records
+        .iter()
+        .rev()
+        .find(|record| record.kind == "local-model.embedded")
+        .and_then(|record| decode_event::<Embedded>(record).ok())
+        .map(|embedded| embedded.vectors)
 }
 
 /// Build the recorded event for an unregistered model spec.
@@ -159,6 +251,8 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
             let e: Registered = decode_event(record)?;
             let local = state_mut::<LocalModelState>(state, "local-model")?;
             let id = e.id.clone();
+            let embedding = e.embedding.map(EmbeddingConfigWire::into_config);
+            let is_embedding = embedding.is_some();
             local.specs.insert(
                 e.id,
                 LocalModelSpec {
@@ -172,12 +266,24 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
                     source: e.source,
                     size_bytes: e.size_bytes,
                     draft_model: e.draft_model,
+                    embedding,
                 },
             );
-            // The first registered model becomes the default automatically.
-            if local.default_model.is_none() {
+            // The first registered model of each kind becomes that kind's
+            // default: embedding models set the embed default, generation models
+            // the chat default — never crossing over.
+            if is_embedding {
+                if local.default_embed_model.is_none() {
+                    local.default_embed_model = Some(id);
+                }
+            } else if local.default_model.is_none() {
                 local.default_model = Some(id);
             }
+        }
+        "local-model.embedded" => {
+            // A derived read-model: the recorded vectors are consumed by the
+            // caller at commit time and deliberately never enter State (floats
+            // aren't `Eq`, so keeping them would break replay identity).
         }
         "local-model.removed" => {
             let e: Removed = decode_event(record)?;
@@ -185,6 +291,9 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
             local.specs.remove(&e.id);
             if local.default_model.as_deref() == Some(e.id.as_str()) {
                 local.default_model = None;
+            }
+            if local.default_embed_model.as_deref() == Some(e.id.as_str()) {
+                local.default_embed_model = None;
             }
         }
         "local-model.default-set" => {
@@ -233,8 +342,28 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
         "local-model.registered" => {
             let e: Registered = decode_event(record).ok()?;
             Some(format!(
-                "local-model.registered {} ({}/{}) at {}",
-                e.id, e.backend, e.format, e.local_path
+                "local-model.registered {} ({}/{}{}) at {}",
+                e.id,
+                e.backend,
+                e.format,
+                if e.embedding.is_some() {
+                    ", embedding"
+                } else {
+                    ""
+                },
+                e.local_path
+            ))
+        }
+        "local-model.embedded" => {
+            let e: Embedded = decode_event(record).ok()?;
+            Some(format!(
+                "local-model.embedded {} via {} ({} vector(s), {}-d, {}, {}ms)",
+                e.app,
+                e.model,
+                e.vectors.len(),
+                e.dim,
+                if e.query { "query" } else { "document" },
+                e.duration_ms
             ))
         }
         "local-model.removed" => {

@@ -57,6 +57,14 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 app_arg_index: 0,
             }
         }
+        "search.upsert"
+        | "search.upsertJson"
+        | "search.remove"
+        | "search.configure"
+        | "search.setEmbedding" => PublicCommandDisposition::GrantGated {
+            namespace: "search",
+            app_arg_index: 0,
+        },
         "native.clipboard.write-text"
         | "native.external.open-url"
         | "native.notification.show"
@@ -88,7 +96,7 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "model.ask" => PublicCommandDisposition::Refuse {
             reason: "model.ask is not available through untrusted capability_command",
         },
-        "local-model.ask" => PublicCommandDisposition::GrantGated {
+        "local-model.ask" | "local-model.embed" => PublicCommandDisposition::GrantGated {
             namespace: "local-model",
             app_arg_index: 0,
         },

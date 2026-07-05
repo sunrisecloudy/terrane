@@ -17,11 +17,13 @@ mod events;
 mod types;
 
 pub use events::{
-    chat_cleared_event, default_set_event, registered_event, removed_event, responded_event,
-    RespondedRecord,
+    chat_cleared_event, default_set_event, embedded_event, registered_event, removed_event,
+    responded_event, EmbeddedRecord, RespondedRecord,
 };
 pub use types::{
-    LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS, RECOMMENDED_GGUF_FILE,
+    embed_preset, EmbeddingConfig, LocalModelSpec, LocalModelState, LocalModelTurn, BACKENDS,
+    EMBED_PRESETS, RECOMMENDED_EMBED_GGUF_FILE, RECOMMENDED_EMBED_GGUF_REPO,
+    RECOMMENDED_EMBED_MODEL_ID, RECOMMENDED_EMBED_PRESET, RECOMMENDED_GGUF_FILE,
     RECOMMENDED_GGUF_REPO, RECOMMENDED_MLX_MODEL_ID, RECOMMENDED_MLX_REPO, RECOMMENDED_MODEL_ID,
 };
 
@@ -50,6 +52,9 @@ impl Capability for LocalModelCapability {
                 CommandSpec {
                     name: "local-model.ask",
                 },
+                CommandSpec {
+                    name: "local-model.embed",
+                },
             ],
             events: vec![
                 EventSpec {
@@ -66,6 +71,9 @@ impl Capability for LocalModelCapability {
                 },
                 EventSpec {
                     kind: "local-model.chat-cleared",
+                },
+                EventSpec {
+                    kind: "local-model.embedded",
                 },
             ],
             queries: Vec::new(),
@@ -89,6 +97,18 @@ impl Capability for LocalModelCapability {
                 ResourceMethod::Call {
                     name: "chatModel",
                     params: &["model", "prompt"],
+                },
+                ResourceMethod::Call {
+                    name: "embed",
+                    params: &["text"],
+                },
+                ResourceMethod::Call {
+                    name: "embedQuery",
+                    params: &["text"],
+                },
+                ResourceMethod::Call {
+                    name: "embedModel",
+                    params: &["model", "text"],
                 },
                 ResourceMethod::Call {
                     name: "pullModel",
@@ -126,11 +146,14 @@ impl Capability for LocalModelCapability {
             "local-model.rm" => commands::decide_rm(ctx, args),
             "local-model.default" => commands::decide_default(ctx, args),
             "local-model.ask" => commands::decide_ask(ctx, args),
+            "local-model.embed" => commands::decide_embed(ctx, args),
             // ResourceMethod::Call routes (app-scoped args, positional).
             "local-model.askModel" => commands::decide_ask_model(ctx, args),
             "local-model.askJson" => commands::decide_ask_json(ctx, args),
             "local-model.chat" => commands::decide_chat(ctx, args),
             "local-model.chatModel" => commands::decide_chat_model(ctx, args),
+            "local-model.embedQuery" => commands::decide_embed_query(ctx, args),
+            "local-model.embedModel" => commands::decide_embed_model(ctx, args),
             "local-model.pullModel" => commands::decide_pull_model(ctx, args),
             "local-model.resetChat" => commands::decide_reset_chat(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
@@ -170,6 +193,19 @@ impl Capability for LocalModelCapability {
             "ask" | "askModel" | "askJson" | "chat" | "chatModel" => Ok(ReadValue::OptString(
                 events::response_text_from_records(records),
             )),
+            // Single-text resource calls: hand back the one vector as a JSON
+            // array of floats (`null` if nothing was produced).
+            "embed" | "embedQuery" | "embedModel" => {
+                let vector = events::vectors_from_records(records)
+                    .and_then(|mut vectors| (!vectors.is_empty()).then(|| vectors.remove(0)));
+                let json = match vector {
+                    Some(vector) => serde_json::to_string(&vector).map_err(|e| {
+                        Error::InvalidInput(format!("embedding encode failed: {e}"))
+                    })?,
+                    None => "null".to_string(),
+                };
+                Ok(ReadValue::OptString(Some(json)))
+            }
             "pullModel" => Ok(ReadValue::OptString(events::registered_id_from_records(
                 records,
             ))),

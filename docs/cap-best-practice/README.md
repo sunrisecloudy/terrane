@@ -40,6 +40,15 @@ Request ──▶ decide ──▶ [Event] ──▶ commit (log) ──▶ broa
        `i18n/<code>/<ns>.<key>` (not hard-coded English), run the full gate,
        commit small and green → [09-docs-and-done.md](09-docs-and-done.md)
 
+## Case studies
+
+Worked end-to-end applications of the steps above — read the matching numbered
+file first, then the case study.
+
+| Doc | Builds |
+|---|---|
+| [10-case-study-hybrid-search.md](10-case-study-hybrid-search.md) | A `search` capability — BM25 + dense-vector hybrid search (RRF) as a rebuildable KV projection: which library, where embeddings come from, and why the index is not replay-critical state |
+
 ## Reference crates
 
 Read code before writing code — each of these is the canonical example of one

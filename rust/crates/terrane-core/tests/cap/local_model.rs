@@ -5,7 +5,10 @@ use std::fs;
 use std::path::Path;
 
 use tempfile::tempdir;
-use terrane_cap_local_model::{registered_event, responded_event, LocalModelSpec, RespondedRecord};
+use terrane_cap_local_model::{
+    embedded_event, registered_event, responded_event, EmbeddedRecord, LocalModelSpec,
+    RespondedRecord,
+};
 use terrane_core::{fold_records_in_memory, Core, EffectRunner, Error, State, LOCAL_OWNER_SUBJECT};
 use terrane_core::{Effect, EventRecord, Result};
 
@@ -64,8 +67,23 @@ impl EffectRunner for StubLlm {
                     source: Some(format!("hf:{repo}")),
                     size_bytes: Some(42),
                     draft_model: None,
+                    embedding: None,
                 },
             )?]),
+            Effect::LocalModelEmbed {
+                app,
+                model,
+                texts,
+                query,
+            } => Ok(vec![embedded_event(&EmbeddedRecord {
+                app: app.clone(),
+                model: model.clone(),
+                query: *query,
+                dim: 3,
+                // Exactly-representable f32s so the JSON round-trip is unambiguous.
+                vectors: texts.iter().map(|_| vec![0.5, 0.25, 0.125]).collect(),
+                duration_ms: 1,
+            })?]),
             other => Err(Error::InvalidInput(format!(
                 "stub runner cannot perform {other:?}"
             ))),
@@ -365,6 +383,9 @@ function handle(input) {
     if (verb === "askJson") { return String(lm.askJson(input[1], input.slice(2).join(" "))); }
     if (verb === "chat") { return String(lm.chat(input.slice(1).join(" "))); }
     if (verb === "chatModel") { return String(lm.chatModel(input[1], input.slice(2).join(" "))); }
+    if (verb === "embed") { return String(lm.embed(input.slice(1).join(" "))); }
+    if (verb === "embedQuery") { return String(lm.embedQuery(input.slice(1).join(" "))); }
+    if (verb === "embedModel") { return String(lm.embedModel(input[1], input.slice(2).join(" "))); }
     if (verb === "models") { return String(lm.models()); }
     if (verb === "pull") { return String(input.length > 2 ? lm.pullModel(input[1], input[2]) : lm.pullModel(input[1])); }
     if (verb === "reset") { return String(lm.resetChat()); }
@@ -457,6 +478,78 @@ fn js_backend_calls_local_model_and_replay_never_reruns_inference() {
         ))
         .is_err());
     assert_eq!(core.state().local_model.turns["caller"].len(), before);
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn js_backend_embeds_and_replay_never_reembeds() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = install_caller(dir.path(), &log);
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "caller", "local-model"],
+    ))
+    .unwrap();
+
+    // Registering an embedding model sets the embed default without disturbing
+    // the chat default (qwen, from install_caller).
+    core.dispatch(req(
+        "local-model.register",
+        &["nomic", "llama_cpp", "/models/nomic.gguf", "--embed"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.state().local_model.default_embed_model.as_deref(),
+        Some("nomic")
+    );
+    assert_eq!(
+        core.state().local_model.default_model.as_deref(),
+        Some("qwen")
+    );
+
+    // embed → the JS app receives the vector as a JSON array; one embedded
+    // record is committed.
+    let records = core
+        .dispatch(req("js-runtime.run", &["caller", "embed", "hello world"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("[0.5,0.25,0.125]"));
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].kind, "local-model.embedded");
+
+    // embedQuery (search side) and embedModel (named) also hand back vectors.
+    core.dispatch(req("js-runtime.run", &["caller", "embedQuery", "find"]))
+        .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("[0.5,0.25,0.125]"));
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "embedModel", "nomic", "a document"],
+    ))
+    .unwrap();
+    assert_eq!(core.take_last_output().as_deref(), Some("[0.5,0.25,0.125]"));
+
+    // Option A: the embedded events fold to no-op, so no vectors enter State —
+    // replay rebuilds identical State without re-running inference, and a cold
+    // reopen agrees on the embed default.
+    assert!(!core.state().local_model.turns.contains_key("caller"));
+    assert!(core.replay_matches().unwrap());
+    assert_eq!(
+        Core::open(&log)
+            .unwrap()
+            .state()
+            .local_model
+            .default_embed_model
+            .as_deref(),
+        Some("nomic")
+    );
+
+    // A generation model asked to embed is refused in decide; nothing recorded.
+    assert!(core
+        .dispatch(req(
+            "js-runtime.run",
+            &["caller", "embedModel", "qwen", "hi"]
+        ))
+        .is_err());
     assert!(core.replay_matches().unwrap());
 }
 

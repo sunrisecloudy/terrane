@@ -195,6 +195,20 @@ pub enum Effect {
         max_tokens: Option<u32>,
         temperature_milli: Option<u32>,
         draft_model: Option<String>,
+        /// A recognized embedding-preset name (e.g. `"nomic"`) when pulling an
+        /// embedding model; the runner resolves it into the recorded config.
+        embed_preset: Option<String>,
+    },
+    /// Encode one or more texts into dense vectors with a registered embedding
+    /// model. The pooled, (optionally) L2-normalized vectors are recorded as the
+    /// effect result; replay never re-runs inference.
+    LocalModelEmbed {
+        app: String,
+        model: String,
+        texts: Vec<String>,
+        /// Apply the model's query prefix (search side) rather than the document
+        /// prefix (index side) — asymmetric encoders need the distinction.
+        query: bool,
     },
 }
 

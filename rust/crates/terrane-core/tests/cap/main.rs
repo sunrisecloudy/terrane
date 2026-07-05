@@ -24,5 +24,6 @@ mod native;
 mod net;
 mod relational_db;
 mod replica;
+mod search;
 mod stt;
 mod wasm_runtime;

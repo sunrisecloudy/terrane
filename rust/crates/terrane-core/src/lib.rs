@@ -411,6 +411,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_kv::KvCapability));
     registry.register(Box::new(terrane_cap_relational_db::RelationalDbCapability));
+    registry.register(Box::new(terrane_cap_search::SearchCapability));
     registry.register(Box::new(terrane_cap_crdt::CrdtCapability));
     registry.register(Box::new(terrane_cap_crypto::CryptoCapability));
     registry.register(Box::new(terrane_cap_replica::ReplicaCapability));

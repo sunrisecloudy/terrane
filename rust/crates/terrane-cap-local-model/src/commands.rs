@@ -4,8 +4,9 @@ use terrane_cap_interface::{
 
 use crate::events::{chat_cleared_event, default_set_event, registered_event, removed_event};
 use crate::types::{
-    LocalModelSpec, LocalModelState, BACKENDS, RECOMMENDED_GGUF_FILE, RECOMMENDED_GGUF_REPO,
-    RECOMMENDED_MODEL_ID,
+    embed_preset, EmbeddingConfig, LocalModelSpec, LocalModelState, BACKENDS, EMBED_PRESETS,
+    RECOMMENDED_EMBED_GGUF_FILE, RECOMMENDED_EMBED_GGUF_REPO, RECOMMENDED_EMBED_MODEL_ID,
+    RECOMMENDED_EMBED_PRESET, RECOMMENDED_GGUF_FILE, RECOMMENDED_GGUF_REPO, RECOMMENDED_MODEL_ID,
 };
 
 /// The optional spec flags shared by `register` and `pull`.
@@ -17,6 +18,8 @@ pub(crate) struct SpecOptions {
     pub max_tokens: Option<u32>,
     pub temperature_milli: Option<u32>,
     pub draft_model: Option<String>,
+    /// A recognized embedding-preset name; makes this spec an embedding model.
+    pub embed_preset: Option<String>,
 }
 
 /// `local-model.register <id> <backend> <path> [--context N] [--template T]
@@ -37,6 +40,8 @@ pub(crate) fn decide_register(_ctx: CommandCtx<'_>, args: &[String]) -> Result<D
         ));
     }
     ensure_draft_supported(&backend, &options)?;
+    let embedding = resolve_embedding(&options)?;
+    ensure_embed_backend(&backend, embedding.is_some())?;
     let spec = LocalModelSpec {
         format: backend_format(&backend).to_string(),
         backend,
@@ -48,6 +53,7 @@ pub(crate) fn decide_register(_ctx: CommandCtx<'_>, args: &[String]) -> Result<D
         source: None,
         size_bytes: None,
         draft_model: options.draft_model,
+        embedding,
     };
     Ok(Decision::Commit(vec![registered_event(&id, &spec)?]))
 }
@@ -87,10 +93,22 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
             )))
         }
     };
+    if options.embed_preset.is_some() && backend != "gguf" {
+        return Err(Error::InvalidInput(
+            "embedding models require the gguf backend (mlx embeddings are not supported yet)"
+                .into(),
+        ));
+    }
 
     let (id, repo, file) = match positional {
-        // Zero-config: the recommended model for the chosen backend.
+        // Zero-config: the recommended model for the chosen backend (or the
+        // recommended embedding model when `--embed` is given).
         [] => match backend {
+            "gguf" if options.embed_preset.is_some() => (
+                RECOMMENDED_EMBED_MODEL_ID.to_string(),
+                RECOMMENDED_EMBED_GGUF_REPO.to_string(),
+                Some(RECOMMENDED_EMBED_GGUF_FILE.to_string()),
+            ),
             "gguf" => (
                 RECOMMENDED_MODEL_ID.to_string(),
                 RECOMMENDED_GGUF_REPO.to_string(),
@@ -145,6 +163,7 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
                 max_tokens: options.max_tokens,
                 temperature_milli: options.temperature_milli,
                 draft_model: None,
+                embed_preset: options.embed_preset,
             }))
         }
         _ => {
@@ -163,6 +182,7 @@ pub(crate) fn decide_pull(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decis
                 max_tokens: options.max_tokens,
                 temperature_milli: options.temperature_milli,
                 draft_model: options.draft_model,
+                embed_preset: None,
             }))
         }
     }
@@ -332,6 +352,114 @@ pub(crate) fn decide_chat_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<
     let mut rewritten = vec![app, "--model".to_string(), model, "--continue".to_string()];
     rewritten.extend(rest.iter().cloned());
     decide_ask(ctx, &rewritten)
+}
+
+/// `local-model.embed <app> [--model <id>] [--query] <text…>` — encode text
+/// into a dense vector with a registered embedding model; the vector is
+/// computed at the edge and recorded. Without `--model` the embed resolves to
+/// the home's default embedding model. `--query` applies the model's query
+/// prefix (search side) instead of the document prefix (index side).
+pub(crate) fn decide_embed(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    ensure_app_exists(ctx.bus, &app)?;
+
+    let mut explicit_model = None;
+    let mut query = false;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--model" => {
+                explicit_model = Some(model_id(args, i + 1)?);
+                i += 2;
+            }
+            "--query" => {
+                query = true;
+                i += 1;
+            }
+            _ => break,
+        }
+    }
+
+    let local = state_ref::<LocalModelState>(ctx.state, "local-model")?;
+    let model = resolve_embed_model(local, explicit_model)?;
+    let text = required_tail(args, i, "text")?;
+
+    Ok(Decision::Effect(Effect::LocalModelEmbed {
+        app,
+        model,
+        texts: vec![text],
+        query,
+    }))
+}
+
+/// `ctx.resource["local-model"].embedQuery(text)` — embed search-side text
+/// (applies the model's query prefix), answered by the default embedding model.
+pub(crate) fn decide_embed_query(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let rest = args.get(1..).unwrap_or_default();
+    let mut rewritten = vec![app, "--query".to_string()];
+    rewritten.extend(rest.iter().cloned());
+    decide_embed(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].embedModel(model, text)` — embed document-side
+/// text with an explicitly named embedding model.
+pub(crate) fn decide_embed_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let model = arg(args, 1, "model")?;
+    let rest = args.get(2..).unwrap_or_default();
+    let mut rewritten = vec![app, "--model".to_string(), model];
+    rewritten.extend(rest.iter().cloned());
+    decide_embed(ctx, &rewritten)
+}
+
+/// `--model` → the home's default embedding model → a helpful error. Also
+/// refuses a generation model asked to embed.
+pub(crate) fn resolve_embed_model(
+    local: &LocalModelState,
+    explicit: Option<String>,
+) -> Result<String> {
+    if let Some(model) = explicit {
+        return match local.specs.get(&model) {
+            None => Err(Error::InvalidInput(format!(
+                "unknown local model: {model}; register or pull it first"
+            ))),
+            Some(spec) if spec.embedding.is_none() => Err(Error::InvalidInput(format!(
+                "{model} is not an embedding model; pull one with `local-model pull --embed`"
+            ))),
+            Some(_) => Ok(model),
+        };
+    }
+    if let Some(default) = &local.default_embed_model {
+        return Ok(default.clone());
+    }
+    Err(Error::InvalidInput(
+        "no embedding model registered; run `terrane local-model pull --embed` to fetch the \
+         recommended one"
+            .into(),
+    ))
+}
+
+/// Resolve the embedding config named by `--embed`/`--embed-preset`, if any.
+fn resolve_embedding(options: &SpecOptions) -> Result<Option<EmbeddingConfig>> {
+    match &options.embed_preset {
+        None => Ok(None),
+        Some(name) => embed_preset(name).map(Some).ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "unknown embed preset {name:?}; expected one of {EMBED_PRESETS:?}"
+            ))
+        }),
+    }
+}
+
+/// Embeddings only run on the llama_cpp backend today; refuse an mlx embed spec.
+fn ensure_embed_backend(backend: &str, is_embedding: bool) -> Result<()> {
+    if is_embedding && backend != "llama_cpp" {
+        return Err(Error::InvalidInput(format!(
+            "embedding models require the llama_cpp backend; got {backend}"
+        )));
+    }
+    Ok(())
 }
 
 /// `ctx.resource["local-model"].pullModel(repo[, file])` — download weights
@@ -530,10 +658,26 @@ pub(crate) fn parse_spec_options(args: &[String], from: usize) -> Result<SpecOpt
                 options.draft_model = Some(value);
                 i += 2;
             }
+            // Bare `--embed` uses the recommended preset; `--embed-preset <name>`
+            // selects a specific encoder family.
+            "--embed" => {
+                options.embed_preset = Some(RECOMMENDED_EMBED_PRESET.to_string());
+                i += 1;
+            }
+            "--embed-preset" => {
+                let value = arg(args, i + 1, "--embed-preset value")?;
+                if embed_preset(&value).is_none() {
+                    return Err(Error::InvalidInput(format!(
+                        "unknown embed preset {value:?}; expected one of {EMBED_PRESETS:?}"
+                    )));
+                }
+                options.embed_preset = Some(value);
+                i += 2;
+            }
             other => {
                 return Err(Error::InvalidInput(format!(
                     "unknown option {other:?}; expected --backend, --context, --template, \
-                     --max-tokens, --temp, or --draft"
+                     --max-tokens, --temp, --draft, --embed, or --embed-preset"
                 )));
             }
         }

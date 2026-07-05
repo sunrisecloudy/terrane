@@ -6,8 +6,14 @@ use std::any::Any;
 
 use terrane_cap_interface::{CapBus, CommandCtx, Decision, Effect, Error, QueryValue, StateStore};
 
-use crate::commands::{decide_ask, decide_pull, decide_register, parse_spec_options, SpecOptions};
-use crate::types::LocalModelState;
+use crate::commands::{
+    decide_ask, decide_embed, decide_embed_model, decide_embed_query, decide_pull, decide_register,
+    parse_spec_options, resolve_embed_model, SpecOptions,
+};
+use crate::types::{
+    EmbeddingConfig, LocalModelState, RECOMMENDED_EMBED_GGUF_FILE, RECOMMENDED_EMBED_GGUF_REPO,
+    RECOMMENDED_EMBED_MODEL_ID,
+};
 
 struct Store {
     local_model: LocalModelState,
@@ -67,6 +73,7 @@ fn store_with_backend(model: Option<&str>, backend: &str) -> Store {
                 source: None,
                 size_bytes: None,
                 draft_model: None,
+                embedding: None,
             },
         );
         // Mirrors the fold: the first registered model becomes the default.
@@ -136,6 +143,7 @@ fn spec_options_parse_and_reject_unknown_flags() {
             max_tokens: Some(256),
             temperature_milli: Some(700),
             draft_model: None,
+            embed_preset: None,
         }
     );
 
@@ -493,4 +501,246 @@ fn draft_model_is_mlx_only_and_flows_into_the_pull_effect() {
         panic!("mlx pull should be an effect");
     };
     assert_eq!(draft_model.as_deref(), Some("org/tiny"));
+}
+
+// ---- embeddings ----
+
+fn nomic_config() -> EmbeddingConfig {
+    crate::types::embed_preset("nomic").expect("nomic preset")
+}
+
+/// A store holding one registered embedding model set as the embed default.
+fn store_with_embed(id: &str) -> Store {
+    let mut state = LocalModelState::default();
+    state.specs.insert(
+        id.to_string(),
+        crate::LocalModelSpec {
+            backend: "llama_cpp".into(),
+            format: "gguf".into(),
+            local_path: "/models/embed.gguf".into(),
+            context_length: None,
+            chat_template: None,
+            max_tokens: None,
+            temperature_milli: None,
+            source: None,
+            size_bytes: None,
+            draft_model: None,
+            embedding: Some(nomic_config()),
+        },
+    );
+    state.default_embed_model = Some(id.to_string());
+    Store { local_model: state }
+}
+
+#[test]
+fn embed_builds_effect_defaulting_to_document_side() {
+    let store = store_with_embed("nomic");
+    let bus = Bus {
+        apps: vec!["notes".into()],
+    };
+    let ctx = CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    let decision = decide_embed(ctx, &strings(&["notes", "hello world"])).unwrap();
+    let Decision::Effect(Effect::LocalModelEmbed {
+        app,
+        model,
+        texts,
+        query,
+    }) = decision
+    else {
+        panic!("embed should be an effect");
+    };
+    assert_eq!(app, "notes");
+    assert_eq!(model, "nomic");
+    assert_eq!(texts, vec!["hello world".to_string()]);
+    assert!(!query, "bare embed is document-side");
+}
+
+#[test]
+fn embed_query_route_sets_the_query_flag() {
+    let store = store_with_embed("nomic");
+    let bus = Bus {
+        apps: vec!["notes".into()],
+    };
+    let ctx = CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    let decision = decide_embed_query(ctx, &strings(&["notes", "find me"])).unwrap();
+    let Decision::Effect(Effect::LocalModelEmbed { query, texts, .. }) = decision else {
+        panic!("embedQuery should be an effect");
+    };
+    assert!(query, "embedQuery is search-side");
+    assert_eq!(texts, vec!["find me".to_string()]);
+}
+
+#[test]
+fn embed_model_route_names_the_model() {
+    let store = store_with_embed("nomic");
+    let bus = Bus {
+        apps: vec!["notes".into()],
+    };
+    let ctx = CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    let decision = decide_embed_model(ctx, &strings(&["notes", "nomic", "doc text"])).unwrap();
+    let Decision::Effect(Effect::LocalModelEmbed { model, query, .. }) = decision else {
+        panic!("embedModel should be an effect");
+    };
+    assert_eq!(model, "nomic");
+    assert!(!query);
+}
+
+#[test]
+fn embed_refuses_a_generation_model() {
+    // A chat model asked to embed is rejected before reaching the edge.
+    let store = store_with(Some("qwen"));
+    let err = resolve_embed_model(&store.local_model, Some("qwen".into())).unwrap_err();
+    assert!(err.to_string().contains("not an embedding model"), "{err}");
+}
+
+#[test]
+fn embed_without_a_default_embedding_model_errors() {
+    let store = store_with(Some("qwen")); // a chat default, but no embed default
+    let err = resolve_embed_model(&store.local_model, None).unwrap_err();
+    assert!(
+        err.to_string().contains("no embedding model registered"),
+        "{err}"
+    );
+}
+
+#[test]
+fn pull_embed_flag_selects_the_recommended_embedding_model() {
+    let store = store_with(None);
+    let bus = Bus { apps: vec![] };
+    let ctx = CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    let decision = decide_pull(ctx, &strings(&["--embed"])).unwrap();
+    let Decision::Effect(Effect::LocalModelPull {
+        id,
+        repo,
+        file,
+        embed_preset,
+        backend,
+        ..
+    }) = decision
+    else {
+        panic!("pull --embed should be an effect");
+    };
+    assert_eq!(id, RECOMMENDED_EMBED_MODEL_ID);
+    assert_eq!(repo, RECOMMENDED_EMBED_GGUF_REPO);
+    assert_eq!(file.as_deref(), Some(RECOMMENDED_EMBED_GGUF_FILE));
+    assert_eq!(backend, "gguf");
+    assert_eq!(embed_preset.as_deref(), Some("nomic"));
+}
+
+#[test]
+fn pull_embed_rejects_the_mlx_backend() {
+    let store = store_with(None);
+    let bus = Bus { apps: vec![] };
+    let ctx = CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+    let err = decide_pull(ctx, &strings(&["--embed", "--backend", "mlx"])).unwrap_err();
+    assert!(
+        err.to_string().contains("require the gguf backend"),
+        "{err}"
+    );
+}
+
+#[test]
+fn register_embed_preset_marks_the_spec_and_rejects_mlx() {
+    let store = store_with(None);
+    let bus = Bus { apps: vec![] };
+    let ctx = || CommandCtx {
+        state: &store,
+        bus: &bus,
+    };
+
+    // A gguf register with --embed folds into an embedding spec.
+    let decision = decide_register(
+        ctx(),
+        &strings(&["nomic", "llama_cpp", "/models/embed.gguf", "--embed"]),
+    )
+    .unwrap();
+    let Decision::Commit(records) = decision else {
+        panic!("register should commit");
+    };
+    let mut state = LocalModelState::default();
+    crate::events::fold(&mut state_store(&mut state), &records[0]).unwrap();
+    let spec = state.specs.get("nomic").expect("registered");
+    assert_eq!(spec.embedding.as_ref(), Some(&nomic_config()));
+    // The embedding model set the embed default, not the chat default.
+    assert_eq!(state.default_embed_model.as_deref(), Some("nomic"));
+    assert!(state.default_model.is_none());
+
+    // Embeddings need llama_cpp; an mlx embed spec is refused.
+    let err =
+        decide_register(ctx(), &strings(&["nomic", "mlx", "org/model", "--embed"])).unwrap_err();
+    assert!(
+        err.to_string().contains("require the llama_cpp backend"),
+        "{err}"
+    );
+}
+
+#[test]
+fn embedded_event_roundtrips_and_folds_to_a_noop() {
+    let event = crate::embedded_event(&crate::EmbeddedRecord {
+        app: "notes".into(),
+        model: "nomic".into(),
+        query: false,
+        dim: 3,
+        vectors: vec![vec![0.1, 0.2, 0.3]],
+        duration_ms: 5,
+    })
+    .unwrap();
+
+    // The caller reads the vectors back from the committed records.
+    let vectors = crate::events::vectors_from_records(std::slice::from_ref(&event)).unwrap();
+    assert_eq!(vectors, vec![vec![0.1, 0.2, 0.3]]);
+
+    // Folding it changes nothing: the vectors never enter State.
+    let mut state = LocalModelState::default();
+    let before = state.clone();
+    crate::events::fold(&mut state_store(&mut state), &event).unwrap();
+    assert_eq!(state, before);
+}
+
+#[test]
+fn embed_presets_reject_unknown_names() {
+    assert!(crate::types::embed_preset("nomic").is_some());
+    assert!(crate::types::embed_preset("bogus").is_none());
+
+    let err = parse_spec_options(&strings(&["--embed-preset", "bogus"]), 0).unwrap_err();
+    assert!(err.to_string().contains("unknown embed preset"), "{err}");
+}
+
+/// Wrap a bare state slice as a `StateStore` so `fold` can be exercised in unit
+/// tests without the engine.
+fn state_store(state: &mut LocalModelState) -> SliceStore<'_> {
+    SliceStore { local_model: state }
+}
+
+struct SliceStore<'a> {
+    local_model: &'a mut LocalModelState,
+}
+
+impl StateStore for SliceStore<'_> {
+    fn get(&self, namespace: &str) -> Option<&dyn Any> {
+        (namespace == "local-model").then_some(self.local_model as &dyn Any)
+    }
+
+    fn get_mut(&mut self, namespace: &str) -> Option<&mut dyn Any> {
+        (namespace == "local-model").then_some(self.local_model as &mut dyn Any)
+    }
 }

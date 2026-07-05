@@ -1,6 +1,13 @@
 use super::*;
 
-const ALLOWED_RESOURCES: &[&str] = &["kv", "crdt", "relational_db", "build"];
+const ALLOWED_RESOURCES: &[&str] = &[
+    "kv",
+    "crdt",
+    "relational_db",
+    "build",
+    "search",
+    "local-model",
+];
 
 fn generated_json() -> String {
     let manifest = concat!(

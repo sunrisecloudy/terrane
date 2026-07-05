@@ -232,6 +232,7 @@ fn describe_renders_own_events() {
             source: None,
             size_bytes: None,
             draft_model: None,
+            embedding: None,
         },
     )
     .unwrap();
