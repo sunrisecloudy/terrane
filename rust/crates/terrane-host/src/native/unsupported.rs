@@ -1,4 +1,7 @@
-use terrane_cap_native::NativeRequestRecord;
+use terrane_cap_native::{
+    operation_catalog, NativeRequestRecord, OP_AUDIO_RECORD, OP_CAMERA_CAPTURE_PHOTO,
+    OP_CLIPBOARD_READ_TEXT, OP_SCREEN_CAPTURE,
+};
 
 use super::{NativeConnector, NativeConnectorInfo, NativeExecutionResult};
 
@@ -14,7 +17,7 @@ impl UnsupportedNativeConnector {
                 host_id,
                 platform,
                 env!("CARGO_PKG_VERSION"),
-                Vec::<String>::new(),
+                conservative_supported_operations(),
             ),
         }
     }
@@ -43,4 +46,18 @@ pub fn default_connector() -> UnsupportedNativeConnector {
         format!("terrane-host-{}", std::env::consts::OS),
         std::env::consts::OS,
     )
+}
+
+fn conservative_supported_operations() -> Vec<String> {
+    operation_catalog()
+        .into_iter()
+        .filter(|entry| entry.status == "v1")
+        .map(|entry| entry.id.to_string())
+        .filter(|operation| {
+            operation != OP_CLIPBOARD_READ_TEXT
+                && operation != OP_CAMERA_CAPTURE_PHOTO
+                && operation != OP_AUDIO_RECORD
+                && operation != OP_SCREEN_CAPTURE
+        })
+        .collect()
 }

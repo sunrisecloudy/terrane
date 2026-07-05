@@ -5,8 +5,9 @@ use terrane_cap_interface::{
 };
 
 use crate::operations::{
-    CANCEL, CLIPBOARD_READ_TEXT, CLIPBOARD_WRITE_TEXT, COMPLETE, DIALOG_OPEN_FILE,
-    DIALOG_SAVE_FILE, EXTERNAL_OPEN_URL, FAIL, NOTIFICATION_SHOW, PLATFORM_OBSERVE,
+    AUDIO_RECORD, CAMERA_CAPTURE_PHOTO, CANCEL, CLIPBOARD_READ_TEXT, CLIPBOARD_WRITE_TEXT,
+    COMPLETE, DIALOG_OPEN_FILE, DIALOG_SAVE_FILE, EXTERNAL_OPEN_URL, FAIL, NOTIFICATION_SHOW,
+    PLATFORM_OBSERVE, RESOURCE_AUDIO_RECORD, RESOURCE_CAMERA_CAPTURE_PHOTO,
     RESOURCE_CLIPBOARD_READ_TEXT, RESOURCE_CLIPBOARD_WRITE_TEXT, RESOURCE_DIALOG_OPEN_FILE,
     RESOURCE_DIALOG_SAVE_FILE, RESOURCE_EXTERNAL_OPEN_URL, RESOURCE_NOTIFICATION_SHOW,
     RESOURCE_SCREEN_CAPTURE, RESOURCE_SHORTCUT_REGISTER_GLOBAL, RESOURCE_TRAY_SET_MENU,
@@ -35,6 +36,8 @@ pub fn native_doc(include_internal: bool) -> CapabilityDoc {
                 NOTIFICATION_SHOW.to_string(),
                 DIALOG_OPEN_FILE.to_string(),
                 DIALOG_SAVE_FILE.to_string(),
+                CAMERA_CAPTURE_PHOTO.to_string(),
+                AUDIO_RECORD.to_string(),
                 SCREEN_CAPTURE.to_string(),
                 TRAY_SET_MENU.to_string(),
                 SHORTCUT_REGISTER_GLOBAL.to_string(),
@@ -45,6 +48,8 @@ pub fn native_doc(include_internal: bool) -> CapabilityDoc {
                 "native.notificationShow".to_string(),
                 "native.dialogOpenFile".to_string(),
                 "native.dialogSaveFile".to_string(),
+                "native.cameraCapturePhoto".to_string(),
+                "native.audioRecord".to_string(),
                 "native.screenCapture".to_string(),
                 "native.traySetMenu".to_string(),
                 "native.shortcutRegisterGlobal".to_string(),
@@ -79,16 +84,16 @@ pub fn native_doc(include_internal: bool) -> CapabilityDoc {
                 .to_string(),
             "native.supports reads folded platform observation state and never probes a live connector."
                 .to_string(),
-            "Large native bytes are not stored inline; screen.capture completes with a blob CAS reference."
+            "Large native bytes are not stored inline; camera.capturePhoto, audio.record, and screen.capture complete with blob CAS references."
                 .to_string(),
-            "clipboard.readText and screen.capture require operation-level native grants: native:clipboard.readText and native:screen.capture."
+            "clipboard.readText, camera.capturePhoto, audio.record, and screen.capture require operation-level native grants such as native:camera.capturePhoto."
                 .to_string(),
         ],
         limits: vec![
             LimitDoc {
                 name: "resultSize".to_string(),
                 value: "none | inline-small | blob-ref".to_string(),
-                reason: "The event log stores bounded JSON facts; screen pixels live in the blob CAS."
+                reason: "The event log stores bounded JSON facts; captured media bytes live in the blob CAS."
                     .to_string(),
             },
             LimitDoc {
@@ -149,6 +154,8 @@ fn commands() -> Vec<CommandDoc> {
         request_command(NOTIFICATION_SHOW, "Request a local notification."),
         request_command(DIALOG_OPEN_FILE, "Request a native open-file dialog."),
         request_command(DIALOG_SAVE_FILE, "Request a user-mediated save-file dialog."),
+        request_command(CAMERA_CAPTURE_PHOTO, "Request a camera photo into the blob CAS."),
+        request_command(AUDIO_RECORD, "Request bounded microphone audio into the blob CAS."),
         request_command(SCREEN_CAPTURE, "Request screen/window capture into the blob CAS."),
         request_command(TRAY_SET_MENU, "Request installation of an app tray menu."),
         request_command(
@@ -179,6 +186,14 @@ fn commands() -> Vec<CommandDoc> {
         request_command(
             RESOURCE_DIALOG_SAVE_FILE,
             "Resource alias used by ctx.resource.native.dialogSaveFile.",
+        ),
+        request_command(
+            RESOURCE_CAMERA_CAPTURE_PHOTO,
+            "Resource alias used by ctx.resource.native.cameraCapturePhoto.",
+        ),
+        request_command(
+            RESOURCE_AUDIO_RECORD,
+            "Resource alias used by ctx.resource.native.audioRecord.",
         ),
         request_command(
             RESOURCE_SCREEN_CAPTURE,
@@ -366,6 +381,26 @@ fn resource_methods() -> Vec<terrane_cap_interface::ResourceMethodDoc> {
                 param("blobName", "Blob CAS name to save.", "string"),
             ],
             "Record a save-file dialog request.",
+            "void",
+        ),
+        native_resource_method(
+            "cameraCapturePhoto",
+            "write",
+            &[
+                param("requestId", "Native request id.", "string"),
+                param("inputJson", "JSON {facing?, maxWidth?}.", "json"),
+            ],
+            "Record a sensitive camera photo request.",
+            "void",
+        ),
+        native_resource_method(
+            "audioRecord",
+            "write",
+            &[
+                param("requestId", "Native request id.", "string"),
+                param("inputJson", "JSON {maxDurationMs, sampleRateHz?}.", "json"),
+            ],
+            "Record a sensitive microphone recording request.",
             "void",
         ),
         native_resource_method(

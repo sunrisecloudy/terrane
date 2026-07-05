@@ -121,8 +121,12 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             app_arg_index: 0,
         },
         "native.clipboard.read-text"
+        | "native.camera.capture-photo"
+        | "native.audio.record"
         | "native.screen.capture"
         | "native.clipboardReadText"
+        | "native.cameraCapturePhoto"
+        | "native.audioRecord"
         | "native.screenCapture" => PublicCommandDisposition::Refuse {
             reason: "sensitive native operations require operation-level selector grants through the app resource runtime",
         },

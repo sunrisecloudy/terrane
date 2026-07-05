@@ -1328,7 +1328,10 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
         });
     }
     if let Some(operation) = raw.strip_prefix("native:") {
-        if !matches!(operation, "clipboard.readText" | "screen.capture") {
+        if !matches!(
+            operation,
+            "clipboard.readText" | "camera.capturePhoto" | "audio.record" | "screen.capture"
+        ) {
             return Err(Error::InvalidInput(format!(
                 "unknown native operation grant: {operation}"
             )));
