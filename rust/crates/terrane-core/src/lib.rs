@@ -80,6 +80,7 @@ use terrane_cap_job_queue::JobState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_local_model::LocalModelState;
 use terrane_cap_media::MediaState;
+use terrane_cap_migration::MigrationState;
 use terrane_cap_mcp_client::McpClientState;
 use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
@@ -121,6 +122,7 @@ pub struct State {
     pub model: ModelState,
     pub local_model: LocalModelState,
     pub media: MediaState,
+    pub migration: MigrationState,
     pub mcp: McpClientState,
     pub native: NativeState,
     pub scheduler: SchedulerState,
@@ -158,6 +160,7 @@ impl StateStore for State {
             "model" => Some(&self.model),
             "local-model" => Some(&self.local_model),
             "media" => Some(&self.media),
+            "migration" => Some(&self.migration),
             "mcp" => Some(&self.mcp),
             "native" => Some(&self.native),
             "scheduler" => Some(&self.scheduler),
@@ -196,6 +199,7 @@ impl StateStore for State {
             "model" => Some(&mut self.model),
             "local-model" => Some(&mut self.local_model),
             "media" => Some(&mut self.media),
+            "migration" => Some(&mut self.migration),
             "mcp" => Some(&mut self.mcp),
             "native" => Some(&mut self.native),
             "scheduler" => Some(&mut self.scheduler),
@@ -533,6 +537,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_model::ModelCapability));
     registry.register(Box::new(terrane_cap_local_model::LocalModelCapability));
     registry.register(Box::new(terrane_cap_media::MediaCapability));
+    registry.register(Box::new(terrane_cap_migration::MigrationCapability));
     registry.register(Box::new(terrane_cap_mcp_client::McpClientCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
@@ -1036,6 +1041,10 @@ impl RuntimeHost for RuntimeResourceHost {
     fn take_records(&mut self) -> Vec<EventRecord> {
         coalesce(std::mem::take(&mut self.recorded))
     }
+
+    fn record_count(&self) -> usize {
+        coalesce_keys(&self.recorded).into_iter().filter(|keep| *keep).count()
+    }
 }
 
 impl RuntimeResourceHost {
@@ -1085,6 +1094,15 @@ fn sensitive_native_resource_id(namespace: &str, method: &str) -> Option<&'stati
 }
 
 fn coalesce(writes: Vec<RecordedWrite>) -> Vec<EventRecord> {
+    let keep = coalesce_keys(&writes);
+    writes
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(write, keep)| keep.then_some(write.record))
+        .collect()
+}
+
+fn coalesce_keys(writes: &[RecordedWrite]) -> Vec<bool> {
     let mut keep = vec![true; writes.len()];
     for i in 0..writes.len() {
         if !writes[i].is_set {
@@ -1100,11 +1118,7 @@ fn coalesce(writes: Vec<RecordedWrite>) -> Vec<EventRecord> {
             keep[i] = false;
         }
     }
-    writes
-        .into_iter()
-        .zip(keep)
-        .filter_map(|(write, keep)| keep.then_some(write.record))
-        .collect()
+    keep
 }
 
 #[cfg(debug_assertions)]
@@ -1498,6 +1512,9 @@ impl<R: EffectRunner + 'static> Core<R> {
             }
             None => None,
         };
+        if namespace == "js-runtime" {
+            check_js_runtime_data_version(&self.state, &source, source_files.as_ref(), &app.id)?;
+        }
         let host = RuntimeHostHandle::new(Box::new(
             RuntimeResourceHost::new_with_principal(
                 request.app.clone(),
@@ -1641,6 +1658,40 @@ impl<R: EffectRunner + 'static> Core<R> {
     }
 }
 
+fn check_js_runtime_data_version(
+    state: &State,
+    source: &str,
+    source_files: Option<&BTreeMap<String, String>>,
+    app: &str,
+) -> Result<()> {
+    let manifest_version = match source_files {
+        Some(files) => {
+            let manifest = terrane_cap_js_runtime::read_manifest_from_files(files)?;
+            terrane_cap_js_runtime::manifest_data_version(&manifest)
+        }
+        None => {
+            let path = Path::new(source);
+            if !path.is_dir() {
+                return Ok(());
+            }
+            let manifest = terrane_cap_js_runtime::read_manifest(path)?;
+            terrane_cap_js_runtime::manifest_data_version(&manifest)
+        }
+    };
+    let state_version = terrane_cap_migration::version(state, app)?;
+    if state_version < manifest_version {
+        return Err(Error::InvalidInput(format!(
+            "app {app} data version is {state_version}, but manifest expects {manifest_version}; run `terrane migrate {app}`"
+        )));
+    }
+    if state_version > manifest_version {
+        return Err(Error::InvalidInput(format!(
+            "app {app} data version is {state_version}, but this bundle expects {manifest_version}; restore a newer app bundle or a pre-migration backup"
+        )));
+    }
+    Ok(())
+}
+
 fn admit_command(request: &Request) -> Result<()> {
     // Trusted-host only:
     // - `auth.*` and `kv.public.*` mutate cross-app/platform data (CLI + FFI both
@@ -1656,6 +1707,7 @@ fn admit_command(request: &Request) -> Result<()> {
         || request.name == "automation.fire"
         || request.name == "automation.suppress"
         || request.name.starts_with("kv.public.")
+        || request.name.starts_with("migration.")
         || request.name == "app.link.deliver"
         || request.name == "scheduler.fire"
         || request.name == "job.start"

@@ -943,6 +943,18 @@ pub struct BundleManifest {
     pub file_types: Vec<FileTypeSpec>,
     #[nserde(default)]
     pub browser_permissions: Vec<String>,
+    #[nserde(default, rename = "dataVersion")]
+    pub data_version: u64,
+    #[nserde(default)]
+    pub migrations: Vec<MigrationSpec>,
+}
+
+#[derive(Debug, Clone, DeJson)]
+pub struct MigrationSpec {
+    #[nserde(default)]
+    pub to: u64,
+    #[nserde(default)]
+    pub script: String,
 }
 
 #[derive(Debug, Clone, DeJson)]
@@ -958,10 +970,60 @@ pub fn read_manifest(bundle_dir: &Path) -> Result<BundleManifest, Error> {
         .map_err(|e| Error::Runtime(format!("read manifest.json: {e}")))?;
     let manifest = BundleManifest::deserialize_json(&text)
         .map_err(|e| Error::Runtime(format!("manifest.json: {e}")))?;
-    Ok(BundleManifest {
+    let manifest = BundleManifest {
         runtime: non_empty_or(manifest.runtime, "js"),
         ..manifest
-    })
+    };
+    validate_manifest_migrations(&manifest, Some(bundle_dir))?;
+    Ok(manifest)
+}
+
+pub fn manifest_data_version(manifest: &BundleManifest) -> u64 {
+    if manifest.data_version == 0 {
+        1
+    } else {
+        manifest.data_version
+    }
+}
+
+pub fn validate_manifest_migrations(
+    manifest: &BundleManifest,
+    bundle_dir: Option<&Path>,
+) -> Result<(), Error> {
+    let data_version = manifest_data_version(manifest);
+    if data_version == 1 && manifest.migrations.is_empty() {
+        return Ok(());
+    }
+    let mut expected = 2u64;
+    for step in &manifest.migrations {
+        if step.to != expected {
+            return Err(Error::InvalidInput(format!(
+                "manifest migrations must be consecutive: expected to={expected}, got {}",
+                step.to
+            )));
+        }
+        if step.script.trim().is_empty() {
+            return Err(Error::InvalidInput(
+                "manifest migration script must not be empty".into(),
+            ));
+        }
+        if let Some(dir) = bundle_dir {
+            if !dir.join(&step.script).is_file() {
+                return Err(Error::InvalidInput(format!(
+                    "manifest migration script does not exist: {}",
+                    step.script
+                )));
+            }
+        }
+        expected += 1;
+    }
+    if expected - 1 != data_version {
+        return Err(Error::InvalidInput(format!(
+            "manifest migrations end at {}, but dataVersion is {data_version}",
+            expected - 1
+        )));
+    }
+    Ok(())
 }
 
 pub fn validate_common_api_bundle(path: &Path) -> Result<(), String> {

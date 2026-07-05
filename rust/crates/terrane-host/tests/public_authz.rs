@@ -137,6 +137,7 @@ fn public_query_inventory_covers_every_registered_query() {
             "history.list",
             "interop.apps",
             "job.due",
+            "migration.status",
             "native.supports",
             "query.jmespath",
             "replica.peer",
@@ -154,6 +155,7 @@ fn public_query_inventory_covers_every_registered_query() {
                 | "job.due"
                 | "automation.list"
                 | "automation.stat"
+                | "migration.status"
                 | "query.jmespath"
                 | "scheduler.due"
         ) {

@@ -38,6 +38,7 @@ terrane-cap-query.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-local-model.workspace = true
 terrane-cap-media.workspace = true
+terrane-cap-migration.workspace = true
 terrane-cap-mcp-client.workspace = true
 terrane-cap-relational-db.workspace = true
 terrane-cap-search.workspace = true

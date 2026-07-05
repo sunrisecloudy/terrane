@@ -25,6 +25,7 @@ mod job_queue;
 mod kv;
 mod local_model;
 mod media;
+mod migration;
 mod mcp;
 mod model;
 mod native;

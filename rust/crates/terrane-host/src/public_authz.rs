@@ -168,6 +168,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "kv.public.set" | "kv.public.rm" | "kv.public.import" => PublicCommandDisposition::Refuse {
             reason: "public KV is trusted-host-only; app backends read it via ctx.resource.kv.public*",
         },
+        "migration.apply" | "migration.commit" => PublicCommandDisposition::Refuse {
+            reason: "app data migrations are trusted-host-only; use terrane migrate <app>",
+        },
         "connection.define" | "connection.remove" | "connection.mark_authorized" => {
             PublicCommandDisposition::Refuse {
                 reason: "connection credentials are trusted-admin-only; apps consume grants through $secret markers",
