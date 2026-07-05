@@ -265,6 +265,14 @@ impl Capability for BlobCapability {
             _ => None,
         }
     }
+
+    fn app_of(&self, record: &EventRecord) -> Option<String> {
+        match record.kind.as_str() {
+            "blob.stored" => decode_event::<Stored>(record).ok().map(|e| e.app),
+            "blob.removed" => decode_event::<Removed>(record).ok().map(|e| e.app),
+            _ => None,
+        }
+    }
 }
 
 fn decide_put(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {

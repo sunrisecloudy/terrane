@@ -42,9 +42,14 @@ impl Capability for ReplicaCapability {
 
     fn manifest(&self) -> CapManifest {
         CapManifest {
-            commands: vec![CommandSpec {
-                name: "replica.init",
-            }],
+            commands: vec![
+                CommandSpec {
+                    name: "replica.init",
+                },
+                CommandSpec {
+                    name: "replica.rotate",
+                },
+            ],
             events: vec![EventSpec {
                 kind: "replica.initialized",
             }],
@@ -75,6 +80,7 @@ impl Capability for ReplicaCapability {
                     Ok(Decision::Effect(Effect::NewReplicaId))
                 }
             }
+            "replica.rotate" => Ok(Decision::Effect(Effect::NewReplicaId)),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }
@@ -93,12 +99,7 @@ impl Capability for ReplicaCapability {
     fn fold(&self, state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         if record.kind == "replica.initialized" {
             let e: Initialized = decode_event(record)?;
-            // First identity wins — guard against a duplicated init event ever
-            // changing a home's peer on replay.
-            let state = state_mut::<ReplicaState>(state, "replica")?;
-            if state.peer.is_none() {
-                state.peer = Some(e.peer);
-            }
+            state_mut::<ReplicaState>(state, "replica")?.peer = Some(e.peer);
         }
         Ok(())
     }

@@ -26,6 +26,7 @@ pub mod app_log;
 pub mod applescript;
 pub mod automation;
 pub mod asr;
+pub mod backup;
 pub mod blob_store;
 pub mod cap_doc;
 pub mod cli;

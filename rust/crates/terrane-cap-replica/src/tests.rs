@@ -34,7 +34,7 @@ impl CapBus for NoBus {
 }
 
 #[test]
-fn initialized_event_folds_only_once() {
+fn initialized_event_folds_latest_peer() {
     let mut store = Store::default();
     let cap = ReplicaCapability;
     cap.fold(&mut store, &initialized_event(7).unwrap())
@@ -42,7 +42,7 @@ fn initialized_event_folds_only_once() {
     cap.fold(&mut store, &initialized_event(8).unwrap())
         .unwrap();
 
-    assert_eq!(store.replica.peer, Some(7));
+    assert_eq!(store.replica.peer, Some(8));
 }
 
 #[test]
@@ -76,5 +76,18 @@ fn init_is_an_effect_until_peer_exists_then_noops() {
             )
             .unwrap(),
         Decision::Commit(Vec::new())
+    );
+    assert_eq!(
+        ReplicaCapability
+            .decide(
+                CommandCtx {
+                    state: &store,
+                    bus: &bus,
+                },
+                "replica.rotate",
+                &[],
+            )
+            .unwrap(),
+        Decision::Effect(Effect::NewReplicaId)
     );
 }

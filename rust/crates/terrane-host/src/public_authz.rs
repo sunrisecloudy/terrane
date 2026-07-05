@@ -272,6 +272,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         "app.link.deliver" => PublicCommandDisposition::Refuse {
             reason: "app.link.deliver routes host-observed OS payloads and is trusted-host-only",
         },
+        "replica.rotate" => PublicCommandDisposition::Refuse {
+            reason: "replica.rotate is clone/restore identity repair and trusted-host-only",
+        },
         "app.add" | "replica.init" => PublicCommandDisposition::Allow,
         "sync.pair" | "sync.unpair" | "sync.apply" => PublicCommandDisposition::Refuse {
             reason: "sync commands are host-edge-only; pair and apply through the sync transport",

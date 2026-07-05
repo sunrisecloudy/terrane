@@ -34,3 +34,10 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
         _ => None,
     }
 }
+
+pub(crate) fn app_of(record: &EventRecord) -> Option<String> {
+    match record.kind.as_str() {
+        "crdt.update" => decode_event::<Update>(record).ok().map(|e| e.app),
+        _ => None,
+    }
+}

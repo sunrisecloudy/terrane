@@ -348,6 +348,16 @@ impl Capability for AppCapability {
             _ => None,
         }
     }
+
+    fn app_of(&self, record: &EventRecord) -> Option<String> {
+        match record.kind.as_str() {
+            "app.added" => decode_added(record).ok().map(|e| e.id),
+            "app.upgraded" => decode_event::<Upgraded>(record).ok().map(|e| e.id),
+            "app.link.registered" => decode_event::<LinkRegistered>(record).ok().map(|e| e.app),
+            "app.removed" => decode_event::<Removed>(record).ok().map(|e| e.id),
+            _ => None,
+        }
+    }
 }
 
 pub const DEFAULT_VERSION: &str = "0.0.0";

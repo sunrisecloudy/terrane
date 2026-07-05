@@ -103,6 +103,10 @@ impl Capability for CrdtCapability {
         events::describe(record)
     }
 
+    fn app_of(&self, record: &EventRecord) -> Option<String> {
+        events::app_of(record)
+    }
+
     fn read_resource(
         &self,
         ctx: ResourceReadCtx<'_>,

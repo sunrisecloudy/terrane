@@ -34,6 +34,7 @@ nanoserde = { workspace = true }
 # argv. Reads a line from stdin: no echo on a TTY, plain when piped.
 rpassword = "7"
 rusqlite.workspace = true
+serde.workspace = true
 serde_json = "1"
 keyring.workspace = true
 # Edge HTTP(S) GET for the `net` effect (http:// and https://, TLS via rustls).
@@ -85,6 +86,8 @@ terrane-local-llm = { workspace = true, optional = true }
 terrane-asr = { workspace = true, optional = true }
 base64 = "0.22"
 sha2 = "0.10"
+tar.workspace = true
+zstd.workspace = true
 symphonia = { version = "0.5", default-features = false, features = ["aac", "flac", "mp3", "isomp4", "ogg", "pcm", "vorbis", "wav"] }
 tempfile.workspace = true
 
