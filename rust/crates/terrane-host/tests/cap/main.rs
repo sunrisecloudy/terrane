@@ -32,3 +32,4 @@ mod search;
 mod sysinfo;
 mod telemetry;
 mod time;
+mod tts;

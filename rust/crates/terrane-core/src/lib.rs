@@ -86,6 +86,7 @@ use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_stt::SttState;
 use terrane_cap_time::TimeState;
 use terrane_cap_telemetry::TelemetryState;
+use terrane_cap_tts::TtsState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -116,6 +117,7 @@ pub struct State {
     pub native: NativeState,
     pub scheduler: SchedulerState,
     pub stt: SttState,
+    pub tts: TtsState,
     pub crdt: CrdtState,
     pub connection: ConnectionState,
     pub document: DocumentState,
@@ -147,6 +149,7 @@ impl StateStore for State {
             "native" => Some(&self.native),
             "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
+            "tts" => Some(&self.tts),
             "crdt" => Some(&self.crdt),
             "connection" => Some(&self.connection),
             "document" => Some(&self.document),
@@ -179,6 +182,7 @@ impl StateStore for State {
             "native" => Some(&mut self.native),
             "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
+            "tts" => Some(&mut self.tts),
             "crdt" => Some(&mut self.crdt),
             "connection" => Some(&mut self.connection),
             "document" => Some(&mut self.document),
@@ -494,6 +498,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
+    registry.register(Box::new(terrane_cap_tts::TtsCapability));
     registry.register(Box::new(terrane_cap_time::TimeCapability));
     registry.register(Box::new(terrane_cap_sysinfo::SysinfoCapability));
     registry.register(Box::new(terrane_cap_telemetry::TelemetryCapability));
