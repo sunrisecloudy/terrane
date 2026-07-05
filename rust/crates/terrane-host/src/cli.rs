@@ -82,6 +82,13 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane job (submit <app> <verb> [--job-id id] [--now-ms ms] [--retry json] [--args-json json | args…] | stat <app> <job-id> | ls <app> [status] | cancel <app> <job-id>)".into())
         }
+        ["automation", "tick"] => run_automation_tick(None),
+        ["automation", "tick", "--now-ms", now_ms] => run_automation_tick(Some(now_ms)),
+        ["automation", "ls", app] | ["automation", "list", app] => run_automation_ls(app),
+        ["automation", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane automation (tick [--now-ms <epoch-ms>] | ls <app>)".into())
+        }
         ["blob", "put", app, name, mime, path] => run_blob_put(app, name, mime, path),
         ["blob", "get", app, name, path] => run_blob_get(app, name, path),
         ["blob", "stat", app, name] => run_blob_stat(app, name),
@@ -1238,6 +1245,65 @@ pub fn run_scheduler_ls(app: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_automation_tick(now_ms: Option<&str>) -> Result<(), String> {
+    let mut core = crate::open()?;
+    crate::ensure_identity(&mut core)?;
+    let outcome = match now_ms {
+        Some(raw) => {
+            let now = raw
+                .parse::<u64>()
+                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?;
+            crate::automation::run_tick_at(&mut core, now)?
+        }
+        None => crate::automation::run_tick(&mut core)?,
+    };
+    if outcome.records.is_empty() && outcome.backend_outputs.is_empty() {
+        println!("automation tick: no matching rules");
+    } else {
+        for item in outcome.backend_outputs {
+            let status = if item.error.is_some() {
+                "run_failed"
+            } else {
+                "ran"
+            };
+            println!("{} {}/{} verb={}", status, item.app, item.name, item.verb);
+        }
+        let suppressed = outcome
+            .records
+            .iter()
+            .filter(|record| record.kind == "automation.suppressed")
+            .count();
+        if suppressed > 0 {
+            println!("suppressed {suppressed} automation fire(s)");
+        }
+    }
+    Ok(())
+}
+
+pub fn run_automation_ls(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let rules = core
+        .state()
+        .automation
+        .rules
+        .get(app)
+        .cloned()
+        .unwrap_or_default();
+    for (name, rule) in rules {
+        println!(
+            "{} last_fired_at={} fire_count={} suppressed_count={} rule={}",
+            name,
+            rule.last_fired_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            rule.fire_count,
+            rule.suppressed_count,
+            rule.rule_json
+        );
+    }
+    Ok(())
+}
+
 pub fn run_history(app: &str, rest: &[&str]) -> Result<(), String> {
     let core = crate::open()?;
     let args = parse_history_args(app, rest)?;
@@ -1963,6 +2029,8 @@ pub fn print_help() {
          \x20 terrane scheduler ls <app>                       list folded scheduler state\n\
          \x20 terrane job submit <app> <verb> [args…]          queue a background backend job\n\
          \x20 terrane job stat|ls|cancel <app> [job-id]        inspect or cancel durable jobs\n\
+         \x20 terrane automation tick [--now-ms <epoch-ms>]    fire matching event rules and run backend verbs\n\
+         \x20 terrane automation ls <app>                      list folded automation state\n\
          \x20 terrane history <app> [--key k] [--at seq] [--filter f] [--before seq] [--limit n]\n\
          \x20 terrane revert <app> --to <seq> [--key k | --prefix p | --scope app] [--actor actor] [--yes]\n\
          \x20 terrane blob put <app> <name> <mime> <path>     store file bytes in the blob CAS\n\

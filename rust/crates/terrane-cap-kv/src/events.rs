@@ -1,6 +1,7 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde_json::Value;
 use terrane_cap_interface::{
-    decode_app_removed, decode_event, encode_event, state_mut, truncate, EventRecord, Result,
+    decode_app_removed, decode_event, encode_event, state_mut, truncate, Error, EventRecord, Result,
     StateStore,
 };
 
@@ -58,6 +59,29 @@ pub fn delete_event(app: impl Into<String>, key: impl Into<String>) -> Result<Ev
             key: key.into(),
         },
     )
+}
+
+pub fn event_payload_json(record: &EventRecord) -> Result<Option<Value>> {
+    match record.kind.as_str() {
+        "kv.set" => {
+            let e: Set = decode_event(record)?;
+            Ok(Some(serde_json::json!({
+                "app": e.app,
+                "key": e.key,
+                "value": e.value,
+            })))
+        }
+        "kv.deleted" => {
+            let e: Deleted = decode_event(record)?;
+            Ok(Some(serde_json::json!({
+                "app": e.app,
+                "key": e.key,
+            })))
+        }
+        other => Err(Error::InvalidInput(format!(
+            "not a kv event payload: {other}"
+        ))),
+    }
 }
 
 pub fn storage_configured_event(

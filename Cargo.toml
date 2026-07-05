@@ -5,6 +5,7 @@ members = [
   "rust/crates/terrane-cap-agent",
   "rust/crates/terrane-cap-app",
   "rust/crates/terrane-cap-auth",
+  "rust/crates/terrane-cap-automation",
   "rust/crates/terrane-cap-build",
   "rust/crates/terrane-cap-builder",
   "rust/crates/terrane-cap-browser",
@@ -63,6 +64,7 @@ terrane-cap-interface = { path = "rust/crates/terrane-cap-interface" }
 terrane-cap-agent = { path = "rust/crates/terrane-cap-agent" }
 terrane-cap-app = { path = "rust/crates/terrane-cap-app" }
 terrane-cap-auth = { path = "rust/crates/terrane-cap-auth" }
+terrane-cap-automation = { path = "rust/crates/terrane-cap-automation" }
 terrane-cap-build = { path = "rust/crates/terrane-cap-build" }
 terrane-cap-builder = { path = "rust/crates/terrane-cap-builder" }
 terrane-cap-browser = { path = "rust/crates/terrane-cap-browser" }

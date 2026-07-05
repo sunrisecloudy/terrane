@@ -3739,6 +3739,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-automation"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "sha2",
+ "terrane-cap-auth",
+ "terrane-cap-interface",
+ "terrane-cap-kv",
+ "terrane-cap-query",
+]
+
+[[package]]
 name = "terrane-cap-blob"
 version = "0.1.0"
 dependencies = [
@@ -3909,6 +3922,7 @@ dependencies = [
  "borsh",
  "rocksdb",
  "rusqlite",
+ "serde_json",
  "terrane-cap-interface",
 ]
 
@@ -4117,6 +4131,7 @@ dependencies = [
  "terrane-cap-agent",
  "terrane-cap-app",
  "terrane-cap-auth",
+ "terrane-cap-automation",
  "terrane-cap-blob",
  "terrane-cap-browser",
  "terrane-cap-build",
@@ -4180,6 +4195,7 @@ dependencies = [
  "terrane-asr",
  "terrane-cap-app",
  "terrane-cap-auth",
+ "terrane-cap-automation",
  "terrane-cap-blob",
  "terrane-cap-browser",
  "terrane-cap-builder",

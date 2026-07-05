@@ -190,6 +190,15 @@ For external MCP servers, declare exact resources in the manifest as
 is live discovery and records nothing.
 
 <!-- generated:resource-api:start -->
+#### `ctx.resource.automation`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.automation.set(name, ruleJson)` | write |
+| `ctx.resource.automation.rm(name)` | write |
+| `ctx.resource.automation.list()` | read |
+| `ctx.resource.automation.stat(name)` | read |
+
 #### `ctx.resource.blob`
 
 | Method | Kind |

@@ -67,6 +67,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
     assert_eq!(
         grantable,
         BTreeSet::from([
+            "automation",
             "blob",
             "browser",
             "build",
@@ -127,6 +128,8 @@ fn public_query_inventory_covers_every_registered_query() {
         queries,
         vec![
             "app.exists",
+            "automation.list",
+            "automation.stat",
             "common.channels",
             "geo.supports",
             "history.at",
@@ -149,6 +152,8 @@ fn public_query_inventory_covers_every_registered_query() {
                 | "history.key"
                 | "history.list"
                 | "job.due"
+                | "automation.list"
+                | "automation.stat"
                 | "query.jmespath"
                 | "scheduler.due"
         ) {
@@ -278,6 +283,8 @@ fn dangerous_and_effect_commands_are_refused() {
         "native.complete",
         "native.fail",
         "native.cancel",
+        "automation.fire",
+        "automation.suppress",
         "scheduler.fire",
     ] {
         assert!(
