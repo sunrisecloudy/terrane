@@ -74,7 +74,7 @@ fn cap_info_returns_document_capability_completion_doc() {
     let (ok, out, err) = host(home, &["cap", "info", "document", "--format", "json"]);
     assert!(ok, "stderr: {err}");
     assert!(out.contains(r#""namespace":"document""#), "out: {out}");
-    assert!(out.contains(r#""status":"planned""#), "out: {out}");
+    assert!(out.contains(r#""status":"stable""#), "out: {out}");
     assert!(out.contains("document.schema.json"), "out: {out}");
 
     let (ok, skill, err) = host(home, &["cap", "info", "document", "--format", "skill"]);

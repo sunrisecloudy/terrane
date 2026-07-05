@@ -61,6 +61,12 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 app_arg_index: 0,
             }
         }
+        "document.create" | "document.patch" | "document.append" | "document.delete" => {
+            PublicCommandDisposition::GrantGated {
+                namespace: "document",
+                app_arg_index: 0,
+            }
+        }
         "search.upsert"
         | "search.upsertJson"
         | "search.remove"

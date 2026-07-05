@@ -44,6 +44,13 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["blob", "rm", app, name] => run_blob_rm(app, name),
         ["blob", "verify", rest @ ..] => run_blob_verify(rest),
         ["blob", "gc", rest @ ..] => run_blob_gc(rest),
+        ["document", "ls", app] => run_document_ls(app),
+        ["document", "get", app, id] => run_document_get(app, id),
+        ["document", "rm", app, id] => run_document_rm(app, id),
+        ["document", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane document (ls <app> | get <app> <id> | rm <app> <id>)".into())
+        }
         ["query", "jmespath", app, source_json, rest @ ..] => {
             run_query_jmespath(app, source_json, rest)
         }
@@ -358,6 +365,21 @@ pub fn run_state() -> Result<(), String> {
         };
         println!("  {} — {} [{}]", run.id, run.app_id, status);
     }
+
+    println!("documents:");
+    if state.document.docs.is_empty() {
+        println!("  (none)");
+    }
+    for (app, docs) in &state.document.docs {
+        for doc in docs.values() {
+            println!(
+                "  {app}/{} — {} ({} bytes)",
+                doc.id,
+                doc.title,
+                doc.body.len()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -569,6 +591,32 @@ pub fn run_blob_gc(rest: &[&str]) -> Result<(), String> {
     for hash in plan.stale_hashes {
         println!("{hash}");
     }
+    Ok(())
+}
+
+pub fn run_document_ls(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    println!(
+        "{}",
+        terrane_cap_document::document_list_json(core.state(), app).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
+pub fn run_document_get(app: &str, id: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    match terrane_cap_document::get_document_json(core.state(), app, id)
+        .map_err(|e| e.to_string())?
+    {
+        Some(json) => println!("{json}"),
+        None => println!("null"),
+    }
+    Ok(())
+}
+
+pub fn run_document_rm(app: &str, id: &str) -> Result<(), String> {
+    let args = vec![app.to_string(), id.to_string()];
+    print_command_outcome(crate::dispatch("document.delete", &args)?);
     Ok(())
 }
 
@@ -827,6 +875,9 @@ pub fn print_help() {
          \x20 terrane blob rm <app> <name>                    remove a blob name\n\
          \x20 terrane blob verify [app [name]]                verify live blob hashes against the CAS\n\
          \x20 terrane blob gc [--dry-run|--yes]               report or delete unreferenced CAS rows\n\
+         \x20 terrane document ls <app>                       list document summaries as JSON\n\
+         \x20 terrane document get <app> <id>                 print one document as JSON or null\n\
+         \x20 terrane document rm <app> <id>                  delete one document\n\
          \x20 terrane i18n import <path>                    seed the public KV bucket from i18n/system & apps/*/i18n catalogs\n\
          \x20 terrane i18n negotiate <accept-language>       resolve a header to the best supported code\n\
          \x20 terrane native observe-default                    record default host native support\n\

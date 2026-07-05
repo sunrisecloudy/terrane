@@ -191,6 +191,18 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.crypto.sha1Hex(text)` | read |
 | `ctx.resource.crypto.randomId()` | read |
 
+#### `ctx.resource.document`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.document.create(id, title, body, metadataJson)` | write |
+| `ctx.resource.document.patch(id, patchJson)` | write |
+| `ctx.resource.document.append(id, text)` | write |
+| `ctx.resource.document.delete(id)` | write |
+| `ctx.resource.document.get(id)` | read |
+| `ctx.resource.document.list()` | read |
+| `ctx.resource.document.exportMarkdown(id)` | read |
+
 #### `ctx.resource.kv`
 
 | Method | Kind |

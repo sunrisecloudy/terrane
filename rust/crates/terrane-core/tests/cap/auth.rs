@@ -137,7 +137,7 @@ fn grant_validates_namespace_and_verbs_against_registered_specs() {
     let unknown_namespace = core
         .dispatch(req(
             "auth.grant",
-            &[LOCAL_OWNER_SUBJECT, "demo", "document"],
+            &[LOCAL_OWNER_SUBJECT, "demo", "unknown-resource"],
         ))
         .unwrap_err()
         .to_string();
@@ -194,7 +194,7 @@ fn permission_request_validates_requested_namespaces_against_specs() {
                 "demo",
                 "invoke",
                 "web",
-                "document",
+                "unknown-resource",
             ],
         ))
         .unwrap_err()

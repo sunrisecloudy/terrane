@@ -1,14 +1,12 @@
-mod document;
-
 use terrane_cap_interface::CapabilityDoc;
 
 pub fn all(include_internal: bool) -> Vec<CapabilityDoc> {
-    vec![document::document_doc(include_internal)]
+    let _ = include_internal;
+    Vec::new()
 }
 
 pub fn get(namespace: &str, include_internal: bool) -> Option<CapabilityDoc> {
-    match namespace {
-        "document" => Some(document::document_doc(include_internal)),
-        _ => None,
-    }
+    let _ = namespace;
+    let _ = include_internal;
+    None
 }

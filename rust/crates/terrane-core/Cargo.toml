@@ -22,6 +22,7 @@ terrane-cap-builder.workspace = true
 terrane-cap-blob.workspace = true
 terrane-cap-crdt.workspace = true
 terrane-cap-crypto.workspace = true
+terrane-cap-document.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-query.workspace = true
