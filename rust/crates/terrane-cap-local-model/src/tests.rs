@@ -314,6 +314,7 @@ fn ask_resolves_models_parses_constraints_and_rejects_conflicts() {
         app,
         model,
         prompt,
+        image_parts,
         system,
         history,
         schema: parsed_schema,
@@ -327,6 +328,7 @@ fn ask_resolves_models_parses_constraints_and_rejects_conflicts() {
         ("demo", "qwen", "hi")
     );
     assert_eq!(parsed_schema.as_deref(), Some(schema));
+    assert!(image_parts.is_empty());
     assert_eq!(grammar, None);
     assert_eq!(system, None);
     assert!(history.is_empty());

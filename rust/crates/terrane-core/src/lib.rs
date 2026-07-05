@@ -45,7 +45,7 @@ pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
     ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost, ParamDoc,
-    QueryCtx, QueryValue, ReadValue, RecordedCallCap, Request, ResourceDoc, ResourceMethod,
+    ModelImagePart, QueryCtx, QueryValue, ReadValue, RecordedCallCap, Request, ResourceDoc, ResourceMethod,
     ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle,
     RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT,
     LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,

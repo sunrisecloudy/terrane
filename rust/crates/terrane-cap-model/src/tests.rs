@@ -68,7 +68,8 @@ fn ask_decision_rejects_unknown_agents_and_empty_prompts() {
         Decision::Effect(Effect::ModelCall {
             app: "demo".into(),
             agent: "codex".into(),
-            prompt: "build this".into()
+            prompt: "build this".into(),
+            image_parts: Vec::new(),
         })
     );
     assert!(ModelCapability

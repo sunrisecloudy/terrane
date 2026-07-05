@@ -84,6 +84,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "local-model",
             "mcp",
             "media",
+            "model",
             "native",
             "net",
             "query",

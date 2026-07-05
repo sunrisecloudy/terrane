@@ -74,7 +74,8 @@ fn model_capability_returns_effect_and_folds_recorded_turn() {
         Decision::Effect(Effect::ModelCall {
             app: "demo".into(),
             agent: "codex".into(),
-            prompt: "make counter".into()
+            prompt: "make counter".into(),
+            image_parts: Vec::new(),
         })
     );
 
@@ -146,6 +147,8 @@ fn model_doc_covers_recorded_model_effects_and_app_cleanup() {
     assert_eq!(doc.manifest.events, vec!["model.responded".to_string()]);
     assert_eq!(doc.manifest.subscriptions, vec!["app.removed".to_string()]);
     assert!(doc.manifest.queries.is_empty());
+    assert_eq!(doc.manifest.resource_methods[0].name, "ask");
+    assert_eq!(doc.resources[0].namespace, "model");
     assert!(doc
         .constraints
         .iter()

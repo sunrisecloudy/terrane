@@ -175,6 +175,7 @@ pub enum Effect {
         app: String,
         agent: String,
         prompt: String,
+        image_parts: Vec<ModelImagePart>,
     },
     GenerateAppWithHarness {
         draft_id: String,
@@ -236,6 +237,7 @@ pub enum Effect {
         app: String,
         model: String,
         prompt: String,
+        image_parts: Vec<ModelImagePart>,
         system: Option<String>,
         /// Prior (user, assistant) exchanges to continue from, oldest first.
         history: Vec<(String, String)>,
@@ -312,6 +314,17 @@ pub enum Effect {
         app: String,
         connection: String,
     },
+}
+
+/// A content-addressed image input handed to model effect runners. Capabilities
+/// validate these from folded blob metadata or caller-supplied refs; bytes stay
+/// in the host-owned blob CAS and never enter the event/effect payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelImagePart {
+    pub name: Option<String>,
+    pub hash: String,
+    pub size: u64,
+    pub mime: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

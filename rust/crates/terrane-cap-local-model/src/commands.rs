@@ -225,6 +225,7 @@ pub(crate) fn decide_rm(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision
 
 /// The most recent prior exchanges fed back on `--continue`.
 pub(crate) const CONTINUE_TURN_LIMIT: usize = 8;
+pub const MAX_LOCAL_MODEL_CALLS_PER_APP: usize = 64;
 
 /// `local-model.ask <app> [--model <id>] [--system <text>] [--continue]
 /// [--schema <json>] [--grammar <gbnf>] <prompt…>` — validate purely;
@@ -294,6 +295,9 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
         )));
     }
     let prompt = required_tail(args, i, "prompt")?;
+    enforce_spend_limit(local, &app)?;
+    let (prompt, image_parts) =
+        terrane_cap_model::normalize_prompt_json(ctx.state, &app, &prompt, false)?;
     let history = if continued {
         conversation_history(local, &app, &model)
     } else {
@@ -304,11 +308,22 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
         app,
         model,
         prompt,
+        image_parts,
         system,
         history,
         schema,
         grammar,
     }))
+}
+
+fn enforce_spend_limit(local: &LocalModelState, app: &str) -> Result<()> {
+    let count = local.turns.get(app).map(Vec::len).unwrap_or(0);
+    if count >= MAX_LOCAL_MODEL_CALLS_PER_APP {
+        return Err(Error::InvalidInput(format!(
+            "local-model.ask per-app recorded call limit exceeded: {MAX_LOCAL_MODEL_CALLS_PER_APP}"
+        )));
+    }
+    Ok(())
 }
 
 /// `ctx.resource["local-model"].askModel(model, prompt)` — positional args

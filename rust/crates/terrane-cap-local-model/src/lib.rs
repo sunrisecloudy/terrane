@@ -8,7 +8,8 @@
 
 use terrane_cap_interface::{
     CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
-    EventSpec, GrantResourceSpec, ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
+    EventSpec, GrantResourceSpec, ReadValue, RecordedCallCap, ResourceMethod, ResourceReadCtx,
+    Result, StateStore,
 };
 
 mod commands;
@@ -16,6 +17,7 @@ mod doc;
 mod events;
 mod types;
 
+pub use commands::MAX_LOCAL_MODEL_CALLS_PER_APP;
 pub use events::{
     chat_cleared_event, default_set_event, embedded_event, registered_event, removed_event,
     responded_event, EmbeddedRecord, RespondedRecord,
@@ -28,6 +30,8 @@ pub use types::{
 };
 
 pub struct LocalModelCapability;
+
+pub const MAX_RECORDED_LOCAL_MODEL_CALLS_PER_RUN: usize = 4;
 
 impl Capability for LocalModelCapability {
     fn namespace(&self) -> &'static str {
@@ -214,6 +218,25 @@ impl Capability for LocalModelCapability {
                 "local-model.{other} is not a callable resource"
             ))),
         }
+    }
+
+    fn recorded_call_per_run_limit(&self, method: &str) -> Option<RecordedCallCap> {
+        matches!(
+            method,
+            "ask"
+                | "askModel"
+                | "askJson"
+                | "chat"
+                | "chatModel"
+                | "embed"
+                | "embedQuery"
+                | "embedModel"
+                | "pullModel"
+        )
+        .then_some(RecordedCallCap {
+            limit: MAX_RECORDED_LOCAL_MODEL_CALLS_PER_RUN,
+            escape_hint: "move repeated local-model work to an explicit host workflow",
+        })
     }
 }
 

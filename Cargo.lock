@@ -3933,6 +3933,7 @@ dependencies = [
  "borsh",
  "serde_json",
  "terrane-cap-interface",
+ "terrane-cap-model",
 ]
 
 [[package]]
@@ -3974,6 +3975,8 @@ name = "terrane-cap-model"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "serde_json",
+ "terrane-cap-blob",
  "terrane-cap-interface",
 ]
 

@@ -117,7 +117,12 @@ impl EffectRunner for EdgeRunner {
             Effect::BrowserRender { app, request } => {
                 browser_render(self.home()?, app, request)
             }
-            Effect::ModelCall { app, agent, prompt } => {
+            Effect::ModelCall {
+                app,
+                agent,
+                prompt,
+                image_parts: _,
+            } => {
                 let (response, exit_code) = run_agent(agent, prompt)?;
                 Ok(vec![responded_event(
                     app, agent, prompt, response, exit_code,
@@ -223,6 +228,7 @@ impl EffectRunner for EdgeRunner {
                 app,
                 model,
                 prompt,
+                image_parts,
                 system,
                 history,
                 schema,
@@ -231,6 +237,7 @@ impl EffectRunner for EdgeRunner {
                 app,
                 model,
                 prompt,
+                image_parts,
                 system.as_deref(),
                 history,
                 schema.as_deref(),

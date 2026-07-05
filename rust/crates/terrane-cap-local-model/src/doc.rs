@@ -130,6 +130,16 @@ pub fn local_model_doc(include_internal: bool) -> CapabilityDoc {
                 "app",
                 "Recorded turns are stored under the app that requested them.",
             ),
+            limit(
+                "maxRecordedCallsPerBackendRun",
+                &crate::MAX_RECORDED_LOCAL_MODEL_CALLS_PER_RUN.to_string(),
+                "Maximum recorded local-model resource calls a single backend run may make.",
+            ),
+            limit(
+                "maxLocalModelCallsPerApp",
+                &crate::MAX_LOCAL_MODEL_CALLS_PER_APP.to_string(),
+                "Recorded local-model generation calls retained per app before decide refuses more.",
+            ),
         ],
         compatibility: vec![
             "Weights availability is outside replay; deterministic behavior depends on recording \

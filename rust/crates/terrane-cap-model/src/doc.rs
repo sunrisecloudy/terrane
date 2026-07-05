@@ -1,6 +1,6 @@
 use terrane_cap_interface::{
-    command_doc, event_doc, limit, param, CapabilityDoc, CapabilityManifestDoc, CommandDoc,
-    EventDoc, ExampleDoc, InternalNote, ResourceDoc, SchemaDoc,
+    command_doc, event_doc, limit, param, resource_method, CapabilityDoc, CapabilityManifestDoc,
+    CommandDoc, EventDoc, ExampleDoc, InternalNote, ResourceDoc, ResourceMethodDoc, SchemaDoc,
 };
 
 use crate::AGENTS;
@@ -23,12 +23,19 @@ pub fn model_doc(include_internal: bool) -> CapabilityDoc {
             queries: Vec::new(),
             events: vec!["model.responded".to_string()],
             subscriptions: vec!["app.removed".to_string()],
-            resource_methods: Vec::new(),
+            resource_methods: model_resource_methods(),
         },
         commands: model_commands(),
         queries: Vec::new(),
         events: model_events(),
-        resources: Vec::<ResourceDoc>::new(),
+        resources: vec![ResourceDoc {
+            namespace: "model".to_string(),
+            summary: "Backend resource surface installed as ctx.resource.model for apps that declare \
+                      the model resource and hold the namespace grant (verb: call). Each call runs \
+                      one recorded edge agent request and returns the reply text."
+                .to_string(),
+            methods: model_resource_methods(),
+        }],
         schemas: Vec::<SchemaDoc>::new(),
         examples: vec![ExampleDoc {
             title: "Ask Codex and record the answer".to_string(),
@@ -41,6 +48,9 @@ pub fn model_doc(include_internal: bool) -> CapabilityDoc {
         constraints: vec![
             "model.ask validates that the app exists, the agent is supported, and the prompt is non-empty."
                 .to_string(),
+            "Prompt JSON parts may reference image blobs by app-local name or by content-addressed \
+             {hash,size,mime}; inline bytes/base64 are rejected before the effect."
+                .to_string(),
             "The agent CLI is executed only by the edge effect runner, never by replay.".to_string(),
             "A completed call is recorded as model.responded with app id, agent, prompt, response, and exit code."
                 .to_string(),
@@ -50,6 +60,9 @@ pub fn model_doc(include_internal: bool) -> CapabilityDoc {
         limits: vec![
             limit("supportedAgents", &AGENTS.join(","), "Initial recorded agent CLI allow-list."),
             limit("transcriptScope", "app", "Model turns are stored under the app that requested them."),
+            limit("maxModelCallsPerApp", &crate::MAX_MODEL_CALLS_PER_APP.to_string(), "Recorded model calls retained per app before decide refuses more."),
+            limit("maxImagePartsPerCall", &crate::MAX_IMAGE_PARTS_PER_CALL.to_string(), "Maximum image blob refs in one prompt."),
+            limit("maxImagePartBytes", &crate::MAX_IMAGE_PART_BYTES.to_string(), "Maximum size for each image blob ref."),
         ],
         compatibility: vec![
             "Model availability is outside replay; deterministic behavior depends on recording model.responded once at the edge."
@@ -67,6 +80,29 @@ pub fn model_doc(include_internal: bool) -> CapabilityDoc {
             Vec::new()
         },
     }
+}
+
+fn model_resource_methods() -> Vec<ResourceMethodDoc> {
+    let with_returns = |mut method: ResourceMethodDoc, returns: &str| {
+        method.returns = returns.to_string();
+        method
+    };
+    vec![with_returns(
+        resource_method(
+            "ask",
+            "call",
+            &[
+                param("agent", "Supported agent CLI name.", "agent"),
+                param(
+                    "promptJsonOrText",
+                    "Plain prompt text or JSON parts with text/blob refs.",
+                    "string",
+                ),
+            ],
+            "Runs one recorded agent call and returns the response text.",
+        ),
+        "string | null",
+    )]
 }
 
 fn model_commands() -> Vec<CommandDoc> {

@@ -400,6 +400,12 @@ is live discovery and records nothing.
 | --- | --- |
 | `ctx.resource.media.info(blobName)` | read |
 
+#### `ctx.resource.model`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.model.ask(agent, promptJsonOrText)` | call |
+
 #### `ctx.resource.native`
 
 | Method | Kind |

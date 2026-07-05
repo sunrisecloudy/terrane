@@ -26,25 +26,29 @@ impl EffectRunner for StubLlm {
                 app,
                 model,
                 prompt,
+                image_parts,
                 system,
                 history,
                 schema,
                 grammar,
-            } => Ok(vec![responded_event(&RespondedRecord {
-                app: app.clone(),
-                model: model.clone(),
-                prompt: prompt.clone(),
-                system: system.clone(),
-                continued: !history.is_empty(),
-                response: format!("stub response (history={})", history.len()),
-                ok: true,
-                constraint: schema
-                    .as_ref()
-                    .map(|_| "schema-mask".to_string())
-                    .or_else(|| grammar.as_ref().map(|_| "grammar".to_string())),
-                token_count: 3,
-                duration_ms: 12,
-            })?]),
+            } => {
+                assert!(image_parts.is_empty(), "stub local model is text-only");
+                Ok(vec![responded_event(&RespondedRecord {
+                    app: app.clone(),
+                    model: model.clone(),
+                    prompt: prompt.clone(),
+                    system: system.clone(),
+                    continued: !history.is_empty(),
+                    response: format!("stub response (history={})", history.len()),
+                    ok: true,
+                    constraint: schema
+                        .as_ref()
+                        .map(|_| "schema-mask".to_string())
+                        .or_else(|| grammar.as_ref().map(|_| "grammar".to_string())),
+                    token_count: 3,
+                    duration_ms: 12,
+                })?])
+            }
             Effect::LocalModelPull {
                 id,
                 repo,
@@ -214,6 +218,48 @@ fn ask_and_pull_validate_purely_before_any_effect() {
         bare.contains(terrane_cap_local_model::RECOMMENDED_GGUF_REPO),
         "{bare}"
     );
+}
+
+#[test]
+fn local_model_rejects_image_parts_until_model_is_vision_capable() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open_with(dir.path().join("log.bin"), StubLlm).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    core.dispatch(req(
+        "local-model.register",
+        &["qwen", "llama_cpp", "/models/qwen.gguf"],
+    ))
+    .unwrap();
+
+    let prompt = r#"{"parts":[{"text":"describe"},{"blob":{"hash":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","size":12,"mime":"image/png"}}]}"#;
+    let err = core
+        .dispatch(req("local-model.ask", &["demo", prompt]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("does not support image input"), "{err}");
+    assert!(!core.state().local_model.turns.contains_key("demo"));
+}
+
+#[test]
+fn local_model_per_app_spend_limit_blocks_after_recorded_turns() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open_with(dir.path().join("log.bin"), StubLlm).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    core.dispatch(req(
+        "local-model.register",
+        &["qwen", "llama_cpp", "/models/qwen.gguf"],
+    ))
+    .unwrap();
+    for i in 0..terrane_cap_local_model::MAX_LOCAL_MODEL_CALLS_PER_APP {
+        core.dispatch(req("local-model.ask", &["demo", &format!("turn {i}")]))
+            .unwrap();
+    }
+
+    let err = core
+        .dispatch(req("local-model.ask", &["demo", "one more"]))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("per-app recorded call limit"), "{err}");
 }
 
 #[test]

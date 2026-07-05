@@ -11,7 +11,8 @@ mod state;
 pub use abi::{
     decode_event, encode_event, format_item_uri, namespace_of, parse_item_uri, AppId,
     CommandAuthority, Decision, Effect, Error, EventRecord, ExecutionPrincipal, ItemUri, Request,
-    Result, RuntimeOutput, RuntimeRequest, LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
+    ModelImagePart, Result, RuntimeOutput, RuntimeRequest, LOCAL_ORG, LOCAL_OWNER_SUBJECT,
+    LOCAL_SOURCE,
 };
 pub use capability::{Capability, RecordedCallCap};
 pub use doc::{

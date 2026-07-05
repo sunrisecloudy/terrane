@@ -105,6 +105,7 @@ fn register_ask_and_cascade_through_the_trait_surface() {
             app: "demo".into(),
             model: "qwen".into(),
             prompt: "say hi".into(),
+            image_parts: Vec::new(),
             system: None,
             history: Vec::new(),
             schema: None,

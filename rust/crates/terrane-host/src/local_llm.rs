@@ -20,6 +20,7 @@ pub(crate) fn call(
     app: &str,
     model: &str,
     prompt: &str,
+    image_parts: &[terrane_core::ModelImagePart],
     system: Option<&str>,
     history: &[(String, String)],
     schema: Option<&str>,
@@ -39,6 +40,11 @@ pub(crate) fn call(
         .specs
         .get(model)
         .ok_or_else(|| Error::InvalidInput(format!("unknown local model: {model}")))?;
+    if !image_parts.is_empty() {
+        return Err(Error::InvalidInput(format!(
+            "{model} is not registered as a vision-capable local model"
+        )));
+    }
 
     let constraint = match (schema, grammar) {
         (Some(schema), _) => Some(Constraint::JsonSchema(schema.to_string())),
@@ -405,6 +411,9 @@ pub(crate) fn call(
     _app: &str,
     _model: &str,
     _prompt: &str,
+    _image_parts: &[terrane_core::ModelImagePart],
+    _system: Option<&str>,
+    _history: &[(String, String)],
     _schema: Option<&str>,
     _grammar: Option<&str>,
     _state: &State,
