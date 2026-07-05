@@ -155,3 +155,153 @@ fn app_removal_drops_native_request_state() {
     assert!(!core.state().native.requests.contains_key("demo"));
     assert!(core.replay_matches().unwrap());
 }
+
+#[test]
+fn native_v2_validates_inputs_and_blob_ref_results() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    core.dispatch(req(
+        "native.platform.observe",
+        &[
+            "local",
+            "macos",
+            "test-1",
+            "screen.capture",
+            "tray.setMenu",
+            "window.control",
+        ],
+    ))
+    .unwrap();
+
+    let bad_target = core
+        .dispatch(req(
+            "native.screen.capture",
+            &["demo", "cap-1", "desktop"],
+        ))
+        .unwrap_err();
+    assert!(bad_target
+        .to_string()
+        .contains("target must be screen or window"));
+
+    core.dispatch(req("native.screen.capture", &["demo", "cap-1", "screen"]))
+        .unwrap();
+    let record = &core.state().native.requests["demo"]["cap-1"];
+    assert_eq!(record.operation_id, "screen.capture");
+    assert_eq!(record.result_size_class, "blob-ref");
+
+    let inline_bytes = core
+        .dispatch(req("native.complete", &["demo", "cap-1", r#"{"ok":true}"#]))
+        .unwrap_err();
+    assert!(inline_bytes
+        .to_string()
+        .contains("screen.capture result hash string is required"));
+
+    core.dispatch(req(
+        "native.complete",
+        &[
+            "demo",
+            "cap-1",
+            r#"{"hash":"abc","size":12,"mime":"image/png","width":1,"height":1,"blobName":"__capture__/cap-1"}"#,
+        ],
+    ))
+    .unwrap();
+    assert!(core.replay_matches().unwrap());
+}
+
+#[test]
+fn native_v2_folds_tray_shortcut_registrations_and_replays() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open(&log).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    core.dispatch(req(
+        "native.platform.observe",
+        &["local", "macos", "test-1", "tray.setMenu", "shortcut.registerGlobal"],
+    ))
+    .unwrap();
+
+    core.dispatch(req(
+        "native.tray.set-menu",
+        &[
+            "demo",
+            "tray-1",
+            "Demo",
+            r#"[{"id":"open","label":"Open"}]"#,
+        ],
+    ))
+    .unwrap();
+    core.dispatch(req(
+        "native.complete",
+        &["demo", "tray-1", r#"{"installed":true}"#],
+    ))
+    .unwrap();
+    assert_eq!(core.state().native.tray_menus["demo"].items[0].id, "open");
+
+    core.dispatch(req(
+        "native.shortcut.register-global",
+        &["demo", "hot-1", "cmd+shift+K", "open"],
+    ))
+    .unwrap();
+    core.dispatch(req(
+        "native.complete",
+        &["demo", "hot-1", r#"{"registered":true}"#],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.state().native.shortcuts["demo"]["cmd+shift+K"].verb,
+        "open"
+    );
+
+    core.dispatch(req(
+        "native.tray.set-menu",
+        &["demo", "tray-2", "Demo", r#"[]"#],
+    ))
+    .unwrap();
+    core.dispatch(req(
+        "native.complete",
+        &["demo", "tray-2", r#"{"installed":true}"#],
+    ))
+    .unwrap();
+    assert!(!core.state().native.tray_menus.contains_key("demo"));
+    assert!(core.replay_matches().unwrap());
+
+    let reopened = Core::open(&log).unwrap();
+    assert_eq!(
+        reopened.state().native.shortcuts["demo"]["cmd+shift+K"].verb,
+        "open"
+    );
+}
+
+#[test]
+fn native_sensitive_resource_methods_require_operation_selector_grants() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
+    grant_resource(&mut core, "demo", "native");
+    core.dispatch(req(
+        "native.platform.observe",
+        &["local", "macos", "test-1", "screen.capture"],
+    ))
+    .unwrap();
+
+    let mut host = RuntimeResourceHost::new("demo", core.state().clone());
+    let denied = host
+        .write_resource("native", "screenCapture", &["cap-1".into(), "screen".into()])
+        .unwrap_err();
+    assert!(denied
+        .to_string()
+        .contains("requires grant native:screen.capture"));
+
+    core.dispatch(req(
+        "auth.grant",
+        &[terrane_core::LOCAL_OWNER_SUBJECT, "demo", "native:screen.capture"],
+    ))
+    .unwrap();
+    let mut host = RuntimeResourceHost::new("demo", core.state().clone());
+    host.write_resource("native", "screenCapture", &["cap-1".into(), "screen".into()])
+        .unwrap();
+    let records = host.take_records();
+    assert_eq!(records[0].kind, "native.requested");
+    assert_eq!(host.read_resource("native", "pending", &[]).unwrap(), ReadValue::StringList(vec!["cap-1".into()]));
+}

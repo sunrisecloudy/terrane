@@ -96,12 +96,26 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
         | "native.external.open-url"
         | "native.notification.show"
         | "native.dialog.open-file"
+        | "native.dialog.save-file"
+        | "native.tray.set-menu"
+        | "native.shortcut.register-global"
+        | "native.window.control"
         | "native.clipboardWriteText"
         | "native.externalOpenUrl"
         | "native.notificationShow"
-        | "native.dialogOpenFile" => PublicCommandDisposition::GrantGated {
+        | "native.dialogOpenFile"
+        | "native.dialogSaveFile"
+        | "native.traySetMenu"
+        | "native.shortcutRegisterGlobal"
+        | "native.windowControl" => PublicCommandDisposition::GrantGated {
             namespace: "native",
             app_arg_index: 0,
+        },
+        "native.clipboard.read-text"
+        | "native.screen.capture"
+        | "native.clipboardReadText"
+        | "native.screenCapture" => PublicCommandDisposition::Refuse {
+            reason: "sensitive native operations require operation-level selector grants through the app resource runtime",
         },
         "native.platform.observe" | "native.complete" | "native.fail" | "native.cancel" => {
             PublicCommandDisposition::Refuse {

@@ -3,7 +3,7 @@
 use terrane_cap_interface::{
     arg, state_ref, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Error,
     EventPattern, EventRecord, EventSpec, GrantResourceSpec, QueryCtx, QuerySpec, QueryValue,
-    ReadValue, ResourceReadCtx, Result, StateStore,
+    ReadValue, ResourceReadCtx, Result, StateStore, UnknownSelectorSchemaPolicy,
 };
 
 mod commands;
@@ -15,8 +15,9 @@ mod types;
 
 pub use events::{cancelled_event, completed_event, failed_event, platform_observed_event};
 pub use operations::{
-    operation_catalog, OperationCatalogEntry, OP_CLIPBOARD_WRITE_TEXT, OP_DIALOG_OPEN_FILE,
-    OP_EXTERNAL_OPEN_URL, OP_NOTIFICATION_SHOW,
+    operation_catalog, OperationCatalogEntry, OP_CLIPBOARD_READ_TEXT, OP_CLIPBOARD_WRITE_TEXT,
+    OP_DIALOG_OPEN_FILE, OP_DIALOG_SAVE_FILE, OP_EXTERNAL_OPEN_URL, OP_NOTIFICATION_SHOW,
+    OP_SCREEN_CAPTURE, OP_SHORTCUT_REGISTER_GLOBAL, OP_TRAY_SET_MENU, OP_WINDOW_CONTROL,
 };
 pub use types::{NativePlatformObservation, NativeRequestRecord, NativeRequestStatus, NativeState};
 
@@ -58,11 +59,22 @@ impl Capability for NativeCapability {
                 name: "native.supports",
             }],
             resources: resources::resource_methods(),
-            grant_resources: vec![GrantResourceSpec::namespace_v1(
-                "native",
-                &["read", "write"],
-                "Async native OS request queue.",
-            )],
+            grant_resources: vec![
+                GrantResourceSpec::namespace_v1(
+                    "native",
+                    &["read", "write"],
+                    "Async native OS request queue for save dialogs, tray menu, global shortcut, own window control, and other non-sensitive native requests.",
+                ),
+                GrantResourceSpec {
+                    namespace: "native",
+                    selector_schema_id: operations::NATIVE_OPERATION_SELECTOR_SCHEMA_ID,
+                    selector_schema_json: operations::NATIVE_OPERATION_SELECTOR_SCHEMA_JSON,
+                    verbs: &["write"],
+                    compatibility: terrane_cap_interface::GrantResourceCompatibility::BACKWARD_AND_FORWARD,
+                    unknown_selector_schema_policy: UnknownSelectorSchemaPolicy::Deny,
+                    summary: "Operation-level native grant for sensitive requests such as clipboard.readText and screen.capture.",
+                },
+            ],
             subscriptions: vec![EventPattern {
                 kind: "app.removed",
             }],

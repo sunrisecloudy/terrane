@@ -347,9 +347,15 @@ is live discovery and records nothing.
 | Method | Kind |
 | --- | --- |
 | `ctx.resource.native.clipboardWriteText(requestId, text)` | write |
+| `ctx.resource.native.clipboardReadText(requestId)` | write |
 | `ctx.resource.native.externalOpenUrl(requestId, url)` | write |
 | `ctx.resource.native.notificationShow(requestId, title, body)` | write |
 | `ctx.resource.native.dialogOpenFile(requestId, optionsJson)` | write |
+| `ctx.resource.native.dialogSaveFile(requestId, suggestedName, blobName)` | write |
+| `ctx.resource.native.screenCapture(requestId, target)` | write |
+| `ctx.resource.native.traySetMenu(requestId, title, itemsJson)` | write |
+| `ctx.resource.native.shortcutRegisterGlobal(requestId, accelerator, verb)` | write |
+| `ctx.resource.native.windowControl(requestId, action, title)` | write |
 | `ctx.resource.native.result(requestId)` | read |
 | `ctx.resource.native.pending()` | read |
 

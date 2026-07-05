@@ -834,6 +834,7 @@ impl RuntimeHost for RuntimeResourceHost {
     }
 
     fn write_resource(&mut self, namespace: &str, method: &str, args: &[String]) -> Result<()> {
+        self.ensure_resource_write_allowed(namespace, method)?;
         let name = format!("{namespace}.{method}");
         let mut scoped_args = Vec::with_capacity(args.len() + 1);
         scoped_args.push(self.app.clone());
@@ -1003,6 +1004,26 @@ impl RuntimeHost for RuntimeResourceHost {
 }
 
 impl RuntimeResourceHost {
+    fn ensure_resource_write_allowed(&self, namespace: &str, method: &str) -> Result<()> {
+        let Some(resource_id) = sensitive_native_resource_id(namespace, method) else {
+            return Ok(());
+        };
+        if self.temporary_allowed_resources.contains(namespace)
+            || dev_allow_requested_resources()
+            || terrane_cap_auth::resource_granted(
+                &self.state,
+                &self.principal,
+                &self.app,
+                resource_id,
+            )?
+        {
+            return Ok(());
+        }
+        Err(Error::Runtime(format!(
+            "ctx.resource.{namespace}.{method} requires grant {resource_id}"
+        )))
+    }
+
     fn telemetry_granted(&self) -> Result<bool> {
         Ok(self.temporary_allowed_resources.contains("telemetry")
             || dev_allow_requested_resources()
@@ -1012,6 +1033,17 @@ impl RuntimeResourceHost {
                 &self.app,
                 "telemetry",
             )?)
+    }
+}
+
+fn sensitive_native_resource_id(namespace: &str, method: &str) -> Option<&'static str> {
+    if namespace != "native" {
+        return None;
+    }
+    match method {
+        "clipboardReadText" => Some("native:clipboard.readText"),
+        "screenCapture" => Some("native:screen.capture"),
+        _ => None,
     }
 }
 
