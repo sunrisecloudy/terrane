@@ -20,6 +20,7 @@ mod history;
 mod host;
 mod i18n;
 mod interop;
+mod job_queue;
 mod kv;
 mod local_model;
 mod media;

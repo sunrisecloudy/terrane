@@ -176,6 +176,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "geo",
             "history",
             "interop",
+            "job",
             "kv",
             "local-model",
             "mcp",

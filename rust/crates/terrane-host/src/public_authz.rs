@@ -142,6 +142,13 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 reason: "scheduler.fire is trusted-host-only",
             }
         }
+        "job.submit" | "job.cancel" | "job.progress" => PublicCommandDisposition::GrantGated {
+            namespace: "job",
+            app_arg_index: 0,
+        },
+        "job.start" | "job.report" | "job.reap" => PublicCommandDisposition::Refuse {
+            reason: "job lifecycle commands are trusted-host-only",
+        },
         "kv.storage.set" | "kv.storage.clear" => PublicCommandDisposition::Refuse {
             reason: "storage configuration is trusted-admin-only",
         },

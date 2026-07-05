@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        126,
+        132,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,10 +52,10 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        67,
+        70,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 57, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 60, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -78,6 +78,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "geo",
             "history",
             "interop",
+            "job",
             "kv",
             "local-model",
             "mcp",
@@ -132,6 +133,7 @@ fn public_query_inventory_covers_every_registered_query() {
             "history.key",
             "history.list",
             "interop.apps",
+            "job.due",
             "native.supports",
             "query.jmespath",
             "replica.peer",
@@ -146,6 +148,7 @@ fn public_query_inventory_covers_every_registered_query() {
                 | "history.at"
                 | "history.key"
                 | "history.list"
+                | "job.due"
                 | "query.jmespath"
                 | "scheduler.due"
         ) {

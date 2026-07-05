@@ -32,6 +32,7 @@ pub mod ffi;
 pub mod home;
 pub mod i18n;
 pub mod deep_links;
+pub mod job;
 mod local_llm;
 pub mod mcp;
 mod metrics;

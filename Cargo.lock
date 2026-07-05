@@ -3883,6 +3883,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-job-queue"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-js-runtime"
 version = "0.1.0"
 dependencies = [
@@ -4122,6 +4131,7 @@ dependencies = [
  "terrane-cap-history",
  "terrane-cap-interface",
  "terrane-cap-interop",
+ "terrane-cap-job-queue",
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-local-model",
@@ -4183,6 +4193,7 @@ dependencies = [
  "terrane-cap-history",
  "terrane-cap-interface",
  "terrane-cap-interop",
+ "terrane-cap-job-queue",
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-local-model",

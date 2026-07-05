@@ -24,6 +24,7 @@ mod harness;
 mod history;
 mod host;
 mod interop;
+mod job_queue;
 mod interface;
 mod kv;
 mod local_model;

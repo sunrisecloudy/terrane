@@ -73,6 +73,15 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane scheduler (tick [--now-ms <epoch-ms>] | ls <app>)".into())
         }
+        ["job", "submit", app, verb, rest @ ..] => run_job_submit(app, verb, rest),
+        ["job", "stat", app, job_id] => run_job_stat(app, job_id),
+        ["job", "ls", app] | ["job", "list", app] => run_job_ls(app, None),
+        ["job", "ls", app, status] | ["job", "list", app, status] => run_job_ls(app, Some(status)),
+        ["job", "cancel", app, job_id] => run_job_cancel(app, job_id),
+        ["job", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane job (submit <app> <verb> [--job-id id] [--now-ms ms] [--retry json] [--args-json json | args…] | stat <app> <job-id> | ls <app> [status] | cancel <app> <job-id>)".into())
+        }
         ["blob", "put", app, name, mime, path] => run_blob_put(app, name, mime, path),
         ["blob", "get", app, name, path] => run_blob_get(app, name, path),
         ["blob", "stat", app, name] => run_blob_stat(app, name),
@@ -1016,16 +1025,23 @@ pub fn run_kv_storage_status() -> Result<(), String> {
 pub fn run_scheduler_tick(now_ms: Option<&str>) -> Result<(), String> {
     let mut core = crate::open()?;
     crate::ensure_identity(&mut core)?;
-    let outcomes = match now_ms {
+    let parsed_now = match now_ms {
         Some(raw) => {
-            let now = raw
+            Some(raw
                 .parse::<u64>()
-                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?;
-            crate::scheduler::run_due_at(&mut core, now)?
+                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?)
         }
+        None => None,
+    };
+    let outcomes = match parsed_now {
+        Some(now) => crate::scheduler::run_due_at(&mut core, now)?,
         None => crate::scheduler::run_due(&mut core)?,
     };
-    if outcomes.is_empty() {
+    let job_outcomes = match parsed_now {
+        Some(now) => crate::job::run_due_at(&mut core, now)?,
+        None => crate::job::run_due(&mut core)?,
+    };
+    if outcomes.is_empty() && job_outcomes.is_empty() {
         println!("scheduler tick: no due schedules");
     } else {
         for outcome in outcomes {
@@ -1044,8 +1060,154 @@ pub fn run_scheduler_tick(now_ms: Option<&str>) -> Result<(), String> {
                 outcome.verb
             );
         }
+        for outcome in job_outcomes {
+            let status = if outcome.error.is_some() {
+                "job_failed"
+            } else {
+                "job_completed"
+            };
+            println!(
+                "{} {}/{} attempt={} verb={}",
+                status, outcome.app, outcome.job_id, outcome.attempt, outcome.verb
+            );
+        }
     }
     Ok(())
+}
+
+pub fn run_job_submit(app: &str, verb: &str, rest: &[&str]) -> Result<(), String> {
+    let mut job_id = None::<String>;
+    let mut retry_json = String::new();
+    let mut now_ms = None::<u64>;
+    let mut args_json = None::<String>;
+    let mut tail = Vec::<String>::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--job-id" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--job-id requires a value".into());
+                };
+                job_id = Some((*value).to_string());
+                i += 2;
+            }
+            "--retry" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--retry requires a value".into());
+                };
+                retry_json = (*value).to_string();
+                i += 2;
+            }
+            "--now-ms" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--now-ms requires a value".into());
+                };
+                now_ms = Some(
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| format!("--now-ms must be an unsigned integer, got {value:?}"))?,
+                );
+                i += 2;
+            }
+            "--args-json" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--args-json requires a value".into());
+                };
+                args_json = Some((*value).to_string());
+                i += 2;
+            }
+            other => {
+                tail.push(other.to_string());
+                i += 1;
+            }
+        }
+    }
+    let args_json = match args_json {
+        Some(value) => value,
+        None => serde_json::to_string(&tail).map_err(|e| e.to_string())?,
+    };
+    let submitted_at = match now_ms {
+        Some(value) => value,
+        None => crate::job::now_epoch_ms()?,
+    };
+    let mut core = crate::open()?;
+    crate::ensure_identity(&mut core)?;
+    let id = crate::job::submit(
+        &mut core,
+        app,
+        verb,
+        &args_json,
+        &retry_json,
+        submitted_at,
+        job_id.as_deref(),
+    )?;
+    println!("{id}");
+    Ok(())
+}
+
+pub fn run_job_stat(app: &str, job_id: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    match core
+        .state()
+        .job
+        .jobs
+        .get(app)
+        .and_then(|jobs| jobs.get(job_id))
+    {
+        Some(job) => println!("{}", job_state_json(job)),
+        None => println!("null"),
+    }
+    Ok(())
+}
+
+pub fn run_job_ls(app: &str, status: Option<&str>) -> Result<(), String> {
+    let core = crate::open()?;
+    let jobs = core.state().job.jobs.get(app).cloned().unwrap_or_default();
+    for (job_id, job) in jobs {
+        if status.is_some_and(|want| want != job.status.as_str()) {
+            continue;
+        }
+        println!(
+            "{} status={} attempt={} verb={} next_attempt_at={}",
+            job_id,
+            job.status.as_str(),
+            job.attempt,
+            job.verb,
+            job.next_attempt_at
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+    Ok(())
+}
+
+pub fn run_job_cancel(app: &str, job_id: &str) -> Result<(), String> {
+    let at = crate::job::now_epoch_ms()?;
+    print_command_outcome(crate::dispatch(
+        "job.cancel",
+        &[app.to_string(), job_id.to_string(), at.to_string()],
+    )?);
+    Ok(())
+}
+
+fn job_state_json(job: &terrane_cap_job_queue::Job) -> String {
+    serde_json::json!({
+        "app": job.app,
+        "job_id": job.job_id,
+        "verb": job.verb,
+        "status": job.status.as_str(),
+        "attempt": job.attempt,
+        "progress_pct": job.progress_pct,
+        "submitted_at": job.submitted_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "cancelled_at": job.cancelled_at,
+        "next_attempt_at": job.next_attempt_at,
+        "lease_until": job.lease_until,
+        "last_error": job.last_error,
+        "output": job.output,
+    })
+    .to_string()
 }
 
 pub fn run_scheduler_ls(app: &str) -> Result<(), String> {
@@ -1799,6 +1961,8 @@ pub fn print_help() {
          \x20 terrane kv storage status\n\
          \x20 terrane scheduler tick [--now-ms <epoch-ms>]     fire due schedules and run backend verbs\n\
          \x20 terrane scheduler ls <app>                       list folded scheduler state\n\
+         \x20 terrane job submit <app> <verb> [args…]          queue a background backend job\n\
+         \x20 terrane job stat|ls|cancel <app> [job-id]        inspect or cancel durable jobs\n\
          \x20 terrane history <app> [--key k] [--at seq] [--filter f] [--before seq] [--limit n]\n\
          \x20 terrane revert <app> --to <seq> [--key k | --prefix p | --scope app] [--actor actor] [--yes]\n\
          \x20 terrane blob put <app> <name> <mime> <path>     store file bytes in the blob CAS\n\

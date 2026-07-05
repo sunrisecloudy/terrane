@@ -19,6 +19,7 @@ members = [
   "rust/crates/terrane-cap-harness",
   "rust/crates/terrane-cap-history",
   "rust/crates/terrane-cap-interop",
+  "rust/crates/terrane-cap-job-queue",
   "rust/crates/terrane-cap-kv",
   "rust/crates/terrane-cap-query",
   "rust/crates/terrane-cap-js-runtime",
@@ -76,6 +77,7 @@ terrane-cap-geo = { path = "rust/crates/terrane-cap-geo" }
 terrane-cap-harness = { path = "rust/crates/terrane-cap-harness" }
 terrane-cap-history = { path = "rust/crates/terrane-cap-history" }
 terrane-cap-interop = { path = "rust/crates/terrane-cap-interop" }
+terrane-cap-job-queue = { path = "rust/crates/terrane-cap-job-queue" }
 terrane-cap-kv = { path = "rust/crates/terrane-cap-kv" }
 terrane-cap-query = { path = "rust/crates/terrane-cap-query" }
 terrane-cap-js-runtime = { path = "rust/crates/terrane-cap-js-runtime" }

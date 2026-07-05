@@ -297,6 +297,16 @@ is live discovery and records nothing.
 | `ctx.resource.interop.send(interface, kind, payloadJson)` | call |
 | `ctx.resource.interop.pick(interface)` | call |
 
+#### `ctx.resource.job`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.job.submit(jobId, verb, argsJson, retryJson, submittedAt)` | call |
+| `ctx.resource.job.cancel(jobId, at)` | write |
+| `ctx.resource.job.progress(jobId, attempt, pct, note, at, leaseUntil)` | write |
+| `ctx.resource.job.stat(jobId)` | read |
+| `ctx.resource.job.list(status)` | read |
+
 #### `ctx.resource.kv`
 
 | Method | Kind |

@@ -75,6 +75,7 @@ use terrane_cap_geo::GeoState;
 use terrane_cap_harness::HarnessState;
 use terrane_cap_history::HistoryState;
 use terrane_cap_interop::InteropState;
+use terrane_cap_job_queue::JobState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_local_model::LocalModelState;
 use terrane_cap_media::MediaState;
@@ -111,6 +112,7 @@ pub struct State {
     pub harness: HarnessState,
     pub history: HistoryState,
     pub interop: InteropState,
+    pub job: JobState,
     pub kv: KvState,
     pub query: QueryState,
     pub net: NetState,
@@ -146,6 +148,7 @@ impl StateStore for State {
             "harness" => Some(&self.harness),
             "history" => Some(&self.history),
             "interop" => Some(&self.interop),
+            "job" => Some(&self.job),
             "kv" => Some(&self.kv),
             "query" => Some(&self.query),
             "net" => Some(&self.net),
@@ -182,6 +185,7 @@ impl StateStore for State {
             "harness" => Some(&mut self.harness),
             "history" => Some(&mut self.history),
             "interop" => Some(&mut self.interop),
+            "job" => Some(&mut self.job),
             "kv" => Some(&mut self.kv),
             "query" => Some(&mut self.query),
             "net" => Some(&mut self.net),
@@ -494,6 +498,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_history::HistoryCapability));
     registry.register(Box::new(terrane_cap_interop::InteropCapability));
+    registry.register(Box::new(terrane_cap_job_queue::JobQueueCapability));
     registry.register(Box::new(terrane_cap_kv::KvCapability));
     registry.register(Box::new(terrane_cap_query::QueryCapability));
     registry.register(Box::new(terrane_cap_relational_db::RelationalDbCapability));
@@ -1625,6 +1630,9 @@ fn admit_command(request: &Request) -> Result<()> {
         || request.name.starts_with("kv.public.")
         || request.name == "app.link.deliver"
         || request.name == "scheduler.fire"
+        || request.name == "job.start"
+        || request.name == "job.report"
+        || request.name == "job.reap"
         || request.name == "stt.session.open"
         || request.name == "stt.segment.append"
         || request.name == "stt.session.close-host"

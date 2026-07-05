@@ -31,6 +31,7 @@ terrane-cap-geo.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-history.workspace = true
 terrane-cap-interop.workspace = true
+terrane-cap-job-queue.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-query.workspace = true
 terrane-cap-js-runtime.workspace = true
