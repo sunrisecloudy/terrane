@@ -11,6 +11,7 @@ mod helpers;
 mod app;
 mod applescript;
 mod automation;
+mod backup;
 mod blob;
 mod browser;
 mod common;
