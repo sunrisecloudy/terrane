@@ -38,4 +38,5 @@ mod search;
 mod stt;
 mod telemetry;
 mod time;
+mod tts;
 mod wasm_runtime;

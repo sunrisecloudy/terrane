@@ -201,6 +201,19 @@ pub enum Effect {
         hash: String,
         bytes: Vec<u8>,
     },
+    TtsSpeak {
+        app: String,
+        text: String,
+        voice: Option<String>,
+        rate_milli: u32,
+    },
+    TtsRender {
+        app: String,
+        text: String,
+        text_hash: String,
+        voice: Option<String>,
+        rate_milli: u32,
+    },
     MediaTransform {
         app: String,
         source_hash: String,
