@@ -230,6 +230,17 @@ internal notes hidden unless `includeInternal=true`.
 | --- | --- |
 | `ctx.resource.net.get(url)` | call |
 
+#### `ctx.resource.query`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.query.jmespath(sourceJson, expression)` | read |
+| `ctx.resource.query.pipeline(sourceJson, pipelineJson)` | read |
+| `ctx.resource.query.viewGet(view, key)` | read |
+| `ctx.resource.query.viewScan(view, prefix, limit)` | read |
+| `ctx.resource.query.viewStat(view)` | read |
+| `ctx.resource.query.viewList()` | read |
+
 #### `ctx.resource.relational_db`
 
 | Method | Kind |
@@ -306,6 +317,41 @@ function handle(input) {
     return v == null ? "(unset)" : v;
   }
   return "?";
+}
+```
+
+For `query`: reads are deterministic over folded app state. A common pattern is
+to scan JSON values from `kv`, aggregate them, and later materialize the same
+pipeline from the trusted command surface for fast keyed reads:
+
+```js
+var source = JSON.stringify({ kv: { prefix: "orders/" } });
+var dailyTotals = JSON.stringify([
+  { $group: { _id: "$day", total: { $sum: "$total" }, count: { $count: {} } } },
+  { $sort: { _id: 1 } },
+]);
+
+function handle(input) {
+  if (input[0] === "previewDaily") {
+    return ctx.resource.query.pipeline(source, dailyTotals);
+  }
+  if (input[0] === "dailyTotal") {
+    return ctx.resource.query.viewGet("sales-by-day", input[1]);
+  }
+  return "?";
+}
+```
+
+The matching materialized view definition is:
+
+```json
+{
+  "source": { "kv": { "prefix": "orders/" } },
+  "pipeline": [
+    { "$group": { "_id": "$day", "total": { "$sum": "$total" }, "count": { "$count": {} } } },
+    { "$sort": { "_id": 1 } }
+  ],
+  "key": "_id"
 }
 ```
 

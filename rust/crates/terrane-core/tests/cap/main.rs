@@ -23,6 +23,7 @@ mod log;
 mod model;
 mod native;
 mod net;
+mod query;
 mod relational_db;
 mod replica;
 mod scheduler;

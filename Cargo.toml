@@ -11,6 +11,7 @@ members = [
   "rust/crates/terrane-cap-crypto",
   "rust/crates/terrane-cap-harness",
   "rust/crates/terrane-cap-kv",
+  "rust/crates/terrane-cap-query",
   "rust/crates/terrane-cap-js-runtime",
   "rust/crates/terrane-cap-local-model",
   "rust/crates/terrane-cap-relational-db",
@@ -52,6 +53,7 @@ terrane-cap-crdt = { path = "rust/crates/terrane-cap-crdt" }
 terrane-cap-crypto = { path = "rust/crates/terrane-cap-crypto" }
 terrane-cap-harness = { path = "rust/crates/terrane-cap-harness" }
 terrane-cap-kv = { path = "rust/crates/terrane-cap-kv" }
+terrane-cap-query = { path = "rust/crates/terrane-cap-query" }
 terrane-cap-js-runtime = { path = "rust/crates/terrane-cap-js-runtime" }
 terrane-cap-local-model = { path = "rust/crates/terrane-cap-local-model" }
 terrane-cap-relational-db = { path = "rust/crates/terrane-cap-relational-db" }
@@ -84,6 +86,8 @@ rocksdb = { version = "0.24.0", default-features = false, features = ["bindgen-r
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+jmespath = "0.5.0"
+sha2 = "0.10"
 regex = "1"
 tempfile = "3"
 

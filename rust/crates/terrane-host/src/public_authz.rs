@@ -65,6 +65,12 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "search",
             app_arg_index: 0,
         },
+        "query.view.define" | "query.materialize" | "query.view.drop" => {
+            PublicCommandDisposition::GrantGated {
+                namespace: "query",
+                app_arg_index: 0,
+            }
+        }
         "native.clipboard.write-text"
         | "native.external.open-url"
         | "native.notification.show"

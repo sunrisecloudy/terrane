@@ -1420,6 +1420,7 @@ fn query_value_json(capability: &str, query: &str, value: QueryValue) -> String 
         QueryValue::Bool(value) => value.to_string(),
         QueryValue::U64(Some(value)) => value.to_string(),
         QueryValue::U64(None) => "null".to_string(),
+        QueryValue::Json(value) => value,
     };
     format!(
         r#"{{"capability":{},"query":{},"value":{value}}}"#,

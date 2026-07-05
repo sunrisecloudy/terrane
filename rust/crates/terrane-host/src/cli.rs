@@ -33,6 +33,9 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
+        ["query", "jmespath", app, source_json, rest @ ..] => {
+            run_query_jmespath(app, source_json, rest)
+        }
         ["i18n", "import", path] => run_i18n_import(path),
         ["i18n", "negotiate", header] => run_i18n_negotiate(header),
         // Host verbs for the local-model edge (runtime + resident server) —
@@ -128,6 +131,24 @@ pub fn run_command(ns: &str, verb: &str, rest: &[&str]) -> Result<(), String> {
 pub fn dispatch(command: &str, args: &[&str]) -> Result<(), String> {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     print_command_outcome(crate::dispatch(command, &args)?);
+    Ok(())
+}
+
+pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result<(), String> {
+    if rest.is_empty() {
+        return Err("usage: terrane query jmespath <app> <sourceJson> <expression>".into());
+    }
+    let mut args = vec![app.to_string(), source_json.to_string(), rest.join(" ")];
+    let value = crate::query_on_core(&crate::open()?, "query", "jmespath", &args)?;
+    args.clear();
+    match value {
+        terrane_core::QueryValue::Json(json) => println!("{json}"),
+        other => {
+            return Err(format!(
+                "query.jmespath returned unexpected value: {other:?}"
+            ))
+        }
+    }
     Ok(())
 }
 
@@ -635,6 +656,7 @@ pub fn print_help() {
          \x20 terrane log                    print the event log (decoded)\n\
          \x20 terrane replay                 rebuild state from the log and verify it\n\
          \x20 terrane migrate-log            upgrade a pre-actor log and keep log.bin.pre-actor\n\
+         \x20 terrane query jmespath <app> <sourceJson> <expression>  read folded state with JMESPath\n\
          \x20 terrane cap list               list capability docs\n\
          \x20 terrane cap info <namespace>   show capability docs\n\
          \x20 terrane contract export        print the public API contract (JSON)\n\
