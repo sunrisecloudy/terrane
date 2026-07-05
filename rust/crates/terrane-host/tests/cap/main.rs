@@ -32,6 +32,7 @@ mod query;
 mod scheduler;
 mod search;
 mod sysinfo;
+mod stream;
 mod telemetry;
 mod time;
 mod tts;

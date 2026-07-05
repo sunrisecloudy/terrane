@@ -39,6 +39,7 @@ mod replica;
 mod scheduler;
 mod search;
 mod stt;
+mod stream;
 mod telemetry;
 mod time;
 mod tts;

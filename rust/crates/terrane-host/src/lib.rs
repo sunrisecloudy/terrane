@@ -45,6 +45,7 @@ pub mod scheduler;
 pub mod secret_store;
 mod stt_edge;
 pub mod stt_runner;
+pub mod stream_edge;
 mod tts_edge;
 pub mod sync;
 

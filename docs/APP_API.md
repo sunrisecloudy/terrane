@@ -412,6 +412,12 @@ is live discovery and records nothing.
 | `ctx.resource.search.vectorSearch(queryVecJson, optionsJson)` | read |
 | `ctx.resource.search.status()` | read |
 
+#### `ctx.resource.stream`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.stream.list()` | read |
+
 #### `ctx.resource.stt`
 
 | Method | Kind |
@@ -482,6 +488,13 @@ has the `net` grant, or through the CLI as
 redacted before persistence for built-in sensitive names and app-declared
 `sensitiveHeaders`; `{"$secret":"name"}` is reserved for future host secret
 resolution and is rejected at the edge until that resolver exists.
+
+For `stream`: declare `"stream"` when an app needs a long-running host to
+maintain outbound SSE/WebSocket subscriptions. `ctx.resource.stream.list()`
+returns folded desired-state (`name`, `kind`, `verb`, `lastSeq`, `status`).
+Hosts record every received message as `stream.message`, offloading large or
+binary payloads to blob refs like `__stream__/<app>/<name>/<seq>`; replay folds
+recorded messages and never opens sockets or reruns the callback verb.
 
 For `tts`: `ctx.resource.tts.speak(text)` is transient and records nothing, so
 replay never makes sound. `ctx.resource.tts.render(text, "--voice", voice,

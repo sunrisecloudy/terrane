@@ -85,6 +85,7 @@ use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_stt::SttState;
+use terrane_cap_stream::StreamState;
 use terrane_cap_time::TimeState;
 use terrane_cap_telemetry::TelemetryState;
 use terrane_cap_tts::TtsState;
@@ -118,6 +119,7 @@ pub struct State {
     pub native: NativeState,
     pub scheduler: SchedulerState,
     pub stt: SttState,
+    pub stream: StreamState,
     pub tts: TtsState,
     pub crdt: CrdtState,
     pub connection: ConnectionState,
@@ -151,6 +153,7 @@ impl StateStore for State {
             "native" => Some(&self.native),
             "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
+            "stream" => Some(&self.stream),
             "tts" => Some(&self.tts),
             "crdt" => Some(&self.crdt),
             "connection" => Some(&self.connection),
@@ -185,6 +188,7 @@ impl StateStore for State {
             "native" => Some(&mut self.native),
             "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
+            "stream" => Some(&mut self.stream),
             "tts" => Some(&mut self.tts),
             "crdt" => Some(&mut self.crdt),
             "connection" => Some(&mut self.connection),
@@ -503,6 +507,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_native::NativeCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
+    registry.register(Box::new(terrane_cap_stream::StreamCapability));
     registry.register(Box::new(terrane_cap_tts::TtsCapability));
     registry.register(Box::new(terrane_cap_time::TimeCapability));
     registry.register(Box::new(terrane_cap_sysinfo::SysinfoCapability));
@@ -1609,6 +1614,8 @@ fn admit_command(request: &Request) -> Result<()> {
     // - the host-owned edge of `stt` (session lifecycle, segment append,
     //   retention, purge). Apps may call only `stt.select` and `stt.stop`, so
     //   those are deliberately not gated here.
+    // - the host-owned edge of `stream` (message ingest, reconnect markers,
+    //   and host closes). Apps declare desired state with stream.open/close.
     let trusted_only = request.name.starts_with("auth.")
         || request.name.starts_with("kv.public.")
         || request.name == "app.link.deliver"
@@ -1617,7 +1624,10 @@ fn admit_command(request: &Request) -> Result<()> {
         || request.name == "stt.segment.append"
         || request.name == "stt.session.close-host"
         || request.name == "stt.retention.trim"
-        || request.name == "stt.session.purge";
+        || request.name == "stt.session.purge"
+        || request.name == "stream.message"
+        || request.name == "stream.reopened"
+        || request.name == "stream.close-host";
     if trusted_only && !request.authority.is_trusted_host() {
         return Err(Error::InvalidInput(format!(
             "{} requires trusted host authority",
