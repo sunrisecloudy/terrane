@@ -38,8 +38,8 @@ fn surface_is_derived_from_the_live_declarations() {
         .capability_docs
         .iter()
         .find(|doc| doc.namespace == "document")
-        .expect("planned document docs");
-    assert_eq!(document.status, "planned");
+        .expect("document docs");
+    assert_eq!(document.status, "stable");
     assert!(document
         .schemas
         .iter()

@@ -11,7 +11,9 @@
       "type": "string"
     },
     "metadata": {
-      "$ref": "document_meta.schema.json"
+      "type": "object",
+      "additionalProperties": true,
+      "description": "RFC 7386 merge patch for metadata; null values delete keys."
     }
   }
 }

@@ -3548,6 +3548,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-document"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde_json",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-harness"
 version = "0.1.0"
 dependencies = [
@@ -3740,6 +3749,7 @@ dependencies = [
  "terrane-cap-builder",
  "terrane-cap-crdt",
  "terrane-cap-crypto",
+ "terrane-cap-document",
  "terrane-cap-harness",
  "terrane-cap-history",
  "terrane-cap-interface",
@@ -3785,6 +3795,7 @@ dependencies = [
  "terrane-cap-blob",
  "terrane-cap-builder",
  "terrane-cap-crdt",
+ "terrane-cap-document",
  "terrane-cap-harness",
  "terrane-cap-history",
  "terrane-cap-js-runtime",

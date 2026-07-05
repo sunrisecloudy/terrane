@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        87,
+        90,
         "registered commands changed: {commands:?}"
     );
 
@@ -52,7 +52,7 @@ fn public_command_inventory_covers_every_registered_command() {
     );
     assert_eq!(
         grant_gated.len(),
-        43,
+        46,
         "grant-gated commands: {grant_gated:?}"
     );
     assert_eq!(refused.len(), 42, "refused commands: {refused:?}");
@@ -71,6 +71,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "build",
             "crdt",
             "crypto",
+            "document",
             "history",
             "kv",
             "local-model",

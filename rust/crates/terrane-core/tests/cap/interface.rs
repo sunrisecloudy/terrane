@@ -169,6 +169,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "build",
             "crdt",
             "crypto",
+            "document",
             "history",
             "kv",
             "local-model",
@@ -308,14 +309,14 @@ fn registry_bus_reports_unknown_capability_or_query() {
 }
 
 #[test]
-fn capability_docs_include_registered_relational_docs() {
+fn capability_docs_include_registered_capability_docs() {
     let docs = capability_docs(false);
     assert!(docs.iter().any(|doc| doc.namespace == "kv"));
     let document = docs
         .iter()
         .find(|doc| doc.namespace == "document")
-        .expect("planned document doc");
-    assert_eq!(document.status, "planned");
+        .expect("document doc");
+    assert_eq!(document.status, "stable");
     assert!(document
         .schemas
         .iter()
@@ -323,7 +324,7 @@ fn capability_docs_include_registered_relational_docs() {
     assert!(document
         .constraints
         .iter()
-        .any(|constraint| constraint.contains("Planned resource availability warning")));
+        .any(|constraint| constraint.contains("RFC 7386 JSON merge-patch")));
     let document_create_command = document
         .commands
         .iter()
@@ -336,7 +337,7 @@ fn capability_docs_include_registered_relational_docs() {
     assert!(document_create_command
         .errors
         .iter()
-        .any(|error| error.contains("planned capability not granted")));
+        .any(|error| error.contains("document quota exceeded")));
     assert!(document
         .events
         .iter()
@@ -351,7 +352,7 @@ fn capability_docs_include_registered_relational_docs() {
     assert!(document_create
         .errors
         .iter()
-        .any(|error| error.contains("planned capability not granted")));
+        .any(|error| error.contains("document quota exceeded")));
     let document_get = document
         .manifest
         .resource_methods
@@ -384,7 +385,7 @@ fn capability_docs_include_registered_relational_docs() {
     assert!(document_internal
         .internal
         .iter()
-        .any(|note| note.title.contains("Likely backing store")));
+        .any(|note| note.title.contains("Persistence")));
 }
 
 /// Every method a capability installs on `ctx.resource` must be documented

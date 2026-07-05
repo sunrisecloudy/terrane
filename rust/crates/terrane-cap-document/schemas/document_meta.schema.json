@@ -1,0 +1,5 @@
+{
+  "$id": "document_meta.schema.json",
+  "type": "object",
+  "additionalProperties": true
+}

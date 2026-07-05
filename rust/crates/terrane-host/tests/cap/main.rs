@@ -10,6 +10,7 @@ mod helpers;
 
 mod app;
 mod blob;
+mod document;
 mod history;
 mod host;
 mod i18n;
