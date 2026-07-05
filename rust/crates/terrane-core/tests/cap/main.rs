@@ -24,6 +24,7 @@ mod interface;
 mod kv;
 mod local_model;
 mod log;
+mod media;
 mod model;
 mod native;
 mod net;

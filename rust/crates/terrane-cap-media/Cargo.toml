@@ -1,0 +1,15 @@
+[package]
+name = "terrane-cap-media"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_media"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-interface.workspace = true
+terrane-cap-blob.workspace = true
+borsh.workspace = true
+serde_json.workspace = true

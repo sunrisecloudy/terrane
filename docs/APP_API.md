@@ -289,6 +289,12 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.local-model.resetChat()` | call |
 | `ctx.resource.local-model.models()` | read |
 
+#### `ctx.resource.media`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.media.info(blobName)` | read |
+
 #### `ctx.resource.native`
 
 | Method | Kind |

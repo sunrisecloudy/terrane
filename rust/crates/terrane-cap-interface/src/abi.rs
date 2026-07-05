@@ -197,6 +197,13 @@ pub enum Effect {
         hash: String,
         bytes: Vec<u8>,
     },
+    MediaTransform {
+        app: String,
+        source_hash: String,
+        source_mime: String,
+        ops_json: String,
+        dest_name: String,
+    },
     NewReplicaId,
     LocalModelCall {
         app: String,

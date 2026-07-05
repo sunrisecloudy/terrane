@@ -18,6 +18,7 @@ members = [
   "rust/crates/terrane-cap-query",
   "rust/crates/terrane-cap-js-runtime",
   "rust/crates/terrane-cap-local-model",
+  "rust/crates/terrane-cap-media",
   "rust/crates/terrane-cap-relational-db",
   "rust/crates/terrane-cap-search",
   "rust/crates/terrane-cap-scheduler",
@@ -66,6 +67,7 @@ terrane-cap-kv = { path = "rust/crates/terrane-cap-kv" }
 terrane-cap-query = { path = "rust/crates/terrane-cap-query" }
 terrane-cap-js-runtime = { path = "rust/crates/terrane-cap-js-runtime" }
 terrane-cap-local-model = { path = "rust/crates/terrane-cap-local-model" }
+terrane-cap-media = { path = "rust/crates/terrane-cap-media" }
 terrane-cap-relational-db = { path = "rust/crates/terrane-cap-relational-db" }
 terrane-cap-search = { path = "rust/crates/terrane-cap-search" }
 terrane-cap-scheduler = { path = "rust/crates/terrane-cap-scheduler" }

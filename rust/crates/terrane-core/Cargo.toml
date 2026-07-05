@@ -30,6 +30,7 @@ terrane-cap-kv.workspace = true
 terrane-cap-query.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-local-model.workspace = true
+terrane-cap-media.workspace = true
 terrane-cap-relational-db.workspace = true
 terrane-cap-search.workspace = true
 terrane-cap-scheduler.workspace = true

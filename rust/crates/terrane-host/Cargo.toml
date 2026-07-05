@@ -25,6 +25,8 @@ path = "src/bin/terrane.rs"
 
 [dependencies]
 getrandom = "0.4.3"
+hound.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 nanoserde = { workspace = true }
 # Hidden terminal input for `run … --ask`, so a master password never lands on
 # argv. Reads a line from stdin: no echo on a TTY, plain when piped.
@@ -48,6 +50,7 @@ terrane-cap-interop.workspace = true
 terrane-cap-js-runtime.workspace = true
 terrane-cap-kv.workspace = true
 terrane-cap-local-model.workspace = true
+terrane-cap-media.workspace = true
 terrane-cap-model.workspace = true
 terrane-cap-native.workspace = true
 terrane-cap-net.workspace = true
@@ -62,11 +65,11 @@ terrane-local-llm = { workspace = true, optional = true }
 terrane-asr = { workspace = true, optional = true }
 base64 = "0.22"
 sha2 = "0.10"
+symphonia = { version = "0.5", default-features = false, features = ["aac", "flac", "mp3", "isomp4", "ogg", "pcm", "vorbis", "wav"] }
+tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 rocksdb = { workspace = true, optional = true }
 
 [dev-dependencies]
-hound.workspace = true
-tempfile.workspace = true
