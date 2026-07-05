@@ -181,6 +181,28 @@ fn resource_commands_need_grants_and_never_prompt_for_missing_apps() {
 }
 
 #[test]
+fn net_request_is_grant_gated_for_public_callers() {
+    let dir = tempdir().unwrap();
+    let mut core = terrane_host::open_at_log_path(dir.path().join("log.bin")).unwrap();
+    app(&mut core, "demo");
+    let request = r#"{"url":"http://127.0.0.1/","responseBody":"inline"}"#.to_string();
+
+    assert_eq!(
+        authorize_public_command(&core, "net.request", &["demo".into(), request.clone()]).unwrap(),
+        PublicCommandAuthz::NeedsGrant {
+            app: "demo".into(),
+            namespace: "net".into()
+        }
+    );
+
+    grant(&mut core, "demo", "net");
+    assert_eq!(
+        authorize_public_command(&core, "net.request", &["demo".into(), request]).unwrap(),
+        PublicCommandAuthz::Allow
+    );
+}
+
+#[test]
 fn dangerous_and_effect_commands_are_refused() {
     let dir = tempdir().unwrap();
     let core = terrane_host::open_at_log_path(dir.path().join("log.bin")).unwrap();

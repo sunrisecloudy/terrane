@@ -155,6 +155,10 @@ pub enum Effect {
         app: String,
         url: String,
     },
+    HttpRequest {
+        app: String,
+        request: String,
+    },
     ModelCall {
         app: String,
         agent: String,

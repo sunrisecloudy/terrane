@@ -247,6 +247,7 @@ internal notes hidden unless `includeInternal=true`.
 | Method | Kind |
 | --- | --- |
 | `ctx.resource.net.get(url)` | call |
+| `ctx.resource.net.call(request_json)` | call |
 
 #### `ctx.resource.query`
 
@@ -330,6 +331,18 @@ internal notes hidden unless `includeInternal=true`.
 
 For `kv`: `key` and `value` must be strings, and a missing key reads back as
 `null`/`undefined` — test it with `== null` (which matches both):
+
+For `net`: `ctx.resource.net.call(request_json)` accepts the same request JSON
+as `net.request`: `method`, `url`, `headers`, optional string or `$base64`
+body, `sensitiveHeaders`, `timeoutMs`, `redirect`, and `responseBody`. It is
+live and unrecorded, so replay does not re-send it. To record a replay-stable
+full HTTP response from trusted tooling, dispatch
+`net.request <app> <request-json>` through `capability_command` after the app
+has the `net` grant, or through the CLI as
+`terrane net request <app> <request-json>`. Recorded request headers are
+redacted before persistence for built-in sensitive names and app-declared
+`sensitiveHeaders`; `{"$secret":"name"}` is reserved for future host secret
+resolution and is rejected at the edge until that resolver exists.
 
 ```js
 var kv = ctx.resource.kv;

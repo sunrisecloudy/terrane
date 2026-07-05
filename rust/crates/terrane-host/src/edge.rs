@@ -7,11 +7,14 @@
 
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 use terrane_cap_builder as builder;
 use terrane_cap_harness as harness;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
@@ -20,6 +23,7 @@ use terrane_cap_kv::{
 };
 use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
+use terrane_cap_net::request::{RedirectPolicy, RequestBody, RequestValue, ResponseBodyMode};
 use terrane_cap_replica::initialized_event;
 use terrane_core::{Effect, EffectRunner, LiveHost};
 use terrane_core::{Error, EventRecord, Result};
@@ -103,6 +107,7 @@ impl EffectRunner for EdgeRunner {
                 let (status, body) = http_get(url)?;
                 Ok(vec![fetched_event(app, url, status, body)?])
             }
+            Effect::HttpRequest { app, request } => http_request(self.home()?, app, request),
             Effect::ModelCall { app, agent, prompt } => {
                 let (response, exit_code) = run_agent(agent, prompt)?;
                 Ok(vec![responded_event(
@@ -751,6 +756,349 @@ fn http_get(url: &str) -> Result<(u16, String)> {
             "HTTP GET {url} failed: {transport}"
         ))),
     }
+}
+
+fn http_request(home: &Path, app: &str, request: &str) -> Result<Vec<EventRecord>> {
+    let prepared = terrane_cap_net::request::prepare_request(request)?;
+    if prepared.has_unresolved_secret {
+        return Err(Error::InvalidInput(
+            "net.request contains unresolved {$secret}; secret resolution belongs to cap-oauth-connections"
+                .into(),
+        ));
+    }
+    validate_http_target(&prepared.url)?;
+
+    let timeout = Duration::from_millis(prepared.timeout_ms);
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout_read(timeout)
+        .redirects(0)
+        .build();
+    let resp = perform_http_request(&agent, &prepared)?;
+
+    let status = resp.status();
+    let response_headers = filtered_response_headers(&resp);
+    let mime = response_headers
+        .get("content-type")
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+    let bytes = read_response_bytes(resp, terrane_cap_net::request::BODY_HARD_LIMIT)?;
+    let body_size = u64::try_from(bytes.len())
+        .map_err(|_| Error::Storage("HTTP response body length overflow".into()))?;
+    let body_hash = terrane_cap_net::request::sha256_hex(&bytes);
+    let recorded_body =
+        choose_recorded_body(&prepared.response_body, &bytes, &body_hash, body_size, &mime)?;
+
+    let mut records = Vec::new();
+    if recorded_body.kind == "blob" {
+        crate::blob_store::insert_if_absent(home, &body_hash, &bytes)?;
+        records.push(terrane_cap_blob::stored_event(
+            app,
+            format!("__net__/{}", prepared.request_key),
+            &body_hash,
+            body_size,
+            &mime,
+        )?);
+    }
+    records.push(terrane_cap_net::responded_event(
+        app,
+        prepared.request_key,
+        prepared.redacted_json,
+        status,
+        response_headers,
+        recorded_body,
+    )?);
+    Ok(records)
+}
+
+fn perform_http_request(
+    agent: &ureq::Agent,
+    prepared: &terrane_cap_net::request::PreparedRequest,
+) -> Result<ureq::Response> {
+    let mut url = prepared.url.clone();
+    let original_scheme = url_scheme(&url)?.to_string();
+    for hop in 0..=5 {
+        validate_http_target(&url)?;
+        let resp = perform_single_http_request(agent, prepared, &url)?;
+        if !(300..400).contains(&resp.status()) {
+            return Ok(resp);
+        }
+        match prepared.redirect {
+            RedirectPolicy::Manual => return Ok(resp),
+            RedirectPolicy::Deny => {
+                return Err(Error::Storage(format!(
+                    "HTTP {} {} refused redirect status {}",
+                    prepared.method,
+                    url,
+                    resp.status()
+                )))
+            }
+            RedirectPolicy::Follow => {
+                if hop == 5 {
+                    return Err(Error::Storage(format!(
+                        "HTTP {} {} exceeded 5 redirects",
+                        prepared.method, prepared.url
+                    )));
+                }
+                let location = resp.header("location").ok_or_else(|| {
+                    Error::Storage(format!(
+                        "HTTP {} {} redirect missing location",
+                        prepared.method, url
+                    ))
+                })?;
+                let next = resolve_redirect_url(&url, location)?;
+                let next_scheme = url_scheme(&next)?;
+                if original_scheme == "https" && next_scheme == "http" {
+                    return Err(Error::Storage(format!(
+                        "HTTP {} {} refused https-to-http redirect",
+                        prepared.method, prepared.url
+                    )));
+                }
+                url = next;
+            }
+        }
+    }
+    Err(Error::Storage(format!(
+        "HTTP {} {} exceeded 5 redirects",
+        prepared.method, prepared.url
+    )))
+}
+
+fn perform_single_http_request(
+    agent: &ureq::Agent,
+    prepared: &terrane_cap_net::request::PreparedRequest,
+    url: &str,
+) -> Result<ureq::Response> {
+    let mut req = agent.request(&prepared.method, url);
+    for header in &prepared.headers {
+        let RequestValue::Plain(value) = &header.value else {
+            return Err(Error::InvalidInput(
+                "net.request contains unresolved {$secret}; secret resolution belongs to cap-oauth-connections"
+                    .into(),
+            ));
+        };
+        req = req.set(&header.name, value);
+    }
+    let resp = match &prepared.body {
+        Some(RequestBody::Text(body)) => req.send_string(body),
+        Some(RequestBody::Base64(bytes)) => req.send_bytes(bytes),
+        Some(RequestBody::Secret(_)) => {
+            return Err(Error::InvalidInput(
+                "net.request contains unresolved {$secret}; secret resolution belongs to cap-oauth-connections"
+                    .into(),
+            ))
+        }
+        None => req.call(),
+    };
+    match resp {
+        Ok(resp) => Ok(resp),
+        Err(ureq::Error::Status(_, resp)) => Ok(resp),
+        Err(ureq::Error::Transport(transport)) => Err(Error::Storage(format!(
+            "HTTP {} {} failed: {transport}",
+            prepared.method, url
+        ))),
+    }
+}
+
+fn filtered_response_headers(resp: &ureq::Response) -> BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &[
+        "content-type",
+        "content-length",
+        "etag",
+        "last-modified",
+        "location",
+        "cache-control",
+    ];
+    let mut out = BTreeMap::new();
+    for name in ALLOWED {
+        if let Some(value) = resp.header(name) {
+            out.insert((*name).to_string(), value.to_string());
+        }
+    }
+    out
+}
+
+fn read_response_bytes(resp: ureq::Response, hard_limit: usize) -> Result<Vec<u8>> {
+    let mut reader = resp.into_reader().take(
+        u64::try_from(hard_limit + 1)
+            .map_err(|_| Error::Storage("HTTP response limit overflow".into()))?,
+    );
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::Storage(format!("reading HTTP response body failed: {e}")))?;
+    if bytes.len() > hard_limit {
+        return Err(Error::Storage(format!(
+            "HTTP response body exceeds {hard_limit} bytes"
+        )));
+    }
+    Ok(bytes)
+}
+
+fn choose_recorded_body(
+    mode: &ResponseBodyMode,
+    bytes: &[u8],
+    hash: &str,
+    size: u64,
+    mime: &str,
+) -> Result<terrane_cap_net::RecordedBody> {
+    let text = is_text_mime(mime);
+    let inline = match mode {
+        ResponseBodyMode::Inline => {
+            if bytes.len() > terrane_cap_net::request::INLINE_FORCED_LIMIT {
+                return Err(Error::Storage(format!(
+                    "inline HTTP response body exceeds {} bytes",
+                    terrane_cap_net::request::INLINE_FORCED_LIMIT
+                )));
+            }
+            true
+        }
+        ResponseBodyMode::Blob => false,
+        ResponseBodyMode::Auto => {
+            text && bytes.len() <= terrane_cap_net::request::INLINE_AUTO_LIMIT
+        }
+    };
+    if inline {
+        let (body, is_base64) = if text {
+            match String::from_utf8(bytes.to_vec()) {
+                Ok(body) => (body, false),
+                Err(_) => (B64.encode(bytes), true),
+            }
+        } else {
+            (B64.encode(bytes), true)
+        };
+        return Ok(terrane_cap_net::RecordedBody {
+            kind: "inline".to_string(),
+            body,
+            is_base64,
+            hash: hash.to_string(),
+            size,
+            mime: mime.to_string(),
+        });
+    }
+    Ok(terrane_cap_net::RecordedBody {
+        kind: "blob".to_string(),
+        body: String::new(),
+        is_base64: false,
+        hash: hash.to_string(),
+        size,
+        mime: mime.to_string(),
+    })
+}
+
+fn is_text_mime(mime: &str) -> bool {
+    let mime = mime.to_ascii_lowercase();
+    mime.starts_with("text/")
+        || matches!(
+            mime.as_str(),
+            "application/json"
+                | "application/javascript"
+                | "application/xml"
+                | "application/x-www-form-urlencoded"
+        )
+        || mime.ends_with("+json")
+        || mime.ends_with("+xml")
+}
+
+fn validate_http_target(url: &str) -> Result<()> {
+    let (scheme, rest) = split_url_scheme(url)?;
+    if !matches!(scheme, "http" | "https") {
+        return Err(Error::InvalidInput(format!(
+            "net request URL scheme must be http or https: {scheme}"
+        )));
+    }
+    let host_port = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Error::InvalidInput("net request URL missing host".into()))?;
+    let (host, port) = split_host_port(host_port, scheme)?;
+    if host == "169.254.169.254" {
+        return Err(Error::InvalidInput(
+            "net request to cloud metadata address 169.254.169.254 is denied".into(),
+        ));
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        deny_metadata_ip(ip)?;
+        return Ok(());
+    }
+    for addr in (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|e| Error::Storage(format!("resolve {host}: {e}")))?
+    {
+        deny_metadata_ip(addr.ip())?;
+    }
+    Ok(())
+}
+
+fn resolve_redirect_url(current: &str, location: &str) -> Result<String> {
+    if location.contains("://") {
+        return Ok(location.to_string());
+    }
+    let (scheme, rest) = split_url_scheme(current)?;
+    let host_port = rest
+        .split(['/', '?', '#'])
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| Error::InvalidInput("net request URL missing host".into()))?;
+    if location.starts_with('/') {
+        return Ok(format!("{scheme}://{host_port}{location}"));
+    }
+    let path = rest
+        .split_once('/')
+        .map(|(_, path)| path.split(['?', '#']).next().unwrap_or(""))
+        .unwrap_or("");
+    let base = path.rsplit_once('/').map(|(base, _)| base).unwrap_or("");
+    if base.is_empty() {
+        Ok(format!("{scheme}://{host_port}/{location}"))
+    } else {
+        Ok(format!("{scheme}://{host_port}/{base}/{location}"))
+    }
+}
+
+fn url_scheme(url: &str) -> Result<&str> {
+    split_url_scheme(url).map(|(scheme, _)| scheme)
+}
+
+fn split_url_scheme(url: &str) -> Result<(&str, &str)> {
+    url.split_once("://")
+        .ok_or_else(|| Error::InvalidInput("net request URL must include http:// or https://".into()))
+}
+
+fn split_host_port(host_port: &str, scheme: &str) -> Result<(String, u16)> {
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    if let Some(rest) = host_port.strip_prefix('[') {
+        let (host, tail) = rest
+            .split_once(']')
+            .ok_or_else(|| Error::InvalidInput("invalid bracketed IPv6 URL host".into()))?;
+        let port = if let Some(port) = tail.strip_prefix(':') {
+            parse_port(port)?
+        } else {
+            default_port
+        };
+        return Ok((host.to_string(), port));
+    }
+    match host_port.rsplit_once(':') {
+        Some((host, port)) if !host.contains(':') => Ok((host.to_string(), parse_port(port)?)),
+        _ => Ok((host_port.to_string(), default_port)),
+    }
+}
+
+fn parse_port(port: &str) -> Result<u16> {
+    port.parse::<u16>()
+        .map_err(|_| Error::InvalidInput(format!("invalid URL port: {port}")))
+}
+
+fn deny_metadata_ip(ip: IpAddr) -> Result<()> {
+    if ip == IpAddr::from([169, 254, 169, 254]) {
+        return Err(Error::InvalidInput(
+            "net request to cloud metadata address 169.254.169.254 is denied".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn read_pipe(mut pipe: impl Read) -> Result<Vec<u8>> {
