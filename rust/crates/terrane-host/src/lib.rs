@@ -222,11 +222,41 @@ pub fn log_path_for_home(home: impl AsRef<Path>) -> PathBuf {
 }
 
 /// Ensure this home has minted its replica identity before it authors anything.
-/// Idempotent — `replica.init` is a no-op once the id exists.
+/// Idempotent — replica/person creation and the local replica attestation are
+/// no-ops once the public facts exist.
 pub fn ensure_identity(core: &mut HostCore) -> Result<(), String> {
     if core.state().replica.peer.is_none() {
         core.dispatch(Request::new("replica.init", Vec::new()))
             .map_err(|e| e.to_string())?;
+    }
+    if core.state().person.persons.is_empty() {
+        core.dispatch(Request::trusted_host("person.create", Vec::new()))
+            .map_err(|e| e.to_string())?;
+    }
+    if let (Some(peer), Some(person_id)) = (
+        core.state().replica.peer,
+        core.state().person.persons.keys().next().cloned(),
+    ) {
+        let claim = peer.to_string();
+        let has_replica = core
+            .state()
+            .person
+            .persons
+            .get(&person_id)
+            .map(|person| {
+                person
+                    .attestations
+                    .values()
+                    .any(|att| att.kind == "replica" && att.claim == claim && !att.revoked)
+            })
+            .unwrap_or(false);
+        if !has_replica {
+            core.dispatch(Request::trusted_host(
+                "person.attest",
+                vec![person_id, "replica".to_string(), claim],
+            ))
+            .map_err(|e| e.to_string())?;
+        }
     }
     if !terrane_cap_auth::local_owner_member_exists(core.state()).map_err(|e| e.to_string())? {
         core.dispatch(Request::trusted_host(

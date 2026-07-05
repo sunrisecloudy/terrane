@@ -53,6 +53,20 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane connection (set <name> [--kind apiKey|oauth2|smtp] [--field key] [--config json] | rm <name> | ls | stat <name> | authorize <name>)".into())
         }
+        ["person", "create"] => dispatch("person.create", &[]),
+        ["person", "whoami"] => run_person_whoami(),
+        ["person", "get", person_id] => run_person_get(person_id),
+        ["person", "attest", person_id, kind, claim] => {
+            dispatch("person.attest", &[person_id, kind, claim])
+        }
+        ["person", "revoke-attestation", person_id, kind, claim] => {
+            dispatch("person.revoke-attestation", &[person_id, kind, claim])
+        }
+        ["person", "rotate", person_id] => dispatch("person.rotate", &[person_id]),
+        ["person", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane person (create | whoami | get <person-id> | attest <person-id> <kind> <claim> | revoke-attestation <person-id> <kind> <claim> | rotate <person-id>)".into())
+        }
         ["mcp", "connect", name, transport_json] => run_mcp_connect(name, transport_json),
         ["mcp", "rm", name] | ["mcp", "disconnect", name] => run_mcp_disconnect(name),
         ["mcp", "ls"] | ["mcp", "list"] => run_mcp_ls(),
@@ -353,6 +367,24 @@ fn run_connection_stat(name: &str) -> Result<(), String> {
             })
         ),
         None => return Err(format!("unknown connection: {name}")),
+    }
+    Ok(())
+}
+
+fn run_person_whoami() -> Result<(), String> {
+    let core = crate::open()?;
+    match crate::query_on_core(&core, "person", "whoami", &[])? {
+        terrane_core::QueryValue::Json(json) => println!("{json}"),
+        other => return Err(format!("person.whoami returned unexpected value: {other:?}")),
+    }
+    Ok(())
+}
+
+fn run_person_get(person_id: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    match crate::query_on_core(&core, "person", "get", &[person_id.to_string()])? {
+        terrane_core::QueryValue::Json(json) => println!("{json}"),
+        other => return Err(format!("person.get returned unexpected value: {other:?}")),
     }
     Ok(())
 }
@@ -2233,6 +2265,8 @@ pub fn print_help() {
          \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane connection set <name> [--field key]       read a secret from stdin/prompt and record public metadata\n\
          \x20 terrane connection ls|stat|rm                     inspect or remove non-secret connection metadata\n\
+         \x20 terrane person create|whoami                      ensure or inspect the local durable person\n\
+         \x20 terrane person attest|rotate|revoke-attestation   attach, rotate, or revoke public identity facts\n\
          \x20 terrane mcp connect <name> <transport-json>       record an external MCP server connection\n\
          \x20 terrane mcp call <app> <connection> <tool> <args-json>  call an external MCP tool; record the result\n\
          \x20 terrane mcp tools <app> <connection>              list tools from an external MCP server\n\

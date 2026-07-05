@@ -29,6 +29,7 @@ members = [
   "rust/crates/terrane-cap-media",
   "rust/crates/terrane-cap-migration",
   "rust/crates/terrane-cap-mcp-client",
+  "rust/crates/terrane-cap-person",
   "rust/crates/terrane-cap-relational-db",
   "rust/crates/terrane-cap-search",
   "rust/crates/terrane-cap-scheduler",
@@ -90,6 +91,7 @@ terrane-cap-local-model = { path = "rust/crates/terrane-cap-local-model" }
 terrane-cap-media = { path = "rust/crates/terrane-cap-media" }
 terrane-cap-migration = { path = "rust/crates/terrane-cap-migration" }
 terrane-cap-mcp-client = { path = "rust/crates/terrane-cap-mcp-client" }
+terrane-cap-person = { path = "rust/crates/terrane-cap-person" }
 terrane-cap-relational-db = { path = "rust/crates/terrane-cap-relational-db" }
 terrane-cap-search = { path = "rust/crates/terrane-cap-search" }
 terrane-cap-scheduler = { path = "rust/crates/terrane-cap-scheduler" }

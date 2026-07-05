@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use ed25519_dalek::{Signer, SigningKey};
 use terrane_cap_builder as builder;
 use terrane_cap_harness as harness;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
@@ -27,6 +28,10 @@ use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
 use terrane_cap_net::request::{RedirectPolicy, RequestBody, RequestValue, ResponseBodyMode};
 use terrane_cap_browser::request::RenderOutput;
+use terrane_cap_person::{
+    attestation_message, attested_event, created_event, hex as hex_lower, rotated_event,
+    rotation_message, validate_person_id,
+};
 use terrane_cap_replica::initialized_event;
 use terrane_core::{Effect, EffectRunner, LiveHost};
 use terrane_core::{Error, EventRecord, Result};
@@ -352,6 +357,13 @@ Effect::LocalModelEmbed {
             Effect::McpTools { app, connection } => {
                 crate::mcp_client::list_tools(self.home()?, state, app, connection)
             }
+            Effect::PersonKeygen => person_keygen(self.home()?),
+            Effect::PersonSign {
+                person_id,
+                kind,
+                claim,
+            } => person_sign(self.home()?, person_id, kind, claim),
+            Effect::PersonRotate { person_id } => person_rotate(self.home()?, person_id),
         }
     }
 
@@ -372,6 +384,64 @@ fn mint_webhook_token() -> Result<String> {
         let _ = write!(out, "{byte:02x}");
     }
     Ok(out)
+}
+
+fn person_secret_name(person_id: &str) -> Result<String> {
+    Ok(format!("person-{}", validate_person_id(person_id)?))
+}
+
+fn store_person_seed(home: &Path, person_id: &str, seed: &[u8; 32]) -> Result<()> {
+    crate::secret_store::set_secret(
+        home,
+        &person_secret_name(person_id)?,
+        "ed25519",
+        &B64.encode(seed),
+    )
+}
+
+fn load_person_key(home: &Path, person_id: &str) -> Result<SigningKey> {
+    let secret = crate::secret_store::get_secret(home, &person_secret_name(person_id)?, "ed25519")?;
+    let bytes = B64
+        .decode(secret)
+        .map_err(|e| Error::Storage(format!("decode person secret seed: {e}")))?;
+    let seed: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::Storage("person secret seed has invalid length".into()))?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+fn new_person_key() -> Result<SigningKey> {
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed)
+        .map_err(|e| Error::Runtime(format!("mint person keypair: {e}")))?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+fn person_keygen(home: &Path) -> Result<Vec<EventRecord>> {
+    let signing = new_person_key()?;
+    let pubkey = hex_lower(signing.verifying_key().as_bytes());
+    let event = created_event(&pubkey)?;
+    let person_id = terrane_cap_person::person_id_for_pubkey(&pubkey)?;
+    store_person_seed(home, &person_id, signing.as_bytes())?;
+    Ok(vec![event])
+}
+
+fn person_sign(home: &Path, person_id: &str, kind: &str, claim: &str) -> Result<Vec<EventRecord>> {
+    let signing = load_person_key(home, person_id)?;
+    let message = attestation_message(person_id, kind, claim)?;
+    let sig = signing.sign(&message);
+    Ok(vec![attested_event(person_id, kind, claim, &hex_lower(&sig.to_bytes()))?])
+}
+
+fn person_rotate(home: &Path, person_id: &str) -> Result<Vec<EventRecord>> {
+    let old = load_person_key(home, person_id)?;
+    let new = new_person_key()?;
+    let new_pubkey = hex_lower(new.verifying_key().as_bytes());
+    let message = rotation_message(person_id, &new_pubkey)?;
+    let sig = old.sign(&message);
+    store_person_seed(home, person_id, new.as_bytes())?;
+    Ok(vec![rotated_event(person_id, &new_pubkey, &hex_lower(&sig.to_bytes()))?])
 }
 
 fn run_app_call(

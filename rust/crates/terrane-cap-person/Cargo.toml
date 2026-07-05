@@ -1,0 +1,16 @@
+[package]
+name = "terrane-cap-person"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_person"
+path = "src/lib.rs"
+
+[dependencies]
+borsh.workspace = true
+ed25519-dalek = { version = "2", features = ["std"] }
+serde_json.workspace = true
+sha2.workspace = true
+terrane-cap-interface.workspace = true

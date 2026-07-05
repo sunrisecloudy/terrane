@@ -176,6 +176,12 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 reason: "connection credentials are trusted-admin-only; apps consume grants through $secret markers",
             }
         }
+        "person.create"
+        | "person.attest"
+        | "person.revoke-attestation"
+        | "person.rotate" => PublicCommandDisposition::Refuse {
+            reason: "person identity key operations are trusted-host-only",
+        },
         "mcp.connect" | "mcp.disconnect" => PublicCommandDisposition::Refuse {
             reason: "external MCP server registry writes are trusted-admin-only",
         },
