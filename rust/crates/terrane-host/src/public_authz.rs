@@ -130,6 +130,16 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
                 reason: "connection credentials are trusted-admin-only; apps consume grants through $secret markers",
             }
         }
+        "mcp.connect" | "mcp.disconnect" => PublicCommandDisposition::Refuse {
+            reason: "external MCP server registry writes are trusted-admin-only",
+        },
+        "mcp.tools" => PublicCommandDisposition::Refuse {
+            reason: "mcp.tools is transient discovery and is only available through ctx.resource.mcp.tools or trusted CLI",
+        },
+        "mcp.call" => PublicCommandDisposition::GrantGated {
+            namespace: "mcp",
+            app_arg_index: 0,
+        },
         "js-runtime.run" | "wasm-runtime.run" => PublicCommandDisposition::Refuse {
             reason: "run apps through the invoke tool",
         },
@@ -211,6 +221,9 @@ pub fn authorize_public_command(
     name: &str,
     args: &[String],
 ) -> Result<PublicCommandAuthz, String> {
+    if name == "mcp.call" {
+        return authorize_public_mcp_call(core, args);
+    }
     match classify_public_command(name) {
         PublicCommandDisposition::Allow => Ok(PublicCommandAuthz::Allow),
         PublicCommandDisposition::Refuse { reason } => Ok(PublicCommandAuthz::Refuse {
@@ -259,6 +272,42 @@ pub fn authorize_public_command(
                 })
             }
         }
+    }
+}
+
+fn authorize_public_mcp_call(core: &HostCore, args: &[String]) -> Result<PublicCommandAuthz, String> {
+    let app = match args.first().map(String::as_str) {
+        Some(app) if !app.trim().is_empty() => app,
+        _ => {
+            return Ok(PublicCommandAuthz::Refuse {
+                reason: "mcp.call requires app id at args[0] for public grant check".to_string(),
+            })
+        }
+    };
+    if !core.state().app.apps.contains_key(app) {
+        return Ok(PublicCommandAuthz::Refuse {
+            reason: format!("no such app: {app}"),
+        });
+    }
+    let connection = match args.get(1).map(String::as_str) {
+        Some(connection) if !connection.trim().is_empty() => connection,
+        _ => {
+            return Ok(PublicCommandAuthz::Refuse {
+                reason: "mcp.call requires connection at args[1] for public grant check".to_string(),
+            })
+        }
+    };
+    let resource_id = terrane_cap_mcp_client::mcp_resource_id(connection).map_err(|e| e.to_string())?;
+    let principal = ExecutionPrincipal::local_owner();
+    if terrane_cap_auth::resource_granted(core.state(), &principal, app, &resource_id)
+        .map_err(|e| e.to_string())?
+    {
+        Ok(PublicCommandAuthz::Allow)
+    } else {
+        Ok(PublicCommandAuthz::NeedsGrant {
+            app: app.to_string(),
+            namespace: resource_id,
+        })
     }
 }
 

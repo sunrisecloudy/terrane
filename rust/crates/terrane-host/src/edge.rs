@@ -251,6 +251,28 @@ Effect::LocalModelEmbed {
                 verb,
                 args,
             } => run_app_call(self, chain, target, verb, args, state),
+            Effect::McpCall {
+                app,
+                connection,
+                tool,
+                args,
+                args_redacted,
+                timeout_ms,
+            } => crate::mcp_client::call(
+                self.home()?,
+                state,
+                crate::mcp_client::McpCallRequest {
+                    app,
+                    connection,
+                    tool,
+                    args,
+                    args_redacted,
+                    timeout_ms: *timeout_ms,
+                },
+            ),
+            Effect::McpTools { app, connection } => {
+                crate::mcp_client::list_tools(self.home()?, state, app, connection)
+            }
         }
     }
 

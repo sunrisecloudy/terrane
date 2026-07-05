@@ -50,6 +50,17 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane connection (set <name> [--kind apiKey|oauth2|smtp] [--field key] [--config json] | rm <name> | ls | stat <name> | authorize <name>)".into())
         }
+        ["mcp", "connect", name, transport_json] => run_mcp_connect(name, transport_json),
+        ["mcp", "rm", name] | ["mcp", "disconnect", name] => run_mcp_disconnect(name),
+        ["mcp", "ls"] | ["mcp", "list"] => run_mcp_ls(),
+        ["mcp", "call", app, connection, tool, args_json] => {
+            run_mcp_call(app, connection, tool, args_json)
+        }
+        ["mcp", "tools", app, connection] => run_mcp_tools(app, connection),
+        ["mcp", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane mcp (connect <name> <transport-json> | rm <name> | ls | call <app> <connection> <tool> <args-json> | tools <app> <connection>)".into())
+        }
         ["kv", "storage", "set", rest @ ..] => run_kv_storage_set(rest),
         ["kv", "storage", "clear", rest @ ..] => run_kv_storage_clear(rest),
         ["kv", "storage", "status"] => run_kv_storage_status(),
@@ -286,6 +297,59 @@ fn run_connection_authorize(name: &str) -> Result<(), String> {
     Err("OAuth browser authorization is not wired in this host yet; use connection.mark_authorized after a trusted edge exchange".into())
 }
 
+fn run_mcp_connect(name: &str, transport_json: &str) -> Result<(), String> {
+    let name = terrane_cap_mcp_client::validate_name(name).map_err(|e| e.to_string())?;
+    let args = vec![name, transport_json.to_string()];
+    print_command_outcome(crate::dispatch("mcp.connect", &args)?);
+    Ok(())
+}
+
+fn run_mcp_disconnect(name: &str) -> Result<(), String> {
+    let name = terrane_cap_mcp_client::validate_name(name).map_err(|e| e.to_string())?;
+    let args = vec![name];
+    print_command_outcome(crate::dispatch("mcp.disconnect", &args)?);
+    Ok(())
+}
+
+fn run_mcp_ls() -> Result<(), String> {
+    let core = crate::open()?;
+    for (name, transport) in &core.state().mcp.connections {
+        println!("{name}\t{transport}");
+    }
+    Ok(())
+}
+
+fn run_mcp_call(app: &str, connection: &str, tool: &str, args_json: &str) -> Result<(), String> {
+    print_command_outcome(crate::dispatch(
+        "mcp.call",
+        &[
+            app.to_string(),
+            connection.to_string(),
+            tool.to_string(),
+            args_json.to_string(),
+        ],
+    )?);
+    Ok(())
+}
+
+fn run_mcp_tools(app: &str, connection: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    let records = crate::mcp_client::list_tools(
+        &crate::home_dir(),
+        core.state(),
+        app,
+        connection,
+    )
+    .map_err(|e| e.to_string())?;
+    let record = records
+        .iter()
+        .find(|record| record.kind == "mcp.called")
+        .ok_or_else(|| "mcp tools produced no response".to_string())?;
+    let (_, _, call) = terrane_cap_mcp_client::decode_called(record).map_err(|e| e.to_string())?;
+    println!("{}", call.result);
+    Ok(())
+}
+
 pub fn run_open(target: &str) -> Result<(), String> {
     println!("{}", crate::deep_links::open_target(target)?.message());
     Ok(())
@@ -471,6 +535,31 @@ pub fn run_state() -> Result<(), String> {
             println!(
                 "  {app} render {request_key} -> {} {} {} ({} bytes)",
                 render.status, render.output, render.body_kind, render.size
+            );
+        }
+    }
+
+    println!("mcp connections:");
+    if state.mcp.connections.is_empty() {
+        println!("  (none)");
+    }
+    for (name, transport) in &state.mcp.connections {
+        println!("  {name} {transport}");
+    }
+
+    println!("mcp calls:");
+    if state.mcp.calls.is_empty() {
+        println!("  (none)");
+    }
+    for (app, calls) in &state.mcp.calls {
+        for (call_key, call) in calls {
+            println!(
+                "  {app} {call_key} {}.{} {} ({} bytes) error={}",
+                call.connection,
+                call.tool,
+                call.result_kind,
+                call.result_size,
+                call.is_error
             );
         }
     }
@@ -1315,6 +1404,10 @@ pub fn print_help() {
          \x20 terrane native drain-once                         drain one pending native request\n\
          \x20 terrane connection set <name> [--field key]       read a secret from stdin/prompt and record public metadata\n\
          \x20 terrane connection ls|stat|rm                     inspect or remove non-secret connection metadata\n\
+         \x20 terrane mcp connect <name> <transport-json>       record an external MCP server connection\n\
+         \x20 terrane mcp call <app> <connection> <tool> <args-json>  call an external MCP tool; record the result\n\
+         \x20 terrane mcp tools <app> <connection>              list tools from an external MCP server\n\
+         \x20 terrane mcp ls|rm                                  inspect or remove MCP connections\n\
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane net request <app> <request-json>          full HTTP request; record redacted request + response\n\
          \x20 terrane browser render <app> <request-json>       headless render; record redacted request + result\n\

@@ -21,6 +21,7 @@ mod interop;
 mod kv;
 mod local_model;
 mod media;
+mod mcp;
 mod model;
 mod native;
 mod net;

@@ -269,6 +269,18 @@ pub enum Effect {
         verb: String,
         args: Vec<String>,
     },
+    McpCall {
+        app: String,
+        connection: String,
+        tool: String,
+        args: String,
+        args_redacted: String,
+        timeout_ms: u64,
+    },
+    McpTools {
+        app: String,
+        connection: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

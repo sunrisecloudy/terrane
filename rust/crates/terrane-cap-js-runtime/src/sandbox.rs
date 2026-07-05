@@ -162,9 +162,10 @@ fn install_resources(
     let install_ctx = InstallResourceCtx { host, first_error };
     let surface: Vec<(String, Vec<ResourceMethod>)> = resources
         .iter()
-        .filter_map(|ns| {
+        .filter_map(|resource| {
+            let ns = resource.split_once(':').map(|(ns, _)| ns).unwrap_or(resource);
             let api = install_ctx.host.resource_methods(ns).ok()?;
-            (!api.is_empty()).then(|| (ns.clone(), api))
+            (!api.is_empty()).then(|| (ns.to_string(), api))
         })
         .collect();
 

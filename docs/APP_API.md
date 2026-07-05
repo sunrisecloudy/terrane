@@ -184,6 +184,11 @@ json|markdown|skill`, or the MCP tools `capabilities_list` and
 `capability_info`. Those views come from the same capability declarations, with
 internal notes hidden unless `includeInternal=true`.
 
+For external MCP servers, declare exact resources in the manifest as
+`"mcp:<name>"`. The runtime installs `ctx.resource.mcp`, but every recorded
+`call` is checked against the exact `mcp:<name>` grant at decide-time; `tools`
+is live discovery and records nothing.
+
 <!-- generated:resource-api:start -->
 #### `ctx.resource.blob`
 
@@ -307,6 +312,13 @@ internal notes hidden unless `includeInternal=true`.
 | `ctx.resource.local-model.pullModel(repo, file)` | call |
 | `ctx.resource.local-model.resetChat()` | call |
 | `ctx.resource.local-model.models()` | read |
+
+#### `ctx.resource.mcp`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.mcp.call(connection, tool, argsJson)` | call |
+| `ctx.resource.mcp.tools(connection)` | call |
 
 #### `ctx.resource.media`
 
