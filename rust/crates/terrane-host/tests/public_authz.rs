@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        101,
+        102,
         "registered commands changed: {commands:?}"
     );
 
@@ -55,7 +55,7 @@ fn public_command_inventory_covers_every_registered_command() {
         52,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 47, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 48, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -70,6 +70,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "blob",
             "browser",
             "build",
+            "common",
             "connection",
             "crdt",
             "crypto",
@@ -120,6 +121,7 @@ fn public_query_inventory_covers_every_registered_query() {
         queries,
         vec![
             "app.exists",
+            "common.channels",
             "history.at",
             "history.key",
             "history.list",
@@ -132,7 +134,7 @@ fn public_query_inventory_covers_every_registered_query() {
     for query in queries {
         let expected = if matches!(
             query,
-            "history.at" | "history.key" | "history.list" | "query.jmespath"
+            "common.channels" | "history.at" | "history.key" | "history.list" | "query.jmespath"
         ) {
             PublicQueryDisposition::Unclassified
         } else {

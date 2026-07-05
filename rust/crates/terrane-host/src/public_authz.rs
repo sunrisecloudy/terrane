@@ -141,6 +141,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "browser",
             app_arg_index: 0,
         },
+        "common.send" => PublicCommandDisposition::Refuse {
+            reason: "common.send requires a channel-specific grant and must run through an app resource call or trusted host command",
+        },
         "net.fetch" => PublicCommandDisposition::Refuse {
             reason: "net.fetch is not available through untrusted capability_command",
         },

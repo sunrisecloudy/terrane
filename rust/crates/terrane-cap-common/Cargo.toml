@@ -1,0 +1,19 @@
+[package]
+name = "terrane-cap-common"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_common"
+path = "src/lib.rs"
+
+[dependencies]
+terrane-cap-interface.workspace = true
+terrane-cap-auth.workspace = true
+terrane-cap-blob.workspace = true
+terrane-cap-connection.workspace = true
+borsh.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

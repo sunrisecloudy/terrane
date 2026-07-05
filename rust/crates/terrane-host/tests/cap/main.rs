@@ -11,6 +11,7 @@ mod helpers;
 mod app;
 mod blob;
 mod browser;
+mod common;
 mod connection;
 mod deep_links;
 mod document;

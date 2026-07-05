@@ -1278,6 +1278,22 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
             resource_id,
         });
     }
+    if let Some(channel) = raw.strip_prefix("common:send:") {
+        if channel != "email" {
+            return Err(Error::InvalidInput(format!(
+                "unknown common send channel grant: {channel}"
+            )));
+        }
+        return Ok(GrantTarget {
+            namespace: "common".to_string(),
+            selector_id: channel.to_string(),
+            selector_json: format!(
+                r#"{{"namespace":"common","action":"send","channel":"{}"}}"#,
+                json_string(channel)
+            ),
+            resource_id: raw.to_string(),
+        });
+    }
     Ok(GrantTarget {
         namespace: raw.to_string(),
         selector_id: String::new(),

@@ -201,6 +201,11 @@ pub enum Effect {
         hash: String,
         bytes: Vec<u8>,
     },
+    ChannelSend {
+        app: String,
+        channel: String,
+        message: String,
+    },
     MediaTransform {
         app: String,
         source_hash: String,

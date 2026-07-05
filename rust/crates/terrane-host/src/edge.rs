@@ -6,8 +6,8 @@
 //! home's replica id from OS entropy (`replica`).
 
 use std::collections::BTreeMap;
-use std::io::Read;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::io::{Read, Write};
+use std::net::{IpAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
@@ -161,6 +161,11 @@ impl EffectRunner for EdgeRunner {
                     mime,
                 )?])
             }
+            Effect::ChannelSend {
+                app,
+                channel,
+                message,
+            } => channel_send(self.home()?, state, app, channel, message),
             Effect::MediaTransform {
                 app,
                 source_hash,
@@ -571,6 +576,302 @@ fn generate_app_with_harness(
         Err(e) => records.push(builder::failed_event(draft_id, e.to_string())?),
     }
     Ok(records)
+}
+
+fn channel_send(
+    home: &Path,
+    state: &terrane_core::State,
+    app: &str,
+    channel: &str,
+    message: &str,
+) -> Result<Vec<EventRecord>> {
+    if channel != terrane_cap_common::CHANNEL_EMAIL {
+        return Err(Error::InvalidInput(format!(
+            "unknown common.send channel at edge: {channel}"
+        )));
+    }
+    let prepared = terrane_cap_common::decode_prepared_send(message)?;
+    let sent_at = prepared.sent_at.unwrap_or(system_epoch_seconds()?);
+    let message_id = new_message_id()?;
+    let mut records = Vec::new();
+    if prepared.body_kind == "blob" {
+        let body = prepared
+            .body_blob
+            .as_deref()
+            .ok_or_else(|| Error::InvalidInput("common body blob payload missing".into()))?;
+        let bytes = body.as_bytes();
+        crate::blob_store::insert_if_absent(home, &prepared.body, bytes)?;
+        records.push(terrane_cap_blob::stored_event(
+            app,
+            format!("__common__/body/{}", prepared.body),
+            &prepared.body,
+            u64::try_from(bytes.len())
+                .map_err(|_| Error::Storage("common body length overflow".into()))?,
+            "application/json",
+        )?);
+    }
+    let result = send_email(home, state, app, &prepared, &message_id);
+    match result {
+        Ok(()) => records.push(terrane_cap_common::sent_event(
+            app,
+            &prepared,
+            &message_id,
+            "sent",
+            "",
+            sent_at,
+        )?),
+        Err(error) => records.push(terrane_cap_common::sent_event(
+            app,
+            &prepared,
+            &message_id,
+            "failed",
+            &error.to_string(),
+            sent_at,
+        )?),
+    }
+    Ok(records)
+}
+
+fn send_email(
+    home: &Path,
+    state: &terrane_core::State,
+    app: &str,
+    prepared: &terrane_cap_common::PreparedSend,
+    message_id: &str,
+) -> Result<()> {
+    let meta = state
+        .connection
+        .connections
+        .get(&prepared.connection)
+        .ok_or_else(|| Error::InvalidInput(format!("unknown connection: {}", prepared.connection)))?;
+    if meta.kind != "smtp" {
+        return Err(Error::InvalidInput(format!(
+            "connection {} is {}, expected smtp",
+            prepared.connection, meta.kind
+        )));
+    }
+    let resource_id = terrane_cap_connection::connection_resource_id(&prepared.connection)?;
+    if !terrane_cap_auth::resource_granted(
+        state,
+        &ExecutionPrincipal::local_owner(),
+        app,
+        &resource_id,
+    )? {
+        return Err(Error::InvalidInput(format!(
+            "permission required: grant {resource_id} to {app} for {}",
+            terrane_core::LOCAL_OWNER_SUBJECT
+        )));
+    }
+    let config: serde_json::Value = serde_json::from_str(&meta.config_public_json)
+        .map_err(|e| Error::InvalidInput(format!("smtp config_public_json invalid: {e}")))?;
+    let host = config
+        .get("host")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidInput("smtp config missing host".into()))?;
+    let username = config
+        .get("username")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| Error::InvalidInput("smtp config missing username".into()))?;
+    let port = config.get("port").and_then(|v| v.as_u64()).unwrap_or(25);
+    let from = config.get("from").and_then(|v| v.as_str()).unwrap_or(username);
+    let password = crate::secret_store::get_secret(home, &prepared.connection, "password")
+        .or_else(|_| crate::secret_store::get_secret(home, &prepared.connection, "key"))?;
+    let mime = build_email_message(home, from, prepared, message_id)?;
+    smtp_submit(
+        host,
+        u16::try_from(port).map_err(|_| Error::InvalidInput("smtp port out of range".into()))?,
+        username,
+        &password,
+        from,
+        prepared,
+        &mime,
+    )
+}
+
+fn build_email_message(
+    home: &Path,
+    from: &str,
+    prepared: &terrane_cap_common::PreparedSend,
+    message_id: &str,
+) -> Result<String> {
+    let mut headers = String::new();
+    headers.push_str(&format!("Message-ID: <{}>\r\n", sanitize_header(message_id)));
+    headers.push_str(&format!("From: {}\r\n", sanitize_header(from)));
+    headers.push_str(&format!("To: {}\r\n", prepared.to.join(", ")));
+    if !prepared.cc.is_empty() {
+        headers.push_str(&format!("Cc: {}\r\n", prepared.cc.join(", ")));
+    }
+    if let Some(subject) = &prepared.subject {
+        headers.push_str(&format!("Subject: {}\r\n", sanitize_header(subject)));
+    }
+    headers.push_str("MIME-Version: 1.0\r\n");
+    if prepared.attachments.is_empty() && prepared.html.is_none() {
+        headers.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
+        headers.push_str(&prepared.text);
+        return Ok(headers);
+    }
+    let boundary = format!("terrane-{}", prepared.body_hash);
+    headers.push_str(&format!(
+        "Content-Type: multipart/mixed; boundary=\"{}\"\r\n\r\n",
+        boundary
+    ));
+    headers.push_str(&format!("--{}\r\n", boundary));
+    headers.push_str("Content-Type: text/plain; charset=utf-8\r\n\r\n");
+    headers.push_str(&prepared.text);
+    headers.push_str("\r\n");
+    if let Some(html) = &prepared.html {
+        headers.push_str(&format!("--{}\r\n", boundary));
+        headers.push_str("Content-Type: text/html; charset=utf-8\r\n\r\n");
+        headers.push_str(html);
+        headers.push_str("\r\n");
+    }
+    for attachment in &prepared.attachments {
+        let bytes = crate::blob_store::read_verified(home, &attachment.hash)?;
+        headers.push_str(&format!("--{}\r\n", boundary));
+        headers.push_str(&format!(
+            "Content-Type: {}\r\nContent-Disposition: attachment; filename=\"{}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n",
+            sanitize_header(&attachment.mime),
+            sanitize_header(&attachment.name)
+        ));
+        let encoded = B64.encode(bytes);
+        for chunk in encoded.as_bytes().chunks(76) {
+            headers.push_str(
+                std::str::from_utf8(chunk)
+                    .map_err(|e| Error::Storage(format!("base64 chunk invalid UTF-8: {e}")))?,
+            );
+            headers.push_str("\r\n");
+        }
+    }
+    headers.push_str(&format!("--{}--\r\n", boundary));
+    Ok(headers)
+}
+
+fn smtp_submit(
+    host: &str,
+    port: u16,
+    username: &str,
+    password: &str,
+    from: &str,
+    prepared: &terrane_cap_common::PreparedSend,
+    message: &str,
+) -> Result<()> {
+    let mut stream = TcpStream::connect((host, port))
+        .map_err(|e| Error::Storage(format!("smtp connect {host}:{port}: {e}")))?;
+    stream
+        .set_read_timeout(Some(edge_timeout()))
+        .map_err(|e| Error::Storage(format!("smtp set read timeout: {e}")))?;
+    stream
+        .set_write_timeout(Some(edge_timeout()))
+        .map_err(|e| Error::Storage(format!("smtp set write timeout: {e}")))?;
+    smtp_expect(&mut stream, &[220])?;
+    smtp_cmd(&mut stream, "EHLO terrane.local\r\n", &[250])?;
+    if !username.is_empty() || !password.is_empty() {
+        let auth = B64.encode(format!("\0{username}\0{password}"));
+        smtp_cmd(&mut stream, &format!("AUTH PLAIN {auth}\r\n"), &[235, 503])?;
+    }
+    smtp_cmd(&mut stream, &format!("MAIL FROM:<{}>\r\n", smtp_addr(from)?), &[250])?;
+    for rcpt in prepared
+        .to
+        .iter()
+        .chain(prepared.cc.iter())
+        .chain(prepared.bcc.iter())
+    {
+        smtp_cmd(&mut stream, &format!("RCPT TO:<{}>\r\n", smtp_addr(rcpt)?), &[250, 251])?;
+    }
+    smtp_cmd(&mut stream, "DATA\r\n", &[354])?;
+    let data = dot_stuff(message);
+    stream
+        .write_all(data.as_bytes())
+        .and_then(|_| stream.write_all(b"\r\n.\r\n"))
+        .map_err(|e| Error::Storage(format!("smtp write DATA: {e}")))?;
+    smtp_expect(&mut stream, &[250])?;
+    let _ = smtp_cmd(&mut stream, "QUIT\r\n", &[221]);
+    Ok(())
+}
+
+fn smtp_cmd(stream: &mut TcpStream, command: &str, expected: &[u16]) -> Result<String> {
+    stream
+        .write_all(command.as_bytes())
+        .map_err(|e| Error::Storage(format!("smtp write command: {e}")))?;
+    smtp_expect(stream, expected)
+}
+
+fn smtp_expect(stream: &mut TcpStream, expected: &[u16]) -> Result<String> {
+    let mut response = String::new();
+    loop {
+        let line = read_smtp_line(stream)?;
+        let code = line
+            .get(0..3)
+            .and_then(|v| v.parse::<u16>().ok())
+            .ok_or_else(|| Error::Storage(format!("smtp malformed response: {line:?}")))?;
+        let more = line.as_bytes().get(3).copied() == Some(b'-');
+        response.push_str(&line);
+        if !more {
+            if expected.contains(&code) {
+                return Ok(response);
+            }
+            return Err(Error::Storage(format!(
+                "smtp unexpected response {code}: {}",
+                response.trim_end()
+            )));
+        }
+    }
+}
+
+fn read_smtp_line(stream: &mut TcpStream) -> Result<String> {
+    let mut out = Vec::new();
+    let mut byte = [0u8; 1];
+    while out.len() < 8192 {
+        let n = stream
+            .read(&mut byte)
+            .map_err(|e| Error::Storage(format!("smtp read response: {e}")))?;
+        if n == 0 {
+            return Err(Error::Storage("smtp connection closed".into()));
+        }
+        out.push(byte[0]);
+        if out.ends_with(b"\n") {
+            return String::from_utf8(out)
+                .map_err(|e| Error::Storage(format!("smtp response not UTF-8: {e}")));
+        }
+    }
+    Err(Error::Storage("smtp response line too long".into()))
+}
+
+fn smtp_addr(value: &str) -> Result<String> {
+    if value.contains(['\r', '\n', '<', '>']) {
+        return Err(Error::InvalidInput("smtp address contains unsafe characters".into()));
+    }
+    Ok(value.to_string())
+}
+
+fn sanitize_header(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
+}
+
+fn dot_stuff(message: &str) -> String {
+    message
+        .replace("\r\n.", "\r\n..")
+        .replace("\n.", "\n..")
+}
+
+fn system_epoch_seconds() -> Result<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| Error::Runtime("wall clock reads before Unix epoch".into()))
+}
+
+fn new_message_id() -> Result<String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| Error::Storage(format!("message-id randomness unavailable: {e}")))?;
+    let mut out = String::with_capacity(45);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{byte:02x}");
+    }
+    out.push_str("@terrane.local");
+    Ok(out)
 }
 
 fn run_harness_js(

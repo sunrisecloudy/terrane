@@ -11,6 +11,7 @@ mod auth;
 mod blob;
 mod browser;
 mod builder;
+mod common;
 mod connection;
 mod crdt;
 mod crypto;

@@ -3778,6 +3778,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-common"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "serde",
+ "serde_json",
+ "sha2",
+ "terrane-cap-auth",
+ "terrane-cap-blob",
+ "terrane-cap-connection",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-connection"
 version = "0.1.0"
 dependencies = [
@@ -4046,6 +4060,7 @@ dependencies = [
  "terrane-cap-browser",
  "terrane-cap-build",
  "terrane-cap-builder",
+ "terrane-cap-common",
  "terrane-cap-connection",
  "terrane-cap-crdt",
  "terrane-cap-crypto",
@@ -4101,6 +4116,7 @@ dependencies = [
  "terrane-cap-blob",
  "terrane-cap-browser",
  "terrane-cap-builder",
+ "terrane-cap-common",
  "terrane-cap-connection",
  "terrane-cap-crdt",
  "terrane-cap-crypto",

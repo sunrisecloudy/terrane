@@ -208,6 +208,14 @@ internal notes hidden unless `includeInternal=true`.
 | --- | --- |
 | `ctx.resource.build.compileTs(path, source)` | read |
 
+#### `ctx.resource.common`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.common.send(messageJson)` | call |
+| `ctx.resource.common.status(messageId)` | read |
+| `ctx.resource.common.channels()` | read |
+
 #### `ctx.resource.connection`
 
 | Method | Kind |

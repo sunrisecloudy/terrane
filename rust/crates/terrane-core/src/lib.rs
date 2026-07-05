@@ -66,6 +66,7 @@ use terrane_cap_auth::AuthState;
 use terrane_cap_blob::BlobState;
 use terrane_cap_browser::BrowserState;
 use terrane_cap_builder::BuilderState;
+use terrane_cap_common::CommonState;
 use terrane_cap_crdt::CrdtState;
 use terrane_cap_connection::ConnectionState;
 use terrane_cap_document::DocumentState;
@@ -100,6 +101,7 @@ pub struct State {
     pub blob: BlobState,
     pub browser: BrowserState,
     pub builder: BuilderState,
+    pub common: CommonState,
     pub harness: HarnessState,
     pub history: HistoryState,
     pub interop: InteropState,
@@ -129,6 +131,7 @@ impl StateStore for State {
             "blob" => Some(&self.blob),
             "browser" => Some(&self.browser),
             "builder" => Some(&self.builder),
+            "common" => Some(&self.common),
             "harness" => Some(&self.harness),
             "history" => Some(&self.history),
             "interop" => Some(&self.interop),
@@ -159,6 +162,7 @@ impl StateStore for State {
             "blob" => Some(&mut self.blob),
             "browser" => Some(&mut self.browser),
             "builder" => Some(&mut self.builder),
+            "common" => Some(&mut self.common),
             "harness" => Some(&mut self.harness),
             "history" => Some(&mut self.history),
             "interop" => Some(&mut self.interop),
@@ -465,6 +469,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_browser::BrowserCapability));
     registry.register(Box::new(terrane_cap_build::BuildCapability));
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));
+    registry.register(Box::new(terrane_cap_common::CommonCapability));
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_history::HistoryCapability));
     registry.register(Box::new(terrane_cap_interop::InteropCapability));
