@@ -67,6 +67,11 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane person (create | whoami | get <person-id> | attest <person-id> <kind> <claim> | revoke-attestation <person-id> <kind> <claim> | rotate <person-id>)".into())
         }
+        ["pair", addr, "--code", code] => crate::sync::run_pair_http(addr, code),
+        ["pair", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane pair <http-url> --code <code>".into())
+        }
         ["mcp", "connect", name, transport_json] => run_mcp_connect(name, transport_json),
         ["mcp", "rm", name] | ["mcp", "disconnect", name] => run_mcp_disconnect(name),
         ["mcp", "ls"] | ["mcp", "list"] => run_mcp_ls(),
@@ -188,9 +193,12 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
         ["sync", app, "--from", home] => run_sync(app, home),
         ["sync", app, "--peer", addr] => crate::sync::run_sync_peer(app, addr),
+        ["sync", app, "--peer", addr, "--watch"] | ["sync", app, "--watch", "--peer", addr] => {
+            crate::sync::run_sync_http(app, addr, true)
+        }
         ["sync", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane sync <app> (--from <home> | --peer <addr>)".into())
+            Err("usage: terrane sync <app> (--from <home> | --peer <addr> [--watch])".into())
         }
         // Run an app backend. `--ask` prompts (hidden) for the first verb
         // argument — the password manager's `auth` — so a master password never
@@ -2248,6 +2256,7 @@ pub fn print_help() {
          \x20 terrane blob rm <app> <name>                    remove a blob name\n\
          \x20 terrane blob verify [app [name]]                verify live blob hashes against the CAS\n\
          \x20 terrane blob gc [--dry-run|--yes]               report or delete unreferenced CAS rows\n\
+         \x20 terrane sync <app> --peer <url> [--watch]       sync one app over HTTP; --watch long-polls\n\
          \x20 terrane webhook register <app> <name> <verb>    mint a local-network webhook URL\n\
          \x20 terrane webhook rotate|unregister <app> <name>  rotate or remove a webhook URL\n\
          \x20 terrane webhook ls <app>                        list webhook URL paths\n\
@@ -2267,6 +2276,7 @@ pub fn print_help() {
          \x20 terrane connection ls|stat|rm                     inspect or remove non-secret connection metadata\n\
          \x20 terrane person create|whoami                      ensure or inspect the local durable person\n\
          \x20 terrane person attest|rotate|revoke-attestation   attach, rotate, or revoke public identity facts\n\
+         \x20 terrane pair <url> --code <code>                  pair with a sync HTTP peer\n\
          \x20 terrane mcp connect <name> <transport-json>       record an external MCP server connection\n\
          \x20 terrane mcp call <app> <connection> <tool> <args-json>  call an external MCP tool; record the result\n\
          \x20 terrane mcp tools <app> <connection>              list tools from an external MCP server\n\

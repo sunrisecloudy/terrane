@@ -117,6 +117,10 @@ pub fn route(
         return webhook(core, app, name, token, request, admin_base_url);
     }
 
+    if let (Method::Post, ["sync", "pair"]) = (&method, segs.as_slice()) {
+        return sync_pair(core, request);
+    }
+
     if require_auth && !authorized(request, token) {
         return json_error(401, "unauthorized");
     }
@@ -134,6 +138,16 @@ pub fn route(
             status: "ok".into(),
             version: CONTRACT_VERSION.into(),
         }),
+        (Method::Post, ["sync", app, "vv"]) => sync_vv(core, app, request),
+        (Method::Post, ["sync", app, "delta"]) => sync_delta(core, app, request),
+        (Method::Post, ["sync", app, "events"]) => sync_events(core, app, request),
+        (Method::Post, ["sync", app, "apply-events"]) => {
+            sync_apply_events(core, app, request)
+        }
+        (Method::Get, ["sync", app, "cursor", peer]) => sync_cursor(core, app, peer),
+        (Method::Get, ["sync", app, "blobs"]) => sync_blobs(core, app),
+        (Method::Get, ["sync", app, "blob", hash]) => sync_blob(core, app, hash),
+        (Method::Get, ["sync", _app, "wait"]) => Response::from_string("").with_status_code(204),
         (Method::Get, ["__terrane", "admin"]) => {
             let locale = negotiate_locale(request);
             let (system, app) = shell_i18n_data(core, &locale, None);
@@ -307,6 +321,115 @@ pub fn route(
 }
 
 type WebhookRateMap = BTreeMap<(String, String), (u64, u32)>;
+
+fn sync_pair(core: &mut terrane_host::HostCore, request: &mut Request) -> Resp {
+    let body = match read_body(request) {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let pair = match borsh::from_slice::<terrane_host::sync::PairRequest>(&body) {
+        Ok(pair) => pair,
+        Err(e) => return json_error(400, &format!("bad sync pair request: {e}")),
+    };
+    match terrane_host::sync::pair_request(core, pair).and_then(|value| {
+        borsh::to_vec(&value).map_err(|e| format!("encode sync pair response: {e}"))
+    }) {
+        Ok(bytes) => Response::from_data(bytes),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn sync_vv(core: &terrane_host::HostCore, app: &str, request: &mut Request) -> Resp {
+    let body = match read_body(request) {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    match terrane_host::sync::vv_response(core, app, &body).and_then(|value| {
+        borsh::to_vec(&value).map_err(|e| format!("encode sync vv response: {e}"))
+    }) {
+        Ok(bytes) => Response::from_data(bytes),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn sync_delta(core: &mut terrane_host::HostCore, app: &str, request: &mut Request) -> Resp {
+    let body = match read_body(request) {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    match terrane_host::sync::ingest_crdt_delta(core, app, &body) {
+        Ok(_) => Response::from_string(""),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn sync_events(core: &terrane_host::HostCore, app: &str, request: &mut Request) -> Resp {
+    let body = match read_body(request) {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    if body.len() != 8 {
+        return json_error(400, "sync events cursor body must be 8 bytes");
+    }
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(&body);
+    let cursor = u64::from_le_bytes(raw);
+    match terrane_host::sync::event_batch_since(core, app, cursor).and_then(|value| {
+        borsh::to_vec(&value).map_err(|e| format!("encode sync events response: {e}"))
+    }) {
+        Ok(bytes) => Response::from_data(bytes),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn sync_apply_events(core: &mut terrane_host::HostCore, app: &str, request: &mut Request) -> Resp {
+    let body = match read_body(request) {
+        Ok(body) => body,
+        Err(resp) => return resp,
+    };
+    let batch = match borsh::from_slice::<terrane_host::sync::EventBatchResponse>(&body) {
+        Ok(batch) => batch,
+        Err(e) => return json_error(400, &format!("bad sync event batch: {e}")),
+    };
+    match terrane_host::sync::apply_event_batch(core, app, &batch) {
+        Ok(_) => Response::from_string(""),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn sync_cursor(core: &terrane_host::HostCore, app: &str, peer: &str) -> Resp {
+    match core.query("sync", "cursor", &[peer.to_string(), app.to_string()]) {
+        Ok(terrane_core::QueryValue::U64(Some(value))) => Response::from_string(value.to_string()),
+        Ok(_) => Response::from_string("0"),
+        Err(e) => json_error(400, &e.to_string()),
+    }
+}
+
+fn sync_blobs(core: &terrane_host::HostCore, app: &str) -> Resp {
+    match borsh::to_vec(&terrane_host::sync::blob_refs(core, app))
+        .map_err(|e| format!("encode sync blobs response: {e}"))
+    {
+        Ok(bytes) => Response::from_data(bytes),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn sync_blob(core: &terrane_host::HostCore, _app: &str, hash: &str) -> Resp {
+    match terrane_host::sync::blob_bytes(core, hash) {
+        Ok(bytes) => Response::from_data(bytes),
+        Err(e) if e.contains("blob missing:") => json_error(404, &e),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+fn read_body(request: &mut Request) -> Result<Vec<u8>, Resp> {
+    let mut body = Vec::new();
+    request
+        .as_reader()
+        .read_to_end(&mut body)
+        .map_err(|_| json_error(400, "cannot read request body"))?;
+    Ok(body)
+}
 
 fn webhook_rates() -> &'static Mutex<WebhookRateMap> {
     static RATES: OnceLock<Mutex<WebhookRateMap>> = OnceLock::new();

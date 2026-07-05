@@ -14,6 +14,7 @@ name = "terrane-web"
 path = "src/main.rs"
 
 [dependencies]
+borsh.workspace = true
 terrane-api.workspace = true
 terrane-core.workspace = true
 terrane-host.workspace = true

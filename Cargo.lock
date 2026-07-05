@@ -4198,6 +4198,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-sync"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "terrane-cap-interface",
+]
+
+[[package]]
 name = "terrane-cap-sysinfo"
 version = "0.1.0"
 dependencies = [
@@ -4301,6 +4309,7 @@ dependencies = [
  "terrane-cap-search",
  "terrane-cap-stream",
  "terrane-cap-stt",
+ "terrane-cap-sync",
  "terrane-cap-sysinfo",
  "terrane-cap-telemetry",
  "terrane-cap-time",
@@ -4315,6 +4324,7 @@ name = "terrane-host"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "borsh",
  "ed25519-dalek",
  "getrandom 0.4.3",
  "hound",
@@ -4364,6 +4374,7 @@ dependencies = [
  "terrane-cap-replica",
  "terrane-cap-scheduler",
  "terrane-cap-stream",
+ "terrane-cap-sync",
  "terrane-cap-telemetry",
  "terrane-cap-time",
  "terrane-cap-tts",
@@ -4400,6 +4411,7 @@ dependencies = [
 name = "terrane-host-web"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "nanoserde",
  "tempfile",
  "terrane-api",

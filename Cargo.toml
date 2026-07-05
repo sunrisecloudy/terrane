@@ -36,6 +36,7 @@ members = [
   "rust/crates/terrane-cap-model",
   "rust/crates/terrane-cap-native",
   "rust/crates/terrane-cap-stt",
+  "rust/crates/terrane-cap-sync",
   "rust/crates/terrane-cap-stream",
   "rust/crates/terrane-cap-tts",
   "rust/crates/terrane-cap-time",
@@ -98,6 +99,7 @@ terrane-cap-scheduler = { path = "rust/crates/terrane-cap-scheduler" }
 terrane-cap-model = { path = "rust/crates/terrane-cap-model" }
 terrane-cap-native = { path = "rust/crates/terrane-cap-native" }
 terrane-cap-stt = { path = "rust/crates/terrane-cap-stt" }
+terrane-cap-sync = { path = "rust/crates/terrane-cap-sync" }
 terrane-cap-stream = { path = "rust/crates/terrane-cap-stream" }
 terrane-cap-tts = { path = "rust/crates/terrane-cap-tts" }
 terrane-cap-time = { path = "rust/crates/terrane-cap-time" }

@@ -270,6 +270,9 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             reason: "app.link.deliver routes host-observed OS payloads and is trusted-host-only",
         },
         "app.add" | "replica.init" => PublicCommandDisposition::Allow,
+        "sync.pair" | "sync.unpair" | "sync.apply" => PublicCommandDisposition::Refuse {
+            reason: "sync commands are host-edge-only; pair and apply through the sync transport",
+        },
         // App-callable stt surface: record a selection / stop a session. Both
         // take the app id at arg 0 and are gated by the stt grant.
         "stt.select" | "stt.stop" => PublicCommandDisposition::GrantGated {

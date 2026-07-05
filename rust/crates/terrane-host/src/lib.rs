@@ -834,7 +834,7 @@ pub fn sync_from_home(app: &str, from_home: &str) -> Result<SyncOutcome, String>
     }
 }
 
-fn sync_blob_metadata(
+pub fn sync_blob_metadata(
     app: &str,
     source: &terrane_core::State,
     local: &mut HostCore,

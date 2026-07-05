@@ -91,6 +91,7 @@ use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_stt::SttState;
+use terrane_cap_sync::SyncState;
 use terrane_cap_stream::StreamState;
 use terrane_cap_time::TimeState;
 use terrane_cap_telemetry::TelemetryState;
@@ -131,6 +132,7 @@ pub struct State {
     pub person: PersonState,
     pub scheduler: SchedulerState,
     pub stt: SttState,
+    pub sync: SyncState,
     pub stream: StreamState,
     pub tts: TtsState,
     pub crdt: CrdtState,
@@ -171,6 +173,7 @@ impl StateStore for State {
             "person" => Some(&self.person),
             "scheduler" => Some(&self.scheduler),
             "stt" => Some(&self.stt),
+            "sync" => Some(&self.sync),
             "stream" => Some(&self.stream),
             "tts" => Some(&self.tts),
             "crdt" => Some(&self.crdt),
@@ -212,6 +215,7 @@ impl StateStore for State {
             "person" => Some(&mut self.person),
             "scheduler" => Some(&mut self.scheduler),
             "stt" => Some(&mut self.stt),
+            "sync" => Some(&mut self.sync),
             "stream" => Some(&mut self.stream),
             "tts" => Some(&mut self.tts),
             "crdt" => Some(&mut self.crdt),
@@ -552,6 +556,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_person::PersonCapability));
     registry.register(Box::new(terrane_cap_scheduler::SchedulerCapability));
     registry.register(Box::new(terrane_cap_stt::SttCapability));
+    registry.register(Box::new(terrane_cap_sync::SyncCapability));
     registry.register(Box::new(terrane_cap_stream::StreamCapability));
     registry.register(Box::new(terrane_cap_tts::TtsCapability));
     registry.register(Box::new(terrane_cap_time::TimeCapability));
