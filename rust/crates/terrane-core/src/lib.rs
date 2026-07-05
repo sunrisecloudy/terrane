@@ -69,6 +69,7 @@ use terrane_cap_builder::BuilderState;
 use terrane_cap_crdt::CrdtState;
 use terrane_cap_connection::ConnectionState;
 use terrane_cap_document::DocumentState;
+use terrane_cap_geo::GeoState;
 use terrane_cap_harness::HarnessState;
 use terrane_cap_history::HistoryState;
 use terrane_cap_interop::InteropState;
@@ -115,6 +116,7 @@ pub struct State {
     pub crdt: CrdtState,
     pub connection: ConnectionState,
     pub document: DocumentState,
+    pub geo: GeoState,
     pub replica: ReplicaState,
     pub time: TimeState,
     pub telemetry: TelemetryState,
@@ -144,6 +146,7 @@ impl StateStore for State {
             "crdt" => Some(&self.crdt),
             "connection" => Some(&self.connection),
             "document" => Some(&self.document),
+            "geo" => Some(&self.geo),
             "replica" => Some(&self.replica),
             "time" => Some(&self.time),
             "telemetry" => Some(&self.telemetry),
@@ -174,6 +177,7 @@ impl StateStore for State {
             "crdt" => Some(&mut self.crdt),
             "connection" => Some(&mut self.connection),
             "document" => Some(&mut self.document),
+            "geo" => Some(&mut self.geo),
             "replica" => Some(&mut self.replica),
             "time" => Some(&mut self.time),
             "telemetry" => Some(&mut self.telemetry),
@@ -476,6 +480,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_crypto::CryptoCapability));
     registry.register(Box::new(terrane_cap_connection::ConnectionCapability));
     registry.register(Box::new(terrane_cap_document::DocumentCapability));
+    registry.register(Box::new(terrane_cap_geo::GeoCapability));
     registry.register(Box::new(terrane_cap_replica::ReplicaCapability));
     registry.register(Box::new(terrane_cap_net::NetCapability));
     registry.register(Box::new(terrane_cap_model::ModelCapability));

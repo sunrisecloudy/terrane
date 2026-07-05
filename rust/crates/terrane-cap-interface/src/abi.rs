@@ -251,6 +251,14 @@ pub enum Effect {
     ObserveTime {
         app: String,
     },
+    /// Observe the host location once and record the rounded result as a
+    /// `geo.observed` event. The edge applies the requested precision before
+    /// constructing the event; replay folds the recorded fix and never consults
+    /// a location provider.
+    GeoLocate {
+        app: String,
+        precision: String,
+    },
     /// Append one structured log line to the per-app ring buffer
     /// (`$TERRANE_HOME/logs/<app>/current.jsonl`). Transient when emitted as a
     /// `debug`/`info`/`warn` write — recorded NOTHING — and recorded (an error

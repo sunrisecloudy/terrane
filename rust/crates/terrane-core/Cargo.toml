@@ -25,6 +25,7 @@ terrane-cap-crdt.workspace = true
 terrane-cap-crypto.workspace = true
 terrane-cap-connection.workspace = true
 terrane-cap-document.workspace = true
+terrane-cap-geo.workspace = true
 terrane-cap-harness.workspace = true
 terrane-cap-history.workspace = true
 terrane-cap-interop.workspace = true

@@ -14,6 +14,7 @@ mod browser;
 mod connection;
 mod deep_links;
 mod document;
+mod geo;
 mod history;
 mod host;
 mod i18n;
