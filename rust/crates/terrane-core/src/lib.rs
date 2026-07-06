@@ -88,6 +88,7 @@ use terrane_cap_mcp_client::McpClientState;
 use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
+use terrane_cap_org::OrgState;
 use terrane_cap_person::PersonState;
 use terrane_cap_presence::PresenceState;
 use terrane_cap_push::PushState;
@@ -136,6 +137,7 @@ pub struct State {
     pub migration: MigrationState,
     pub mcp: McpClientState,
     pub native: NativeState,
+    pub org: OrgState,
     pub person: PersonState,
     pub presence: PresenceState,
     pub push: PushState,
@@ -182,6 +184,7 @@ impl StateStore for State {
             "migration" => Some(&self.migration),
             "mcp" => Some(&self.mcp),
             "native" => Some(&self.native),
+            "org" => Some(&self.org),
             "person" => Some(&self.person),
             "presence" => Some(&self.presence),
             "push" => Some(&self.push),
@@ -229,6 +232,7 @@ impl StateStore for State {
             "migration" => Some(&mut self.migration),
             "mcp" => Some(&mut self.mcp),
             "native" => Some(&mut self.native),
+            "org" => Some(&mut self.org),
             "person" => Some(&mut self.person),
             "presence" => Some(&mut self.presence),
             "push" => Some(&mut self.push),
@@ -576,6 +580,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_migration::MigrationCapability));
     registry.register(Box::new(terrane_cap_mcp_client::McpClientCapability));
     registry.register(Box::new(terrane_cap_native::NativeCapability));
+    registry.register(Box::new(terrane_cap_org::OrgCapability));
     registry.register(Box::new(terrane_cap_person::PersonCapability));
     registry.register(Box::new(terrane_cap_presence::PresenceCapability));
     registry.register(Box::new(terrane_cap_push::PushCapability));

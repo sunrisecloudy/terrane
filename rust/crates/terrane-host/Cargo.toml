@@ -71,6 +71,7 @@ terrane-cap-mcp-client.workspace = true
 terrane-cap-model.workspace = true
 terrane-cap-native.workspace = true
 terrane-cap-net.workspace = true
+terrane-cap-org.workspace = true
 terrane-cap-person.workspace = true
 terrane-cap-presence.workspace = true
 terrane-cap-push.workspace = true

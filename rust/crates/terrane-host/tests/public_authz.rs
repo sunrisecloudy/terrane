@@ -29,7 +29,7 @@ fn public_command_inventory_covers_every_registered_command() {
     let commands = terrane_core::command_names();
     assert_eq!(
         commands.len(),
-        166,
+        171,
         "registered commands changed: {commands:?}"
     );
 
@@ -55,7 +55,7 @@ fn public_command_inventory_covers_every_registered_command() {
         78,
         "grant-gated commands: {grant_gated:?}"
     );
-    assert_eq!(refused.len(), 86, "refused commands: {refused:?}");
+    assert_eq!(refused.len(), 91, "refused commands: {refused:?}");
     assert_eq!(allowed, vec!["app.add", "replica.init"]);
 }
 
@@ -143,6 +143,8 @@ fn public_query_inventory_covers_every_registered_query() {
             "job.due",
             "migration.status",
             "native.supports",
+            "org.info",
+            "org.members",
             "person.get",
             "person.whoami",
             "query.jmespath",
@@ -167,6 +169,8 @@ fn public_query_inventory_covers_every_registered_query() {
                 | "automation.list"
                 | "automation.stat"
                 | "migration.status"
+                | "org.info"
+                | "org.members"
                 | "person.get"
                 | "person.whoami"
                 | "query.jmespath"

@@ -28,6 +28,7 @@ use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
 use terrane_cap_net::request::{RedirectPolicy, RequestBody, RequestValue, ResponseBodyMode};
 use terrane_cap_browser::request::RenderOutput;
+use terrane_cap_org::{created_event as org_created_event, member_granted_event, org_id_for_pubkey, role_grant_message};
 use terrane_cap_person::{
     attestation_message, attested_event, created_event, hex as hex_lower, rotated_event,
     rotation_message, validate_person_id,
@@ -385,6 +386,21 @@ Effect::LocalModelEmbed {
                 claim,
             } => person_sign(self.home()?, person_id, kind, claim),
             Effect::PersonRotate { person_id } => person_rotate(self.home()?, person_id),
+            Effect::OrgKeygen { founder } => org_keygen(self.home()?, founder),
+            Effect::OrgRoleSign {
+                org_id,
+                member,
+                role,
+                signer,
+                redeem_token_hash,
+            } => org_role_sign(
+                self.home()?,
+                org_id,
+                member,
+                role,
+                signer,
+                redeem_token_hash.as_deref(),
+            ),
         }
     }
 
@@ -470,6 +486,79 @@ fn person_sign(home: &Path, person_id: &str, kind: &str, claim: &str) -> Result<
     let message = attestation_message(person_id, kind, claim)?;
     let sig = signing.sign(&message);
     Ok(vec![attested_event(person_id, kind, claim, &hex_lower(&sig.to_bytes()))?])
+}
+
+fn org_secret_name(org_id: &str) -> Result<String> {
+    Ok(format!("org-{}", terrane_cap_org::validate_org_id(org_id)?))
+}
+
+fn store_org_seed(home: &Path, org_id: &str, seed: &[u8; 32]) -> Result<()> {
+    crate::secret_store::set_secret(
+        home,
+        &org_secret_name(org_id)?,
+        "ed25519",
+        &B64.encode(seed),
+    )
+}
+
+fn new_org_key() -> Result<SigningKey> {
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed)
+        .map_err(|e| Error::Runtime(format!("mint org keypair: {e}")))?;
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+fn org_keygen(home: &Path, founder: &str) -> Result<Vec<EventRecord>> {
+    let signing = new_org_key()?;
+    let pubkey = hex_lower(signing.verifying_key().as_bytes());
+    let org_id = org_id_for_pubkey(&pubkey)?;
+    store_org_seed(home, &org_id, signing.as_bytes())?;
+    let mut records = vec![org_created_event(&org_id, &pubkey, founder)?];
+    if let Some(grant) = org_founder_grant(home, &org_id, founder)? {
+        records.push(grant);
+    }
+    Ok(records)
+}
+
+fn org_role_sign(
+    home: &Path,
+    org_id: &str,
+    member: &str,
+    role: &str,
+    signer: &str,
+    redeem_token_hash: Option<&str>,
+) -> Result<Vec<EventRecord>> {
+    let signing = load_person_key(home, signer)?;
+    let message = role_grant_message(org_id, member, role)?;
+    let sig = signing.sign(&message);
+    let mut records = vec![member_granted_event(
+        org_id,
+        member,
+        role,
+        &hex_lower(&sig.to_bytes()),
+        signer,
+    )?];
+    if let Some(token_hash) = redeem_token_hash {
+        records.push(terrane_cap_org::invite_redeemed_event(org_id, token_hash, member)?);
+    }
+    Ok(records)
+}
+
+fn org_founder_grant(home: &Path, org_id: &str, founder: &str) -> Result<Option<EventRecord>> {
+    let signing = load_person_key(home, founder);
+    let signing = match signing {
+        Ok(key) => key,
+        Err(_) => return Ok(None),
+    };
+    let message = role_grant_message(org_id, founder, "owner")?;
+    let sig = signing.sign(&message);
+    Ok(Some(member_granted_event(
+        org_id,
+        founder,
+        "owner",
+        &hex_lower(&sig.to_bytes()),
+        founder,
+    )?))
 }
 
 fn person_rotate(home: &Path, person_id: &str) -> Result<Vec<EventRecord>> {

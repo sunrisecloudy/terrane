@@ -223,6 +223,14 @@ json|markdown|skill`, or the MCP tools `capabilities_list` and
 `capability_info`. Those views come from the same capability declarations, with
 internal notes hidden unless `includeInternal=true`.
 
+The `org` capability models an organization as a shared Terrane home: its own
+log, apps, and data, with members recorded as person-signed role grants. It has
+no `ctx.resource` methods in v1; hosts use the trusted CLI surface
+(`terrane org create|invite|join|leave|role set|info|members`) and stamp org
+work through the normal `ExecutionPrincipal { org, subject }` envelope. Premium
+hosting is only an availability option for that same home, never a limitation on
+self-hosted orgs.
+
 For external MCP servers, declare exact resources in the manifest as
 `"mcp:<name>"`. The runtime installs `ctx.resource.mcp`, but every recorded
 `call` is checked against the exact `mcp:<name>` grant at decide-time; `tools`
