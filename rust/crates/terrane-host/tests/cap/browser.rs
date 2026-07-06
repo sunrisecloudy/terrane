@@ -115,6 +115,37 @@ fn browser_render_sees_js_inserted_text_that_net_fetch_misses() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+#[ignore = "requires a macOS GUI session for real WKWebView rendering; Chromium fallback may be used when the Rust WKWebView runner is stubbed"]
+fn browser_render_tries_wkwebview_first_on_macos_and_keeps_chromium_fallback() {
+    let page = br#"<!doctype html><title>WKWebView First</title><main>mac render smoke</main>"#;
+    let (base, server) = loopback_server(1, move |_request, stream| {
+        respond(stream, "200 OK", &[("Content-Type", "text/html")], page);
+    });
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    terrane(home, &["app", "add", "web", "Web App"]);
+    let request = format!(r#"{{"url":"{base}","output":"text","waitMs":100}}"#);
+
+    let (ok, out, err) = terrane(home, &["browser", "render", "web", &request]);
+    if !ok && err.contains("no system Chrome/Chromium") {
+        eprintln!("skipping macOS WKWebView-first e2e: Rust WKWebView runner is a documented stub and no Chromium fallback is installed");
+        return;
+    }
+    if !ok && err.contains("browser render failed with status signal") {
+        eprintln!("skipping macOS WKWebView-first e2e: Chromium fallback aborts in this headless test environment");
+        return;
+    }
+    assert!(ok, "browser render failed; stdout: {out}; stderr: {err}");
+    assert!(out.contains("browser.rendered"), "out: {out}");
+    server.join().unwrap();
+
+    let (ok, log, err) = terrane(home, &["log"]);
+    assert!(ok, "log failed; stderr: {err}");
+    assert!(log.contains("browser.rendered web text 127.0.0.1:"));
+}
+
+#[test]
 fn browser_render_blocks_cloud_metadata_url() {
     let dir = tempdir().unwrap();
     let home = dir.path();

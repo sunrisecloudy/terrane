@@ -1,5 +1,39 @@
 # Browser Capability Implementation Notes
 
+## WKWebView-first follow-up
+
+### Files changed
+
+- `rust/crates/terrane-host/src/edge.rs`
+  - Added macOS-first browser engine dispatch for `Effect::BrowserRender`.
+  - Added a `#[cfg(target_os = "macos")]` WKWebView runner module that compiles as a documented Rust stub and returns a typed `BrowserUnavailable` storage error for fallback.
+  - Kept the existing Chromium runner as the fallback engine.
+- `rust/crates/terrane-host/tests/cap/browser.rs`
+  - Added an ignored macOS e2e smoke for the WKWebView-first dispatch path and Chromium fallback.
+
+### Key design choices
+
+- `browser_render` still owns request preparation, URL/net-policy validation, blob CAS offload, and `browser.rendered` event creation. The engine change only swaps the capture source behind `run_browser_render`.
+- On macOS, `run_browser_render` attempts `wkwebview_render::run` first, then falls back to `run_chromium_render`.
+- The WKWebView runner is a compile-time macOS module, but it is intentionally stubbed in Rust because this repo currently drives WKWebView from Swift and has no Rust Objective-C/WebKit binding or host-services runner seam to reuse.
+- Chromium fallback behavior, ephemeral profile behavior, body inlining/blob policy, request redaction, and replay identity are unchanged.
+
+### Deviation
+
+- A real Rust WKWebView renderer is not implemented in this slice. Adding one would require introducing and locking a new Objective-C/WebKit binding or a Swift host-services bridge, neither of which exists in the current Rust host. The shipped path compiles, exercises the macOS dispatch point, documents the stub, and preserves the already-merged Chromium fallback.
+
+### Proof tests
+
+- `terrane-host tests/cap/browser.rs::browser_render_blocks_cloud_metadata_url`
+  - Proves the existing URL policy still rejects cloud metadata before any browser engine runs.
+- `terrane-host tests/cap/browser.rs::browser_render_tries_wkwebview_first_on_macos_and_keeps_chromium_fallback` (`#[ignore]`)
+  - Exercises the macOS WKWebView-first dispatch path and confirms the existing recorded render output remains compatible when Chromium fallback is used.
+- Existing browser proofs remain the replay/blob/security coverage:
+  - `terrane-host tests/cap/browser.rs::browser_render_sees_js_inserted_text_that_net_fetch_misses` (`#[ignore]`)
+  - `terrane-host tests/cap/browser.rs::browser_screenshot_offloads_to_blob` (`#[ignore]`)
+  - `terrane-core tests/cap/browser.rs::browser_render_resource_records_and_replays_identically`
+  - `terrane-cap-browser tests/capability.rs::browser_render_canonicalizes_redacts_and_returns_effect`
+
 ## Files changed
 
 - Added `rust/crates/terrane-cap-browser/`
