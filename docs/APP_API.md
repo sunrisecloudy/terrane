@@ -98,6 +98,50 @@ grant only authorizes `send` to the chosen app; a direct
 `ctx.resource.interop.call(target, verb, args)` still needs the blanket
 `interop` namespace grant.
 
+### Optional bundle smoke tests
+
+An app bundle may include `tests.json` beside `manifest.json`. It is a list of
+backend smoke cases that Terrane runs during bundle validation (`app.import`,
+`app install`, `app_bundle_validate`, and staged builder validation). Missing
+`tests.json` is a no-op.
+
+Each case invokes the draft backend through the same `js-runtime.run` path used
+for normal app calls:
+
+```json
+[
+  {
+    "verb": "echo",
+    "args": ["hello"],
+    "expect": { "contains": "Echo: hello" }
+  },
+  {
+    "verb": "profile",
+    "args": ["Ada"],
+    "expect": {
+      "jsonSubset": { "ok": true, "user": { "name": "Ada" } }
+    }
+  },
+  {
+    "verb": "profile",
+    "args": ["Ada"],
+    "expect": {
+      "shape": { "ok": "boolean", "user": { "name": "string" } }
+    }
+  }
+]
+```
+
+- `verb` is required and must be non-empty.
+- `args` is optional and defaults to `[]`; every arg is a string.
+- `expect` is optional. A string shorthand means substring match. Object
+  expectations can use `contains`, `jsonSubset`, and/or `shape`.
+- `jsonSubset` parses the string reply as JSON and recursively checks that the
+  expected object fields, array prefix, and primitive values are present.
+- `shape` parses the string reply as JSON and recursively checks fields. String
+  values can be type names: `string`, `number`, `boolean`, `null`, `array`,
+  `object`, or `any`; other literals are matched like a JSON subset.
+
 ### Low-level: define `handle` yourself
 
 If you'd rather control everything (or don't want self-description), define a
