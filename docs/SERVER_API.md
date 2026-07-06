@@ -35,6 +35,7 @@ auth; non-loopback binds require `Authorization: Bearer <token>`.
 | `POST` | `/mcp`                                 | one JSON-RPC request             | MCP JSON-RPC response (`202 Accepted` for notifications) |
 | `GET`  | `/apps/{id}/` and `/apps/{id}/{asset}` | —                                | the app's UI + assets (path-traversal guarded)           |
 | `POST` | `/apps/{id}/invoke`                    | `InvokeRequest { verb, args[] }` | `InvokeResponse { output }`                              |
+| `GET`  | `/apps/{id}/logs?level=&tail=`         | —                                | app-local backend log JSON lines                         |
 
 Any failure returns `ApiError { error }` with a non-2xx status. An `invoke`
 against a resource the app has not been granted returns a `permission_required`
@@ -103,20 +104,30 @@ the host-level MCP manual and capability-owned docs. The stdio host reads
 newline-delimited JSON-RPC from stdin/stdout; the web host exposes the same
 behavior at `POST /mcp`.
 
-Tools:
+Tools (`terrane-api::mcp_tools()`, 27 total):
 
 | Tool                 | Input                                            | Returns                                                    |
 | -------------------- | ------------------------------------------------ | ---------------------------------------------------------- |
 | `workflows_list`     | `{}`                                             | guided workflow ids and first calls                        |
 | `workflow_info`      | `{ name }`                                       | exact `tools/call` recipe steps for one workflow           |
 | `app_recipe`         | `{ kind? }`                                      | app-building happy-path guidance                           |
+| `app_build_start`    | `{ id, name, kind?, withUi? }`                   | creates a server-side draft app bundle                     |
+| `app_build_put_file` | `{ draftId, path?, content?, files? }`           | writes one or more complete draft files                    |
+| `app_build_get`      | `{ draftId, path?, includeContent? }`            | draft file summaries or one file's content                 |
+| `app_build_list`     | `{}`                                             | draft ids/status for recovery after stalls                 |
+| `app_build_validate` | `{ draftId }`                                    | validates a draft and returns a validation token            |
+| `app_build_commit`   | `{ draftId, validationToken? }`                  | commits a validated draft through `app.add`                |
+| `app_build_discard`  | `{ draftId }`                                    | discards a server-side draft                               |
 | `app_scaffold`       | `{ id, name, kind?, withUi? }`                   | generated bundle files as JSON                             |
 | `app_bundle_validate` | `{ path }`                                      | bundle manifest/ref validation                             |
 | `app_register_inline` | `{ files, id?, name?, runtime?, dryRun? }`      | MCP-only validated app registration from inline files      |
 | `app_register`       | `{ source, id?, name?, runtime?, dryRun? }`      | validated `app.add` dispatch or dry-run                    |
+| `app_upgrade`        | `{ app, source?, toVersion?, fromDraft? }`       | trusted local app upgrade through `app.upgrade`            |
+| `app_install`        | `{ source }`                                     | trusted signed `.terrane` archive install                  |
 | `list_apps`          | `{}`                                             | the installed apps (id, name, has_ui)                      |
 | `app_actions`        | `{ app }`                                        | the app's actions (verbs + args); may return `permission_required` (`isError: true`) |
 | `invoke`             | `{ app, verb, args[] }`                          | the backend's output string; may return `permission_required` (`isError: true`) |
+| `app_logs`           | `{ app, level?, tail? }`                         | app-local backend log JSON lines                           |
 | `permission_check`   | `{ requestId }`                                  | the `PermissionRequestView` for that request (`structuredContent`), or text error `"permission request not found"` |
 | `permission_cancel`  | `{ requestId, reason? }`                         | cancels a pending request (dispatches `auth.permission.cancel`); returns the updated view. Does **not** grant access |
 | `permission_requests` | `{}`                                            | `{ requests: [PermissionRequestView, …] }` — all local requests |
@@ -133,8 +144,8 @@ app's own — not hard-coded in the host.
 For weaker or blank-context models, the intended order starts one step earlier:
 `workflows_list` → choose a workflow from `chooseByOutcome` → `workflow_info` →
 exact tool calls. The `make_js_kv_app` workflow routes agents through
-`app_scaffold`, `app_register_inline` with `dryRun: true`,
-`app_register_inline` commit, `app_actions`, and `invoke`.
+`app_build_start`, one or more `app_build_put_file` calls,
+`app_build_validate`, `app_build_commit`, `app_actions`, and `invoke`.
 The harder `make_js_multicap_app_no_filesystem` workflow uses
 `app_scaffold` kind `js_multicap_audit` and proves five capability surfaces:
 `app`, `kv`, `crdt`, `relational_db`, and `replica`. Evaluation-style runs
@@ -205,6 +216,25 @@ manual, while each `terrane-cap-*` crate owns its capability document.
 Every `tools/call` result carries `isError`. Tool-level failures (unknown app, a
 backend error) come back as a result with `isError: true` and the message as
 text — not as a JSON-RPC error — so the model sees them.
+
+---
+
+## Sync Contract
+
+The exported sync slice is intentionally narrow and source-derived:
+
+| Field | Value |
+| --- | --- |
+| `wire_event` | `crdt.update` |
+| `syncable_event_kinds` | `crdt.update` |
+| `transports` | `file: terrane sync <app> --from <home>`; `tcp: terrane serve / terrane sync <app> --peer <addr>` |
+
+The file path exchanges log/CRDT state from another local home. The TCP path is
+the sync-v2 peer transport: one side runs `terrane serve [--addr <addr>]`, the
+other runs `terrane sync <app> --peer <addr>`, and each connection exchanges
+version vectors plus only the CRDT deltas the other side lacks. Host edges may
+serve additional sync helper routes, but only the transports above are part of
+the exported `SyncInfo` contract until `terrane-api` declares more.
 
 ---
 
@@ -347,14 +377,43 @@ Status values an agent must handle: `pending` | `approved` | `denied` |
 
 Derived from every registered capability's grant spec:
 
-| Namespace | Verbs |
-| --- | --- |
-| `kv` | `read`, `write` |
-| `crdt` | `read`, `write` |
-| `relational_db` | `read`, `write` |
-| `build` | `read` (read-only) |
-| `local-model` | `call`, `read` |
-| `native` | `read`, `write` |
+| Namespace | Selector schema | Verbs |
+| --- | --- | --- |
+| `applescript` | `namespace.v1` | `call`, `read` |
+| `automation` | `namespace.v1` | `read`, `write` |
+| `blob` | `namespace.v1` | `read`, `write`, `call` |
+| `browser` | `namespace.v1` | `call` |
+| `build` | `namespace.v1` | `read` |
+| `common` | `namespace.v1` | `call`, `read` |
+| `connection` | `namespace.v1` | `read`, `call` |
+| `crdt` | `namespace.v1` | `read`, `write` |
+| `crypto` | `namespace.v1` | `read` |
+| `document` | `namespace.v1` | `read`, `write` |
+| `geo` | `namespace.v1` | `call`, `read` |
+| `history` | `namespace.v1` | `read` |
+| `interop` | `namespace.v1` | `call` |
+| `job` | `namespace.v1` | `read`, `write`, `call` |
+| `kv` | `namespace.v1` | `read`, `write` |
+| `local-model` | `namespace.v1` | `call`, `read` |
+| `mcp` | `namespace.v1` | `call` |
+| `media` | `namespace.v1` | `call`, `read` |
+| `model` | `namespace.v1` | `call` |
+| `native` | `namespace.v1` | `read`, `write` |
+| `native` | `native.operation.v1` | `write` |
+| `net` | `namespace.v1` | `call` |
+| `presence` | `namespace.v1` | `call`, `read`, `publish`, `subscribe` |
+| `push` | `namespace.v1` | `call`, `read`, `subscribe` |
+| `query` | `namespace.v1` | `read`, `write` |
+| `relational_db` | `namespace.v1` | `read`, `write` |
+| `scheduler` | `namespace.v1` | `read`, `write` |
+| `search` | `namespace.v1` | `read`, `write` |
+| `stream` | `namespace.v1` | `read` |
+| `stt` | `namespace.v1` | `call`, `read` |
+| `sysinfo` | `namespace.v1` | `read` |
+| `telemetry` | `namespace.v1` | `call`, `read` |
+| `time` | `namespace.v1` | `call`, `read` |
+| `tts` | `namespace.v1` | `call`, `read` |
+| `webhook` | `namespace.v1` | `read` |
 
 A namespace a manifest requests but that is not grantable is skipped, not
 blocked.

@@ -17,7 +17,7 @@
 use nanoserde::{DeJson, SerJson};
 
 /// Version of *this* host API surface. Bumped when a route/tool/shape changes.
-pub const CONTRACT_VERSION: &str = "0.7.0";
+pub const CONTRACT_VERSION: &str = "0.8.0";
 
 /// The MCP protocol revision the MCP host speaks in its `initialize` handshake.
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";

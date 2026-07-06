@@ -876,12 +876,45 @@ A `PermissionRequestView` has: `requestId`, `org`, `subject`, `app`, `appName`,
 
 ### Grantable namespaces & verbs
 
-| Namespace | Verbs |
-| --- | --- |
-| `kv` | `read`, `write` |
-| `crdt` | `read`, `write` |
-| `relational_db` | `read`, `write` |
-| `build` | `read` (read-only) |
+Derived from `terrane_core::grant_resource_specs()`:
+
+| Namespace | Selector schema | Verbs |
+| --- | --- | --- |
+| `applescript` | `namespace.v1` | `call`, `read` |
+| `automation` | `namespace.v1` | `read`, `write` |
+| `blob` | `namespace.v1` | `read`, `write`, `call` |
+| `browser` | `namespace.v1` | `call` |
+| `build` | `namespace.v1` | `read` |
+| `common` | `namespace.v1` | `call`, `read` |
+| `connection` | `namespace.v1` | `read`, `call` |
+| `crdt` | `namespace.v1` | `read`, `write` |
+| `crypto` | `namespace.v1` | `read` |
+| `document` | `namespace.v1` | `read`, `write` |
+| `geo` | `namespace.v1` | `call`, `read` |
+| `history` | `namespace.v1` | `read` |
+| `interop` | `namespace.v1` | `call` |
+| `job` | `namespace.v1` | `read`, `write`, `call` |
+| `kv` | `namespace.v1` | `read`, `write` |
+| `local-model` | `namespace.v1` | `call`, `read` |
+| `mcp` | `namespace.v1` | `call` |
+| `media` | `namespace.v1` | `call`, `read` |
+| `model` | `namespace.v1` | `call` |
+| `native` | `namespace.v1` | `read`, `write` |
+| `native` | `native.operation.v1` | `write` |
+| `net` | `namespace.v1` | `call` |
+| `presence` | `namespace.v1` | `call`, `read`, `publish`, `subscribe` |
+| `push` | `namespace.v1` | `call`, `read`, `subscribe` |
+| `query` | `namespace.v1` | `read`, `write` |
+| `relational_db` | `namespace.v1` | `read`, `write` |
+| `scheduler` | `namespace.v1` | `read`, `write` |
+| `search` | `namespace.v1` | `read`, `write` |
+| `stream` | `namespace.v1` | `read` |
+| `stt` | `namespace.v1` | `call`, `read` |
+| `sysinfo` | `namespace.v1` | `read` |
+| `telemetry` | `namespace.v1` | `call`, `read` |
+| `time` | `namespace.v1` | `call`, `read` |
+| `tts` | `namespace.v1` | `call`, `read` |
+| `webhook` | `namespace.v1` | `read` |
 
 `terrane auth grant` with no verbs argument grants the full set for that
 namespace. A namespace your manifest requests but that isn't one of these is
