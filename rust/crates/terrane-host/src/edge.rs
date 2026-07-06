@@ -2084,7 +2084,7 @@ fn http_request(home: &Path, state: &terrane_core::State, app: &str, request: &s
 fn browser_render(home: &Path, app: &str, request: &str) -> Result<Vec<EventRecord>> {
     let prepared = terrane_cap_browser::request::prepare_render(request)?;
     validate_browser_target(&prepared.url, &prepared.allowed_hosts)?;
-    let capture = run_chromium_render(&prepared)?;
+    let capture = run_browser_render(&prepared)?;
     let hash = terrane_cap_browser::request::sha256_hex(&capture.bytes);
     let size = u64::try_from(capture.bytes.len())
         .map_err(|_| Error::Storage("browser capture length overflow".into()))?;
@@ -2120,6 +2120,38 @@ struct BrowserCapture {
     status: u16,
     title: String,
     bytes: Vec<u8>,
+}
+
+fn run_browser_render(
+    prepared: &terrane_cap_browser::request::PreparedRender,
+) -> Result<BrowserCapture> {
+    #[cfg(target_os = "macos")]
+    {
+        match wkwebview_render::run(prepared) {
+            Ok(capture) => return Ok(capture),
+            Err(error) => {
+                let _wkwebview_error = error;
+            }
+        }
+    }
+    run_chromium_render(prepared)
+}
+
+#[cfg(target_os = "macos")]
+mod wkwebview_render {
+    use super::BrowserCapture;
+    use terrane_core::{Error, Result};
+
+    // The repo's concrete WKWebView usage is currently Swift-side. Keep the
+    // Rust macOS edge shaped for WKWebView-first dispatch without adding a
+    // speculative Objective-C/WebKit binding that would fail the default gate.
+    pub(super) fn run(
+        _prepared: &terrane_cap_browser::request::PreparedRender,
+    ) -> Result<BrowserCapture> {
+        Err(Error::Storage(
+            "BrowserUnavailable: macOS WKWebView browser.render runner is not linked in this Rust host; falling back to system Chrome/Chromium".into(),
+        ))
+    }
 }
 
 struct EphemeralProfile {
