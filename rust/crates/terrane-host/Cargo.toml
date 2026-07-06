@@ -100,4 +100,9 @@ tempfile.workspace = true
 libc = "0.2"
 rocksdb = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.4", default-features = false, features = ["std"] }
+objc2-core-location = { version = "0.3.2", default-features = false, features = ["CLLocation", "CLLocationManager", "CLLocationManagerDelegate"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSArray", "NSDate", "NSError", "NSObject", "NSRunLoop", "NSString"] }
+
 [dev-dependencies]

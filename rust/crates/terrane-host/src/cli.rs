@@ -208,6 +208,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["query", "jmespath", app, source_json, rest @ ..] => {
             run_query_jmespath(app, source_json, rest)
         }
+        ["geo", "supports"] => run_geo_supports(),
         ["i18n", "import", path] => run_i18n_import(path),
         ["i18n", "negotiate", header] => run_i18n_negotiate(header),
         // Host verbs for the local-model edge (runtime + resident server) —
@@ -334,6 +335,14 @@ pub fn run_query_jmespath(app: &str, source_json: &str, rest: &[&str]) -> Result
                 "query.jmespath returned unexpected value: {other:?}"
             ))
         }
+    }
+    Ok(())
+}
+
+pub fn run_geo_supports() -> Result<(), String> {
+    match crate::query_on_core(&crate::open()?, "geo", "supports", &[])? {
+        terrane_core::QueryValue::Bool(value) => println!("{value}"),
+        other => return Err(format!("geo.supports returned unexpected value: {other:?}")),
     }
     Ok(())
 }
