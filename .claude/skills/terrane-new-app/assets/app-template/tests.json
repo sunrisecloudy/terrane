@@ -1,0 +1,9 @@
+[
+  { "verb": "items", "expect": { "shape": "array" } },
+  { "verb": "common.list", "expect": { "shape": "array" } },
+  {
+    "verb": "common.get",
+    "args": ["999999"],
+    "expect": { "jsonSubset": { "ok": false, "error": { "code": "NotFound" } } }
+  }
+]

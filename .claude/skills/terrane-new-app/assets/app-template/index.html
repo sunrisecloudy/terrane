@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>My App</title>
+    <style>
+      /* Use logical properties (inline-start, text-align: start) so RTL
+         locales mirror correctly. Respect the host theme via color-scheme. */
+      :root { color-scheme: light dark; }
+      body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; }
+      form { display: flex; gap: 8px; margin-block-end: 12px; }
+      input { flex: 1; padding: 6px 8px; }
+      ul { list-style: none; padding: 0; margin: 0; }
+      li { display: flex; gap: 8px; padding: 6px 0; align-items: baseline; }
+      li span { flex: 1; text-align: start; }
+    </style>
+  </head>
+  <body>
+    <form id="add-form">
+      <input id="add-text" autocomplete="off" />
+      <button type="submit" data-i18n="add">Add</button>
+    </form>
+    <ul id="notes"></ul>
+    <p id="empty" data-i18n="empty" hidden>Nothing here yet</p>
+
+    <script>
+      // The UI's only bridge to the platform: invoke its OWN backend.
+      // window.terrane.invoke(verb, ...args) -> Promise<string>.
+      const t = (key, params) =>
+        window.terrane?.t ? window.terrane.t(key, params) : (params?.default ?? key);
+
+      async function render() {
+        const raw = await window.terrane.invoke("items");
+        let notes = [];
+        try { notes = JSON.parse(raw); } catch { /* backend degraded (e.g. kv ungranted) */ }
+        const ul = document.getElementById("notes");
+        ul.textContent = "";
+        for (const note of notes) {
+          const li = document.createElement("li");
+          const span = document.createElement("span");
+          span.textContent = note.text; // textContent, never innerHTML
+          const rm = document.createElement("button");
+          rm.textContent = t("remove", { default: "Remove" });
+          rm.onclick = async () => { await window.terrane.invoke("rm", String(note.id)); render(); };
+          li.append(span, rm);
+          ul.append(li);
+        }
+        document.getElementById("empty").hidden = notes.length > 0;
+      }
+
+      document.getElementById("add-form").onsubmit = async (e) => {
+        e.preventDefault();
+        const input = document.getElementById("add-text");
+        const text = input.value.trim();
+        if (!text) return;
+        await window.terrane.invoke("add", text);
+        input.value = "";
+        render();
+      };
+
+      // Localize: writing direction + every [data-i18n] element, re-run when
+      // the host pushes a (new) message bundle. Defaults keep the first paint
+      // correct before the bundle arrives, and headless/CLI hosts still work.
+      function localize() {
+        document.documentElement.dir = window.terrane?.getDir?.() || "ltr";
+        document.querySelectorAll("[data-i18n]").forEach((el) => {
+          el.textContent = t(el.dataset.i18n, { default: el.textContent.trim() });
+        });
+      }
+      localize();
+      window.terrane?.onMessages?.(localize);
+
+      render();
+    </script>
+  </body>
+</html>
