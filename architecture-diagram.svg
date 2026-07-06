@@ -1,0 +1,157 @@
+<svg viewBox="0 0 1080 1160" width="1080" height="1160" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#71717A"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1080" height="1160" fill="#FFFFFF"/>
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif">
+
+    <!-- Title -->
+    <text x="540" y="44" font-size="25" font-weight="bold" fill="#18181B" text-anchor="middle">Terrane at a glance — one gate, one spine, four primitives</text>
+
+    <!-- 1. Organization boundary (primitive 2: org) -->
+    <rect x="40" y="72" width="1000" height="122" rx="10" fill="none" stroke="#D97706" stroke-width="1.5" stroke-dasharray="7,5"/>
+    <rect x="56" y="62" width="56" height="20" rx="10" fill="#D97706"/>
+    <text x="84" y="76" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">2 · org</text>
+    <text x="540" y="180" font-size="12" font-style="italic" fill="#B45309" text-anchor="middle">organization = a shared home members sync with · the principal.org field</text>
+
+    <!-- Principals row (blue) -->
+    <rect x="60" y="88" width="225" height="64" rx="8" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5"/>
+    <text x="172.5" y="115" font-size="15.5" font-weight="bold" fill="#1E3A8A" text-anchor="middle">User</text>
+    <text x="172.5" y="136" font-size="12" fill="#4C63AD" text-anchor="middle">person keypair</text>
+    <rect x="205" y="78" width="74" height="20" rx="10" fill="#D97706"/>
+    <text x="242" y="92" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">1 · person</text>
+
+    <rect x="305" y="88" width="225" height="64" rx="8" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5"/>
+    <text x="417.5" y="115" font-size="15.5" font-weight="bold" fill="#1E3A8A" text-anchor="middle">Agent</text>
+    <text x="417.5" y="136" font-size="12" fill="#4C63AD" text-anchor="middle">delegated authority</text>
+
+    <rect x="550" y="88" width="225" height="64" rx="8" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5"/>
+    <text x="662.5" y="115" font-size="15.5" font-weight="bold" fill="#1E3A8A" text-anchor="middle">App</text>
+    <text x="662.5" y="136" font-size="12" fill="#4C63AD" text-anchor="middle">interop caller</text>
+
+    <rect x="795" y="88" width="225" height="64" rx="8" fill="#DBEAFE" stroke="#2563EB" stroke-width="1.5"/>
+    <text x="907.5" y="115" font-size="15.5" font-weight="bold" fill="#1E3A8A" text-anchor="middle">Peer · Visitor</text>
+    <text x="907.5" y="136" font-size="12" fill="#4C63AD" text-anchor="middle">sync · public web</text>
+
+    <!-- Converging arrows into the grant gate -->
+    <line x1="172.5" y1="196" x2="282" y2="242" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <line x1="417.5" y1="196" x2="454" y2="242" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <line x1="662.5" y1="196" x2="626" y2="242" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+    <line x1="907.5" y1="196" x2="798" y2="242" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- 2. Grant gate -->
+    <rect x="60" y="246" width="960" height="62" rx="8" fill="#E4E4E7" stroke="#3F3F46" stroke-width="2"/>
+    <text x="540" y="272" font-size="16" font-weight="bold" fill="#18181B" text-anchor="middle">Grants — the auth capability</text>
+    <text x="540" y="292" font-size="12" fill="#52525B" text-anchor="middle">one gate for every actor · no side doors</text>
+
+    <line x1="540" y1="308" x2="540" y2="338" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- 3. Host -->
+    <rect x="60" y="342" width="960" height="62" rx="8" fill="#F4F4F5" stroke="#A1A1AA" stroke-width="1.5"/>
+    <text x="540" y="368" font-size="16" font-weight="bold" fill="#18181B" text-anchor="middle">Host — CLI · web · macOS · MCP</text>
+    <text x="540" y="388" font-size="12" fill="#52525B" text-anchor="middle">the edge: effects, UI, daemons</text>
+
+    <line x1="200" y1="404" x2="200" y2="434" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <!-- 4. Core spine -->
+    <rect x="60" y="438" width="280" height="72" rx="8" fill="#F4F4F5" stroke="#A1A1AA" stroke-width="1.5"/>
+    <text x="200" y="468" font-size="15.5" font-weight="bold" fill="#18181B" text-anchor="middle">Capabilities</text>
+    <text x="200" y="489" font-size="12" fill="#52525B" text-anchor="middle">decide → commit</text>
+
+    <line x1="340" y1="474" x2="394" y2="474" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <rect x="400" y="438" width="280" height="72" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+    <text x="540" y="468" font-size="15.5" font-weight="bold" fill="#78350F" text-anchor="middle">Event log</text>
+    <text x="540" y="489" font-size="12" fill="#92400E" text-anchor="middle">append-only + actor</text>
+    <rect x="608" y="428" width="66" height="20" rx="10" fill="#D97706"/>
+    <text x="641" y="442" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">3 · actor</text>
+
+    <line x1="680" y1="474" x2="734" y2="474" stroke="#71717A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+    <rect x="740" y="438" width="280" height="72" rx="8" fill="#F4F4F5" stroke="#A1A1AA" stroke-width="1.5"/>
+    <text x="880" y="468" font-size="15.5" font-weight="bold" fill="#18181B" text-anchor="middle">State</text>
+    <text x="880" y="489" font-size="12" fill="#52525B" text-anchor="middle">deterministic fold</text>
+
+    <!-- Dashed leaders to compositions -->
+    <line x1="200" y1="510" x2="200" y2="558" stroke="#A1A1AA" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="540" y1="510" x2="540" y2="558" stroke="#A1A1AA" stroke-width="1.5" stroke-dasharray="4,4"/>
+    <line x1="880" y1="510" x2="880" y2="558" stroke="#A1A1AA" stroke-width="1.5" stroke-dasharray="4,4"/>
+
+    <!-- 5. Compositions -->
+    <rect x="60" y="560" width="280" height="64" rx="8" fill="#F4F4F5" stroke="#A1A1AA" stroke-width="1.5"/>
+    <text x="200" y="587" font-size="15.5" font-weight="bold" fill="#18181B" text-anchor="middle">Apps</text>
+    <text x="200" y="608" font-size="12" fill="#52525B" text-anchor="middle">compose caps · items</text>
+    <rect x="274" y="550" width="60" height="20" rx="10" fill="#D97706"/>
+    <text x="304" y="564" font-size="11" font-weight="bold" fill="#FFFFFF" text-anchor="middle">4 · item</text>
+
+    <rect x="400" y="560" width="280" height="64" rx="8" fill="#F4F4F5" stroke="#A1A1AA" stroke-width="1.5"/>
+    <text x="540" y="587" font-size="15.5" font-weight="bold" fill="#18181B" text-anchor="middle">Replicas</text>
+    <text x="540" y="608" font-size="12" fill="#52525B" text-anchor="middle">sync ships events</text>
+
+    <rect x="740" y="560" width="280" height="64" rx="8" fill="#FEF3C7" stroke="#D97706" stroke-width="1.5"/>
+    <text x="880" y="587" font-size="15.5" font-weight="bold" fill="#78350F" text-anchor="middle">Org home</text>
+    <text x="880" y="608" font-size="12" fill="#92400E" text-anchor="middle">org-owned apps + data</text>
+
+    <!-- Spine caption -->
+    <text x="540" y="650" font-size="11.5" font-style="italic" fill="#71717A" text-anchor="middle">terrane-core: dispatch → decide → commit → broadcast fold · replaying the log must rebuild identical state — app JS runs once, never on replay</text>
+
+    <!-- Primitives legend -->
+    <text x="540" y="686" font-size="12.5" fill="#52525B" text-anchor="middle">Primitives:  <tspan fill="#B45309" font-weight="bold">1 person</tspan> — identity keypair  ·  <tspan fill="#B45309" font-weight="bold">2 org</tspan> — shared home  ·  <tspan fill="#B45309" font-weight="bold">3 actor</tspan> — on every event  ·  <tspan fill="#B45309" font-weight="bold">4 item</tspan> — app-addressable unit</text>
+
+    <!-- Bottom band: capability catalog -->
+    <text x="540" y="726" font-size="16" font-weight="bold" fill="#18181B" text-anchor="middle">Capability catalog — 49 capabilities in the default registry</text>
+    <text x="540" y="746" font-size="11.5" font-style="italic" fill="#71717A" text-anchor="middle">the 35-plan roadmap (plan-completed-cap/) has landed as terrane-cap-* crates · engine ops (compaction · log migration) live in terrane-core</text>
+
+    <!-- Row 1 -->
+    <rect x="60" y="762" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="80" y="786" font-size="13" font-weight="bold" fill="#3F3F46">Identity &amp; access</text>
+    <text x="80" y="810" font-size="12" fill="#52525B">auth · person · org · crypto</text>
+
+    <rect x="550" y="762" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="570" y="786" font-size="13" font-weight="bold" fill="#3F3F46">Data &amp; storage</text>
+    <text x="570" y="806" font-size="12" fill="#52525B">kv · blob · relational-db · document · crdt</text>
+    <text x="570" y="824" font-size="12" fill="#52525B">query · search · history · time · telemetry</text>
+
+    <!-- Row 2 -->
+    <rect x="60" y="852" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="80" y="876" font-size="13" font-weight="bold" fill="#3F3F46">Apps &amp; runtimes</text>
+    <text x="80" y="896" font-size="12" fill="#52525B">app · build · builder · harness</text>
+    <text x="80" y="914" font-size="12" fill="#52525B">js-runtime · wasm-runtime</text>
+
+    <rect x="550" y="852" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="570" y="876" font-size="13" font-weight="bold" fill="#3F3F46">App-to-app &amp; background</text>
+    <text x="570" y="896" font-size="12" fill="#52525B">interop · common · share</text>
+    <text x="570" y="914" font-size="12" fill="#52525B">scheduler · job-queue · automation</text>
+
+    <!-- Row 3 -->
+    <rect x="60" y="942" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="80" y="966" font-size="13" font-weight="bold" fill="#3F3F46">Integration</text>
+    <text x="80" y="986" font-size="12" fill="#52525B">net · connection · webhook · stream</text>
+    <text x="80" y="1004" font-size="12" fill="#52525B">mcp-client · web-publish · browser</text>
+
+    <rect x="550" y="942" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="570" y="966" font-size="13" font-weight="bold" fill="#3F3F46">Multi-user</text>
+    <text x="570" y="990" font-size="12" fill="#52525B">sync · replica · presence · push · publish</text>
+
+    <!-- Row 4 -->
+    <rect x="60" y="1032" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="80" y="1056" font-size="13" font-weight="bold" fill="#3F3F46">Media &amp; device</text>
+    <text x="80" y="1076" font-size="12" fill="#52525B">media · stt · tts · geo</text>
+    <text x="80" y="1094" font-size="12" fill="#52525B">native · applescript · sysinfo</text>
+
+    <rect x="550" y="1032" width="470" height="76" rx="8" fill="#FAFAFA" stroke="#D4D4D8" stroke-width="1.5"/>
+    <text x="570" y="1056" font-size="13" font-weight="bold" fill="#3F3F46">AI &amp; lifecycle</text>
+    <text x="570" y="1076" font-size="12" fill="#52525B">model · local-model · agent</text>
+    <text x="570" y="1094" font-size="12" fill="#52525B">migration</text>
+
+    <!-- Color legend -->
+    <rect x="330" y="1128" width="12" height="12" fill="#DBEAFE" stroke="#2563EB"/>
+    <text x="348" y="1139" font-size="12.5" fill="#52525B">who acts</text>
+    <rect x="440" y="1128" width="12" height="12" fill="#FEF3C7" stroke="#D97706"/>
+    <text x="458" y="1139" font-size="12.5" fill="#52525B">the 4 primitives</text>
+    <rect x="580" y="1128" width="12" height="12" fill="#F4F4F5" stroke="#A1A1AA"/>
+    <text x="598" y="1139" font-size="12.5" fill="#52525B">the spine &amp; catalog</text>
+  </g>
+</svg>
