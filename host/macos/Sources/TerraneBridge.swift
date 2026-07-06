@@ -26,6 +26,44 @@ struct PermissionRequiredPrompt: Equatable {
   }
 }
 
+/// A candidate app for the interop powerbox picker — an app declaring the
+/// requested interface.
+struct InteropPickCandidate: Equatable {
+  let id: String
+  let name: String
+}
+
+/// The powerbox picker signal raised when a backend calls `interop.send` over
+/// an interface with no chosen default target (or calls `interop.pick`). Parsed
+/// out of the `interop_pick_required:` marker that fronts the surfaced error.
+struct InteropPickPrompt: Equatable {
+  let app: String
+  let interface: String
+  let candidates: [InteropPickCandidate]
+
+  /// Marker token kept in sync with `terrane_cap_interop::PICK_REQUIRED_MARKER`.
+  static let marker = "interop_pick_required:"
+
+  static func parse(error: String) -> InteropPickPrompt? {
+    guard let range = error.range(of: marker) else { return nil }
+    let json = String(error[range.upperBound...])
+    guard let data = json.data(using: .utf8),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let interface = object["interface"] as? String,
+      !interface.isEmpty
+    else {
+      return nil
+    }
+    let app = (object["app"] as? String) ?? ""
+    let candidates = (object["candidates"] as? [[String: Any]])?.compactMap {
+      raw -> InteropPickCandidate? in
+      guard let id = raw["id"] as? String, !id.isEmpty else { return nil }
+      return InteropPickCandidate(id: id, name: (raw["name"] as? String) ?? id)
+    }
+    return InteropPickPrompt(app: app, interface: interface, candidates: candidates ?? [])
+  }
+}
+
 /// Bridges the app UI to terrane-core over the Terrane host C ABI.
 ///
 /// The selected app path calls `terrane.invoke(verb, ...args)` and the App
@@ -44,6 +82,9 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// The host owns the top bar, so it updates the breadcrumb (and persists).
   var onDocumentSet: ((String) -> Void)?
   var onPermissionRequired: ((PermissionRequiredPrompt, @escaping (Bool) -> Void) -> Void)?
+  /// Present the powerbox picker. The completion carries the chosen target app
+  /// id, or `nil` if the user cancelled.
+  var onInteropPickRequired: ((InteropPickPrompt, @escaping (String?) -> Void) -> Void)?
 
   var terraneHandle: OpaquePointer { handle }
 
@@ -365,7 +406,34 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     _ replyHandler: @escaping (Any?, String?) -> Void
   ) {
     let result = invokeSelectedApp(verb: verb, args: args)
-    guard !result.0,
+    if result.0 {
+      replyString(result, replyHandler)
+      return
+    }
+
+    // Powerbox: the backend asked to hand off over an interface with no chosen
+    // target. Render the candidate apps, record the pick, retry.
+    if let pick = InteropPickPrompt.parse(error: result.1), let onInteropPickRequired {
+      onInteropPickRequired(pick) { [weak self] target in
+        guard let self, let target, !target.isEmpty else {
+          replyHandler(nil, result.1)
+          return
+        }
+        let recorded = self.recordInteropPick(
+          caller: pick.app.isEmpty ? self.appId : pick.app,
+          interface: pick.interface,
+          target: target
+        )
+        guard recorded.0 else {
+          replyHandler(nil, recorded.1)
+          return
+        }
+        self.replyString(self.invokeSelectedApp(verb: verb, args: args), replyHandler)
+      }
+      return
+    }
+
+    guard
       let prompt = PermissionRequiredPrompt.parse(
         error: result.1, appId: appId, appName: appName),
       let onPermissionRequired
@@ -385,6 +453,12 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
       }
       self.replyString(self.invokeSelectedApp(verb: verb, args: args), replyHandler)
     }
+  }
+
+  /// Record a powerbox picker choice as a trusted-host dispatch — the app never
+  /// records its own grant.
+  func recordInteropPick(caller: String, interface: String, target: String) -> (Bool, String) {
+    dispatch(command: "interop.pick", argv: [caller, interface, target])
   }
 
   private func createPreview(files: Any) -> (Bool, Any) {

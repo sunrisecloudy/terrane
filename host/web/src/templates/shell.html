@@ -865,6 +865,26 @@
         opacity: 0.6;
         cursor: default;
       }
+      .pick-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 6px 0 0;
+      }
+      .pick-option {
+        padding: 6px 12px;
+        border-radius: 8px;
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+        color: inherit;
+        font: inherit;
+        cursor: pointer;
+      }
+      .pick-option[aria-checked="true"] {
+        border-color: #0071e3;
+        background: color-mix(in srgb, #0071e3 16%, Canvas);
+        font-weight: 600;
+      }
       @media (max-width: 760px) {
         .perm-bar {
           grid-template-columns: 1fr;
@@ -1201,6 +1221,31 @@
             <button id="perm-deny" class="perm-deny" type="button" data-i18n="system.action.deny">Deny</button>
             <button id="perm-approve" class="perm-approve" type="button" data-i18n="system.action.approve">
               Approve
+            </button>
+          </div>
+        </section>
+        <section
+          id="pick-dialog"
+          class="perm-bar"
+          aria-labelledby="pick-title"
+          hidden
+        >
+          <div class="perm-copy">
+            <h2 id="pick-title" class="perm-title" data-i18n="system.pick.title">Choose an app</h2>
+            <p class="perm-text">
+              <strong id="pick-app">An app</strong> wants to hand off over the
+              <strong id="pick-interface">an interface</strong> interface.
+            </p>
+            <div id="pick-list" class="pick-list" role="radiogroup" aria-labelledby="pick-title"></div>
+            <p id="pick-empty" class="perm-note" data-i18n="system.pick.empty" hidden>
+              No installed app can receive this yet.
+            </p>
+            <p class="perm-error" id="pick-error" hidden></p>
+          </div>
+          <div class="perm-actions">
+            <button id="pick-cancel" class="perm-deny" type="button" data-i18n="system.action.cancel">Cancel</button>
+            <button id="pick-confirm" class="perm-approve" type="button" data-i18n="system.action.choose">
+              Choose
             </button>
           </div>
         </section>

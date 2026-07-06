@@ -948,6 +948,9 @@ fn tool_call(
                 Err(crate::InvokeFailure::PermissionRequired(required)) => {
                     tool_json(id, &required.serialize_json(), true)
                 }
+                Err(crate::InvokeFailure::PickRequired(pick)) => {
+                    tool_json(id, &pick.serialize_json(), true)
+                }
                 Err(crate::InvokeFailure::Other(e)) => tool_text(id, &e, true),
             }
         }
@@ -979,6 +982,9 @@ fn tool_call(
                 Ok(output) => tool_text(id, &output, false),
                 Err(crate::InvokeFailure::PermissionRequired(required)) => {
                     tool_json(id, &required.serialize_json(), true)
+                }
+                Err(crate::InvokeFailure::PickRequired(pick)) => {
+                    tool_json(id, &pick.serialize_json(), true)
                 }
                 Err(crate::InvokeFailure::Other(e)) => tool_text(id, &e, true),
             }

@@ -121,6 +121,21 @@ fn run_app(args: &[&str]) -> Result<(), String> {
                 )),
             }
         }
+        Err(InvokeFailure::PickRequired(pick)) => {
+            let choices = if pick.candidates.is_empty() {
+                "(no app declares this interface yet)".to_string()
+            } else {
+                pick.candidates
+                    .iter()
+                    .map(|c| format!("{} ({})", c.name, c.id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            Err(format!(
+                "interop_pick_required: {} needs a target for interface '{}'. Pick one in the shell, or record it with `terrane interop pick {} {} <target>`. Candidates: {}",
+                pick.app, pick.interface, pick.app, pick.interface, choices
+            ))
+        }
         Err(InvokeFailure::Other(message)) => Err(message),
     }
 }

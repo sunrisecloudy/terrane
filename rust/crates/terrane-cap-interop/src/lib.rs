@@ -23,6 +23,19 @@ pub const BLOB_REPLY_LIMIT: usize = 8 * 1024 * 1024;
 pub const PICKER_LIMIT: usize = 200;
 pub const RECENT_PER_CALLER: usize = 64;
 
+/// The common inbox verb `interop.send` delivers to on the picked target.
+pub const RECEIVE_VERB: &str = "common.receive";
+
+/// Marker token that fronts a picker-elicitation signal in an error message.
+/// When a backend calls `interop.send`/`interop.pick` for an interface with no
+/// recorded default target, the decide step fails with `<marker><json>` where
+/// `<json>` is a [`PickRequired`] payload. Hosts (web shell + mac) detect this
+/// token in the surfaced error, render the candidate app list, record the
+/// user's choice as a grant, and retry — the powerbox flow. The token survives
+/// the JS runtime because resource-call errors return the original `Error`
+/// verbatim (see `run_js_bundle`).
+pub const PICK_REQUIRED_MARKER: &str = "interop_pick_required:";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InteropState {
     pub recent: BTreeMap<String, VecDeque<InteropCall>>,
@@ -262,18 +275,58 @@ fn decide_call(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     }))
 }
 
-fn decide_send(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+fn decide_send(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let caller = arg(args, 0, "caller")?;
     let interface = arg(args, 1, "interface")?;
-    Err(Error::InvalidInput(format!(
-        "interop.send for {caller}/{interface} needs a picker-selected default target; shell UI hook is not implemented yet"
-    )))
+    let kind = arg(args, 2, "kind")?;
+    // Payload is optional (empty for a bare ping); everything past it is ignored.
+    let payload = args.get(3).cloned().unwrap_or_default();
+
+    let principal = ExecutionPrincipal::local_owner();
+    let Some(target) =
+        terrane_cap_auth::interop_default_target(ctx.state, &principal, &caller, &interface)?
+    else {
+        // No default target yet: raise the picker. The host turns this marker
+        // into a visual elicitation and, on the user's choice, records the
+        // grant and retries the send.
+        return Err(Error::InvalidInput(pick_required_marker(
+            ctx.state, &caller, &interface,
+        )?));
+    };
+
+    ensure_app_exists(ctx.bus, &caller)?;
+    ensure_app_exists(ctx.bus, &target)?;
+    if !app_declares_interface(ctx.state, &target, &interface)? {
+        return Err(Error::InvalidInput(format!(
+            "app {target} no longer declares interface {interface}; re-pick a target"
+        )));
+    }
+    let call_args = vec![kind, payload];
+    let total: usize = call_args.iter().map(|arg| arg.len()).sum();
+    if total > MAX_ARGS_BYTES {
+        return Err(Error::InvalidInput(format!(
+            "interop args exceed {MAX_ARGS_BYTES} bytes"
+        )));
+    }
+    Ok(Decision::Effect(Effect::AppCall {
+        chain: vec![caller],
+        target,
+        verb: RECEIVE_VERB.to_string(),
+        args: call_args,
+    }))
 }
 
 fn decide_pick(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let caller = arg(args, 0, "caller")?;
     let interface = arg(args, 1, "interface")?;
-    let target = arg(args, 2, "target")?;
+    // A two-arg pick (from `ctx.resource.interop.pick(interface)`) has no target
+    // yet — that is the user's choice. Raise the picker elicitation; the host
+    // records the grant by re-dispatching this command with the chosen target.
+    let Some(target) = args.get(2).filter(|t| !t.is_empty()).cloned() else {
+        return Err(Error::InvalidInput(pick_required_marker(
+            ctx.state, &caller, &interface,
+        )?));
+    };
     ensure_app_exists(ctx.bus, &caller)?;
     ensure_app_exists(ctx.bus, &target)?;
     if !app_declares_interface(ctx.state, &target, &interface)? {
@@ -281,15 +334,38 @@ fn decide_pick(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
             "app {target} does not declare interface {interface}"
         )));
     }
-    // The UI picker is a follow-up; this hook records the grant selected by the
-    // caller/tool path today. Existing auth grants are namespace-shaped, so the
-    // selector detail is encoded in the source string for audit visibility.
-    Ok(Decision::Commit(vec![terrane_cap_auth::granted_namespace_event(
-        &ExecutionPrincipal::local_owner(),
-        &caller,
-        "interop",
-        &format!("interop:{interface}={target}"),
-    )?]))
+    // Choosing IS granting: record the caller → interface → target default as a
+    // scoped interop grant that `interop.send` resolves and `interop.call`
+    // ignores (direct calls still need the blanket `interop` namespace grant).
+    Ok(Decision::Commit(vec![
+        terrane_cap_auth::granted_interop_target_event(
+            &ExecutionPrincipal::local_owner(),
+            &caller,
+            &interface,
+            &target,
+        )?,
+    ]))
+}
+
+/// Build the `interop_pick_required:<json>` signal an unresolved
+/// `interop.send`/`interop.pick` fails with. The JSON carries the interface,
+/// the requesting app, and the candidate apps declaring that interface so the
+/// host can render the picker without a second round-trip.
+fn pick_required_marker(state: &dyn StateStore, caller: &str, interface: &str) -> Result<String> {
+    let apps = state_ref::<AppState>(state, "app")?;
+    let candidates: Vec<serde_json::Value> = apps
+        .apps
+        .values()
+        .filter(|app| app.interfaces.iter().any(|iface| iface == interface))
+        .take(PICKER_LIMIT)
+        .map(|app| serde_json::json!({ "id": app.id, "name": app.name }))
+        .collect();
+    let payload = serde_json::json!({
+        "interface": interface,
+        "app": caller,
+        "candidates": candidates,
+    });
+    Ok(format!("{PICK_REQUIRED_MARKER}{payload}"))
 }
 
 fn validate_call(

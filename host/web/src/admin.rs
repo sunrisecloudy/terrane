@@ -107,6 +107,13 @@ struct DecisionRequest {
 }
 
 #[derive(Debug, Clone, DeJson)]
+struct InteropPickBody {
+    app: String,
+    interface: String,
+    target: String,
+}
+
+#[derive(Debug, Clone, DeJson)]
 struct AgentRequest {
     #[nserde(default)]
     agent: String,
@@ -464,6 +471,40 @@ pub fn revoke(
         Ok(outcome) => json_ok(&GrantResponse {
             records: outcome.records.len(),
             output: outcome.output,
+        }),
+        Err(e) => json_error(400, &e),
+    }
+}
+
+/// Record a powerbox picker choice: caller → target for an interface. Mirrors
+/// the grant/approve routes — gated on the admin lock, dispatched as trusted
+/// host so the app never records its own grant.
+pub fn interop_pick(
+    core: &mut terrane_host::HostCore,
+    state: &AdminSessionState,
+    request: &mut Request,
+) -> Resp {
+    if state.locked() {
+        return json_error(403, "local admin is locked");
+    }
+    let mut body = String::new();
+    if request.as_reader().read_to_string(&mut body).is_err() {
+        return json_error(400, "cannot read request body");
+    }
+    let parsed = match InteropPickBody::deserialize_json(&body) {
+        Ok(parsed) => parsed,
+        Err(e) => return json_error(400, &format!("bad interop pick body: {e}")),
+    };
+    if parsed.app.trim().is_empty()
+        || parsed.interface.trim().is_empty()
+        || parsed.target.trim().is_empty()
+    {
+        return json_error(400, "interop pick needs app, interface, and target");
+    }
+    match terrane_host::record_interop_pick(core, &parsed.app, &parsed.interface, &parsed.target) {
+        Ok(()) => json_ok(&GrantResponse {
+            records: 1,
+            output: None,
         }),
         Err(e) => json_error(400, &e),
     }

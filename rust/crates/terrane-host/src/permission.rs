@@ -53,6 +53,72 @@ impl PermissionRequired {
     }
 }
 
+/// A single app declaring the requested interface — a picker row.
+#[derive(Debug, Clone, PartialEq, Eq, SerJson, DeJson)]
+pub struct InteropPickCandidate {
+    pub id: String,
+    pub name: String,
+}
+
+/// The host-facing form of the `interop_pick_required:` signal a backend raises
+/// when it sends over an interface with no picked default (or calls
+/// `interop.pick`). The shell renders `candidates`, records the choice via
+/// `interop.pick`, and retries the original invoke.
+#[derive(Debug, Clone, PartialEq, Eq, SerJson)]
+pub struct InteropPickRequired {
+    #[nserde(rename = "type")]
+    pub kind: String,
+    pub status: String,
+    pub app: String,
+    pub interface: String,
+    pub candidates: Vec<InteropPickCandidate>,
+    #[nserde(rename = "nextModelAction")]
+    pub next_model_action: String,
+    pub message: String,
+}
+
+#[derive(DeJson)]
+struct InteropPickMarker {
+    interface: String,
+    app: String,
+    candidates: Vec<InteropPickCandidate>,
+}
+
+impl InteropPickRequired {
+    /// Parse an `interop_pick_required:<json>` marker out of a surfaced backend
+    /// error (the marker survives the JS runtime verbatim). Returns `None` for
+    /// any error that is not a picker signal.
+    pub fn parse(error: &str) -> Option<Self> {
+        let marker = terrane_cap_interop::PICK_REQUIRED_MARKER;
+        let start = error.find(marker)? + marker.len();
+        let json = &error[start..];
+        let parsed: InteropPickMarker = DeJson::deserialize_json(json).ok()?;
+        let count = parsed.candidates.len();
+        let message = if count == 0 {
+            format!(
+                "{} wants to send over the {} interface, but no app provides it yet.",
+                parsed.app, parsed.interface
+            )
+        } else {
+            format!(
+                "{} wants to send over the {} interface. Choose an app to receive it.",
+                parsed.app, parsed.interface
+            )
+        };
+        Some(InteropPickRequired {
+            kind: "interop_pick_required".to_string(),
+            status: "interop_pick_required".to_string(),
+            app: parsed.app,
+            interface: parsed.interface,
+            candidates: parsed.candidates,
+            next_model_action:
+                "Ask the user to choose a target app for this interface, then retry the invoke."
+                    .to_string(),
+            message,
+        })
+    }
+}
+
 pub fn recorded_permission_allowed_mcp_tools() -> Vec<String> {
     vec![
         "permission_check".to_string(),

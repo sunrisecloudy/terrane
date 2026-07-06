@@ -64,6 +64,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         self.presentPermissionPrompt(prompt, bridge: bridge, completion: completion)
       }
     }
+    bridge.onInteropPickRequired = { [weak self] prompt, completion in
+      DispatchQueue.main.async {
+        guard let self else {
+          completion(nil)
+          return
+        }
+        self.presentInteropPicker(prompt, completion: completion)
+      }
+    }
     bridge.install(into: config.userContentController)
     let appSchemeHandler = AppSchemeHandler(bridge: bridge) { [weak self] in self?.apps ?? [] }
     self.appSchemeHandler = appSchemeHandler
@@ -584,6 +593,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         }
       }
       completion(true)
+    }
+
+    if let window {
+      alert.beginSheetModal(for: window, completionHandler: handleDecision)
+    } else {
+      handleDecision(alert.runModal())
+    }
+  }
+
+  private func presentInteropPicker(
+    _ prompt: InteropPickPrompt,
+    completion: @escaping (String?) -> Void
+  ) {
+    let appLabel = prompt.app.isEmpty ? "An app" : prompt.app
+    let alert = NSAlert()
+    alert.messageText = "Choose an app for \(appLabel)"
+    alert.alertStyle = .informational
+
+    guard !prompt.candidates.isEmpty else {
+      alert.informativeText =
+        "No installed app can receive over the \(prompt.interface) interface yet."
+      alert.addButton(withTitle: "OK")
+      let finish: (NSApplication.ModalResponse) -> Void = { _ in completion(nil) }
+      if let window {
+        alert.beginSheetModal(for: window, completionHandler: finish)
+      } else {
+        finish(alert.runModal())
+      }
+      return
+    }
+
+    alert.informativeText =
+      "\(appLabel) wants to hand off over the \(prompt.interface) interface."
+    let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+    for candidate in prompt.candidates {
+      let title =
+        candidate.name.isEmpty ? candidate.id : "\(candidate.name) (\(candidate.id))"
+      popup.addItem(withTitle: title)
+      popup.lastItem?.representedObject = candidate.id
+    }
+    alert.accessoryView = popup
+    alert.addButton(withTitle: "Choose")
+    alert.addButton(withTitle: "Cancel")
+
+    let handleDecision: (NSApplication.ModalResponse) -> Void = { response in
+      guard response == .alertFirstButtonReturn,
+        let target = popup.selectedItem?.representedObject as? String
+      else {
+        completion(nil)
+        return
+      }
+      completion(target)
     }
 
     if let window {
