@@ -278,7 +278,7 @@ pub fn register_agent(
         Err(resp) => return resp,
     };
     let owner_user = if parsed.owner_user.trim().is_empty() {
-        LOCAL_OWNER_SUBJECT.to_string()
+        terrane_core::local_owner_subject(core.state())
     } else {
         parsed.owner_user.trim().to_string()
     };
@@ -374,7 +374,7 @@ pub fn grant(
         Err(e) => return json_error(400, &format!("bad grant body: {e}")),
     };
     let subject = if parsed.subject.trim().is_empty() {
-        LOCAL_OWNER_SUBJECT.to_string()
+        terrane_core::local_owner_subject(core.state())
     } else {
         parsed.subject
     };
@@ -459,7 +459,7 @@ pub fn revoke(
         Err(e) => return json_error(400, &format!("bad revoke body: {e}")),
     };
     let subject = if parsed.subject.trim().is_empty() {
-        LOCAL_OWNER_SUBJECT.to_string()
+        terrane_core::local_owner_subject(core.state())
     } else {
         parsed.subject
     };

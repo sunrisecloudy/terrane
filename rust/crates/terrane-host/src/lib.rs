@@ -268,10 +268,11 @@ pub fn ensure_identity(core: &mut HostCore) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         }
     }
-    if !terrane_cap_auth::local_owner_member_exists(core.state()).map_err(|e| e.to_string())? {
+    let owner_subject = terrane_core::local_owner_subject(core.state());
+    if !terrane_cap_auth::member_exists(core.state(), &owner_subject).map_err(|e| e.to_string())? {
         core.dispatch(Request::trusted_host(
             "auth.member.ensure-local-owner",
-            Vec::new(),
+            vec![owner_subject],
         ))
         .map_err(|e| e.to_string())?;
     }

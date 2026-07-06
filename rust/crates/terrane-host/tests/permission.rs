@@ -79,7 +79,7 @@ fn open_at_home_seeds_local_owner_membership_once() {
     let core = terrane_host::open_at_home(&home).unwrap();
     let members = terrane_cap_auth::auth_members(core.state()).unwrap();
     assert_eq!(members.len(), 1);
-    assert_eq!(members[0].subject, terrane_host::LOCAL_OWNER_SUBJECT);
+    assert_eq!(members[0].subject, terrane_core::local_owner_subject(core.state()));
     assert_eq!(members[0].role, "owner");
 
     let reopened = terrane_host::open_at_home(&home).unwrap();

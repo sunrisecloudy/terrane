@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use terrane_cap_connection::{split_secret_ref, validate_secret_len};
 use terrane_cap_crypto::{b64, open, seal, unb64, KEY_LEN};
-use terrane_core::{Error, ExecutionPrincipal, Result, State, LOCAL_OWNER_SUBJECT};
+use terrane_core::{local_owner_principal, Error, Result, State};
 
 const SERVICE: &str = "terrane";
 const FALLBACK_FILE: &str = "secrets.enc";
@@ -89,12 +89,13 @@ fn resolve_json(home: &Path, state: &State, app: &str, value: &mut Value) -> Res
 
 fn ensure_connection_grant(state: &State, app: &str, name: &str) -> Result<()> {
     let resource_id = terrane_cap_connection::connection_resource_id(name)?;
-    let principal = ExecutionPrincipal::local_owner();
+    let principal = local_owner_principal(state);
     if terrane_cap_auth::resource_granted(state, &principal, app, &resource_id)? {
         return Ok(());
     }
     Err(Error::InvalidInput(format!(
-        "permission required: grant {resource_id} to {app} for {LOCAL_OWNER_SUBJECT}"
+        "permission required: grant {resource_id} to {app} for {}",
+        principal.subject
     )))
 }
 

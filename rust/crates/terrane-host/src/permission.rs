@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use nanoserde::{DeJson, SerJson};
 use terrane_cap_kv::{app_bundle_app_id, app_bundle_files};
-use terrane_core::{ExecutionPrincipal, LOCAL_OWNER_SUBJECT};
+use terrane_core::local_owner_principal;
 
 use crate::{BundleManifest, HostCore};
 
@@ -201,7 +201,7 @@ pub fn permission_required_for_app_with_admin_base(
     app: &str,
     admin_base_url: &str,
 ) -> Result<Option<PermissionRequired>, String> {
-    let principal = ExecutionPrincipal::local_owner();
+    let principal = local_owner_principal(core.state());
     let requested = app_requested_resources(core, app)?;
     let grantable: BTreeSet<_> = terrane_core::grant_resource_namespaces()
         .into_iter()
@@ -240,7 +240,7 @@ pub fn permission_required_for_app_with_admin_base(
         .unwrap_or_else(|| "unrecorded".to_string());
     let grant_commands = missing
         .iter()
-        .map(|namespace| format!("terrane auth grant {LOCAL_OWNER_SUBJECT} {app} {namespace}"))
+        .map(|namespace| format!("terrane auth grant {} {app} {namespace}", principal.subject))
         .collect::<Vec<_>>();
     let resources = missing.join(", ");
     Ok(Some(PermissionRequired {
@@ -405,7 +405,7 @@ fn permission_required_for_namespace_status(
         .apps
         .get(app)
         .ok_or_else(|| format!("no such app: {app}"))?;
-    let principal = ExecutionPrincipal::local_owner();
+    let principal = local_owner_principal(core.state());
     if terrane_cap_auth::namespace_granted(core.state(), &principal, app, namespace)
         .map_err(|e| e.to_string())?
     {
@@ -424,7 +424,8 @@ fn permission_required_for_namespace_status(
             .unwrap_or_else(|| "unrecorded".to_string()),
     };
     let grant_commands = vec![format!(
-        "terrane auth grant {LOCAL_OWNER_SUBJECT} {app} {namespace}"
+        "terrane auth grant {} {app} {namespace}",
+        principal.subject
     )];
     let preview = request_status_override == Some("preview");
     let resume_tool = if preview { "" } else { "permission_check" }.to_string();

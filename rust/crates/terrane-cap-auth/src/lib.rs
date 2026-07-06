@@ -402,13 +402,15 @@ fn decide_grant(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
 }
 
 fn decide_member_ensure_local_owner(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
-    if !args.is_empty() {
+    if args.len() > 1 {
         return Err(Error::InvalidInput(format!(
-            "auth.member.ensure-local-owner takes no arguments, got {}",
+            "auth.member.ensure-local-owner takes at most one argument, got {}",
             args.len()
         )));
     }
-    let key = member_key(terrane_cap_interface::LOCAL_ORG, LOCAL_OWNER_SUBJECT);
+    let subject = non_empty_or_arg(args, 0, LOCAL_OWNER_SUBJECT);
+    validate_segment_input("subject", &subject)?;
+    let key = member_key(terrane_cap_interface::LOCAL_ORG, &subject);
     if state_ref::<AuthState>(ctx.state, "auth")?
         .members
         .contains_key(&key)
@@ -417,7 +419,7 @@ fn decide_member_ensure_local_owner(ctx: CommandCtx<'_>, args: &[String]) -> Res
     }
     Ok(Decision::Commit(vec![member_added_event(MemberAdded {
         org: terrane_cap_interface::LOCAL_ORG.to_string(),
-        subject: LOCAL_OWNER_SUBJECT.to_string(),
+        subject,
         role: "owner".to_string(),
         source: LOCAL_SOURCE.to_string(),
     })?]))
@@ -985,10 +987,10 @@ pub fn namespace_granted(
         return Ok(false);
     }
     let resource_id = namespace_resource_id(namespace);
-    let key = grant_key(&principal.org, &principal.subject, app, &resource_id);
-    Ok(state_ref::<AuthState>(state, "auth")?
-        .grants
-        .contains_key(&key))
+    let grants = &state_ref::<AuthState>(state, "auth")?.grants;
+    Ok(grant_subjects_for_lookup(&principal.subject)
+        .iter()
+        .any(|subject| grants.contains_key(&grant_key(&principal.org, subject, app, &resource_id))))
 }
 
 pub fn resource_granted(
@@ -1000,10 +1002,10 @@ pub fn resource_granted(
     if principal.subject.starts_with("agent:") && !agent_is_active(state, &principal.subject)? {
         return Ok(false);
     }
-    let key = grant_key(&principal.org, &principal.subject, app, resource_id);
-    Ok(state_ref::<AuthState>(state, "auth")?
-        .grants
-        .contains_key(&key))
+    let grants = &state_ref::<AuthState>(state, "auth")?.grants;
+    Ok(grant_subjects_for_lookup(&principal.subject)
+        .iter()
+        .any(|subject| grants.contains_key(&grant_key(&principal.org, subject, app, resource_id))))
 }
 
 pub fn any_resource_granted_in_namespace(
@@ -1015,12 +1017,21 @@ pub fn any_resource_granted_in_namespace(
     if principal.subject.starts_with("agent:") && !agent_is_active(state, &principal.subject)? {
         return Ok(false);
     }
+    let subjects = grant_subjects_for_lookup(&principal.subject);
     Ok(state_ref::<AuthState>(state, "auth")?.grants.values().any(|grant| {
         grant.org == principal.org
-            && grant.subject == principal.subject
+            && subjects.iter().any(|subject| subject == &grant.subject)
             && grant.app == app
             && grant.namespace == namespace
     }))
+}
+
+fn grant_subjects_for_lookup(subject: &str) -> Vec<String> {
+    if subject != LOCAL_OWNER_SUBJECT && subject.starts_with("user:") {
+        vec![subject.to_string(), LOCAL_OWNER_SUBJECT.to_string()]
+    } else {
+        vec![subject.to_string()]
+    }
 }
 
 pub fn namespace_resource_id(namespace: &str) -> String {
@@ -1068,11 +1079,15 @@ pub fn auth_members(state: &dyn StateStore) -> Result<Vec<AuthMember>> {
 }
 
 pub fn local_owner_member_exists(state: &dyn StateStore) -> Result<bool> {
+    member_exists(state, LOCAL_OWNER_SUBJECT)
+}
+
+pub fn member_exists(state: &dyn StateStore, subject: &str) -> Result<bool> {
     Ok(state_ref::<AuthState>(state, "auth")?
         .members
         .contains_key(&member_key(
             terrane_cap_interface::LOCAL_ORG,
-            LOCAL_OWNER_SUBJECT,
+            subject,
         )))
 }
 

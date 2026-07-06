@@ -9,7 +9,10 @@ use terrane_cap_person::{
     attestation_message, attested_event, created_event, hex, person_id_for_pubkey, rotated_event,
     rotation_message,
 };
-use terrane_core::{Core, Effect, EffectRunner, EventRecord, QueryValue, State};
+use terrane_core::{
+    local_owner_principal, local_owner_subject, Core, Effect, EffectRunner, EventRecord,
+    QueryValue, State, LOCAL_OWNER_SUBJECT,
+};
 
 use crate::helpers::req;
 
@@ -117,4 +120,68 @@ fn person_queries_return_json_or_null() {
     };
     assert!(json.contains("person_id"));
     assert!(!json.contains(&hex(SigningKey::from_bytes(&[13; 32]).as_bytes())));
+}
+
+#[test]
+fn local_owner_rebinds_to_person_for_new_events_without_rewriting_old_log() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let mut core = Core::open_with(&log, PersonEdge::new(21, 22)).unwrap();
+
+    let pre_person = core.dispatch(req("app.add", &["before", "Before"])).unwrap();
+    assert_eq!(pre_person[0].actor, LOCAL_OWNER_SUBJECT);
+
+    let created = core.dispatch(req("person.create", &[])).unwrap();
+    assert_eq!(created[0].actor, LOCAL_OWNER_SUBJECT);
+    let old_pubkey = hex(SigningKey::from_bytes(&[21; 32]).verifying_key().as_bytes());
+    let person_id = person_id_for_pubkey(&old_pubkey).unwrap();
+    let owner_subject = format!("user:{person_id}");
+    assert_eq!(local_owner_subject(core.state()), owner_subject);
+
+    let post_person = core.dispatch(req("app.add", &["after", "After"])).unwrap();
+    assert_eq!(post_person[0].actor, owner_subject);
+
+    let member = core
+        .dispatch(req("auth.member.ensure-local-owner", &[&owner_subject]))
+        .unwrap();
+    assert_eq!(member[0].actor, owner_subject);
+    assert!(terrane_cap_auth::member_exists(core.state(), &owner_subject).unwrap());
+
+    core.dispatch(req("auth.grant", &[&owner_subject, "after", "kv"]))
+        .unwrap();
+    assert!(terrane_cap_auth::namespace_granted(
+        core.state(),
+        &local_owner_principal(core.state()),
+        "after",
+        "kv"
+    )
+    .unwrap());
+
+    core.dispatch(req("app.add", &["legacy-grant", "Legacy Grant"]))
+        .unwrap();
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "legacy-grant", "kv"],
+    ))
+    .unwrap();
+    assert!(terrane_cap_auth::namespace_granted(
+        core.state(),
+        &local_owner_principal(core.state()),
+        "legacy-grant",
+        "kv"
+    )
+    .unwrap());
+
+    let records = core.log_records().unwrap();
+    assert_eq!(records[0].kind, "app.added");
+    assert_eq!(records[0].actor, LOCAL_OWNER_SUBJECT);
+    assert!(
+        records
+            .iter()
+            .any(|record| record.kind == "app.added" && record.actor == owner_subject)
+    );
+    assert!(core.replay_matches().unwrap());
+    let reopened = Core::open_with(&log, PersonEdge::new(21, 22)).unwrap();
+    assert_eq!(reopened.log_records().unwrap()[0].actor, LOCAL_OWNER_SUBJECT);
+    assert_eq!(reopened.state(), core.state());
 }

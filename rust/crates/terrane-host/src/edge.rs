@@ -35,7 +35,9 @@ use terrane_cap_person::{
 use terrane_cap_replica::initialized_event;
 use terrane_core::{Effect, EffectRunner, LiveHost};
 use terrane_core::{Error, EventRecord, Result};
-use terrane_core::{ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost};
+use terrane_core::{
+    local_owner_principal, ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost,
+};
 
 /// Results a host computed on its own worker thread, waiting to be committed.
 ///
@@ -879,13 +881,13 @@ fn send_email(
     let resource_id = terrane_cap_connection::connection_resource_id(&prepared.connection)?;
     if !terrane_cap_auth::resource_granted(
         state,
-        &ExecutionPrincipal::local_owner(),
+        &local_owner_principal(state),
         app,
         &resource_id,
     )? {
         return Err(Error::InvalidInput(format!(
             "permission required: grant {resource_id} to {app} for {}",
-            terrane_core::LOCAL_OWNER_SUBJECT
+            local_owner_principal(state).subject
         )));
     }
     let config: serde_json::Value = serde_json::from_str(&meta.config_public_json)
@@ -1141,7 +1143,7 @@ fn run_harness_js(
             RuntimeResourceHost::new_with_temporary_resource_grants(
                 app_id.to_string(),
                 state.clone(),
-                ExecutionPrincipal::local_owner(),
+                local_owner_principal(state),
                 bundle.resources.clone(),
             )
             .with_runner(std::sync::Arc::new(EdgeRunner::default())),
@@ -1473,7 +1475,7 @@ fn run_upgrade_migrations(
             RuntimeResourceHost::new_with_principal(
                 id.to_string(),
                 scratch.clone(),
-                ExecutionPrincipal::local_owner(),
+                local_owner_principal(&scratch),
             )
             .with_runner(std::sync::Arc::new(runner.clone_for_nested())),
         ));
