@@ -24,6 +24,7 @@ terrane-cap-builder.workspace = true
 terrane-cap-browser.workspace = true
 terrane-cap-blob.workspace = true
 terrane-cap-webhook.workspace = true
+terrane-cap-web-publish.workspace = true
 terrane-cap-common.workspace = true
 terrane-cap-crdt.workspace = true
 terrane-cap-crypto.workspace = true

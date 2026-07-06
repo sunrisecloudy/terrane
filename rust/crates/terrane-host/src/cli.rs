@@ -156,6 +156,17 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane push (ls <app> | rm <app> <sub_id>)".into())
         }
+        ["web-publish", "enable", app, rest @ ..] => run_web_publish_enable(app, rest),
+        ["web-publish", "disable", app] => dispatch("web-publish.disable", &[app]),
+        ["web-publish", "domain", "set", app, domain] => {
+            dispatch("web-publish.domain.set", &[app, domain])
+        }
+        ["web-publish", "status"] => run_web_publish_status(None),
+        ["web-publish", "status", app] => run_web_publish_status(Some(app)),
+        ["web-publish", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane web-publish (enable <app> [static|interactive] [slug] | disable <app> | domain set <app> <domain> | status [app])".into())
+        }
         ["tts", "speak", app, rest @ ..] => run_tts_speak(app, rest),
         ["tts", "render", app, rest @ ..] => run_tts_render(app, rest),
         ["tts", "voices"] => run_tts_voices(),
@@ -1224,6 +1235,7 @@ fn host_manifest_from_runtime(
         icon: String::new(),
         resources: manifest.resources,
         interfaces: manifest.interfaces,
+        public_verbs: manifest.public_verbs,
         file_types: Vec::new(),
         browser_permissions: Vec::new(),
         data_version: manifest.data_version,
@@ -1957,6 +1969,31 @@ pub fn run_webhook_list(app: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub fn run_web_publish_enable(app: &str, rest: &[&str]) -> Result<(), String> {
+    if rest.len() > 2 {
+        return Err("usage: terrane web-publish enable <app> [static|interactive] [slug]".into());
+    }
+    let mut args = vec![app];
+    args.extend(rest.iter().copied());
+    dispatch("web-publish.enable", &args)
+}
+
+pub fn run_web_publish_status(app: Option<&str>) -> Result<(), String> {
+    let core = crate::open()?;
+    let args = app
+        .map(|app| vec![app.to_string()])
+        .unwrap_or_default();
+    match crate::query_on_core(&core, "web-publish", "status", &args)? {
+        terrane_core::QueryValue::Json(json) => {
+            println!("{json}");
+            Ok(())
+        }
+        other => Err(format!(
+            "web-publish.status returned unexpected value: {other:?}"
+        )),
+    }
+}
+
 fn print_webhook_route(core: &terrane_core::Core<crate::EdgeRunner>, app: &str, name: &str) -> Result<(), String> {
     let meta = core
         .state()
@@ -2539,6 +2576,8 @@ pub fn print_help() {
          \x20 terrane webhook rotate|unregister <app> <name>  rotate or remove a webhook URL\n\
          \x20 terrane webhook ls <app>                        list webhook URL paths\n\
          \x20 terrane push ls|rm <app> [sub_id]                inspect or remove local push subscriptions\n\
+         \x20 terrane web-publish enable <app> [static|interactive] [slug]  record Premium relay publish intent\n\
+         \x20 terrane web-publish disable|status <app>         kill switch or folded publish status\n\
          \x20 terrane tts speak <app> [--voice v] [--rate r] <text…>   speak text now; record nothing\n\
          \x20 terrane tts render <app> [--voice v] [--rate r] <text…>  render speech into blob CAS\n\
          \x20 terrane tts voices|renders <app>                list host voices or folded render metadata\n\

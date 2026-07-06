@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 terrane-cap-interface.workspace = true
+terrane-cap-web-publish.workspace = true
 terrane-cap-telemetry.workspace = true
 nanoserde.workspace = true
 rquickjs = { version = "0.12", features = ["macro"] }

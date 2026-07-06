@@ -41,6 +41,9 @@ pub struct BundleManifest {
     /// Common API interfaces this app advertises.
     #[nserde(default)]
     pub interfaces: Vec<String>,
+    /// Backend verbs anonymous visitors may call when web-publish is interactive.
+    #[nserde(default, rename = "publicVerbs")]
+    pub public_verbs: Vec<String>,
     /// App data version expected by this bundle. Empty/omitted manifests default
     /// to version 1.
     #[nserde(default, rename = "dataVersion")]
@@ -150,6 +153,7 @@ pub fn validate_manifest_migrations(
     manifest: &BundleManifest,
     bundle_dir: Option<&Path>,
 ) -> Result<()> {
+    terrane_cap_web_publish::validate_public_verbs(&manifest.public_verbs)?;
     let data_version = manifest_data_version(manifest);
     if data_version == 1 && manifest.migrations.is_empty() {
         return Ok(());

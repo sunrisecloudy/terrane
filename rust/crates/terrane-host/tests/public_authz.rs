@@ -152,7 +152,8 @@ fn public_query_inventory_covers_every_registered_query() {
             "share.list",
             "sync.cursor",
             "sync.peers",
-            "tts.supports"
+            "tts.supports",
+            "web-publish.status"
         ]
     );
     for query in queries {
@@ -174,6 +175,7 @@ fn public_query_inventory_covers_every_registered_query() {
                 | "share.list"
                 | "sync.cursor"
                 | "sync.peers"
+                | "web-publish.status"
         ) {
             PublicQueryDisposition::Unclassified
         } else {
