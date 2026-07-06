@@ -34,6 +34,7 @@ pub mod cap_doc;
 pub mod cli;
 pub mod edge;
 pub mod ffi;
+mod geo_edge;
 pub mod home;
 pub mod i18n;
 pub mod deep_links;
@@ -491,6 +492,9 @@ pub fn query_on_core(
     query: &str,
     args: &[String],
 ) -> Result<QueryValue, String> {
+    if capability == "geo" && (query == "supports" || query == "geo.supports") {
+        return Ok(QueryValue::Bool(geo_edge::supports()));
+    }
     core.query(capability, query, args)
         .map_err(|e| e.to_string())
 }
