@@ -5,8 +5,8 @@ use nanoserde::{DeJson, SerJson};
 use terrane_cap_app::AppRecord;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
 use terrane_core::{
-    fold_records_in_memory, ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost, State,
-    LOCAL_OWNER_SUBJECT,
+    fold_records_in_memory, local_owner_principal, local_owner_subject, RuntimeHostHandle,
+    RuntimeResourceHost, State,
 };
 
 const SUPPORTED_EXTENSIONS: &[&str] = &["html", "htm", "css", "js", "mjs", "json", "svg"];
@@ -219,7 +219,7 @@ impl PreviewStore {
             app: preview.id.clone(),
             app_name: preview.name.clone(),
             org: terrane_core::LOCAL_ORG.to_string(),
-            subject: LOCAL_OWNER_SUBJECT.to_string(),
+            subject: preview_owner_subject(preview),
             operation: "preview".to_string(),
             source: "preview".to_string(),
             missing_resources: missing.clone(),
@@ -319,12 +319,13 @@ impl PreviewStore {
             ));
         }
         let installed_app = preview.install_app_id.as_str();
+        let owner_subject = preview_owner_subject(preview);
         for namespace in &preview.requested_resources {
             crate::dispatch_on_core(
                 core,
                 "auth.grant",
                 &[
-                    LOCAL_OWNER_SUBJECT.to_string(),
+                    owner_subject.clone(),
                     installed_app.to_string(),
                     namespace.clone(),
                 ],
@@ -356,7 +357,7 @@ impl PreviewStore {
             ));
         }
         preview.permission_status = status.to_string();
-        preview.decided_by = LOCAL_OWNER_SUBJECT.to_string();
+        preview.decided_by = preview_owner_subject(preview);
         preview.decision_reason = reason.to_string();
         if status == "approved" {
             preview.allowed_resources = preview.requested_resources.iter().cloned().collect();
@@ -399,7 +400,7 @@ impl PreviewStore {
             RuntimeResourceHost::new_with_temporary_resource_grants(
                 preview.id.clone(),
                 preview.state.clone(),
-                ExecutionPrincipal::local_owner(),
+                local_owner_principal(&preview.state),
                 preview.allowed_resources.iter().cloned(),
             ),
         ));
@@ -449,7 +450,7 @@ fn preview_request_view(
         admin_url: crate::permission::admin_url(admin_base_url, &request_id),
         request_id: request_id.clone(),
         org: terrane_core::LOCAL_ORG.to_string(),
-        subject: LOCAL_OWNER_SUBJECT.to_string(),
+        subject: preview_owner_subject(preview),
         app: preview.id.clone(),
         app_name: preview.name.clone(),
         operation: "preview".to_string(),
@@ -481,7 +482,11 @@ fn preview_resource_view(
 }
 
 fn preview_request_id(preview: &Preview, resources: &[String]) -> String {
-    crate::permission::permission_request_id(&preview.id, LOCAL_OWNER_SUBJECT, resources)
+    crate::permission::permission_request_id(&preview.id, &preview_owner_subject(preview), resources)
+}
+
+fn preview_owner_subject(preview: &Preview) -> String {
+    local_owner_subject(&preview.state)
 }
 
 impl Preview {

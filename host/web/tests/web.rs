@@ -2128,7 +2128,6 @@ fn admin_can_grant_missing_app_resource() {
     assert_eq!(status, 200, "admin unlock: {body}");
     assert!(body.contains(r#""locked":false"#), "admin unlock: {body}");
 
-    let agent = "agent:local-owner:codex-local";
     let (status, body) = http(
         &addr,
         "POST",
@@ -2138,15 +2137,19 @@ fn admin_can_grant_missing_app_resource() {
         ),
     );
     assert_eq!(status, 200, "admin agent register: {body}");
+    let agent_marker = r#""agent":""#;
+    let agent_start = body.find(agent_marker).unwrap() + agent_marker.len();
+    let agent_end = body[agent_start..].find('"').unwrap() + agent_start;
+    let agent = body[agent_start..agent_end].to_string();
     assert!(
-        body.contains(agent) && body.contains(r#""status":"active"#),
+        agent.starts_with("agent:") && body.contains(r#""status":"active"#),
         "admin agent register: {body}"
     );
 
     let (status, body) = http(&addr, "GET", "/__terrane/admin/agents", None);
     assert_eq!(status, 200, "admin agents: {body}");
     assert!(
-        body.contains(agent) && body.contains("Codex Local"),
+        body.contains(&agent) && body.contains("Codex Local"),
         "admin agents should list local agent: {body}"
     );
 
@@ -2177,7 +2180,7 @@ fn admin_can_grant_missing_app_resource() {
     let (status, body) = http(&addr, "GET", "/__terrane/admin/grants", None);
     assert_eq!(status, 200, "admin grants after agent grant: {body}");
     assert!(
-        body.contains(agent) && body.contains(r#""namespace":"kv"#),
+        body.contains(&agent) && body.contains(r#""namespace":"kv"#),
         "admin grants should include agent grant: {body}"
     );
 
@@ -2243,7 +2246,7 @@ fn admin_can_grant_missing_app_resource() {
     );
     assert_eq!(status, 200, "admin agent revoke: {body}");
     assert!(
-        body.contains(agent) && body.contains(r#""status":"revoked"#),
+        body.contains(&agent) && body.contains(r#""status":"revoked"#),
         "admin agent revoke: {body}"
     );
 
@@ -2274,7 +2277,8 @@ fn admin_can_grant_missing_app_resource() {
             && body.contains("registered agent")
             && body.contains("updated agent delegation")
             && body.contains("revoked agent")
-            && body.contains("revoked user:local-owner access"),
+            && body.contains("revoked user:")
+            && body.contains(" access to kv for app todo"),
         "admin audit should include auth history: {body}"
     );
 

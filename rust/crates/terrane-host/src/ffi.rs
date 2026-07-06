@@ -22,7 +22,7 @@ use std::sync::Mutex;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use terrane_core::Request;
+use terrane_core::{local_owner_principal, Request};
 
 pub const TERRANE_OK: c_int = 0;
 pub const TERRANE_ERR_NULL_ARG: c_int = 1;
@@ -341,7 +341,7 @@ pub unsafe extern "C" fn terrane_blob_read(
         let core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
         let granted = terrane_cap_auth::namespace_granted(
             core.state(),
-            &terrane_core::ExecutionPrincipal::local_owner(),
+            &local_owner_principal(core.state()),
             &app,
             "blob",
         );

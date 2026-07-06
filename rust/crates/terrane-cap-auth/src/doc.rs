@@ -47,11 +47,15 @@ pub fn auth_doc(include_internal: bool) -> CapabilityDoc {
         commands: vec![
             command_doc(
                 "auth.member.ensure-local-owner",
-                &[],
+                &[param(
+                    "subject",
+                    "Optional owner subject; defaults to the bootstrap local owner.",
+                    "subject_id",
+                )],
                 "commit",
-                "Ensure the local owner user has an active owner membership in the local org.",
+                "Ensure the local owner subject has an active owner membership in the local org.",
             )
-            .with_errors(&["unexpected argument"])
+            .with_errors(&["too many arguments", "invalid subject"])
             .with_emits(&["auth.member.added"]),
             command_doc(
                 "auth.grant",

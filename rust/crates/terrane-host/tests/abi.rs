@@ -7,7 +7,7 @@ use std::path::Path;
 use std::ptr;
 
 use tempfile::tempdir;
-use terrane_core::{read_log, Core};
+use terrane_core::{fold_records_in_memory, local_owner_subject, read_log, Core, State};
 use terrane_host::ffi::*;
 
 const APP_ADD_WITH_LINKS: &str =
@@ -108,6 +108,13 @@ unsafe fn take_c_string(p: *mut c_char) -> Option<String> {
     }
 }
 
+fn owner_subject_from_log(log: &Path) -> String {
+    let mut state = State::default();
+    let records = read_log(log).unwrap();
+    fold_records_in_memory(&mut state, &records).unwrap();
+    local_owner_subject(&state)
+}
+
 unsafe fn call_preview_create(
     h: *mut TerraneHandle,
     files_json: &str,
@@ -193,10 +200,12 @@ fn open_host_run_output_free_round_trip() {
     let dir = tempdir().unwrap();
     let src = write_bundle(dir.path());
     let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let log = dir.path().join("log.bin");
 
     unsafe {
         let h = terrane_open(home.as_ptr());
         assert!(!h.is_null(), "open should succeed");
+        let owner_subject = owner_subject_from_log(&log);
 
         // Register the app via the generic dispatch.
         let (code, out, err) = call(
@@ -211,7 +220,7 @@ fn open_host_run_output_free_round_trip() {
             terrane_dispatch,
             h,
             "auth.grant",
-            &["user:local-owner", "demo", "kv"],
+            &[&owner_subject, "demo", "kv"],
         );
         assert_eq!(code, TERRANE_OK, "auth.grant err: {err:?}");
 
@@ -242,6 +251,7 @@ fn open_mints_stable_replica_identity_for_crdt_host_writes() {
     unsafe {
         let h = terrane_open(home.as_ptr());
         assert!(!h.is_null(), "open should succeed");
+        let owner_subject = owner_subject_from_log(&log);
 
         let reopened = Core::open(&log).unwrap();
         let peer = reopened
@@ -271,7 +281,7 @@ fn open_mints_stable_replica_identity_for_crdt_host_writes() {
             terrane_dispatch,
             h,
             "auth.grant",
-            &["user:local-owner", "crdt_demo", "crdt"],
+            &[&owner_subject, "crdt_demo", "crdt"],
         );
         assert_eq!(code, TERRANE_OK, "auth.grant err: {err:?}");
 

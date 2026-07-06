@@ -1,4 +1,4 @@
-use terrane_core::{namespace_of, ExecutionPrincipal};
+use terrane_core::{local_owner_principal, namespace_of};
 
 use crate::HostCore;
 
@@ -376,7 +376,7 @@ pub fn authorize_public_command(
                     reason: format!("no such app: {app}"),
                 });
             }
-            let principal = ExecutionPrincipal::local_owner();
+            let principal = local_owner_principal(core.state());
             let granted =
                 terrane_cap_auth::namespace_granted(core.state(), &principal, app, namespace)
                     .map_err(|e| e.to_string())?;
@@ -415,7 +415,7 @@ fn authorize_public_mcp_call(core: &HostCore, args: &[String]) -> Result<PublicC
         }
     };
     let resource_id = terrane_cap_mcp_client::mcp_resource_id(connection).map_err(|e| e.to_string())?;
-    let principal = ExecutionPrincipal::local_owner();
+    let principal = local_owner_principal(core.state());
     if terrane_cap_auth::resource_granted(core.state(), &principal, app, &resource_id)
         .map_err(|e| e.to_string())?
     {

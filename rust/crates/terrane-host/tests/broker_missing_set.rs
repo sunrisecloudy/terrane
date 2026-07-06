@@ -6,7 +6,7 @@ use std::fs;
 
 use tempfile::tempdir;
 use terrane_host::permission::permission_required_for_app;
-use terrane_host::{dispatch_on_core, open_at_log_path, LOCAL_OWNER_SUBJECT};
+use terrane_host::{dispatch_on_core, open_at_log_path};
 
 fn s(args: &[&str]) -> Vec<String> {
     args.iter().map(|a| a.to_string()).collect()
@@ -58,10 +58,11 @@ fn broker_reports_missing_grant_then_none_after_grant() {
     );
 
     // After granting kv: nothing is required.
+    let owner_subject = terrane_core::local_owner_subject(core.state());
     dispatch_on_core(
         &mut core,
         "auth.grant",
-        &s(&[LOCAL_OWNER_SUBJECT, "demo", "kv"]),
+        &s(&[&owner_subject, "demo", "kv"]),
     )
     .unwrap();
     assert!(

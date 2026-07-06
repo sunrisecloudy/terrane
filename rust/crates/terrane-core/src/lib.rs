@@ -796,6 +796,25 @@ pub fn fold_records_in_memory(state: &mut State, records: &[EventRecord]) -> Res
     Ok(())
 }
 
+/// The canonical local owner subject for newly-authored work. Before the
+/// `person` primitive exists this is the bootstrap constant; once a person has
+/// been recorded, new local-owner actions are attributed to that person.
+pub fn local_owner_subject(state: &State) -> String {
+    state
+        .person
+        .persons
+        .keys()
+        .next()
+        .map(|person_id| format!("user:{person_id}"))
+        .unwrap_or_else(|| LOCAL_OWNER_SUBJECT.to_string())
+}
+
+pub fn local_owner_principal(state: &State) -> ExecutionPrincipal {
+    let mut principal = ExecutionPrincipal::local_owner();
+    principal.subject = local_owner_subject(state);
+    principal
+}
+
 /// Resource bridge used by runtime capabilities. It owns a working State so
 /// guest-code writes are visible to later reads during the same run, while the
 /// real log is untouched until core commits the collected records.
@@ -819,7 +838,8 @@ pub struct RuntimeResourceHost {
 
 impl RuntimeResourceHost {
     pub fn new(app: impl Into<String>, base_state: State) -> Self {
-        Self::new_with_principal(app, base_state, ExecutionPrincipal::local_owner())
+        let principal = local_owner_principal(&base_state);
+        Self::new_with_principal(app, base_state, principal)
     }
 
     pub fn new_with_principal(
@@ -1726,7 +1746,7 @@ impl<R: EffectRunner + 'static> Core<R> {
     pub fn dispatch(&mut self, request: Request) -> Result<Vec<EventRecord>> {
         self.last_output = None;
         let namespace = namespace_of(&request.name)?.to_string();
-        let principal = request.principal.clone();
+        let principal = self.resolve_principal(request.principal.clone());
         let decision = self.decide(request)?;
         match decision {
             Decision::Commit(records) => self.commit(records, &principal),
@@ -1740,6 +1760,14 @@ impl<R: EffectRunner + 'static> Core<R> {
                 "{namespace}: transient effects are only valid as resource calls"
             ))),
             Decision::Runtime(request) => self.run_runtime(&namespace, request, principal),
+        }
+    }
+
+    fn resolve_principal(&self, principal: ExecutionPrincipal) -> ExecutionPrincipal {
+        if principal == ExecutionPrincipal::local_owner() {
+            local_owner_principal(&self.state)
+        } else {
+            principal
         }
     }
 
