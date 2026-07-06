@@ -150,8 +150,8 @@ final class AppSchemeHandler: NSObject, WKURLSchemeHandler {
       switch bridge?.blobAsset(appId: request.appId, name: request.relPath) {
       case .success(let asset):
         respond(to: urlSchemeTask, asset: asset)
-      case .failure(let message):
-        respond(to: urlSchemeTask, status: 404, message: message)
+      case .failure(let status, let message):
+        respond(to: urlSchemeTask, status: status, message: message)
       case .none:
         respond(to: urlSchemeTask, status: 500, message: "terrane bridge is closed")
       }
