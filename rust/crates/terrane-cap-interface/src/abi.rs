@@ -357,6 +357,29 @@ pub enum Effect {
     PersonRotate {
         person_id: String,
     },
+    /// Mint the org keypair at the edge. The org id is derived from the public
+    /// key exactly like a person id, the seed is stored in the host secret
+    /// store under `org-<org_id>`, and the runner also self-signs the founder's
+    /// `owner` role grant with the founder's person key so the first event batch
+    /// records both the org home's identity and the founder membership.
+    OrgKeygen {
+        founder: String,
+    },
+    /// Sign an org role grant with the signer's person key. The signed message
+    /// binds the org id, member person id, and role; replay verifies it against
+    /// the signer's folded person pubkey. Edge policy decides whether the
+    /// signer is authorized to issue the grant (owner/admin) before dispatching
+    /// this effect; the capability only records the verifiable fact.
+    OrgRoleSign {
+        org_id: String,
+        member: String,
+        role: String,
+        signer: String,
+        /// When set (join path), the runner also records
+        /// [`org.invite.redeemed`](terrane_cap_org::invite_redeemed_event) with
+        /// this token hash to close the open invite.
+        redeem_token_hash: Option<String>,
+    },
 }
 
 /// A content-addressed image input handed to model effect runners. Capabilities

@@ -38,6 +38,7 @@ mod mcp;
 mod model;
 mod native;
 mod net;
+mod org;
 mod person;
 mod presence;
 mod push;

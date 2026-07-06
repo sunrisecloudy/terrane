@@ -33,6 +33,7 @@ mod mcp;
 mod model;
 mod native;
 mod net;
+mod org;
 mod password_manager;
 mod person;
 mod presence;

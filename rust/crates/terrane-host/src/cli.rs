@@ -78,6 +78,21 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane person (create | whoami | get <person-id> | attest <person-id> <kind> <claim> | revoke-attestation <person-id> <kind> <claim> | rotate <person-id>)".into())
         }
+        ["org", "create", founder] => dispatch("org.create", &[founder]),
+        ["org", "info"] => run_org_info(None),
+        ["org", "info", org_id] => run_org_info(Some(org_id)),
+        ["org", "members"] => run_org_members(None),
+        ["org", "members", org_id] => run_org_members(Some(org_id)),
+        ["org", "invite", org_id, role, rest @ ..] => run_org_invite(org_id, role, rest),
+        ["org", "join", org_id, token_or_hash, member] => run_org_join(org_id, token_or_hash, member),
+        ["org", "leave", org_id, member] => dispatch("org.leave", &[org_id, member]),
+        ["org", "role", "set", org_id, member, role, signer] => {
+            dispatch("org.role.set", &[org_id, member, role, signer])
+        }
+        ["org", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane org (create <founder> | info [org-id] | members [org-id] | invite <org-id> <owner|admin|member> [--note text] | join <org-id> <token-or-hash> <member> | leave <org-id> <member> | role set <org-id> <member> <owner|admin|member> <signer>)".into())
+        }
         ["share", "invite", app, rest @ ..] => run_share_invite(app, rest),
         ["share", "redeem", app, token, grantee] => run_share_redeem(app, token, grantee),
         ["share", "revoke", app, grantee] => run_share_revoke(app, grantee),
@@ -461,6 +476,70 @@ fn run_person_get(person_id: &str) -> Result<(), String> {
         other => return Err(format!("person.get returned unexpected value: {other:?}")),
     }
     Ok(())
+}
+
+fn run_org_info(org_id: Option<&str>) -> Result<(), String> {
+    let core = crate::open()?;
+    let args: Vec<String> = org_id.into_iter().map(str::to_string).collect();
+    match crate::query_on_core(&core, "org", "info", &args)? {
+        terrane_core::QueryValue::Json(json) => println!("{json}"),
+        other => return Err(format!("org.info returned unexpected value: {other:?}")),
+    }
+    Ok(())
+}
+
+fn run_org_members(org_id: Option<&str>) -> Result<(), String> {
+    let core = crate::open()?;
+    let args: Vec<String> = org_id.into_iter().map(str::to_string).collect();
+    match crate::query_on_core(&core, "org", "members", &args)? {
+        terrane_core::QueryValue::Json(json) => println!("{json}"),
+        other => return Err(format!("org.members returned unexpected value: {other:?}")),
+    }
+    Ok(())
+}
+
+fn run_org_invite(org_id: &str, role: &str, rest: &[&str]) -> Result<(), String> {
+    let note = parse_org_invite_options(rest)?;
+    let token = crate::edge::mint_invite_token().map_err(|e| e.to_string())?;
+    let token_hash = crate::share::token_hash(&token);
+    dispatch("org.invite", &[org_id, role, &token_hash, &note])?;
+    println!("token {token}");
+    println!("token_hash {token_hash}");
+    Ok(())
+}
+
+fn run_org_join(org_id: &str, token_or_hash: &str, member: &str) -> Result<(), String> {
+    let token_hash = normalize_org_token(token_or_hash)?;
+    dispatch("org.join", &[org_id, &token_hash, member])
+}
+
+fn normalize_org_token(value: &str) -> Result<String, String> {
+    if value.trim().is_empty() {
+        return Err("org invite token must not be empty".to_string());
+    }
+    if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(value.to_ascii_lowercase());
+    }
+    Ok(crate::share::token_hash(value))
+}
+
+fn parse_org_invite_options(rest: &[&str]) -> Result<String, String> {
+    let mut note = String::new();
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i] {
+            "--note" => {
+                let Some(value) = rest.get(i + 1) else {
+                    return Err("--note requires a value".into());
+                };
+                note = (*value).to_string();
+                i += 2;
+            }
+            other => return Err(format!("unknown org invite option: {other}")),
+        }
+    }
+    terrane_cap_org::validate_note(&note).map_err(|e| e.to_string())?;
+    Ok(note)
 }
 
 fn run_share_invite(app: &str, rest: &[&str]) -> Result<(), String> {
@@ -2599,6 +2678,8 @@ pub fn print_help() {
          \x20 terrane connection ls|stat|rm                     inspect or remove non-secret connection metadata\n\
          \x20 terrane person create|whoami                      ensure or inspect the local durable person\n\
          \x20 terrane person attest|rotate|revoke-attestation   attach, rotate, or revoke public identity facts\n\
+         \x20 terrane org create|info|members                   create or inspect a shared org home\n\
+         \x20 terrane org invite|join|leave|role set …          manage person-signed org membership facts\n\
          \x20 terrane share invite <app> --rights read|write    mint a one-time app share token\n\
          \x20 terrane share redeem|revoke|ls|invites …          accept, revoke, or inspect shares\n\
          \x20 terrane pair <url> --code <code>                  pair with a sync HTTP peer\n\
