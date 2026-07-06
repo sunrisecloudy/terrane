@@ -30,9 +30,9 @@ argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──
     `terrane-cap-interface` contract (`app`, `kv`, `crdt`, `harness`, etc.).
   - `crates/terrane-host/` — host services plus the `terrane` binary, C ABI,
     preview store, sync, MCP, and the reusable CLI adapter.
-- `host/` — hosts, each its **own Cargo workspace** (separate build) so non-Rust
-  hosts aren't entangled. `host/cli/` is `terrane-host`, the first host; it
-  path-deps across the boundary into `rust/crates` and adds `run <app>`.
+- `host/` — host adapters: `cli/`, `mcp/`, `web/` are Rust packages in the root
+  workspace (`terrane-host-cli` etc.); `macos/` is native with its own build.
+  Each is a thin client path-depping across the boundary into `rust/crates`.
 - `apps/` — app bundles (plain JS, no build system). `apps/todo/` is the first
   app: a `manifest.json` + `main.js` backend over `ctx.resource.kv`.
 
@@ -47,7 +47,10 @@ argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──
   decide, fold, optional describe) and register it in `default_registry`. Never
   reintroduce a central command/event enum or a central decide/fold match.
   Events are name-tagged (`{kind, payload}`); cross-capability reactions go
-  through broadcast fold, not direct coupling.
+  through broadcast fold, not direct coupling. **Follow the step-by-step guide
+  in `docs/cap-best-practice/`** (start at its README checklist — contract,
+  wiring touch points, permissions, tests, release). Capability specs/plans
+  live in `plan-completed-cap/`.
 - **Tests live in their own files, never inline in the implementation.** Put
   them in the crate's `tests/` directory (integration tests over the public
   surface). The `src/*.rs` files hold code; the proofs live beside them.
