@@ -40,6 +40,7 @@ mod native;
 mod net;
 mod person;
 mod presence;
+mod push;
 mod publish;
 mod query;
 mod relational_db;

@@ -47,6 +47,7 @@ pub mod presence;
 pub mod preview;
 pub mod publish;
 pub mod public_authz;
+pub mod push_watch;
 pub mod scheduler;
 pub mod secret_store;
 pub mod share;
@@ -422,7 +423,11 @@ fn dispatch_request_on_core(
     core: &mut HostCore,
     request: Request,
 ) -> Result<CommandOutcome, String> {
+    let command_name = request.name.clone();
     let records = core.dispatch(request).map_err(|e| e.to_string())?;
+    if push_watch::should_process_after_command(&command_name) {
+        push_watch::process_committed_records(core, &records).map_err(|e| e.to_string())?;
+    }
     Ok(CommandOutcome {
         records,
         output: core.take_last_output(),

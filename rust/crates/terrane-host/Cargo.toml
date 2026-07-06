@@ -72,6 +72,7 @@ terrane-cap-native.workspace = true
 terrane-cap-net.workspace = true
 terrane-cap-person.workspace = true
 terrane-cap-presence.workspace = true
+terrane-cap-push.workspace = true
 terrane-cap-publish.workspace = true
 terrane-cap-replica.workspace = true
 terrane-cap-scheduler.workspace = true

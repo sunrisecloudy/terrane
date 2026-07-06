@@ -89,6 +89,7 @@ fn grantable_command_inventory_requires_explicit_extractors_or_refusal() {
             "native",
             "net",
             "presence",
+            "push",
             "query",
             "relational_db",
             "search",

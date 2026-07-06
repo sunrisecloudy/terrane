@@ -148,6 +148,14 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
             let _ = rest;
             Err("usage: terrane webhook (register <app> <name> <verb> | rotate <app> <name> | unregister <app> <name> | ls <app>)".into())
         }
+        ["push", "ls", app] | ["push", "list", app] => run_push_list(app),
+        ["push", "rm", app, sub_id] | ["push", "remove", app, sub_id] => {
+            dispatch("push.unsubscribe", &[app, sub_id])
+        }
+        ["push", rest @ ..] => {
+            let _ = rest;
+            Err("usage: terrane push (ls <app> | rm <app> <sub_id>)".into())
+        }
         ["tts", "speak", app, rest @ ..] => run_tts_speak(app, rest),
         ["tts", "render", app, rest @ ..] => run_tts_render(app, rest),
         ["tts", "voices"] => run_tts_voices(),
@@ -2176,6 +2184,15 @@ pub fn run_native_drain_once() -> Result<(), String> {
     Ok(())
 }
 
+fn run_push_list(app: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    println!(
+        "{}",
+        terrane_cap_push::list_json(core.state(), app).map_err(|e| e.to_string())?
+    );
+    Ok(())
+}
+
 fn parse_kv_storage_set(rest: &[&str]) -> Result<Vec<String>, String> {
     match rest {
         ["--default", backend, tail @ ..] | ["default", backend, tail @ ..] => {
@@ -2521,6 +2538,7 @@ pub fn print_help() {
          \x20 terrane webhook register <app> <name> <verb>    mint a local-network webhook URL\n\
          \x20 terrane webhook rotate|unregister <app> <name>  rotate or remove a webhook URL\n\
          \x20 terrane webhook ls <app>                        list webhook URL paths\n\
+         \x20 terrane push ls|rm <app> [sub_id]                inspect or remove local push subscriptions\n\
          \x20 terrane tts speak <app> [--voice v] [--rate r] <text…>   speak text now; record nothing\n\
          \x20 terrane tts render <app> [--voice v] [--rate r] <text…>  render speech into blob CAS\n\
          \x20 terrane tts voices|renders <app>                list host voices or folded render metadata\n\

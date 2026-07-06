@@ -36,6 +36,7 @@ mod net;
 mod password_manager;
 mod person;
 mod presence;
+mod push;
 mod publish;
 mod query;
 mod scheduler;

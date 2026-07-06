@@ -187,6 +187,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "native",
             "net",
             "presence",
+            "push",
             "query",
             "relational_db",
             "scheduler",
