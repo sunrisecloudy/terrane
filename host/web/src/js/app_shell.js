@@ -427,6 +427,14 @@
               return postJson(route, body);
             });
           }
+          if (isPickRequired(result)) {
+            // Powerbox: the app asked to hand off over an interface with no
+            // chosen target. Render the candidate apps, record the pick, retry.
+            sendBridgeProgress(message.id);
+            return promptForPick(result, function () {
+              return postJson(route, body);
+            });
+          }
           return result;
         })
         .then(function (result) {
@@ -616,6 +624,156 @@
     document.addEventListener("keydown", function (event) {
       if (event.key === "Escape" && !permDialog.hidden && !permApprove.disabled) {
         decideActivePermission("deny");
+      }
+    });
+  }
+
+  // ---- In-session interop picker (powerbox) ------------------------------
+  // A 403 interop_pick_required from an invoke opens a host-owned chooser.
+  // Choosing records the caller -> interface -> target grant and retries;
+  // cancel answers the app with the original pick-required error.
+
+  var pickDialog = document.getElementById("pick-dialog");
+  var pickApp = document.getElementById("pick-app");
+  var pickInterface = document.getElementById("pick-interface");
+  var pickList = document.getElementById("pick-list");
+  var pickEmpty = document.getElementById("pick-empty");
+  var pickError = document.getElementById("pick-error");
+  var pickCancel = document.getElementById("pick-cancel");
+  var pickConfirm = document.getElementById("pick-confirm");
+  var pickQueue = [];
+  var pickActive = null;
+  var pickSelected = "";
+
+  function isPickRequired(result) {
+    return (
+      !result.ok &&
+      result.body &&
+      result.body.type === "interop_pick_required" &&
+      typeof result.body.interface === "string" &&
+      result.body.interface !== ""
+    );
+  }
+
+  function promptForPick(result, retry) {
+    return new Promise(function (resolve) {
+      pickQueue.push({ required: result.body, original: result, retry: retry, resolve: resolve });
+      pumpPickQueue();
+    });
+  }
+
+  function pumpPickQueue() {
+    if (pickActive || !pickQueue.length || !pickDialog) return;
+    pickActive = pickQueue.shift();
+    var required = pickActive.required;
+    pickApp.textContent = required.app || "An app";
+    pickInterface.textContent = required.interface || "an interface";
+    pickError.hidden = true;
+    pickError.textContent = "";
+    pickSelected = "";
+    renderPickOptions(required.candidates || []);
+    setPickBusy(false);
+    pickDialog.hidden = false;
+    if (pickCancel) pickCancel.focus();
+  }
+
+  function renderPickOptions(candidates) {
+    pickList.textContent = "";
+    var hasCandidates = candidates.length > 0;
+    pickEmpty.hidden = hasCandidates;
+    pickConfirm.disabled = !hasCandidates;
+    candidates.forEach(function (candidate) {
+      var id = String(candidate.id || "");
+      if (!id) return;
+      var option = document.createElement("button");
+      option.type = "button";
+      option.className = "pick-option";
+      option.setAttribute("role", "radio");
+      option.setAttribute("aria-checked", "false");
+      option.dataset.target = id;
+      option.textContent = candidate.name ? candidate.name + " (" + id + ")" : id;
+      option.addEventListener("click", function () {
+        selectPickOption(id);
+      });
+      pickList.appendChild(option);
+    });
+  }
+
+  function selectPickOption(target) {
+    pickSelected = target;
+    var options = pickList.querySelectorAll(".pick-option");
+    for (var i = 0; i < options.length; i++) {
+      options[i].setAttribute(
+        "aria-checked",
+        options[i].dataset.target === target ? "true" : "false"
+      );
+    }
+    pickConfirm.disabled = !target;
+  }
+
+  function setPickBusy(busy) {
+    pickConfirm.disabled = busy || !pickSelected;
+    pickCancel.disabled = busy;
+  }
+
+  function settlePick(makeResult) {
+    var entry = pickActive;
+    pickActive = null;
+    pickDialog.hidden = true;
+    makeResult(entry).then(entry.resolve);
+    pumpPickQueue();
+  }
+
+  function confirmActivePick() {
+    if (!pickActive || !pickSelected) return;
+    setPickBusy(true);
+    var required = pickActive.required;
+    fetch("/__terrane/admin/interop/pick", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "X-Terrane-Admin": "local-admin",
+      },
+      body: JSON.stringify({
+        app: required.app,
+        interface: required.interface,
+        target: pickSelected,
+      }),
+    })
+      .then(function (response) {
+        if (!response.ok) {
+          return response.text().then(function (text) {
+            var detail = "";
+            try {
+              detail = (JSON.parse(text) || {}).error || "";
+            } catch (_) {}
+            throw new Error(detail || "HTTP " + response.status);
+          });
+        }
+        settlePick(function (entry) {
+          return entry.retry();
+        });
+      })
+      .catch(function (error) {
+        setPickBusy(false);
+        pickError.textContent = "Cannot choose: " + errorMessage(error);
+        pickError.hidden = false;
+      });
+  }
+
+  function cancelActivePick() {
+    if (!pickActive) return;
+    settlePick(function (entry) {
+      return Promise.resolve(entry.original);
+    });
+  }
+
+  if (pickDialog) {
+    pickConfirm.addEventListener("click", confirmActivePick);
+    pickCancel.addEventListener("click", cancelActivePick);
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape" && !pickDialog.hidden && !pickCancel.disabled) {
+        cancelActivePick();
       }
     });
   }

@@ -364,3 +364,22 @@ fn deny_and_cancel_keep_permission_required() {
             .is_some()
     );
 }
+
+#[test]
+fn interop_pick_required_parses_marker_and_ignores_plain_errors() {
+    use terrane_host::permission::InteropPickRequired;
+
+    let marker = terrane_cap_interop::PICK_REQUIRED_MARKER;
+    let err = format!(
+        "invalid input: {marker}{{\"interface\":\"inbox\",\"app\":\"sender-app\",\"candidates\":[{{\"id\":\"mailbox-app\",\"name\":\"Mailbox\"}}]}}"
+    );
+    let pick = InteropPickRequired::parse(&err).expect("marker should parse");
+    assert_eq!(pick.kind, "interop_pick_required");
+    assert_eq!(pick.interface, "inbox");
+    assert_eq!(pick.app, "sender-app");
+    assert_eq!(pick.candidates.len(), 1);
+    assert_eq!(pick.candidates[0].id, "mailbox-app");
+    assert_eq!(pick.candidates[0].name, "Mailbox");
+
+    assert!(InteropPickRequired::parse("runtime error: something else").is_none());
+}

@@ -139,6 +139,10 @@ pub enum SyncOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InvokeFailure {
     PermissionRequired(Box<permission::PermissionRequired>),
+    /// The backend asked to send over an interface with no picked default
+    /// target (or called `interop.pick`). The host renders the candidate app
+    /// list, records the user's choice as a grant, and retries.
+    PickRequired(Box<permission::InteropPickRequired>),
     Other(String),
 }
 
@@ -146,6 +150,7 @@ impl InvokeFailure {
     pub fn message(&self) -> String {
         match self {
             InvokeFailure::PermissionRequired(required) => required.message(),
+            InvokeFailure::PickRequired(pick) => pick.message.clone(),
             InvokeFailure::Other(message) => message.clone(),
         }
     }
@@ -591,10 +596,31 @@ pub fn invoke_app_input_checked_with_admin_base_and_source(
     let mut argv = Vec::with_capacity(input.len() + 1);
     argv.push(app.to_string());
     argv.extend(input.iter().cloned());
-    Ok(dispatch_on_core(core, command, &argv)
-        .map_err(InvokeFailure::Other)?
-        .output
-        .unwrap_or_default())
+    match dispatch_on_core(core, command, &argv) {
+        Ok(outcome) => Ok(outcome.output.unwrap_or_default()),
+        Err(e) => match permission::InteropPickRequired::parse(&e) {
+            Some(pick) => Err(InvokeFailure::PickRequired(Box::new(pick))),
+            None => Err(InvokeFailure::Other(e)),
+        },
+    }
+}
+
+/// Record a picker choice (caller → target for `interface`) and return once the
+/// grant is folded, so a retried `interop.send` resolves the new default. This
+/// is the trusted-host recording arm of `interop.pick`; app/agent callers can
+/// only *raise* the picker, never record the grant themselves.
+pub fn record_interop_pick(
+    core: &mut HostCore,
+    caller: &str,
+    interface: &str,
+    target: &str,
+) -> Result<(), String> {
+    dispatch_on_core(
+        core,
+        "interop.pick",
+        &[caller.to_string(), interface.to_string(), target.to_string()],
+    )
+    .map(|_| ())
 }
 
 /// Return an app's self-declared action metadata by invoking its reserved

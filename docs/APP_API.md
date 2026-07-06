@@ -86,6 +86,18 @@ Items are named by `terrane://app/<appId>/item/<itemId>`, where `itemId` is
 percent-encoded. The URI is a name, not a bearer token; resolving it still goes
 through interop authorization and the owning app's live `common.get`.
 
+To hand data off without knowing the receiver, call
+`ctx.resource.interop.send(interface, kind, payloadJson)`. It resolves the
+caller's picked default target for the interface and delivers
+`common.receive(kind, payloadJson)` to it. If the user has not picked a target
+yet, `send` — and a bare `ctx.resource.interop.pick(interface)` — raise the
+**powerbox picker**: the host renders every installed app declaring that
+interface, and the user's choice IS the grant. The pick is recorded as a scoped
+`interop:<interface>=<target>` auth grant and applied to the retried call. That
+grant only authorizes `send` to the chosen app; a direct
+`ctx.resource.interop.call(target, verb, args)` still needs the blanket
+`interop` namespace grant.
+
 ### Low-level: define `handle` yourself
 
 If you'd rather control everything (or don't want self-description), define a

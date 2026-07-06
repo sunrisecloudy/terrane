@@ -94,6 +94,101 @@ fn two_apps_call_each_other_and_resolve_item_uri() {
 }
 
 #[test]
+fn interop_send_picks_default_target_then_delivers_to_receive() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+
+    let target = home.join("mailbox-app");
+    fs::create_dir(&target).unwrap();
+    fs::write(
+        target.join("manifest.json"),
+        r#"{ "id": "mailbox-app", "name": "Mailbox", "runtime": "js", "backend": "main.js", "resources": ["kv"], "interfaces": ["inbox"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        target.join("main.js"),
+        r#"
+            var actions = {
+              "common.receive": { run: function (args) {
+                var kind = args[0] || "";
+                var payload = args[1] || "";
+                ctx.resource.kv.set("inbox/last", JSON.stringify({ kind: kind, payload: payload }));
+                return "received:" + kind + ":" + payload;
+              } }
+            };
+        "#,
+    )
+    .unwrap();
+
+    let caller = home.join("sender-app");
+    fs::create_dir(&caller).unwrap();
+    fs::write(
+        caller.join("manifest.json"),
+        r#"{ "id": "sender-app", "name": "Sender", "runtime": "js", "backend": "main.js", "resources": ["interop"], "interfaces": ["items"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        caller.join("main.js"),
+        r#"
+            var actions = {
+              ship: { run: function (args) {
+                return ctx.resource.interop.send("inbox", args[0], args[1]);
+              } }
+            };
+        "#,
+    )
+    .unwrap();
+
+    for (id, path) in [("mailbox-app", &target), ("sender-app", &caller)] {
+        let (ok, _, err) = terrane(
+            home,
+            &["app", "add", id, id, "--source", path.to_str().unwrap()],
+        );
+        assert!(ok, "app add {id} failed: {err}");
+    }
+
+    // The blanket interop grant (the generic "grant interop" step the shell's
+    // pre-check normally handles) installs `ctx.resource.interop`; the picker
+    // then scopes the default target per interface.
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "sender-app", "interop"],
+    );
+    assert!(ok, "grant sender interop failed: {err}");
+
+    // Before a pick, send raises the powerbox signal naming the candidate app.
+    let (ok, _out, err) = terrane(
+        home,
+        &["js-runtime", "run", "sender-app", "ship", "text", "hi"],
+    );
+    assert!(!ok, "send should raise the picker before a target is chosen");
+    assert!(err.contains("interop_pick_required:"), "err: {err}");
+    assert!(err.contains("mailbox-app"), "picker candidates: {err}");
+
+    // Choosing IS granting: record the caller -> interface -> target default.
+    let (ok, _, err) = terrane(
+        home,
+        &["interop", "pick", "sender-app", "inbox", "mailbox-app"],
+    );
+    assert!(ok, "interop pick failed: {err}");
+
+    // The retried send now resolves the default target and delivers.
+    let (ok, out, err) = terrane(
+        home,
+        &["js-runtime", "run", "sender-app", "ship", "text", "hi"],
+    );
+    assert!(ok, "interop send failed: {err}");
+    assert!(out.contains("received:text:hi"), "out: {out}");
+
+    let (ok, log, err) = terrane(home, &["log"]);
+    assert!(ok, "log failed: {err}");
+    assert!(
+        log.contains("interop.called sender-app -> mailbox-app common.receive"),
+        "log: {log}"
+    );
+}
+
+#[test]
 fn bundle_validation_rejects_missing_common_api() {
     let dir = tempdir().unwrap();
     let home = dir.path();

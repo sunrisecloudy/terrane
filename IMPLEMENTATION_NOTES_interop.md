@@ -15,10 +15,32 @@ Implemented the `interop` capability and the `item` primitive slice as a host-me
 - `interop.apps` lists apps declaring an interface. Public auth explicitly allows that discovery query.
 - `interop.pick` records an `auth.granted` hook through the auth event path. Visual picker UI remains a documented follow-up, as allowed by the slice.
 
-## Known Follow-Up
+## Picker UI (follow-up, now implemented)
 
-- The web/mac visual picker shell is not implemented in this slice. The backend grant hook/query path exists, and raw public `interop.pick` dispatch is refused so picker approval can stay on the recorded approval path.
-- `interop.send` currently validates the route surface but does not auto-select a default target without a recorded picker selection UI.
+- `interop.send(interface, kind, payload)` resolves the caller's picked default
+  target (`terrane_cap_auth::interop_default_target`) and delivers
+  `common.receive(kind, payload)` via `Effect::AppCall`. With no picked target,
+  `send` — and a bare `interop.pick(interface)` — fail with a stable
+  `interop_pick_required:<json>` marker carrying the interface, caller, and
+  candidate apps declaring the interface.
+- The marker survives the JS runtime verbatim (`run_js_bundle` returns the
+  original resource-call `Error`). `terrane_host::permission::InteropPickRequired::parse`
+  turns it into a structured host payload; `invoke_app_input_checked_*` maps it
+  to `InvokeFailure::PickRequired`.
+- Web shell (`host/web`): the invoke route returns the pick payload as a 403
+  `type: interop_pick_required`; `app_shell.js` renders the candidate list in a
+  host-owned picker bar, POSTs the choice to `POST /__terrane/admin/interop/pick`
+  (→ `terrane_host::record_interop_pick` → trusted `interop.pick` with target),
+  and retries the held bridge request. MCP agents receive the same JSON (parity).
+- Mac host (`host/macos`): `InteropPickPrompt.parse` reads the same marker;
+  `AppDelegate.presentInteropPicker` shows an `NSPopUpButton` chooser, records
+  via `TerraneBridge.recordInteropPick`, and retries.
+- Choosing IS granting: the pick records a scoped `interop:<interface>=<target>`
+  auth grant (resource id `interop:<interface>`, target in `selector_id`).
+  Direct `interop.call` still requires the blanket `interop` namespace grant;
+  the picker grant only authorizes `send` to the chosen target. Raw public
+  `interop.pick` stays refused so grants are only recorded through the host
+  picker route.
 
 ## Files Changed
 

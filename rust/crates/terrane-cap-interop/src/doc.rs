@@ -28,13 +28,13 @@ pub fn interop_doc(_include_internal: bool) -> CapabilityDoc {
                 param("kind", "common.receive kind hint.", "string"),
                 param("payloadJson", "JSON payload string.", "json"),
             ],
-            "Send a payload through common.receive.",
+            "Deliver a payload to the picked default target's common.receive; raises the picker if no target is chosen.",
         ), "string reply from common.receive"),
         with_returns(resource_method(
             "pick",
             "call",
-            &[param("interface", "Interface to pick.", "string")],
-            "Record an interop picker grant hook.",
+            &[param("interface", "Interface to pick a default target for.", "string")],
+            "Raise the powerbox picker for an interface; the user's choice is recorded as a scoped grant.",
         ), "grant status string"),
     ];
     CapabilityDoc {
@@ -78,9 +78,13 @@ pub fn interop_doc(_include_internal: bool) -> CapabilityDoc {
                     param("target", "Chosen target app id.", "app_id"),
                 ],
                 "commit",
-                "Record a chosen app as an interop grant hook.",
+                "Record a chosen target as a scoped interop default; a bare two-arg pick raises the picker instead.",
             )
-            .with_errors(&["app not found", "target does not declare interface"])
+            .with_errors(&[
+                "interop_pick_required",
+                "app not found",
+                "target does not declare interface",
+            ])
             .with_emits(&["auth.granted"]),
         ],
         queries: vec![query_doc(

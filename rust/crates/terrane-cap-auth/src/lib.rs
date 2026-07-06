@@ -719,6 +719,68 @@ pub fn granted_namespace_event(
     })
 }
 
+/// The auth `resource_id` an interop picker grant is keyed under: one scoped
+/// grant per (caller, interface) so a caller can hold a distinct default target
+/// for each interface it sends to. Distinct from the blanket `interop`
+/// namespace grant that authorizes `interop.call`.
+pub fn interop_target_resource_id(interface: &str) -> String {
+    format!("interop:{interface}")
+}
+
+/// Record the user's picker choice (from `interop.pick`): caller → target for a
+/// given interface. The chosen target is stored in `selector_id` so
+/// [`interop_default_target`] can resolve it directly, and mirrored into the
+/// human-readable `source` (`interop:<interface>=<target>`) for audit trails.
+pub fn granted_interop_target_event(
+    principal: &ExecutionPrincipal,
+    caller: &str,
+    interface: &str,
+    target: &str,
+) -> Result<EventRecord> {
+    granted_event(Granted {
+        org: principal.org.clone(),
+        subject: principal.subject.clone(),
+        app: caller.to_string(),
+        namespace: "interop".to_string(),
+        selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
+        selector_id: target.to_string(),
+        selector_json: format!(
+            r#"{{"interface":"{}","target":"{}"}}"#,
+            json_string(interface),
+            json_string(target)
+        ),
+        resource_id: interop_target_resource_id(interface),
+        verbs: vec!["call".to_string()],
+        granted_by: LOCAL_OWNER_SUBJECT.to_string(),
+        source: format!("interop:{interface}={target}"),
+    })
+}
+
+/// Resolve the caller's granted default target for an interface, if the user
+/// has picked one via the powerbox. Returns the target app id recorded by
+/// [`granted_interop_target_event`].
+pub fn interop_default_target(
+    state: &dyn StateStore,
+    principal: &ExecutionPrincipal,
+    caller: &str,
+    interface: &str,
+) -> Result<Option<String>> {
+    if principal.subject.starts_with("agent:") && !agent_is_active(state, &principal.subject)? {
+        return Ok(None);
+    }
+    let key = grant_key(
+        &principal.org,
+        &principal.subject,
+        caller,
+        &interop_target_resource_id(interface),
+    );
+    Ok(state_ref::<AuthState>(state, "auth")?
+        .grants
+        .get(&key)
+        .map(|grant| grant.selector_id.clone())
+        .filter(|target| !target.is_empty()))
+}
+
 fn member_added_event(event: MemberAdded) -> Result<EventRecord> {
     encode_event("auth.member.added", &event)
 }

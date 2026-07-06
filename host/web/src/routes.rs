@@ -233,6 +233,9 @@ pub fn route(
         (Method::Delete, ["__terrane", "admin", "grants"]) => {
             crate::admin::revoke(core, admin_session, request)
         }
+        (Method::Post, ["__terrane", "admin", "interop", "pick"]) => {
+            crate::admin::interop_pick(core, admin_session, request)
+        }
         (Method::Post, ["__terrane", "admin", "stt", "open"]) => {
             crate::stt::admin_open_route(core, request)
         }
@@ -1053,6 +1056,12 @@ fn invoke(
         Ok(output) => json_ok(&InvokeResponse { output }),
         Err(terrane_host::InvokeFailure::PermissionRequired(required)) => {
             let body = required.serialize_json();
+            Response::from_data(body.into_bytes())
+                .with_status_code(403)
+                .with_header(header("Content-Type", "application/json"))
+        }
+        Err(terrane_host::InvokeFailure::PickRequired(pick)) => {
+            let body = pick.serialize_json();
             Response::from_data(body.into_bytes())
                 .with_status_code(403)
                 .with_header(header("Content-Type", "application/json"))
