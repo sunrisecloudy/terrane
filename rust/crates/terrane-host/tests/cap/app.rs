@@ -81,6 +81,45 @@ fn app_upgrade_e2e_replaces_bundle_runs_migration_and_archives_versions() {
     assert!(out.contains("replay ok"), "out: {out}");
 }
 
+#[test]
+fn app_install_runs_optional_bundle_smoke_tests() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let bundle = home.join("smoke-pass");
+    write_smoke_bundle(
+        &bundle,
+        "smoke-pass",
+        r#"[
+  {"verb":"echo","args":["hello"],"expect":{"contains":"Echo: hello"}},
+  {"verb":"profile","args":["Ada"],"expect":{"jsonSubset":{"ok":true,"user":{"name":"Ada"}}}},
+  {"verb":"profile","args":["Ada"],"expect":{"shape":{"ok":"boolean","user":{"name":"string","score":"number"}}}}
+]"#,
+    );
+
+    let (ok, out, err) = terrane(home, &["app", "install", path(&bundle)]);
+
+    assert!(ok, "install should accept passing tests.json: {err}");
+    assert!(out.contains("installed"), "out: {out}");
+}
+
+#[test]
+fn app_install_rejects_failing_bundle_smoke_test() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let bundle = home.join("smoke-fail");
+    write_smoke_bundle(
+        &bundle,
+        "smoke-fail",
+        r#"[{"verb":"echo","args":["hello"],"expect":{"contains":"goodbye"}}]"#,
+    );
+
+    let (ok, out, err) = terrane(home, &["app", "install", path(&bundle)]);
+
+    assert!(!ok, "install should reject failing tests.json: {out}");
+    assert!(err.contains("tests.json case 1 (echo) failed expectation"), "err: {err}");
+    assert!(err.contains("goodbye"), "err: {err}");
+}
+
 fn write_bundle(
     bundle: &Path,
     version: &str,
@@ -122,6 +161,42 @@ fn write_bundle(
     for (file, content) in extra_files {
         std::fs::write(bundle.join(file), content).unwrap();
     }
+}
+
+fn write_smoke_bundle(bundle: &Path, id: &str, tests_json: &str) {
+    std::fs::create_dir_all(bundle).unwrap();
+    std::fs::write(
+        bundle.join("manifest.json"),
+        format!(
+            r#"{{
+  "id":"{id}",
+  "name":"Smoke Test",
+  "runtime":"js",
+  "backend":"main.js",
+  "resources":[]
+}}"#
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        bundle.join("main.js"),
+        r#"
+var actions = {
+  echo: {
+    run: function (args) {
+      return "Echo: " + (args[0] || "");
+    }
+  },
+  profile: {
+    run: function (args) {
+      return JSON.stringify({ ok: true, user: { name: args[0] || "", score: 7 }, extra: "kept" });
+    }
+  }
+};
+"#,
+    )
+    .unwrap();
+    std::fs::write(bundle.join("tests.json"), tests_json).unwrap();
 }
 
 fn path(path: &Path) -> &str {

@@ -792,6 +792,76 @@ fn app_build_staged_tools_validate_and_commit_without_resending_files() {
 }
 
 #[test]
+fn app_build_validate_runs_passing_tests_json() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let draft_id = start_smoke_draft(&mut core, "builder-smoke-pass", "Builder Smoke Pass");
+    put_smoke_main(&mut core, &draft_id, "builder-smoke-pass");
+    put_smoke_tests(
+        &mut core,
+        &draft_id,
+        r#"[
+  {"verb":"echo","args":["hello"],"expect":{"contains":"Echo: hello"}},
+  {"verb":"profile","args":["Ada"],"expect":{"jsonSubset":{"ok":true,"user":{"name":"Ada"}}}}
+]"#,
+    );
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"validate","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+
+    assert_eq!(validation["valid"], true, "validate: {validate}");
+}
+
+#[test]
+fn app_build_validate_rejects_failing_tests_json() {
+    let _guard = env_lock().lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let _restore = isolate_home(dir.path());
+    let mut core = crate::open_at_log_path(dir.path().join("log.bin")).unwrap();
+
+    let draft_id = start_smoke_draft(&mut core, "builder-smoke-fail", "Builder Smoke Fail");
+    put_smoke_main(&mut core, &draft_id, "builder-smoke-fail");
+    put_smoke_tests(
+        &mut core,
+        &draft_id,
+        r#"[{"verb":"echo","args":["hello"],"expect":{"contains":"goodbye"}}]"#,
+    );
+
+    let validate = handle_json_rpc(
+        &mut core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"validate","method":"tools/call","params":{{"name":"app_build_validate","arguments":{{"draftId":{}}}}}}}"#,
+            super::json_str(&draft_id)
+        ),
+    )
+    .unwrap();
+    let validation = structured_content(&validate);
+
+    assert_eq!(validation["valid"], false, "validate: {validate}");
+    assert!(
+        validation["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error
+                .as_str()
+                .unwrap_or_default()
+                .contains("tests.json case 1 (echo) failed expectation")),
+        "validate: {validate}"
+    );
+}
+
+#[test]
 fn app_register_inline_dry_run_can_commit_by_draft_id() {
     let _guard = env_lock().lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -847,6 +917,56 @@ fn app_register_inline_dry_run_can_commit_by_draft_id() {
             .is_file(),
         "inline draft should install app files"
     );
+}
+
+fn start_smoke_draft(core: &mut crate::HostCore, id: &str, name: &str) -> String {
+    let start = handle_json_rpc(
+        core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"start","method":"tools/call","params":{{"name":"app_build_start","arguments":{{"id":{},"name":{}}}}}}}"#,
+            super::json_str(id),
+            super::json_str(name)
+        ),
+    )
+    .unwrap();
+    structured_content(&start)["draftId"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn put_smoke_main(core: &mut crate::HostCore, draft_id: &str, app_id: &str) {
+    let main = format!(
+        r#"
+var actions = {{
+  echo: {{ run: function (args) {{ return "Echo: " + (args[0] || ""); }} }},
+  profile: {{ run: function (args) {{ return JSON.stringify({{ ok: true, app: {app_id:?}, user: {{ name: args[0] || "", score: 7 }} }}); }} }}
+}};
+"#
+    );
+    let put = handle_json_rpc(
+        core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put-main","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"main.js","content":{}}}}}}}"#,
+            super::json_str(draft_id),
+            super::json_str(&main)
+        ),
+    )
+    .unwrap();
+    assert!(put.contains(r#""isError":false"#), "put main.js: {put}");
+}
+
+fn put_smoke_tests(core: &mut crate::HostCore, draft_id: &str, tests_json: &str) {
+    let put = handle_json_rpc(
+        core,
+        &format!(
+            r#"{{"jsonrpc":"2.0","id":"put-tests","method":"tools/call","params":{{"name":"app_build_put_file","arguments":{{"draftId":{},"path":"tests.json","content":{}}}}}}}"#,
+            super::json_str(draft_id),
+            super::json_str(tests_json)
+        ),
+    )
+    .unwrap();
+    assert!(put.contains(r#""isError":false"#), "put tests.json: {put}");
 }
 
 #[test]

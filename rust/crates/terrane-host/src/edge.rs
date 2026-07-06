@@ -883,7 +883,15 @@ fn generate_app_with_harness(
             )));
         }
         let allowed_resources = terrane_core::grant_resource_namespaces();
-        builder::parse_generated_files(&response, app_id, name, &allowed_resources)
+        let files = builder::parse_generated_files(&response, app_id, name, &allowed_resources)?;
+        let file_map = files
+            .iter()
+            .map(|file| (file.path.clone(), file.content.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let manifest = manifest_from_files(&file_map)?;
+        crate::validate_bundle_smoke_tests_files(app_id, &manifest, &file_map)
+            .map_err(Error::InvalidInput)?;
+        Ok(files)
     })();
 
     match result {
@@ -1527,7 +1535,8 @@ fn validate_common_api_files(
         source,
         manifest.resources.clone(),
     )
-    .map_err(Error::InvalidInput)
+    .map_err(Error::InvalidInput)?;
+    crate::validate_bundle_smoke_tests_files(id, manifest, files).map_err(Error::InvalidInput)
 }
 
 fn run_upgrade_migrations(

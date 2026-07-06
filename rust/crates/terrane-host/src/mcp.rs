@@ -3235,6 +3235,15 @@ fn inspect_inline_bundle(
                 errors.push(e);
             }
         }
+        if errors.is_empty() {
+            let file_map = files
+                .iter()
+                .map(|file| (file.path.clone(), file.content.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if let Err(e) = crate::validate_bundle_smoke_tests_files(&id, &manifest, &file_map) {
+                errors.push(e);
+            }
+        }
     }
 
     Ok(BundleInfo {

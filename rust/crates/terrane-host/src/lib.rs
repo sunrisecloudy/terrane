@@ -10,6 +10,8 @@ use std::env;
 use std::path::{Path, PathBuf};
 
 use nanoserde::DeJson;
+use serde::Deserialize;
+use serde_json::Value;
 use terrane_api::{AppSummary, AppsResponse};
 use terrane_cap_builder::draft_json;
 use terrane_cap_crdt::crdt_export_hex;
@@ -1124,9 +1126,22 @@ pub fn validate_common_api_bundle(path: &Path) -> Result<(), String> {
     validate_common_api_bundle_source(
         id,
         non_empty_or(manifest.name.clone(), id),
-        source,
+        source.clone(),
         manifest.resources.clone(),
-    )
+    )?;
+    let tests_path = path.join("tests.json");
+    if tests_path.exists() {
+        let tests = std::fs::read_to_string(&tests_path)
+            .map_err(|e| format!("read tests.json: {e}"))?;
+        validate_bundle_smoke_tests_source(
+            id,
+            non_empty_or(manifest.name.clone(), id),
+            source,
+            manifest.resources.clone(),
+            Some(&tests),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn validate_common_api_bundle_source(
@@ -1201,6 +1216,287 @@ pub fn validate_common_api_bundle_source(
     )
     .map_err(|e| format!("common.receive probe failed: {e}"))?;
     Ok(())
+}
+
+pub fn validate_bundle_smoke_tests_source(
+    id: &str,
+    name: String,
+    source: String,
+    resources: Vec<String>,
+    tests_json: Option<&str>,
+) -> Result<(), String> {
+    let Some(tests_json) = tests_json else {
+        return Ok(());
+    };
+    let tests = parse_bundle_smoke_tests(tests_json)?;
+    if tests.is_empty() {
+        return Ok(());
+    }
+    let bundle = JsRuntimeBundle {
+        source,
+        name: name.clone(),
+        resources: resources.clone(),
+    };
+    let mut state = terrane_core::State::default();
+    state.app.apps.insert(
+        id.to_string(),
+        terrane_cap_app::AppRecord {
+            id: id.to_string(),
+            name,
+            source: None,
+            runtime: "js".to_string(),
+            version: terrane_cap_app::DEFAULT_VERSION.to_string(),
+            history: Vec::new(),
+            interfaces: terrane_cap_app::mandatory_interfaces(),
+            links: Vec::new(),
+        },
+    );
+    let host = RuntimeHostHandle::new(Box::new(
+        RuntimeResourceHost::new_with_temporary_resource_grants(
+            id.to_string(),
+            state,
+            ExecutionPrincipal::local_owner(),
+            resources,
+        ),
+    ));
+    for (index, test) in tests.iter().enumerate() {
+        let mut input = Vec::with_capacity(test.args.len() + 1);
+        input.push(test.verb.clone());
+        input.extend(test.args.clone());
+        let reply = run_js_bundle(id, &input, &bundle, host.clone()).map_err(|e| {
+            format!(
+                "tests.json case {} ({}) failed to run: {e}",
+                index + 1,
+                test.verb
+            )
+        })?;
+        if let Some(expect) = &test.expect {
+            expect.matches(&reply).map_err(|e| {
+                format!(
+                    "tests.json case {} ({}) failed expectation: {e}",
+                    index + 1,
+                    test.verb
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+pub fn validate_bundle_smoke_tests_files(
+    id: &str,
+    manifest: &BundleManifest,
+    files: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if manifest.runtime != "js" {
+        return Ok(());
+    }
+    let source = files
+        .get(&manifest.backend)
+        .ok_or_else(|| format!("bundle backend file is missing: {}", manifest.backend))?
+        .clone();
+    validate_bundle_smoke_tests_source(
+        id,
+        non_empty_or(manifest.name.clone(), id),
+        source,
+        manifest.resources.clone(),
+        files.get("tests.json").map(String::as_str),
+    )
+}
+
+#[derive(Debug, Deserialize)]
+struct BundleSmokeTest {
+    verb: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    expect: Option<BundleSmokeExpectation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BundleSmokeExpectation {
+    Contains(String),
+    Object {
+        #[serde(default)]
+        contains: Option<String>,
+        #[serde(default, rename = "jsonSubset")]
+        json_subset: Option<Value>,
+        #[serde(default)]
+        shape: Option<Value>,
+    },
+}
+
+impl BundleSmokeExpectation {
+    fn matches(&self, reply: &str) -> Result<(), String> {
+        match self {
+            Self::Contains(needle) => expect_contains(reply, needle),
+            Self::Object {
+                contains,
+                json_subset,
+                shape,
+            } => {
+                if contains.is_none() && json_subset.is_none() && shape.is_none() {
+                    return Err("expect must include contains, jsonSubset, or shape".to_string());
+                }
+                if let Some(needle) = contains {
+                    expect_contains(reply, needle)?;
+                }
+                let parsed = if json_subset.is_some() || shape.is_some() {
+                    Some(parse_reply_json(reply)?)
+                } else {
+                    None
+                };
+                if let Some(expected) = json_subset {
+                    let actual = parsed
+                        .as_ref()
+                        .ok_or_else(|| "reply JSON was not parsed".to_string())?;
+                    expect_json_subset(actual, expected, "$")?;
+                }
+                if let Some(expected) = shape {
+                    let actual = parsed
+                        .as_ref()
+                        .ok_or_else(|| "reply JSON was not parsed".to_string())?;
+                    expect_json_shape(actual, expected, "$")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn parse_bundle_smoke_tests(raw: &str) -> Result<Vec<BundleSmokeTest>, String> {
+    let tests: Vec<BundleSmokeTest> =
+        serde_json::from_str(raw).map_err(|e| format!("tests.json: {e}"))?;
+    for (index, test) in tests.iter().enumerate() {
+        if test.verb.trim().is_empty() {
+            return Err(format!("tests.json case {} has empty verb", index + 1));
+        }
+    }
+    Ok(tests)
+}
+
+fn expect_contains(reply: &str, needle: &str) -> Result<(), String> {
+    if reply.contains(needle) {
+        Ok(())
+    } else {
+        Err(format!("reply did not contain {needle:?}; got {reply:?}"))
+    }
+}
+
+fn parse_reply_json(reply: &str) -> Result<Value, String> {
+    serde_json::from_str(reply).map_err(|e| format!("reply must be JSON: {e}; got {reply:?}"))
+}
+
+fn expect_json_subset(actual: &Value, expected: &Value, path: &str) -> Result<(), String> {
+    match expected {
+        Value::Object(expected_obj) => {
+            let actual_obj = actual
+                .as_object()
+                .ok_or_else(|| format!("{path} expected object"))?;
+            for (key, expected_value) in expected_obj {
+                let child = actual_obj
+                    .get(key)
+                    .ok_or_else(|| format!("{path}.{key} missing"))?;
+                expect_json_subset(child, expected_value, &format!("{path}.{key}"))?;
+            }
+            Ok(())
+        }
+        Value::Array(expected_items) => {
+            let actual_items = actual
+                .as_array()
+                .ok_or_else(|| format!("{path} expected array"))?;
+            if actual_items.len() < expected_items.len() {
+                return Err(format!(
+                    "{path} expected at least {} array items, got {}",
+                    expected_items.len(),
+                    actual_items.len()
+                ));
+            }
+            for (index, expected_value) in expected_items.iter().enumerate() {
+                expect_json_subset(
+                    &actual_items[index],
+                    expected_value,
+                    &format!("{path}[{index}]"),
+                )?;
+            }
+            Ok(())
+        }
+        _ => {
+            if actual == expected {
+                Ok(())
+            } else {
+                Err(format!("{path} expected {expected}, got {actual}"))
+            }
+        }
+    }
+}
+
+fn expect_json_shape(actual: &Value, expected: &Value, path: &str) -> Result<(), String> {
+    match expected {
+        Value::String(kind) if is_shape_kind(kind) => expect_json_kind(actual, kind, path),
+        Value::Object(expected_obj) => {
+            let actual_obj = actual
+                .as_object()
+                .ok_or_else(|| format!("{path} expected object"))?;
+            for (key, expected_value) in expected_obj {
+                let child = actual_obj
+                    .get(key)
+                    .ok_or_else(|| format!("{path}.{key} missing"))?;
+                expect_json_shape(child, expected_value, &format!("{path}.{key}"))?;
+            }
+            Ok(())
+        }
+        Value::Array(expected_items) => {
+            let actual_items = actual
+                .as_array()
+                .ok_or_else(|| format!("{path} expected array"))?;
+            if expected_items.is_empty() {
+                return Ok(());
+            }
+            if actual_items.len() < expected_items.len() {
+                return Err(format!(
+                    "{path} expected at least {} array items, got {}",
+                    expected_items.len(),
+                    actual_items.len()
+                ));
+            }
+            for (index, expected_value) in expected_items.iter().enumerate() {
+                expect_json_shape(
+                    &actual_items[index],
+                    expected_value,
+                    &format!("{path}[{index}]"),
+                )?;
+            }
+            Ok(())
+        }
+        _ => expect_json_subset(actual, expected, path),
+    }
+}
+
+fn is_shape_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "string" | "number" | "boolean" | "null" | "array" | "object" | "any"
+    )
+}
+
+fn expect_json_kind(actual: &Value, kind: &str, path: &str) -> Result<(), String> {
+    let matches = match kind {
+        "string" => actual.is_string(),
+        "number" => actual.is_number(),
+        "boolean" => actual.is_boolean(),
+        "null" => actual.is_null(),
+        "array" => actual.is_array(),
+        "object" => actual.is_object(),
+        "any" => true,
+        _ => false,
+    };
+    if matches {
+        Ok(())
+    } else {
+        Err(format!("{path} expected {kind}, got {actual}"))
+    }
 }
 
 fn require_common_actions(actions: &str) -> Result<(), String> {
