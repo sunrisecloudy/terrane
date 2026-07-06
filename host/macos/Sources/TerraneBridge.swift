@@ -74,6 +74,7 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   private var appId = ""
   private var appName = ""
   private var appSource = ""
+  private var browserPermissions = Set<String>()
   private var catalogedAppIds = Set<String>()
   private let handle: OpaquePointer  // TerraneHandle*
   private let worker = DispatchQueue(label: "com.terrane.host.bridge", qos: .userInitiated)
@@ -85,6 +86,11 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// Present the powerbox picker. The completion carries the chosen target app
   /// id, or `nil` if the user cancelled.
   var onInteropPickRequired: ((InteropPickPrompt, @escaping (String?) -> Void) -> Void)?
+  /// Present a host-owned camera capture UI for apps that declared the browser
+  /// `camera` permission. This keeps macOS capture off WebKit custom schemes.
+  var onCameraCapturePhoto: ((@escaping (Any?, String?) -> Void) -> Void)?
+  var onCameraStreamStart: ((@escaping (Any?, String?) -> Void) -> Void)?
+  var onCameraStreamStop: ((@escaping (Any?, String?) -> Void) -> Void)?
 
   var terraneHandle: OpaquePointer { handle }
 
@@ -110,6 +116,7 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     appId = app.id
     appName = app.name
     appSource = app.directory.path
+    browserPermissions = Set(app.browserPermissions)
     ensureSelectedAppCataloged()
   }
 
@@ -117,6 +124,7 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     appId = ""
     appName = ""
     appSource = ""
+    browserPermissions = []
   }
 
   func close() {
@@ -183,6 +191,40 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         onDocumentSet?((body["name"] as? String) ?? "")
       }
       replyHandler("ok", nil)
+    case "camera:capturePhoto":
+      guard message.frameInfo.isMainFrame else {
+        replyHandler(nil, "terrane: camera capture is only available to the selected app frame")
+        return
+      }
+      guard browserPermissions.contains("camera") else {
+        replyHandler(nil, "terrane: camera permission is not declared by this app")
+        return
+      }
+      guard let onCameraCapturePhoto else {
+        replyHandler(nil, "terrane: native camera capture is unavailable")
+        return
+      }
+      onCameraCapturePhoto(replyHandler)
+    case "camera:startStream":
+      guard message.frameInfo.isMainFrame else {
+        replyHandler(nil, "terrane: camera stream is only available to the selected app frame")
+        return
+      }
+      guard browserPermissions.contains("camera") else {
+        replyHandler(nil, "terrane: camera permission is not declared by this app")
+        return
+      }
+      guard let onCameraStreamStart else {
+        replyHandler(nil, "terrane: native camera stream is unavailable")
+        return
+      }
+      onCameraStreamStart(replyHandler)
+    case "camera:stopStream":
+      guard let onCameraStreamStop else {
+        replyHandler(["ok": true], nil)
+        return
+      }
+      onCameraStreamStop(replyHandler)
     default:
       replyHandler(nil, "terrane: unknown bridge message")
     }
@@ -368,13 +410,13 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
       }
     }
     guard ok else {
-      return .failure(payload)
+      return .failure(status: 404, message: payload)
     }
     guard let object = Self.jsonObject(from: payload),
       let content = object["content"] as? String,
       let data = Data(base64Encoded: content)
     else {
-      return .failure("terrane_blob_read returned malformed JSON")
+      return .failure(status: 500, message: "terrane_blob_read returned malformed JSON")
     }
     let contentType = (object["contentType"] as? String) ?? "application/octet-stream"
     return .success(AppAsset(data: data, contentType: contentType))
@@ -823,6 +865,15 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
               harness: String(request.harness || request.agent || "codex")
             }
           });
+        },
+        capturePhoto: function () {
+          return post({ kind: "camera:capturePhoto" });
+        },
+        startCameraStream: function () {
+          return post({ kind: "camera:startStream" });
+        },
+        stopCameraStream: function () {
+          return post({ kind: "camera:stopStream" });
         },
         // --- Top-bar document/theme (host chrome) — parity with the web host ---
         getDocument: function () {

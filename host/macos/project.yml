@@ -31,6 +31,7 @@ targets:
           - $(inherited)
           - -lterrane_host
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
+        CODE_SIGN_ENTITLEMENTS: Sources/TerraneHost.entitlements
         HEADER_SEARCH_PATHS:
           - $(inherited)
           - $(SRCROOT)/../../rust/crates/terrane-host/include
@@ -63,6 +64,7 @@ targets:
     dependencies:
       - sdk: WebKit.framework
       - sdk: AppKit.framework
+      - sdk: AVFoundation.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
@@ -70,7 +72,7 @@ targets:
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           cd "$SRCROOT/../.."
-          cargo build -p terrane-host --release
+          cargo build -p terrane-host -p terrane-host-web --release
   TerraneHostE2ETests:
     type: bundle.unit-test
     platform: macOS
@@ -85,6 +87,9 @@ targets:
       - path: Sources/PreviewSchemeHandler.swift
       - path: Sources/AppSidebarView.swift
       - path: Sources/LocalModelPanel.swift
+      - path: Sources/LoopbackAppHost.swift
+      - path: Sources/NativeCameraCapture.swift
+      - path: Sources/NativeCameraFrameStreamer.swift
       - path: Sources/SourceEditor.swift
     settings:
       base:
@@ -97,12 +102,14 @@ targets:
           - $(inherited)
           - -lterrane_host
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
+        CODE_SIGN_ENTITLEMENTS: Sources/TerraneHost.entitlements
         HEADER_SEARCH_PATHS:
           - $(inherited)
           - $(SRCROOT)/../../rust/crates/terrane-host/include
     dependencies:
       - sdk: WebKit.framework
       - sdk: AppKit.framework
+      - sdk: AVFoundation.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
@@ -110,7 +117,7 @@ targets:
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           cd "$SRCROOT/../.."
-          cargo build -p terrane-host --release
+          cargo build -p terrane-host -p terrane-host-web --release
 schemes:
   TerraneHost:
     build:

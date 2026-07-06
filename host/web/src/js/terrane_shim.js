@@ -253,6 +253,7 @@
     };
   }
 
+  var nativeTerrane = window.terrane || {};
   window.APP_ID = __APP_ID_JSON__;
   window.terrane = {
     invoke: function (verb) {
@@ -279,6 +280,15 @@
       return "/apps/" + encodeURIComponent(String(window.APP_ID || "")) +
         "/blob/" + encodeURIComponent(String(name == null ? "" : name));
     },
+    capturePhoto: typeof nativeTerrane.capturePhoto === "function"
+      ? nativeTerrane.capturePhoto.bind(nativeTerrane)
+      : undefined,
+    startCameraStream: typeof nativeTerrane.startCameraStream === "function"
+      ? nativeTerrane.startCameraStream.bind(nativeTerrane)
+      : undefined,
+    stopCameraStream: typeof nativeTerrane.stopCameraStream === "function"
+      ? nativeTerrane.stopCameraStream.bind(nativeTerrane)
+      : undefined,
 
     // --- Top-bar document/theme (host chrome) ---
     // The host owns the top bar; these let an app read and drive its own

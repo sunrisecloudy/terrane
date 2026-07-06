@@ -327,6 +327,12 @@ final class BmiCalculatorE2ETests: XCTestCase {
 
     let html = try String(contentsOf: app.uiURL, encoding: .utf8)
     XCTAssertTrue(html.contains("navigator.mediaDevices.getUserMedia"), html)
+    XCTAssertTrue(html.contains("function hasNativeCapture()"), html)
+    XCTAssertTrue(html.contains("function hasNativeStream()"), html)
+    XCTAssertTrue(html.contains(#""terrane:cameraFrame""#), html)
+    XCTAssertTrue(html.contains("window.terrane.capturePhoto"), html)
+    XCTAssertTrue(html.contains("window.terrane.startCameraStream"), html)
+    XCTAssertTrue(html.contains("hasNativeCapture() && !navigator.mediaDevices"), html)
     XCTAssertTrue(html.contains("audio: false"), html)
     XCTAssertTrue(html.contains(#"toDataURL("image/png")"#), html)
     XCTAssertTrue(html.contains(#"download="photobooth.png""#), html)
@@ -350,13 +356,14 @@ final class BmiCalculatorE2ETests: XCTestCase {
       String(data: frame.data, encoding: .utf8)?.contains("Camera preview") == true)
   }
 
-  func testMacHostDeclaresCameraUsageAndPromptsForWebKitCameraCapture() throws {
+  func testMacHostDeclaresCameraUsageAndGrantsWebKitCameraCapture() throws {
     let root = repoRoot()
     let project = try String(
       contentsOf: root.appendingPathComponent("host/macos/project.yml"),
       encoding: .utf8
     )
     XCTAssertTrue(project.contains("NSCameraUsageDescription"), project)
+    XCTAssertTrue(project.contains("AVFoundation.framework"), project)
 
     let appDelegate = try String(
       contentsOf: root.appendingPathComponent("host/macos/Sources/AppDelegate.swift"),
@@ -366,16 +373,64 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(appDelegate.contains("WKNavigationDelegate"), appDelegate)
     XCTAssertTrue(appDelegate.contains("WKDownloadDelegate"), appDelegate)
     XCTAssertTrue(appDelegate.contains("webView.navigationDelegate = self"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("LoopbackAppHost"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("shouldUseLoopbackFrame"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("loopbackHost?.frameURL(for: app)"), appDelegate)
     XCTAssertTrue(appDelegate.contains("requestMediaCapturePermissionFor"), appDelegate)
     XCTAssertTrue(appDelegate.contains("selectedApp?.browserPermissions"), appDelegate)
-    XCTAssertTrue(appDelegate.contains(#"permissions.contains("camera") ? .prompt : .deny"#), appDelegate)
-    XCTAssertTrue(appDelegate.contains(#"permissions.contains("microphone") ? .prompt : .deny"#), appDelegate)
+    XCTAssertTrue(appDelegate.contains(#"permissions.contains("camera") ? .grant : .deny"#), appDelegate)
+    XCTAssertTrue(appDelegate.contains(#"permissions.contains("microphone") ? .grant : .deny"#), appDelegate)
     XCTAssertTrue(appDelegate.contains("case .cameraAndMicrophone:"), appDelegate)
     XCTAssertTrue(appDelegate.contains("decisionHandler(.deny)"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("onCameraCapturePhoto"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("onCameraStreamStart"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("pushCameraFrame"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("NativeCameraCaptureController.present"), appDelegate)
     XCTAssertTrue(appDelegate.contains("navigationAction.shouldPerformDownload"), appDelegate)
     XCTAssertTrue(appDelegate.contains("decisionHandler(.download)"), appDelegate)
     XCTAssertTrue(appDelegate.contains("download.delegate = self"), appDelegate)
     XCTAssertTrue(appDelegate.contains("NSSavePanel"), appDelegate)
+
+    let bridge = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/TerraneBridge.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(bridge.contains("browserPermissions = Set(app.browserPermissions)"), bridge)
+    XCTAssertTrue(bridge.contains(#""camera:capturePhoto""#), bridge)
+    XCTAssertTrue(bridge.contains(#""camera:startStream""#), bridge)
+    XCTAssertTrue(bridge.contains("startCameraStream: function"), bridge)
+    XCTAssertTrue(bridge.contains("browserPermissions.contains(\"camera\")"), bridge)
+    XCTAssertTrue(bridge.contains("capturePhoto: function"), bridge)
+
+    let nativeCapture = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/NativeCameraCapture.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(nativeCapture.contains("AVCaptureSession"), nativeCapture)
+    XCTAssertTrue(nativeCapture.contains("AVCaptureVideoDataOutput"), nativeCapture)
+    XCTAssertTrue(nativeCapture.contains("Waiting for camera frame"), nativeCapture)
+    XCTAssertTrue(nativeCapture.contains("bestVideoDevice"), nativeCapture)
+    XCTAssertTrue(nativeCapture.contains("!lhs.isSuspended && rhs.isSuspended"), nativeCapture)
+    XCTAssertTrue(nativeCapture.contains(#"mime: "image/png""#), nativeCapture)
+
+    let nativeStream = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/NativeCameraFrameStreamer.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(nativeStream.contains("AVCaptureVideoDataOutput"), nativeStream)
+    XCTAssertTrue(nativeStream.contains(#"mime: "image/jpeg""#), nativeStream)
+    XCTAssertTrue(nativeStream.contains("0.12"), nativeStream)
+
+    let loopbackHost = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/LoopbackAppHost.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(loopbackHost.contains(#""--addr", "127.0.0.1:0""#), loopbackHost)
+    XCTAssertTrue(loopbackHost.contains(#""--apps", appsDirectory.path"#), loopbackHost)
+    XCTAssertTrue(loopbackHost.contains("terrane-loopback-\\(ProcessInfo.processInfo.processIdentifier)"), loopbackHost)
+    XCTAssertTrue(loopbackHost.contains("http://localhost:"), loopbackHost)
+    XCTAssertTrue(loopbackHost.contains("/apps/\\(app.id)/__terrane/frame/"), loopbackHost)
+    XCTAssertTrue(project.contains("terrane-host-web"), project)
   }
 
   func testMacHostPromptsForTerranePermissionGrantsAndRetries() throws {
