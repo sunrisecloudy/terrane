@@ -199,6 +199,15 @@ pub fn classify_public_command(name: &str) -> PublicCommandDisposition {
             namespace: "net",
             app_arg_index: 0,
         },
+        "presence.channel.define" | "presence.channel.drop" => {
+            PublicCommandDisposition::GrantGated {
+                namespace: "presence",
+                app_arg_index: 0,
+            }
+        }
+        "presence.publish" => PublicCommandDisposition::Refuse {
+            reason: "presence.publish is transient-only and must run through ctx.resource.presence.publish or the host presence bridge",
+        },
         "browser.render" => PublicCommandDisposition::GrantGated {
             namespace: "browser",
             app_arg_index: 0,

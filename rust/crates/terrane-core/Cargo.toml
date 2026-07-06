@@ -42,6 +42,7 @@ terrane-cap-media.workspace = true
 terrane-cap-migration.workspace = true
 terrane-cap-mcp-client.workspace = true
 terrane-cap-person.workspace = true
+terrane-cap-presence.workspace = true
 terrane-cap-publish.workspace = true
 terrane-cap-relational-db.workspace = true
 terrane-cap-search.workspace = true

@@ -379,6 +379,7 @@
       if (
         message &&
         (message.type === "terrane:document:set" ||
+          message.type === "terrane:presence:publish" ||
           message.type === "terrane:bridge:request") &&
         message.nonce !== frameNonce
       ) {
@@ -439,6 +440,7 @@
 
   function bridgeRoute(kind) {
     if (kind === "invoke") return "/apps/" + encodeURIComponent(currentId) + "/invoke";
+    if (kind === "presencePublish") return "/apps/" + encodeURIComponent(currentId) + "/presence";
     if (kind === "preview") return "/__terrane/previews";
     if (kind === "builderGenerate") return "/__terrane/builder/generate";
     if (kind === "builderStatus") return "/__terrane/builder/status";

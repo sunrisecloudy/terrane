@@ -37,6 +37,7 @@
   var themeState = "system";
   var docSubs = [];
   var themeSubs = [];
+  var presenceSubs = {};
 
   // Localization state, pushed by the host alongside theme/document. The host
   // negotiates the locale (web: Accept-Language; macOS: system language) and
@@ -70,6 +71,15 @@
       dirState = message.dir === "rtl" ? "rtl" : "ltr";
       notify(localeSubs, localeState);
       notify(messagesSubs, copyMessages());
+      return;
+    }
+    if (message && message.type === "terrane:presence") {
+      var channel = String(message.channel || "");
+      notify(presenceSubs[channel] || [], {
+        channel: channel,
+        from: String(message.from || ""),
+        payload: message.payload,
+      });
       return;
     }
     if (message && message.type === "terrane:bridge:progress") {
@@ -306,6 +316,22 @@
         cb(themeState);
       } catch (_) {}
       return unsubscriber(themeSubs, cb);
+    },
+    onPresence: function (channel, cb) {
+      channel = String(channel || "");
+      if (typeof cb !== "function") return function () {};
+      if (!presenceSubs[channel]) presenceSubs[channel] = [];
+      presenceSubs[channel].push(cb);
+      return unsubscriber(presenceSubs[channel], cb);
+    },
+    publishPresence: function (channel, payload) {
+      return bridgeJson("presencePublish", {
+        channel: String(channel || ""),
+        payload: JSON.stringify(payload == null ? null : payload),
+      }).then(function (j) {
+        if (j.error) throw new Error(j.error);
+        return j.output || "ok";
+      });
     },
 
     // --- Localization (host chrome) — parity with the macOS host ---

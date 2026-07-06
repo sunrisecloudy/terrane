@@ -219,6 +219,14 @@ impl EffectRunner for EdgeRunner {
                 channel,
                 message,
             } => channel_send(self.home()?, state, app, channel, message),
+            Effect::PresencePublish {
+                app,
+                channel,
+                payload,
+            } => {
+                crate::presence::publish(state, app, channel, payload)?;
+                Ok(Vec::new())
+            }
             Effect::TtsSpeak {
                 app: _,
                 text,
@@ -647,6 +655,15 @@ impl LiveHost for EdgeRunner {
                 crate::media_edge::info(&bytes, mime)
             }
             "tts.voices" => crate::tts_edge::voices_json(),
+            "presence.peers" => {
+                let app = args
+                    .first()
+                    .ok_or_else(|| Error::InvalidInput("presence.peers missing app".into()))?;
+                let channel = args
+                    .get(1)
+                    .ok_or_else(|| Error::InvalidInput("presence.peers missing channel".into()))?;
+                crate::presence::peers_json(app, channel)
+            }
             "telemetry.read" => {
                 let app = args
                     .first()

@@ -43,6 +43,7 @@ mod media_edge;
 pub mod mcp_client;
 pub mod native;
 pub mod permission;
+pub mod presence;
 pub mod preview;
 pub mod publish;
 pub mod public_authz;
