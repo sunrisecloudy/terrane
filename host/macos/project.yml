@@ -78,13 +78,30 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           set -euo pipefail
+          CAPABILITY_DESTINATION="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/capabilities"
+          if [ -n "${TERRANE_CAP_BUNDLE_DIR:-}" ]; then
+            if [ ! -f "$TERRANE_CAP_BUNDLE_DIR/index.json" ] || \
+               [ ! -f "$TERRANE_CAP_BUNDLE_DIR/verifying-key.hex" ]; then
+              echo "Invalid native capability bundle directory: missing index or verifying key" >&2
+              exit 1
+            fi
+            BUNDLE_COUNT="$(find "$TERRANE_CAP_BUNDLE_DIR" -maxdepth 1 -type f -name '*.tcap' | wc -l | tr -d ' ')"
+            if [ "$BUNDLE_COUNT" -ne 41 ]; then
+              echo "Invalid native capability bundle directory: expected 41 .tcap files, found $BUNDLE_COUNT" >&2
+              exit 1
+            fi
+            mkdir -p "$CAPABILITY_DESTINATION"
+            rsync -a --delete "$TERRANE_CAP_BUNDLE_DIR/" "$CAPABILITY_DESTINATION/"
+            echo "Embedded 41 prebuilt signed native capabilities from $TERRANE_CAP_BUNDLE_DIR"
+            exit 0
+          fi
           if [ -z "${TERRANE_CAP_SIGNING_KEY_HEX:-}" ]; then
-            echo "Skipping native capabilities: TERRANE_CAP_SIGNING_KEY_HEX is not set"
+            echo "Skipping native capabilities: neither TERRANE_CAP_BUNDLE_DIR nor TERRANE_CAP_SIGNING_KEY_HEX is set"
             exit 0
           fi
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           "$SRCROOT/../../scripts/package-native-capabilities.sh" \
-            "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/capabilities"
+            "$CAPABILITY_DESTINATION"
   TerraneHostE2ETests:
     type: bundle.unit-test
     platform: macOS
