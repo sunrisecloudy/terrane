@@ -215,7 +215,11 @@ fn open_at_log_path_with(
     let mut core =
         Core::open_with(log_path, runner.with_home(home.clone())).map_err(|e| e.to_string())?;
     if let Some(manager) = configured_capability_manager(&home)? {
-        core.attach_capability_manager(manager);
+        core.attach_capability_manager(manager.clone());
+        let records = core.log_records().map_err(|error| error.to_string())?;
+        // Background activation is best-effort: a broken optional worker must
+        // not prevent the fundamental control plane from opening the home.
+        let _ = manager.prepare_background(&records);
     }
     ensure_identity(&mut core)?;
     migrate_legacy_app_requirements(&mut core)?;

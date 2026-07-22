@@ -67,11 +67,11 @@ terrane-cap-telemetry.workspace = true
 terrane-cap-wasm-runtime.workspace = true
 borsh.workspace = true
 sha2 = "0.10"
+serde_json.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
 wat = "1.252.0"
-serde_json.workspace = true
 loro = "1.13.6"
 rusqlite.workspace = true
 ed25519-dalek = { version = "2", features = ["std"] }

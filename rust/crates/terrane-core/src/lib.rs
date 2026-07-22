@@ -1819,12 +1819,24 @@ impl<R: EffectRunner + 'static> Core<R> {
             .map_err(|error| Error::Runtime(error.to_string()))?;
         let mut verified = Vec::new();
         for (namespace, actual_hash) in actual {
-            let payload = self
-                .registry
-                .get(&namespace)?
-                .snapshot(&self.state)?
-                .unwrap_or_default();
-            let expected_hash = format!("{:x}", Sha256::digest(payload));
+            let capability = self.registry.get(&namespace)?;
+            let manifest = capability.manifest();
+            let relevant = records
+                .iter()
+                .filter(|record| {
+                    manifest
+                        .events
+                        .iter()
+                        .any(|event| event.kind == record.kind)
+                        || manifest
+                            .subscriptions
+                            .iter()
+                            .any(|subscription| subscription.kind == record.kind)
+                })
+                .collect::<Vec<_>>();
+            let expected = serde_json::to_vec(&relevant)
+                .map_err(|error| Error::Storage(format!("encode replay hash: {error}")))?;
+            let expected_hash = format!("{:x}", Sha256::digest(expected));
             if actual_hash != expected_hash {
                 return Err(Error::Storage(format!(
                     "dynamic replay mismatch for {namespace}: expected {expected_hash}, got {actual_hash}"

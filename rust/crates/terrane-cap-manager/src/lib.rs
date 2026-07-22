@@ -2,25 +2,27 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use terrane_cap_interface::EventRecord;
 use terrane_cap_protocol::{
-    read_frame, validate_dependency_graph, write_frame, BundleManifest, CapabilityLockfile,
-    LockedCapability, ProtocolError, WorkerRequest, WorkerResponse, LOCK_FORMAT_VERSION,
-    PROTOCOL_VERSION,
+    validate_dependency_graph, write_frame, BundleManifest, CapabilityIndex,
+    CapabilityIndexArtifact, CapabilityLockfile, LockedCapability, ProtocolError, WorkerRequest,
+    WorkerResponse, LOCK_FORMAT_VERSION, PROTOCOL_VERSION,
 };
 
 pub const DEFAULT_MAX_WARM_WORKERS: usize = 8;
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MANIFEST_FILE: &str = "manifest.json";
 const LOCK_FILE: &str = "capabilities.lock.json";
+const INDEX_FILE: &str = "index.json";
 
 pub fn verifying_key_from_hex(value: &str) -> Result<VerifyingKey, ManagerError> {
     let bytes = decode_hex(value)?;
@@ -54,6 +56,7 @@ pub enum ManagerError {
     Protocol(ProtocolError),
     Invalid(String),
     Worker(String),
+    Timeout(Duration),
 }
 
 impl std::fmt::Display for ManagerError {
@@ -64,6 +67,11 @@ impl std::fmt::Display for ManagerError {
             Self::Protocol(error) => write!(f, "capability protocol error: {error}"),
             Self::Invalid(message) => write!(f, "invalid capability bundle: {message}"),
             Self::Worker(message) => write!(f, "capability worker error: {message}"),
+            Self::Timeout(timeout) => write!(
+                f,
+                "capability worker did not respond within {} seconds",
+                timeout.as_secs()
+            ),
         }
     }
 }
@@ -93,6 +101,8 @@ pub struct CapabilityManager {
     packaged_root: PathBuf,
     verifying_key: VerifyingKey,
     catalog: BTreeMap<String, BundleManifest>,
+    artifacts: BTreeMap<String, CapabilityIndexArtifact>,
+    download_base_url: Option<String>,
     slots: Mutex<BTreeMap<String, Arc<Mutex<WorkerSlot>>>>,
     max_warm_workers: usize,
     idle_timeout: Duration,
@@ -109,14 +119,25 @@ struct WorkerSlot {
 struct WorkerProcess {
     child: Child,
     input: BufWriter<ChildStdin>,
-    output: BufReader<ChildStdout>,
+    output: ChildStdout,
     last_used: Instant,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SnapshotDocument {
+    namespace: String,
+    last_applied_seq: u64,
+    state_sha256: String,
+    #[serde(default)]
+    payload_sha256: String,
+    payload: Vec<u8>,
 }
 
 impl WorkerProcess {
     fn call(&mut self, request: &WorkerRequest) -> Result<WorkerResponse, ManagerError> {
         write_frame(&mut self.input, request)?;
-        let response = read_frame(&mut self.output)?;
+        let response = read_worker_response(&mut self.output, request_timeout(request))?;
         self.last_used = Instant::now();
         match response {
             WorkerResponse::Error {
@@ -133,6 +154,122 @@ impl WorkerProcess {
     fn stop(mut self) {
         let _ = self.call(&WorkerRequest::Shutdown);
         let _ = self.child.wait();
+    }
+}
+
+fn request_timeout(request: &WorkerRequest) -> Duration {
+    match request {
+        WorkerRequest::RunRuntime { .. } | WorkerRequest::ExecuteEffect { .. } => {
+            Duration::from_secs(5 * 60)
+        }
+        _ => Duration::from_secs(30),
+    }
+}
+
+#[cfg(unix)]
+fn configure_worker_output(output: &ChildStdout) -> Result<(), ManagerError> {
+    use std::os::fd::AsRawFd;
+
+    let descriptor = output.as_raw_fd();
+    // SAFETY: the descriptor is owned by `output` for the duration of both
+    // calls, and `F_GETFL`/`F_SETFL` do not retain the pointer or descriptor.
+    let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(ManagerError::Io(std::io::Error::last_os_error()));
+    }
+    if unsafe { libc::fcntl(descriptor, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(ManagerError::Io(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn configure_worker_output(_output: &ChildStdout) -> Result<(), ManagerError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_worker_response(
+    output: &mut ChildStdout,
+    timeout: Duration,
+) -> Result<WorkerResponse, ManagerError> {
+    let deadline = Instant::now() + timeout;
+    let mut length = [0u8; 4];
+    read_exact_until(output, &mut length, deadline, timeout)?;
+    let size = u32::from_le_bytes(length) as usize;
+    if size > terrane_cap_protocol::DEFAULT_MAX_FRAME_BYTES {
+        return Err(ManagerError::Protocol(ProtocolError::FrameTooLarge {
+            size,
+            max: terrane_cap_protocol::DEFAULT_MAX_FRAME_BYTES,
+        }));
+    }
+    let mut payload = vec![0u8; size];
+    read_exact_until(output, &mut payload, deadline, timeout)?;
+    serde_json::from_slice(&payload).map_err(ManagerError::Json)
+}
+
+#[cfg(unix)]
+fn read_exact_until(
+    output: &mut ChildStdout,
+    mut buffer: &mut [u8],
+    deadline: Instant,
+    timeout: Duration,
+) -> Result<(), ManagerError> {
+    use std::os::fd::AsRawFd;
+
+    while !buffer.is_empty() {
+        match output.read(buffer) {
+            Ok(0) => return Err(ManagerError::Protocol(ProtocolError::Eof)),
+            Ok(read) => buffer = &mut buffer[read..],
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                let remaining = deadline
+                    .checked_duration_since(Instant::now())
+                    .ok_or(ManagerError::Timeout(timeout))?;
+                let milliseconds = remaining.as_millis().clamp(1, i32::MAX as u128) as i32;
+                let mut descriptor = libc::pollfd {
+                    fd: output.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                // SAFETY: `descriptor` points to one initialized pollfd for the
+                // duration of the call and the timeout is bounded to `i32`.
+                let result = unsafe { libc::poll(&mut descriptor, 1, milliseconds) };
+                if result == 0 {
+                    return Err(ManagerError::Timeout(timeout));
+                }
+                if result < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(ManagerError::Io(error));
+                }
+            }
+            Err(error) => return Err(ManagerError::Io(error)),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn read_worker_response(
+    output: &mut ChildStdout,
+    _timeout: Duration,
+) -> Result<WorkerResponse, ManagerError> {
+    terrane_cap_protocol::read_frame(output).map_err(ManagerError::Protocol)
+}
+
+fn full_replay(process: &mut WorkerProcess, records: &[EventRecord]) -> Result<u64, ManagerError> {
+    match process.call(&WorkerRequest::Replay {
+        records: records.to_vec(),
+    })? {
+        WorkerResponse::Ack { last_applied_seq } if last_applied_seq == records.len() as u64 => {
+            Ok(last_applied_seq)
+        }
+        response => Err(ManagerError::Worker(format!(
+            "worker replay returned {response:?}"
+        ))),
     }
 }
 
@@ -160,16 +297,23 @@ impl CapabilityManager {
     ) -> Result<Arc<Self>, ManagerError> {
         let home = home.into();
         let packaged_root = packaged_root.into();
-        let catalog = read_catalog(&packaged_root, &verifying_key)?;
-        validate_dependency_graph(&catalog)?;
+        let packaged = read_catalog(&packaged_root, &verifying_key)?;
+        validate_dependency_graph(&packaged.manifests)?;
         fs::create_dir_all(home.join("capabilities/cache"))?;
         fs::create_dir_all(home.join("capabilities/state"))?;
-        ensure_lockfile(&home, &packaged_root, &catalog)?;
+        ensure_lockfile(
+            &home,
+            &packaged_root,
+            &packaged.manifests,
+            &packaged.artifacts,
+        )?;
         Ok(Arc::new(Self {
             home,
             packaged_root,
             verifying_key,
-            catalog,
+            catalog: packaged.manifests,
+            artifacts: packaged.artifacts,
+            download_base_url: packaged.download_base_url,
             slots: Mutex::new(BTreeMap::new()),
             max_warm_workers,
             idle_timeout,
@@ -250,6 +394,28 @@ impl CapabilityManager {
         Ok(())
     }
 
+    pub fn prepare_background(
+        self: &Arc<Self>,
+        records: &[EventRecord],
+    ) -> Result<(), ManagerError> {
+        let namespaces = self
+            .catalog
+            .iter()
+            .filter(|(_, manifest)| {
+                manifest.activation == terrane_cap_protocol::ActivationMode::Background
+                    && records.iter().any(|record| {
+                        manifest
+                            .declaration
+                            .events
+                            .iter()
+                            .any(|kind| kind == &record.kind)
+                    })
+            })
+            .map(|(namespace, _)| namespace.clone())
+            .collect::<Vec<_>>();
+        self.prepare(&namespaces, records)
+    }
+
     pub fn call(
         &self,
         namespace: &str,
@@ -268,7 +434,10 @@ impl CapabilityManager {
         };
         match first {
             Ok(response) => Ok(response),
-            Err(error @ (ManagerError::Io(_) | ManagerError::Protocol(_))) => {
+            Err(
+                error
+                @ (ManagerError::Io(_) | ManagerError::Protocol(_) | ManagerError::Timeout(_)),
+            ) => {
                 {
                     let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     if let Some(mut process) = slot.process.take() {
@@ -564,10 +733,20 @@ impl CapabilityManager {
         let result = self.spawn_worker(manifest, records);
         slot.loading = false;
         match result {
-            Ok(process) => {
-                slot.process = Some(process);
+            Ok(mut process) => {
                 slot.keep_alive =
-                    manifest.activation == terrane_cap_protocol::ActivationMode::Background;
+                    if manifest.activation == terrane_cap_protocol::ActivationMode::Background {
+                        matches!(
+                            process.call(&WorkerRequest::BackgroundStatus),
+                            Ok(WorkerResponse::BackgroundStatus {
+                                keep_alive: true,
+                                ..
+                            })
+                        )
+                    } else {
+                        false
+                    };
+                slot.process = Some(process);
                 slot.last_error = None;
                 Ok(())
             }
@@ -585,6 +764,13 @@ impl CapabilityManager {
     ) -> Result<WorkerProcess, ManagerError> {
         let executable = self.ensure_cached(manifest)?;
         let manifest_sha256 = sha256_bytes(&manifest.signing_payload()?);
+        let declared_events = self
+            .catalog
+            .values()
+            .flat_map(|manifest| manifest.declaration.events.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(",");
         let mut child = Command::new(executable)
             .arg("--namespace")
             .arg(&manifest.namespace)
@@ -592,6 +778,7 @@ impl CapabilityManager {
             .arg(&manifest.version)
             .arg("--manifest-sha256")
             .arg(&manifest_sha256)
+            .env("TERRANE_CAP_DECLARED_EVENTS", declared_events)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -604,10 +791,11 @@ impl CapabilityManager {
             .stdout
             .take()
             .ok_or_else(|| ManagerError::Worker("worker stdout was not piped".into()))?;
+        configure_worker_output(&output)?;
         let mut process = WorkerProcess {
             child,
             input: BufWriter::new(input),
-            output: BufReader::new(output),
+            output,
             last_used: Instant::now(),
         };
         let nonce = random_nonce()?;
@@ -633,13 +821,58 @@ impl CapabilityManager {
                 )))
             }
         }
-        match process.call(&WorkerRequest::Replay {
-            records: records.to_vec(),
-        })? {
-            WorkerResponse::Ack { .. } => Ok(process),
-            response => Err(ManagerError::Worker(format!(
-                "worker replay returned {response:?}"
-            ))),
+        let restored_seq = self.restore_worker_snapshot(manifest, records, &mut process)?;
+        for (offset, record) in records[restored_seq as usize..].iter().enumerate() {
+            let seq = restored_seq + offset as u64 + 1;
+            match process.call(&WorkerRequest::Fold {
+                seq,
+                record: record.clone(),
+                dependencies: BTreeMap::new(),
+            })? {
+                WorkerResponse::Ack { last_applied_seq } if last_applied_seq == seq => {}
+                response => {
+                    return Err(ManagerError::Worker(format!(
+                        "worker tail replay at sequence {seq} returned {response:?}"
+                    )))
+                }
+            }
+        }
+        Ok(process)
+    }
+
+    fn restore_worker_snapshot(
+        &self,
+        manifest: &BundleManifest,
+        records: &[EventRecord],
+        process: &mut WorkerProcess,
+    ) -> Result<u64, ManagerError> {
+        let path = self
+            .home
+            .join("capabilities/state")
+            .join(format!("{}.json", manifest.namespace));
+        let document = File::open(path)
+            .ok()
+            .and_then(|file| serde_json::from_reader::<_, SnapshotDocument>(file).ok())
+            .filter(|document| {
+                document.namespace == manifest.namespace
+                    && document.last_applied_seq <= records.len() as u64
+                    && !document.payload_sha256.is_empty()
+                    && sha256_bytes(&document.payload) == document.payload_sha256
+            });
+        let Some(document) = document else {
+            return full_replay(process, records);
+        };
+        match process.call(&WorkerRequest::Restore {
+            snapshot: document.payload,
+            last_applied_seq: document.last_applied_seq,
+            dependencies: BTreeMap::new(),
+        }) {
+            Ok(WorkerResponse::Ack { last_applied_seq })
+                if last_applied_seq == document.last_applied_seq =>
+            {
+                Ok(last_applied_seq)
+            }
+            Ok(_) | Err(_) => full_replay(process, records),
         }
     }
 
@@ -647,6 +880,10 @@ impl CapabilityManager {
         let cache = self.cache_dir(manifest);
         let executable = cache.join(&manifest.executable);
         if cached_bundle_is_valid(&cache, manifest, &self.verifying_key) {
+            return Ok(executable);
+        }
+        if let Some(artifact) = self.artifacts.get(&manifest.namespace) {
+            self.ensure_cached_archive(manifest, artifact, &cache)?;
             return Ok(executable);
         }
         let packaged = self.packaged_root.join(&manifest.namespace);
@@ -668,6 +905,97 @@ impl CapabilityManager {
         }
         fs::rename(&temporary, &cache)?;
         Ok(executable)
+    }
+
+    fn ensure_cached_archive(
+        &self,
+        manifest: &BundleManifest,
+        artifact: &CapabilityIndexArtifact,
+        cache: &Path,
+    ) -> Result<(), ManagerError> {
+        let packaged = self.packaged_root.join(&artifact.archive);
+        let archive = if archive_matches(&packaged, &artifact.archive_sha256) {
+            packaged
+        } else {
+            self.download_exact_artifact(artifact)?
+        };
+        let parent = cache
+            .parent()
+            .ok_or_else(|| ManagerError::Invalid("capability cache has no parent".into()))?;
+        fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(
+            ".{}.tmp-{}",
+            manifest.executable_sha256,
+            random_nonce()?
+        ));
+        fs::create_dir_all(&temporary)?;
+        if let Err(error) = extract_tcap(&archive, &temporary, manifest) {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(error);
+        }
+        manifest.verify_bundle(&temporary, &self.verifying_key)?;
+        let extracted: BundleManifest =
+            serde_json::from_reader(File::open(temporary.join(MANIFEST_FILE))?)?;
+        if extracted != *manifest {
+            let _ = fs::remove_dir_all(&temporary);
+            return Err(ManagerError::Invalid(format!(
+                "archive {} manifest does not match signed index",
+                artifact.archive
+            )));
+        }
+        if cache.exists() {
+            fs::remove_dir_all(cache)?;
+        }
+        fs::rename(temporary, cache)?;
+        Ok(())
+    }
+
+    fn download_exact_artifact(
+        &self,
+        artifact: &CapabilityIndexArtifact,
+    ) -> Result<PathBuf, ManagerError> {
+        let base = self
+            .download_base_url
+            .as_deref()
+            .ok_or_else(|| {
+                ManagerError::Invalid(format!(
+                    "packaged artifact {} is unavailable and signed index has no download URL",
+                    artifact.archive
+                ))
+            })?
+            .trim_end_matches('/');
+        let url = format!("{base}/{}", artifact.archive);
+        let downloads = self.home.join("capabilities/downloads");
+        fs::create_dir_all(&downloads)?;
+        let target = downloads.join(format!(
+            "{}-{}",
+            artifact.manifest.namespace, artifact.archive_sha256
+        ));
+        if archive_matches(&target, &artifact.archive_sha256) {
+            return Ok(target);
+        }
+        let temporary = downloads.join(format!(".download-{}.tmp", random_nonce()?));
+        let response = ureq::get(&url).call().map_err(|error| {
+            ManagerError::Io(std::io::Error::other(format!(
+                "download exact capability artifact {url}: {error}"
+            )))
+        })?;
+        let mut reader = response.into_reader();
+        let mut file = File::create(&temporary)?;
+        std::io::copy(&mut reader, &mut file)?;
+        drop(file);
+        if !archive_matches(&temporary, &artifact.archive_sha256) {
+            let _ = fs::remove_file(&temporary);
+            return Err(ManagerError::Invalid(format!(
+                "downloaded artifact {} does not match pinned hash {}",
+                artifact.archive, artifact.archive_sha256
+            )));
+        }
+        if target.exists() {
+            fs::remove_file(&target)?;
+        }
+        fs::rename(temporary, &target)?;
+        Ok(target)
     }
 
     fn cache_dir(&self, manifest: &BundleManifest) -> PathBuf {
@@ -698,12 +1026,13 @@ impl CapabilityManager {
         fs::create_dir_all(&state_dir)?;
         let target = state_dir.join(format!("{namespace}.json"));
         let temporary = state_dir.join(format!(".{namespace}.tmp"));
-        let document = serde_json::json!({
-            "namespace": namespace,
-            "lastAppliedSeq": last_applied_seq,
-            "stateSha256": state_sha256,
-            "payload": payload,
-        });
+        let document = SnapshotDocument {
+            namespace: namespace.to_string(),
+            last_applied_seq,
+            payload_sha256: sha256_bytes(&payload),
+            state_sha256,
+            payload,
+        };
         fs::write(&temporary, serde_json::to_vec_pretty(&document)?)?;
         fs::rename(temporary, target)?;
         Ok(())
@@ -759,10 +1088,32 @@ impl Drop for CapabilityManager {
     }
 }
 
+struct PackagedCatalog {
+    manifests: BTreeMap<String, BundleManifest>,
+    artifacts: BTreeMap<String, CapabilityIndexArtifact>,
+    download_base_url: Option<String>,
+}
+
 fn read_catalog(
     root: &Path,
     verifying_key: &VerifyingKey,
-) -> Result<BTreeMap<String, BundleManifest>, ManagerError> {
+) -> Result<PackagedCatalog, ManagerError> {
+    let index_path = root.join(INDEX_FILE);
+    if index_path.is_file() {
+        let index: CapabilityIndex = serde_json::from_reader(File::open(index_path)?)?;
+        index.validate(verifying_key)?;
+        let manifests = index
+            .artifacts
+            .iter()
+            .map(|(namespace, artifact)| (namespace.clone(), artifact.manifest.clone()))
+            .collect::<BTreeMap<_, _>>();
+        validate_platforms(&manifests)?;
+        return Ok(PackagedCatalog {
+            manifests,
+            artifacts: index.artifacts,
+            download_base_url: index.download_base_url,
+        });
+    }
     let mut catalog = BTreeMap::new();
     if !root.is_dir() {
         return Err(ManagerError::Invalid(format!(
@@ -804,7 +1155,29 @@ fn read_catalog(
             )));
         }
     }
-    Ok(catalog)
+    Ok(PackagedCatalog {
+        manifests: catalog,
+        artifacts: BTreeMap::new(),
+        download_base_url: None,
+    })
+}
+
+fn validate_platforms(catalog: &BTreeMap<String, BundleManifest>) -> Result<(), ManagerError> {
+    for manifest in catalog.values() {
+        if manifest.platform != std::env::consts::OS
+            || manifest.architecture != std::env::consts::ARCH
+        {
+            return Err(ManagerError::Invalid(format!(
+                "capability {} targets {}/{}, host is {}/{}",
+                manifest.namespace,
+                manifest.platform,
+                manifest.architecture,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn verify_manifest_signature(
@@ -823,6 +1196,7 @@ fn ensure_lockfile(
     home: &Path,
     packaged_root: &Path,
     catalog: &BTreeMap<String, BundleManifest>,
+    artifacts: &BTreeMap<String, CapabilityIndexArtifact>,
 ) -> Result<(), ManagerError> {
     let target = home.join(LOCK_FILE);
     if target.is_file() {
@@ -849,7 +1223,8 @@ fn ensure_lockfile(
                 || locked.executable_sha256 != manifest.executable_sha256
                 || locked.platform != manifest.platform
                 || locked.architecture != manifest.architecture
-                || locked.bundle_sha256 != sha256_bundle(&packaged_root.join(namespace), manifest)?
+                || locked.bundle_sha256
+                    != expected_bundle_sha256(packaged_root, namespace, manifest, artifacts)?
             {
                 return Err(ManagerError::Invalid(format!(
                     "packaged capability {namespace} does not match its exact lock"
@@ -860,7 +1235,7 @@ fn ensure_lockfile(
     }
     let mut lock = CapabilityLockfile::default();
     for (namespace, manifest) in catalog {
-        let bundle_sha256 = sha256_bundle(&packaged_root.join(namespace), manifest)?;
+        let bundle_sha256 = expected_bundle_sha256(packaged_root, namespace, manifest, artifacts)?;
         lock.capabilities.insert(
             namespace.clone(),
             LockedCapability {
@@ -880,6 +1255,18 @@ fn ensure_lockfile(
     Ok(())
 }
 
+fn expected_bundle_sha256(
+    packaged_root: &Path,
+    namespace: &str,
+    manifest: &BundleManifest,
+    artifacts: &BTreeMap<String, CapabilityIndexArtifact>,
+) -> Result<String, ManagerError> {
+    if let Some(artifact) = artifacts.get(namespace) {
+        return Ok(artifact.archive_sha256.clone());
+    }
+    sha256_bundle(&packaged_root.join(namespace), manifest)
+}
+
 fn cached_bundle_is_valid(
     cache: &Path,
     expected: &BundleManifest,
@@ -897,6 +1284,43 @@ fn sha256_bundle(path: &Path, manifest: &BundleManifest) -> Result<String, Manag
     hasher.update(manifest.executable.as_bytes());
     hasher.update(manifest.executable_sha256.as_bytes());
     Ok(hex(&hasher.finalize()))
+}
+
+fn archive_matches(path: &Path, expected: &str) -> bool {
+    path.is_file() && terrane_cap_protocol::sha256_file(path).is_ok_and(|actual| actual == expected)
+}
+
+fn extract_tcap(
+    archive_path: &Path,
+    target: &Path,
+    manifest: &BundleManifest,
+) -> Result<(), ManagerError> {
+    let file = File::open(archive_path)?;
+    let decoder = zstd::Decoder::new(file)?;
+    let mut archive = tar::Archive::new(decoder);
+    let allowed = BTreeSet::from([MANIFEST_FILE.to_string(), manifest.executable.clone()]);
+    let mut seen = BTreeSet::new();
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            return Err(ManagerError::Invalid(
+                "capability archive contains a non-file entry".into(),
+            ));
+        }
+        let path = entry.path()?.to_string_lossy().into_owned();
+        if !allowed.contains(&path) || !seen.insert(path.clone()) {
+            return Err(ManagerError::Invalid(format!(
+                "capability archive contains unexpected entry {path}"
+            )));
+        }
+        entry.unpack(target.join(path))?;
+    }
+    if seen != allowed {
+        return Err(ManagerError::Invalid(
+            "capability archive is missing its manifest or executable".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -947,9 +1371,12 @@ fn hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+
     use ed25519_dalek::{Signer, SigningKey};
     use terrane_cap_protocol::{
-        sha256_file, ActivationMode, CapabilityDeclaration, BUNDLE_FORMAT_VERSION,
+        sha256_file, ActivationMode, CapabilityDeclaration, CapabilityIndex,
+        CapabilityIndexArtifact, BUNDLE_FORMAT_VERSION, INDEX_FORMAT_VERSION,
     };
 
     fn write_bundle(root: &Path, signing: &SigningKey, namespace: &str, dependencies: Vec<String>) {
@@ -983,6 +1410,49 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
+    }
+
+    fn write_indexed_archive(
+        root: &Path,
+        signing: &SigningKey,
+        namespace: &str,
+        download_base_url: Option<String>,
+    ) -> PathBuf {
+        write_bundle(root, signing, namespace, Vec::new());
+        let bundle = root.join(namespace);
+        let manifest: BundleManifest =
+            serde_json::from_reader(File::open(bundle.join(MANIFEST_FILE)).unwrap()).unwrap();
+        let archive_name = format!("{namespace}-0.1.0.tcap");
+        let archive_path = root.join(&archive_name);
+        let file = File::create(&archive_path).unwrap();
+        let encoder = zstd::Encoder::new(file, 1).unwrap();
+        let mut archive = tar::Builder::new(encoder);
+        archive
+            .append_path_with_name(bundle.join(MANIFEST_FILE), MANIFEST_FILE)
+            .unwrap();
+        archive
+            .append_path_with_name(bundle.join("worker"), "worker")
+            .unwrap();
+        archive.into_inner().unwrap().finish().unwrap();
+        fs::remove_dir_all(bundle).unwrap();
+        let artifact = CapabilityIndexArtifact {
+            archive: archive_name,
+            archive_sha256: sha256_file(&archive_path).unwrap(),
+            manifest,
+        };
+        let mut index = CapabilityIndex {
+            format_version: INDEX_FORMAT_VERSION,
+            download_base_url,
+            artifacts: BTreeMap::from([(namespace.to_string(), artifact)]),
+            signature: String::new(),
+        };
+        index.signature = hex(&signing.sign(&index.signing_payload().unwrap()).to_bytes());
+        fs::write(
+            root.join(INDEX_FILE),
+            serde_json::to_vec_pretty(&index).unwrap(),
+        )
+        .unwrap();
+        archive_path
     }
 
     #[test]
@@ -1068,5 +1538,86 @@ mod tests {
                 Err(error) => error,
             };
         assert!(error.to_string().contains("signature verification failed"));
+    }
+
+    #[test]
+    fn signed_tcap_is_extracted_only_when_demanded() {
+        let packaged = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&[21u8; 32]);
+        write_indexed_archive(packaged.path(), &signing, "alpha", None);
+        let manager =
+            CapabilityManager::open(home.path(), packaged.path(), signing.verifying_key()).unwrap();
+        assert!(!home.path().join("capabilities/cache/alpha").exists());
+        let manifest = manager.catalog["alpha"].clone();
+        let executable = manager.ensure_cached(&manifest).unwrap();
+        assert_eq!(fs::read(executable).unwrap(), b"worker");
+    }
+
+    #[test]
+    fn offline_repair_fails_closed_without_replacing_the_exact_lock() {
+        let packaged = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&[22u8; 32]);
+        let archive = write_indexed_archive(packaged.path(), &signing, "alpha", None);
+        fs::remove_file(archive).unwrap();
+        let manager =
+            CapabilityManager::open(home.path(), packaged.path(), signing.verifying_key()).unwrap();
+        let error = manager
+            .ensure_cached(&manager.catalog["alpha"])
+            .unwrap_err();
+        assert!(error.to_string().contains("no download URL"));
+        let lock: CapabilityLockfile =
+            serde_json::from_reader(File::open(home.path().join(LOCK_FILE)).unwrap()).unwrap();
+        assert_eq!(lock.capabilities["alpha"].version, "0.1.0");
+    }
+
+    #[test]
+    fn missing_packaged_archive_repairs_from_signed_index_exact_hash() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let packaged = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&[23u8; 32]);
+        let archive = write_indexed_archive(packaged.path(), &signing, "alpha", Some(base_url));
+        let bytes = fs::read(&archive).unwrap();
+        fs::remove_file(archive).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 2048];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                bytes.len()
+            )
+            .unwrap();
+            stream.write_all(&bytes).unwrap();
+        });
+        let manager =
+            CapabilityManager::open(home.path(), packaged.path(), signing.verifying_key()).unwrap();
+        let executable = manager.ensure_cached(&manager.catalog["alpha"]).unwrap();
+        assert_eq!(fs::read(executable).unwrap(), b"worker");
+        server.join().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn silent_worker_pipe_times_out() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1")
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut output = child.stdout.take().unwrap();
+        configure_worker_output(&output).unwrap();
+        let error = read_worker_response(&mut output, Duration::from_millis(10)).unwrap_err();
+        assert!(matches!(error, ManagerError::Timeout(_)));
+        child.kill().unwrap();
+        child.wait().unwrap();
     }
 }

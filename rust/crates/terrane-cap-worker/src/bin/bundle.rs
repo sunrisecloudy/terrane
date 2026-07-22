@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use ed25519_dalek::SigningKey;
-use terrane_cap_worker::package::{hex, package_all};
+use terrane_cap_worker::package::{hex, package_all_with_index};
 
 fn main() {
     if let Err(error) = run() {
@@ -13,34 +13,37 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let mut worker = None;
+    let mut workers = None;
     let mut output = None;
     let mut platform = Some(env::consts::OS.to_string());
     let mut architecture = Some(env::consts::ARCH.to_string());
+    let mut download_base_url = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         let value = args
             .next()
             .ok_or_else(|| format!("missing value for {arg}"))?;
         match arg.as_str() {
-            "--worker" => worker = Some(PathBuf::from(value)),
+            "--workers" | "--worker" => workers = Some(PathBuf::from(value)),
             "--output" => output = Some(PathBuf::from(value)),
             "--platform" => platform = Some(value),
             "--architecture" => architecture = Some(value),
+            "--download-base-url" => download_base_url = Some(value),
             other => return Err(format!("unknown packager argument: {other}")),
         }
     }
     let signing_key = signing_key()?;
-    let packaged = package_all(
-        worker
+    let packaged = package_all_with_index(
+        workers
             .as_ref()
-            .ok_or_else(|| "--worker is required".to_string())?,
+            .ok_or_else(|| "--workers is required".to_string())?,
         output
             .as_ref()
             .ok_or_else(|| "--output is required".to_string())?,
         &signing_key,
         &platform.unwrap(),
         &architecture.unwrap(),
+        download_base_url,
     )?;
     let verifying_key = hex(signing_key.verifying_key().as_bytes());
     fs::write(

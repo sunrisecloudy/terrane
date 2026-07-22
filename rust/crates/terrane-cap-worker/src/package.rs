@@ -6,7 +6,8 @@ use ed25519_dalek::{Signer, SigningKey};
 use terrane_cap_interface::{GrantResourceSpec, ResourceMethod};
 use terrane_cap_protocol::{
     is_fundamental, sha256_file, ActivationMode, BundleManifest, CapabilityDeclaration,
-    OwnedGrantResourceSpec, OwnedResourceMethod, BUNDLE_FORMAT_VERSION, PROTOCOL_VERSION,
+    CapabilityIndex, CapabilityIndexArtifact, OwnedGrantResourceSpec, OwnedResourceMethod,
+    BUNDLE_FORMAT_VERSION, INDEX_FORMAT_VERSION, PROTOCOL_VERSION,
 };
 use terrane_core::{default_registry, Registry};
 
@@ -64,21 +65,60 @@ pub fn manifests(
 }
 
 pub fn package_all(
-    worker: &Path,
+    workers: &Path,
     output: &Path,
     signing_key: &SigningKey,
     platform: &str,
     architecture: &str,
 ) -> Result<Vec<PathBuf>, String> {
-    if !worker.is_file() {
+    package_all_with_index(workers, output, signing_key, platform, architecture, None)
+}
+
+pub fn package_all_with_index(
+    workers: &Path,
+    output: &Path,
+    signing_key: &SigningKey,
+    platform: &str,
+    architecture: &str,
+    download_base_url: Option<String>,
+) -> Result<Vec<PathBuf>, String> {
+    if !workers.is_file() && !workers.is_dir() {
         return Err(format!(
-            "worker binary does not exist: {}",
-            worker.display()
+            "worker binary directory does not exist: {}",
+            workers.display()
         ));
     }
-    let executable_sha256 = sha256_file(worker).map_err(|error| error.to_string())?;
+    fs::create_dir_all(output).map_err(|error| error.to_string())?;
     let mut packaged = Vec::new();
-    for (namespace, mut manifest) in manifests(&executable_sha256, platform, architecture)? {
+    let mut artifacts = BTreeMap::new();
+    let registry = default_registry();
+    for namespace in registry.namespaces() {
+        if is_fundamental(namespace) {
+            continue;
+        }
+        let legacy_dir = output.join(namespace);
+        if legacy_dir.is_dir() {
+            fs::remove_dir_all(&legacy_dir).map_err(|error| error.to_string())?;
+        }
+        let worker = if workers.is_file() {
+            workers.to_path_buf()
+        } else {
+            workers.join(namespace)
+        };
+        if !worker.is_file() {
+            return Err(format!(
+                "worker binary for {namespace} does not exist: {}",
+                worker.display()
+            ));
+        }
+        let executable_sha256 = sha256_file(&worker).map_err(|error| error.to_string())?;
+        let mut manifest = manifest_for(
+            &registry,
+            namespace,
+            &executable_sha256,
+            platform,
+            architecture,
+        )?;
         manifest.signature = hex(&signing_key
             .sign(
                 &manifest
@@ -86,23 +126,108 @@ pub fn package_all(
                     .map_err(|error| error.to_string())?,
             )
             .to_bytes());
-        let dir = output.join(&namespace);
+        let dir = output.join(format!(".{namespace}.bundle.tmp"));
         if dir.exists() {
             fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;
         }
         fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let executable = dir.join(&manifest.executable);
-        fs::hard_link(worker, &executable)
-            .or_else(|_| fs::copy(worker, &executable).map(|_| ()))
+        fs::hard_link(&worker, &executable)
+            .or_else(|_| fs::copy(&worker, &executable).map(|_| ()))
             .map_err(|error| error.to_string())?;
         fs::write(
             dir.join("manifest.json"),
             serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        packaged.push(dir);
+        let archive_name = format!("{namespace}-{}.tcap", manifest.version);
+        let archive = output.join(&archive_name);
+        let temporary_archive = output.join(format!(".{archive_name}.tmp"));
+        write_archive(&dir, &temporary_archive, &manifest.executable)?;
+        if archive.exists() {
+            fs::remove_file(&archive).map_err(|error| error.to_string())?;
+        }
+        fs::rename(&temporary_archive, &archive).map_err(|error| error.to_string())?;
+        fs::remove_dir_all(&dir).map_err(|error| error.to_string())?;
+        let archive_sha256 = sha256_file(&archive).map_err(|error| error.to_string())?;
+        artifacts.insert(
+            namespace.to_string(),
+            CapabilityIndexArtifact {
+                archive: archive_name,
+                archive_sha256,
+                manifest,
+            },
+        );
+        packaged.push(archive);
     }
+    let mut index = CapabilityIndex {
+        format_version: INDEX_FORMAT_VERSION,
+        download_base_url,
+        artifacts,
+        signature: String::new(),
+    };
+    index.signature = hex(&signing_key
+        .sign(&index.signing_payload().map_err(|error| error.to_string())?)
+        .to_bytes());
+    let temporary_index = output.join(".index.json.tmp");
+    fs::write(
+        &temporary_index,
+        serde_json::to_vec_pretty(&index).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    fs::rename(temporary_index, output.join("index.json")).map_err(|error| error.to_string())?;
     Ok(packaged)
+}
+
+fn write_archive(bundle: &Path, target: &Path, executable: &str) -> Result<(), String> {
+    let file = fs::File::create(target).map_err(|error| error.to_string())?;
+    let encoder = zstd::Encoder::new(file, 3).map_err(|error| error.to_string())?;
+    let mut archive = tar::Builder::new(encoder);
+    archive
+        .append_path_with_name(bundle.join("manifest.json"), "manifest.json")
+        .map_err(|error| error.to_string())?;
+    archive
+        .append_path_with_name(bundle.join(executable), executable)
+        .map_err(|error| error.to_string())?;
+    let encoder = archive.into_inner().map_err(|error| error.to_string())?;
+    encoder.finish().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn manifest_for(
+    registry: &Registry,
+    namespace: &str,
+    executable_sha256: &str,
+    platform: &str,
+    architecture: &str,
+) -> Result<BundleManifest, String> {
+    let capability = registry.get(namespace).map_err(|error| error.to_string())?;
+    let manifest = BundleManifest {
+        format_version: BUNDLE_FORMAT_VERSION,
+        namespace: namespace.to_string(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        protocol_version: PROTOCOL_VERSION,
+        state_schema_version: 1,
+        platform: platform.to_string(),
+        architecture: architecture.to_string(),
+        executable: format!("terrane-cap-{namespace}-worker"),
+        executable_sha256: executable_sha256.to_string(),
+        signature: String::new(),
+        dependencies: dynamic_dependencies(namespace)
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
+        activation: activation_mode(namespace),
+        declaration: declaration(registry, namespace)?,
+    };
+    capability
+        .doc(false)
+        .namespace
+        .eq(namespace)
+        .then_some(())
+        .ok_or_else(|| format!("capability documentation namespace mismatch for {namespace}"))?;
+    manifest.validate().map_err(|error| error.to_string())?;
+    Ok(manifest)
 }
 
 fn declaration(registry: &Registry, namespace: &str) -> Result<CapabilityDeclaration, String> {

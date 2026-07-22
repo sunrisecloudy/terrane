@@ -20,6 +20,7 @@ use terrane_cap_interface::{
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const BUNDLE_FORMAT_VERSION: u32 = 1;
 pub const LOCK_FORMAT_VERSION: u32 = 1;
+pub const INDEX_FORMAT_VERSION: u32 = 1;
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 pub const FUNDAMENTAL_CAPABILITIES: [&str; 8] = [
     "app",
@@ -197,6 +198,95 @@ impl BundleManifest {
             })?;
         Ok(executable)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityIndexArtifact {
+    pub archive: String,
+    pub archive_sha256: String,
+    pub manifest: BundleManifest,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityIndex {
+    pub format_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_base_url: Option<String>,
+    pub artifacts: BTreeMap<String, CapabilityIndexArtifact>,
+    pub signature: String,
+}
+
+impl CapabilityIndex {
+    pub fn signing_payload(&self) -> Result<Vec<u8>, ProtocolError> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Unsigned<'a> {
+            format_version: u32,
+            download_base_url: &'a Option<String>,
+            artifacts: &'a BTreeMap<String, CapabilityIndexArtifact>,
+        }
+        serde_json::to_vec(&Unsigned {
+            format_version: self.format_version,
+            download_base_url: &self.download_base_url,
+            artifacts: &self.artifacts,
+        })
+        .map_err(ProtocolError::Json)
+    }
+
+    pub fn validate(&self, verifying_key: &VerifyingKey) -> Result<(), ProtocolError> {
+        if self.format_version != INDEX_FORMAT_VERSION {
+            return Err(ProtocolError::Invalid(format!(
+                "unsupported capability index version {}",
+                self.format_version
+            )));
+        }
+        if self.artifacts.is_empty() {
+            return Err(ProtocolError::Invalid("capability index is empty".into()));
+        }
+        for (namespace, artifact) in &self.artifacts {
+            if namespace != &artifact.manifest.namespace {
+                return Err(ProtocolError::Invalid(format!(
+                    "capability index key {namespace} does not match manifest namespace {}",
+                    artifact.manifest.namespace
+                )));
+            }
+            artifact.manifest.validate()?;
+            validate_archive_name(&artifact.archive)?;
+            validate_sha256(&artifact.archive_sha256)?;
+            let signature = Signature::from_slice(&decode_hex(&artifact.manifest.signature)?)
+                .map_err(|error| {
+                    ProtocolError::Invalid(format!("invalid bundle signature: {error}"))
+                })?;
+            verifying_key
+                .verify(&artifact.manifest.signing_payload()?, &signature)
+                .map_err(|error| {
+                    ProtocolError::Invalid(format!("bundle signature verification failed: {error}"))
+                })?;
+        }
+        let signature = Signature::from_slice(&decode_hex(&self.signature)?)
+            .map_err(|error| ProtocolError::Invalid(format!("invalid index signature: {error}")))?;
+        verifying_key
+            .verify(&self.signing_payload()?, &signature)
+            .map_err(|error| {
+                ProtocolError::Invalid(format!("index signature verification failed: {error}"))
+            })?;
+        Ok(())
+    }
+}
+
+fn validate_archive_name(value: &str) -> Result<(), ProtocolError> {
+    if !value.ends_with(".tcap")
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains("..")
+    {
+        return Err(ProtocolError::Invalid(format!(
+            "invalid capability archive name: {value}"
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
