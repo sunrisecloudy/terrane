@@ -24,6 +24,28 @@ struct PermissionRequiredPrompt: Equatable {
       message: error
     )
   }
+
+  static func parse(mcpResponse: String) -> PermissionRequiredPrompt? {
+    guard let data = mcpResponse.data(using: .utf8),
+      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let result = root["result"] as? [String: Any],
+      result["isError"] as? Bool == true,
+      let content = result["structuredContent"] as? [String: Any],
+      content["type"] as? String == "permission_required",
+      let app = content["app"] as? String,
+      !app.isEmpty,
+      let resources = content["missingResources"] as? [String],
+      !resources.isEmpty
+    else {
+      return nil
+    }
+    return PermissionRequiredPrompt(
+      appId: app,
+      appName: (content["appName"] as? String) ?? app,
+      missingResources: resources,
+      message: (content["message"] as? String) ?? "permission required"
+    )
+  }
 }
 
 /// A candidate app for the interop powerbox picker — an app declaring the
@@ -451,6 +473,44 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     dispatch(command: "auth.grant", argv: ["user:local-owner", app, namespace])
   }
 
+  /// Keep every GUI-discovered bundle visible to CLI and MCP clients, even
+  /// before a user selects it in the sidebar. `--refresh-source` is idempotent
+  /// when the catalog already points at the same bundle.
+  func catalog(appId: String, name: String, source: String) -> (Bool, String) {
+    let result = dispatch(
+      command: "app.add",
+      argv: [appId, name, "--source", source, "--refresh-source"]
+    )
+    if result.0 {
+      catalogedAppIds.insert(appId)
+    }
+    return result
+  }
+
+  /// Route one MCP JSON-RPC message through the same live Core used by the GUI.
+  /// The loopback listener calls this from its serial queue, while the Rust
+  /// handle mutex coalesces it with app-frame invocations.
+  func handleMcp(request: String, adminBaseURL: String) -> (Bool, String) {
+    request.withCString { requestC in
+      adminBaseURL.withCString { adminC in
+        var out: UnsafeMutablePointer<CChar>?
+        var err: UnsafeMutablePointer<CChar>?
+        let rc = terrane_mcp_handle_json_rpc(handle, requestC, adminC, &out, &err)
+        return output(rc: rc, out: out, err: err, label: "terrane_mcp_handle_json_rpc")
+      }
+    }
+  }
+
+  /// Ask the trusted native UI to resolve a permission request produced by an
+  /// attached MCP client. The MCP transport never receives a grant primitive.
+  func requestPermission(_ prompt: PermissionRequiredPrompt, completion: @escaping (Bool) -> Void) {
+    guard let onPermissionRequired else {
+      completion(false)
+      return
+    }
+    onPermissionRequired(prompt, completion)
+  }
+
   private func replyInvokingSelectedApp(
     verb: String,
     args: [String],
@@ -622,13 +682,8 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   private func ensureSelectedAppCataloged() {
     guard !appId.isEmpty, !catalogedAppIds.contains(appId) else { return }
 
-    let (ok, payload) = dispatch(
-      command: "app.add",
-      argv: [appId, appName, "--source", appSource, "--refresh-source"]
-    )
-    if ok {
-      catalogedAppIds.insert(appId)
-    } else {
+    let (ok, payload) = catalog(appId: appId, name: appName, source: appSource)
+    if !ok {
       NSLog("terrane-host: cannot catalog \(appId): \(payload)")
     }
   }

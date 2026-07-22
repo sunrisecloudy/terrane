@@ -75,6 +75,8 @@ targets:
       - sdk: IOKit.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
+      - sdk: Network.framework
+      - sdk: Security.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
@@ -158,6 +160,7 @@ targets:
       - path: Sources/AppSidebarView.swift
       - path: Sources/LocalModelPanel.swift
       - path: Sources/LoopbackAppHost.swift
+      - path: Sources/McpLoopbackServer.swift
       - path: Sources/NativeCameraCapture.swift
       - path: Sources/NativeCameraFrameStreamer.swift
       - path: Sources/SourceEditor.swift
@@ -190,6 +193,8 @@ targets:
       - sdk: IOKit.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
+      - sdk: Network.framework
+      - sdk: Security.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false

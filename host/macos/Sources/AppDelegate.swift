@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var appSchemeHandler: AppSchemeHandler?
   private var previewSchemeHandler: PreviewSchemeHandler?
   private var loopbackHost: LoopbackAppHost?
+  private var mcpServer: McpLoopbackServer?
   private var home: URL!
   private var apps: [TerraneApp] = []
   private var premiumURL: URL?
@@ -54,6 +55,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       return
     }
     self.bridge = bridge
+    for app in apps {
+      let result = bridge.catalog(appId: app.id, name: app.name, source: app.directory.path)
+      if !result.0 {
+        NSLog("terrane-host: cannot catalog \(app.id) for MCP: \(result.1)")
+      }
+    }
+    let mcpServer = McpLoopbackServer(home: home, bridge: bridge)
+    do {
+      try mcpServer.start()
+      self.mcpServer = mcpServer
+    } catch {
+      NSLog("terrane-host: MCP loopback unavailable: \(error)")
+    }
     // Seed the shared i18n catalog if a catalog dir is configured (parity with
     // the web host's startup seed); idempotent and best-effort. Any host or the
     // CLI seeding this home also suffices.
@@ -183,6 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     sttCapture?.stop(reason: "host-exit")
     cameraFrameStreamer?.stop()
     loopbackHost?.stop()
+    mcpServer?.stop()
     terrane_stt_shutdown()
     bridge?.close()
     // Cached local-model engines must be released before ggml's static
