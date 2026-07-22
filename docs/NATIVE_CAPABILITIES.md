@@ -56,6 +56,14 @@ At most eight idle workers remain warm for ten minutes. Persisted automation,
 job, scheduler, stream, and webhook state reactivates the corresponding workers
 without an app window. Empty homes still start with zero dynamic workers.
 
+On the first open of an existing home, Terrane keeps the event log unchanged,
+replays every pinned dynamic worker, compares its canonical projection with the
+resident one-release compatibility implementation, writes durable worker
+snapshots, and only then atomically writes `capabilities/migration-v1.json`.
+An interrupted or failed migration has no marker and is retried on the next
+open. Unless dynamic mode is required, failure detaches the manager and leaves
+the fundamental control plane running on the emergency static fallback.
+
 ## Operations
 
 ```sh

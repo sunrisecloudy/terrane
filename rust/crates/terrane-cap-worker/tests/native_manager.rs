@@ -41,6 +41,7 @@ fn signed_bundle_runs_replays_decides_and_snapshots_out_of_process() {
             &records,
             WorkerRequest::Decide {
                 request: Request::new("time.now", vec!["notes".into()]),
+                overlay_records: Vec::new(),
                 dependencies: BTreeMap::new(),
             },
         )
@@ -65,6 +66,7 @@ fn signed_bundle_runs_replays_decides_and_snapshots_out_of_process() {
             &records,
             WorkerRequest::Decide {
                 request: Request::new("time.now", vec!["notes".into()]),
+                overlay_records: Vec::new(),
                 dependencies: BTreeMap::new(),
             },
         )

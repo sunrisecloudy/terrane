@@ -14,8 +14,9 @@ use sha2::{Digest, Sha256};
 use terrane_cap_interface::EventRecord;
 use terrane_cap_protocol::{
     validate_dependency_graph, write_frame, BundleManifest, CapabilityIndex,
-    CapabilityIndexArtifact, CapabilityLockfile, LockedCapability, ProtocolError, WorkerRequest,
-    WorkerResponse, LOCK_FORMAT_VERSION, PROTOCOL_VERSION,
+    CapabilityIndexArtifact, CapabilityLockfile, HostConnectorRequest, HostConnectorResponse,
+    LockedCapability, ProtocolError, WorkerRequest, WorkerResponse, LOCK_FORMAT_VERSION,
+    PROTOCOL_VERSION,
 };
 
 pub const DEFAULT_MAX_WARM_WORKERS: usize = 8;
@@ -23,6 +24,7 @@ pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MANIFEST_FILE: &str = "manifest.json";
 const LOCK_FILE: &str = "capabilities.lock.json";
 const INDEX_FILE: &str = "index.json";
+const MIGRATION_MARKER_FILE: &str = "capabilities/migration-v1.json";
 
 pub fn verifying_key_from_hex(value: &str) -> Result<VerifyingKey, ManagerError> {
     let bytes = decode_hex(value)?;
@@ -134,20 +136,56 @@ struct SnapshotDocument {
     payload: Vec<u8>,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationMarker {
+    format_version: u32,
+    lock_sha256: String,
+    migrated_log_records: u64,
+    migrated_log_sha256: String,
+}
+
 impl WorkerProcess {
     fn call(&mut self, request: &WorkerRequest) -> Result<WorkerResponse, ManagerError> {
+        self.call_with_connector(request, &mut |_request| HostConnectorResponse::Error {
+            message: "parent host connector is unavailable for this worker request".into(),
+        })
+    }
+
+    fn call_with_connector(
+        &mut self,
+        request: &WorkerRequest,
+        connector: &mut dyn FnMut(HostConnectorRequest) -> HostConnectorResponse,
+    ) -> Result<WorkerResponse, ManagerError> {
         write_frame(&mut self.input, request)?;
-        let response = read_worker_response(&mut self.output, request_timeout(request))?;
-        self.last_used = Instant::now();
-        match response {
-            WorkerResponse::Error {
-                code,
-                message,
-                retryable,
-            } => Err(ManagerError::Worker(format!(
-                "{code}: {message} (retryable={retryable})"
-            ))),
-            response => Ok(response),
+        loop {
+            let response = read_worker_response(&mut self.output, request_timeout(request))?;
+            self.last_used = Instant::now();
+            match response {
+                WorkerResponse::ConnectorRequest {
+                    request_id,
+                    request,
+                } => {
+                    let response = connector(request);
+                    write_frame(
+                        &mut self.input,
+                        &WorkerRequest::ConnectorResponse {
+                            request_id,
+                            response,
+                        },
+                    )?;
+                }
+                WorkerResponse::Error {
+                    code,
+                    message,
+                    retryable,
+                } => {
+                    return Err(ManagerError::Worker(format!(
+                        "{code}: {message} (retryable={retryable})"
+                    )))
+                }
+                response => return Ok(response),
+            }
         }
     }
 
@@ -332,6 +370,42 @@ impl CapabilityManager {
         self.catalog.get(namespace)
     }
 
+    pub fn migration_complete(&self) -> Result<bool, ManagerError> {
+        let marker_path = self.home.join(MIGRATION_MARKER_FILE);
+        let marker: MigrationMarker = match fs::read(&marker_path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(marker) => marker,
+                Err(_) => return Ok(false),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if marker.format_version != 1 {
+            return Ok(false);
+        }
+        let lock = fs::read(self.home.join(LOCK_FILE))?;
+        Ok(marker.lock_sha256 == sha256_bytes(&lock))
+    }
+
+    pub fn mark_migration_complete(&self, records: &[EventRecord]) -> Result<(), ManagerError> {
+        let path = self.home.join(MIGRATION_MARKER_FILE);
+        let parent = path
+            .parent()
+            .ok_or_else(|| ManagerError::Invalid("migration marker has no parent".into()))?;
+        fs::create_dir_all(parent)?;
+        let lock = fs::read(self.home.join(LOCK_FILE))?;
+        let marker = MigrationMarker {
+            format_version: 1,
+            lock_sha256: sha256_bytes(&lock),
+            migrated_log_records: records.len() as u64,
+            migrated_log_sha256: sha256_bytes(&serde_json::to_vec(records)?),
+        };
+        let temporary = parent.join(format!(".migration-{}.tmp", random_nonce()?));
+        fs::write(&temporary, serde_json::to_vec_pretty(&marker)?)?;
+        fs::rename(temporary, path)?;
+        Ok(())
+    }
+
     pub fn status(&self) -> Vec<CapabilityStatusView> {
         let slots = self
             .slots
@@ -466,6 +540,23 @@ impl CapabilityManager {
             }
             Err(error) => Err(error),
         }
+    }
+
+    pub fn call_with_connector(
+        &self,
+        namespace: &str,
+        records: &[EventRecord],
+        request: WorkerRequest,
+        mut connector: impl FnMut(HostConnectorRequest) -> HostConnectorResponse,
+    ) -> Result<WorkerResponse, ManagerError> {
+        self.ensure_loaded(namespace, records)?;
+        let slot = self.slot(namespace)?;
+        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let process = slot
+            .process
+            .as_mut()
+            .ok_or_else(|| ManagerError::Worker(format!("{namespace} is not loaded")))?;
+        process.call_with_connector(&request, &mut connector)
     }
 
     pub fn fold_loaded(&self, first_seq: u64, records: &[EventRecord]) {
@@ -1467,6 +1558,31 @@ mod tests {
         let lock: CapabilityLockfile =
             serde_json::from_reader(File::open(home.path().join(LOCK_FILE)).unwrap()).unwrap();
         assert_eq!(lock.capabilities["alpha"].version, "0.1.0");
+    }
+
+    #[test]
+    fn migration_marker_is_atomic_and_bound_to_the_exact_lock() {
+        let packaged = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&[31u8; 32]);
+        write_bundle(packaged.path(), &signing, "alpha", Vec::new());
+        let manager =
+            CapabilityManager::open(home.path(), packaged.path(), signing.verifying_key()).unwrap();
+        assert!(!manager.migration_complete().unwrap());
+
+        manager.mark_migration_complete(&[]).unwrap();
+        assert!(manager.migration_complete().unwrap());
+        assert!(home.path().join(MIGRATION_MARKER_FILE).is_file());
+        assert!(fs::read_dir(home.path().join("capabilities"))
+            .unwrap()
+            .all(|entry| !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".migration-")));
+
+        fs::write(home.path().join(LOCK_FILE), b"{}").unwrap();
+        assert!(!manager.migration_complete().unwrap());
     }
 
     #[test]

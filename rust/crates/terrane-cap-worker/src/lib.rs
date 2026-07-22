@@ -5,17 +5,21 @@
 //! no Rust trait object crosses into the host.
 
 use std::any::Any;
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use terrane_cap_interface::{
     CapBus, Capability, CommandCtx, Error, EventRecord, GrantResourceSpec, QueryCtx, QueryValue,
-    ResourceReadCtx, Result as CapResult, StateStore,
+    ResourceMethod, ResourceReadCtx, Result as CapResult, RuntimeCtx, RuntimeHost,
+    RuntimeHostHandle, RuntimeRequest, StateStore,
 };
 use terrane_cap_protocol::{
-    read_frame, write_frame, WorkerRequest, WorkerResponse, PROTOCOL_VERSION,
+    read_frame, write_frame, HostConnectorRequest, HostConnectorResponse, OwnedResourceMethod,
+    WorkerRequest, WorkerResponse, PROTOCOL_VERSION,
 };
 
 #[cfg(feature = "packager")]
@@ -186,60 +190,63 @@ impl Worker {
             }
             WorkerRequest::Decide {
                 request,
+                overlay_records,
                 dependencies: _,
-            } => {
+            } => self.with_overlay(&overlay_records, |worker| {
                 let bus = WorkerBus::new(
-                    self.capability.as_ref(),
-                    &self.support,
-                    &self.state,
-                    &self.declared_events,
+                    worker.capability.as_ref(),
+                    &worker.support,
+                    &worker.state,
+                    &worker.declared_events,
                 );
-                let decision = self.capability.decide(
+                let decision = worker.capability.decide(
                     CommandCtx {
-                        state: &self.state,
+                        state: &worker.state,
                         bus: &bus,
                     },
                     &request.name,
                     &request.args,
                 )?;
                 Ok(WorkerResponse::Decision { decision })
-            }
+            }),
             WorkerRequest::Query {
                 name,
                 args,
+                overlay_records,
                 dependencies: _,
-            } => {
+            } => self.with_overlay(&overlay_records, |worker| {
                 let bus = WorkerBus::new(
-                    self.capability.as_ref(),
-                    &self.support,
-                    &self.state,
-                    &self.declared_events,
+                    worker.capability.as_ref(),
+                    &worker.support,
+                    &worker.state,
+                    &worker.declared_events,
                 );
-                let value = self.capability.query(
+                let value = worker.capability.query(
                     QueryCtx {
-                        state: &self.state,
+                        state: &worker.state,
                         bus: &bus,
                     },
                     &name,
                     &args,
                 )?;
                 Ok(WorkerResponse::QueryValue { value })
-            }
+            }),
             WorkerRequest::ReadResource {
                 app,
                 name,
                 args,
+                overlay_records,
                 dependencies: _,
-            } => {
+            } => self.with_overlay(&overlay_records, |worker| {
                 let bus = WorkerBus::new(
-                    self.capability.as_ref(),
-                    &self.support,
-                    &self.state,
-                    &self.declared_events,
+                    worker.capability.as_ref(),
+                    &worker.support,
+                    &worker.state,
+                    &worker.declared_events,
                 );
-                let value = self.capability.read_resource(
+                let value = worker.capability.read_resource(
                     ResourceReadCtx {
-                        state: &self.state,
+                        state: &worker.state,
                         bus: &bus,
                         app: &app,
                         host: None,
@@ -248,17 +255,21 @@ impl Worker {
                     &args,
                 )?;
                 Ok(WorkerResponse::ReadValue { value })
-            }
+            }),
             WorkerRequest::ResourceCallOutput {
                 app,
                 method,
                 records,
-            } => {
-                let value =
-                    self.capability
-                        .resource_call_output(&self.state, &app, &method, &records)?;
+                overlay_records,
+            } => self.with_overlay(&overlay_records, |worker| {
+                let value = worker.capability.resource_call_output(
+                    &worker.state,
+                    &app,
+                    &method,
+                    &records,
+                )?;
                 Ok(WorkerResponse::ReadValue { value })
-            }
+            }),
             WorkerRequest::Snapshot => {
                 let payload = self.snapshot()?;
                 Ok(WorkerResponse::Snapshot {
@@ -290,6 +301,9 @@ impl Worker {
             )),
             WorkerRequest::ExecuteEffect { .. } => Err(Error::Runtime(
                 "effect execution remains owned by the parent host connector".into(),
+            )),
+            WorkerRequest::ConnectorResponse { .. } => Err(Error::InvalidInput(
+                "connector responses are only valid during runtime execution".into(),
             )),
             WorkerRequest::Shutdown => Ok(WorkerResponse::Ack {
                 last_applied_seq: self.last_applied_seq,
@@ -347,12 +361,58 @@ impl Worker {
         Ok(sha256(&encoded))
     }
 
+    fn with_overlay<T>(
+        &mut self,
+        records: &[EventRecord],
+        action: impl FnOnce(&mut Self) -> CapResult<T>,
+    ) -> CapResult<T> {
+        if records.is_empty() {
+            return action(self);
+        }
+        let baseline = self.snapshot()?;
+        let baseline_seq = self.last_applied_seq;
+        let fold_result = records.iter().try_for_each(|record| self.fold(record));
+        let result = match fold_result {
+            Ok(()) => action(self),
+            Err(error) => Err(error),
+        };
+        self.reset();
+        self.restore_snapshot(&baseline)?;
+        self.last_applied_seq = baseline_seq;
+        result
+    }
+
     fn record_affects_worker(&self, record: &EventRecord) -> bool {
         capability_accepts(self.capability.as_ref(), record)
             || self
                 .support
                 .iter()
                 .any(|capability| capability_accepts(capability.as_ref(), record))
+    }
+
+    fn run_runtime_with_connector(
+        &self,
+        app: String,
+        source: String,
+        source_files: Option<BTreeMap<String, String>>,
+        app_name: String,
+        input: Vec<String>,
+        io: ConnectorIo,
+    ) -> CapResult<WorkerResponse> {
+        let host = RuntimeHostHandle::new(Box::new(ConnectorHost::new(io)));
+        let output = self.capability.run_runtime(
+            RuntimeCtx {
+                source,
+                source_files,
+                app_name,
+                host,
+            },
+            RuntimeRequest { app, input },
+        )?;
+        Ok(WorkerResponse::RuntimeOutput {
+            output,
+            records: Vec::new(),
+        })
     }
 }
 
@@ -461,19 +521,225 @@ impl CapBus for WorkerBus<'_> {
     }
 }
 
-pub fn serve(
+#[derive(Clone)]
+struct ConnectorIo {
+    reader: Arc<Mutex<Box<dyn Read + Send>>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+}
+
+struct ConnectorHost {
+    io: ConnectorIo,
+    next_request_id: Cell<u64>,
+}
+
+impl ConnectorHost {
+    fn new(io: ConnectorIo) -> Self {
+        Self {
+            io,
+            next_request_id: Cell::new(1),
+        }
+    }
+
+    fn call(&self, request: HostConnectorRequest) -> CapResult<HostConnectorResponse> {
+        let request_id = self.next_request_id.get();
+        self.next_request_id.set(request_id + 1);
+        write_frame(
+            &mut *self
+                .io
+                .writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            &WorkerResponse::ConnectorRequest {
+                request_id,
+                request,
+            },
+        )
+        .map_err(|error| Error::Runtime(format!("write host connector request: {error}")))?;
+        let response: WorkerRequest = read_frame(
+            &mut *self
+                .io
+                .reader
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+        .map_err(|error| Error::Runtime(format!("read host connector response: {error}")))?;
+        match response {
+            WorkerRequest::ConnectorResponse {
+                request_id: response_id,
+                response,
+            } if response_id == request_id => match response {
+                HostConnectorResponse::Error { message } => Err(Error::Runtime(message)),
+                response => Ok(response),
+            },
+            other => Err(Error::Runtime(format!(
+                "expected connector response {request_id}, got {other:?}"
+            ))),
+        }
+    }
+}
+
+impl RuntimeHost for ConnectorHost {
+    fn resource_methods(&self, namespace: &str) -> CapResult<Vec<ResourceMethod>> {
+        match self.call(HostConnectorRequest::ResourceMethods {
+            namespace: namespace.to_string(),
+        })? {
+            HostConnectorResponse::ResourceMethods { methods } => {
+                methods.into_iter().map(owned_resource_method).collect()
+            }
+            response => Err(unexpected_connector_response("resource methods", response)),
+        }
+    }
+
+    fn read_resource(
+        &mut self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> CapResult<terrane_cap_interface::ReadValue> {
+        match self.call(HostConnectorRequest::ReadResource {
+            namespace: namespace.to_string(),
+            method: method.to_string(),
+            args: args.to_vec(),
+        })? {
+            HostConnectorResponse::ReadValue { value } => Ok(value),
+            response => Err(unexpected_connector_response("read resource", response)),
+        }
+    }
+
+    fn write_resource(&mut self, namespace: &str, method: &str, args: &[String]) -> CapResult<()> {
+        match self.call(HostConnectorRequest::WriteResource {
+            namespace: namespace.to_string(),
+            method: method.to_string(),
+            args: args.to_vec(),
+        })? {
+            HostConnectorResponse::Ack => Ok(()),
+            response => Err(unexpected_connector_response("write resource", response)),
+        }
+    }
+
+    fn call_resource(
+        &mut self,
+        namespace: &str,
+        method: &str,
+        args: &[String],
+    ) -> CapResult<terrane_cap_interface::ReadValue> {
+        match self.call(HostConnectorRequest::CallResource {
+            namespace: namespace.to_string(),
+            method: method.to_string(),
+            args: args.to_vec(),
+        })? {
+            HostConnectorResponse::ReadValue { value } => Ok(value),
+            response => Err(unexpected_connector_response("call resource", response)),
+        }
+    }
+
+    fn app_log(
+        &mut self,
+        level: &str,
+        msg: &str,
+        data: &str,
+        source: &str,
+        stack: &str,
+        record_error: bool,
+    ) -> CapResult<()> {
+        match self.call(HostConnectorRequest::AppLog {
+            level: level.to_string(),
+            message: msg.to_string(),
+            data: data.to_string(),
+            source: source.to_string(),
+            stack: stack.to_string(),
+            record_error,
+        })? {
+            HostConnectorResponse::Ack => Ok(()),
+            response => Err(unexpected_connector_response("app log", response)),
+        }
+    }
+
+    fn take_records(&mut self) -> Vec<EventRecord> {
+        Vec::new()
+    }
+}
+
+fn unexpected_connector_response(action: &str, response: HostConnectorResponse) -> Error {
+    Error::Runtime(format!("host connector returned {response:?} for {action}"))
+}
+
+fn owned_resource_method(method: OwnedResourceMethod) -> CapResult<ResourceMethod> {
+    let name: &'static str = Box::leak(method.name.into_boxed_str());
+    let params = method
+        .params
+        .into_iter()
+        .map(|value| Box::leak(value.into_boxed_str()) as &'static str)
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    let params: &'static [&'static str] = Box::leak(params);
+    match method.kind.as_str() {
+        "read" => Ok(ResourceMethod::Read { name, params }),
+        "write" => Ok(ResourceMethod::Write { name, params }),
+        "call" => Ok(ResourceMethod::Call { name, params }),
+        kind => Err(Error::Runtime(format!(
+            "host connector returned unknown resource method kind {kind}"
+        ))),
+    }
+}
+
+pub fn serve<R, W>(
     worker: &mut Worker,
-    reader: &mut impl Read,
-    writer: &mut impl Write,
-) -> Result<(), terrane_cap_protocol::ProtocolError> {
+    reader: R,
+    writer: W,
+) -> Result<(), terrane_cap_protocol::ProtocolError>
+where
+    R: Read + Send + 'static,
+    W: Write + Send + 'static,
+{
+    let io = ConnectorIo {
+        reader: Arc::new(Mutex::new(Box::new(reader))),
+        writer: Arc::new(Mutex::new(Box::new(writer))),
+    };
     loop {
-        let request: WorkerRequest = match read_frame(reader) {
+        let request: WorkerRequest = match read_frame(
+            &mut *io
+                .reader
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        ) {
             Ok(request) => request,
             Err(terrane_cap_protocol::ProtocolError::Eof) => return Ok(()),
             Err(error) => return Err(error),
         };
         let shutdown = matches!(request, WorkerRequest::Shutdown);
-        write_frame(writer, &worker.handle(request))?;
+        let response = match request {
+            WorkerRequest::RunRuntime {
+                app,
+                source,
+                source_files,
+                app_name,
+                input,
+                principal: _,
+            } => match worker.run_runtime_with_connector(
+                app,
+                source,
+                source_files,
+                app_name,
+                input,
+                io.clone(),
+            ) {
+                Ok(response) => response,
+                Err(error) => WorkerResponse::Error {
+                    code: error_code(&error).into(),
+                    message: error.to_string(),
+                    retryable: matches!(error, Error::Runtime(_) | Error::Storage(_)),
+                },
+            },
+            request => worker.handle(request),
+        };
+        write_frame(
+            &mut *io
+                .writer
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            &response,
+        )?;
         if shutdown {
             return Ok(());
         }

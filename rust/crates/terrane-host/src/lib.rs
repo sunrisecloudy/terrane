@@ -217,9 +217,35 @@ fn open_at_log_path_with(
     if let Some(manager) = configured_capability_manager(&home)? {
         core.attach_capability_manager(manager.clone());
         let records = core.log_records().map_err(|error| error.to_string())?;
-        // Background activation is best-effort: a broken optional worker must
-        // not prevent the fundamental control plane from opening the home.
-        let _ = manager.prepare_background(&records);
+        let migration = if manager
+            .migration_complete()
+            .map_err(|error| error.to_string())?
+        {
+            Ok(())
+        } else if records.is_empty() {
+            manager
+                .mark_migration_complete(&records)
+                .map_err(|error| error.to_string())
+        } else {
+            core.verify_dynamic_replay()
+                .map(|_| ())
+                .and_then(|()| {
+                    manager
+                        .mark_migration_complete(&records)
+                        .map_err(|error| terrane_core::Error::Runtime(error.to_string()))
+                })
+                .map_err(|error| error.to_string())
+        };
+        if let Err(error) = migration {
+            core.detach_capability_manager();
+            if env::var("TERRANE_CAP_REQUIRE_DYNAMIC").ok().as_deref() == Some("1") {
+                return Err(format!("dynamic capability migration failed: {error}"));
+            }
+        } else {
+            // Background activation is best-effort: a broken optional worker
+            // must not prevent the fundamental control plane from opening.
+            let _ = manager.prepare_background(&records);
+        }
     }
     ensure_identity(&mut core)?;
     migrate_legacy_app_requirements(&mut core)?;

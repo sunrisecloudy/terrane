@@ -339,23 +339,31 @@ pub enum WorkerRequest {
     },
     Decide {
         request: Request,
+        #[serde(default)]
+        overlay_records: Vec<EventRecord>,
         dependencies: BTreeMap<String, Vec<u8>>,
     },
     Query {
         name: String,
         args: Vec<String>,
+        #[serde(default)]
+        overlay_records: Vec<EventRecord>,
         dependencies: BTreeMap<String, Vec<u8>>,
     },
     ReadResource {
         app: String,
         name: String,
         args: Vec<String>,
+        #[serde(default)]
+        overlay_records: Vec<EventRecord>,
         dependencies: BTreeMap<String, Vec<u8>>,
     },
     ResourceCallOutput {
         app: String,
         method: String,
         records: Vec<EventRecord>,
+        #[serde(default)]
+        overlay_records: Vec<EventRecord>,
     },
     RunRuntime {
         app: String,
@@ -367,6 +375,10 @@ pub enum WorkerRequest {
     },
     ExecuteEffect {
         effect: Effect,
+    },
+    ConnectorResponse {
+        request_id: u64,
+        response: HostConnectorResponse,
     },
     Snapshot,
     Health,
@@ -403,6 +415,10 @@ pub enum WorkerResponse {
     EffectRecords {
         records: Vec<EventRecord>,
     },
+    ConnectorRequest {
+        request_id: u64,
+        request: HostConnectorRequest,
+    },
     Snapshot {
         payload: Vec<u8>,
         last_applied_seq: u64,
@@ -421,6 +437,46 @@ pub enum WorkerResponse {
         message: String,
         retryable: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HostConnectorRequest {
+    ResourceMethods {
+        namespace: String,
+    },
+    ReadResource {
+        namespace: String,
+        method: String,
+        args: Vec<String>,
+    },
+    WriteResource {
+        namespace: String,
+        method: String,
+        args: Vec<String>,
+    },
+    CallResource {
+        namespace: String,
+        method: String,
+        args: Vec<String>,
+    },
+    AppLog {
+        level: String,
+        message: String,
+        data: String,
+        source: String,
+        stack: String,
+        record_error: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HostConnectorResponse {
+    ResourceMethods { methods: Vec<OwnedResourceMethod> },
+    ReadValue { value: ReadValue },
+    Ack,
+    Error { message: String },
 }
 
 #[derive(Debug)]

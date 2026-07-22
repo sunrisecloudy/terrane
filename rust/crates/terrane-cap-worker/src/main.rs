@@ -32,5 +32,5 @@ fn run() -> Result<(), String> {
         manifest_sha256.ok_or_else(|| "--manifest-sha256 is required".to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    serve(&mut worker, &mut stdin().lock(), &mut stdout().lock()).map_err(|error| error.to_string())
+    serve(&mut worker, stdin(), stdout()).map_err(|error| error.to_string())
 }
