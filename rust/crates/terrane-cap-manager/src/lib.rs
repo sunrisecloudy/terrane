@@ -416,6 +416,26 @@ impl CapabilityManager {
         Ok(())
     }
 
+    pub fn repair(&self, namespace: &str) -> Result<(), ManagerError> {
+        let manifest = self
+            .catalog
+            .get(namespace)
+            .ok_or_else(|| ManagerError::Invalid(format!("unknown capability {namespace}")))?;
+        let slot = self.slot(namespace)?;
+        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(mut process) = slot.process.take() {
+            self.persist_snapshot(namespace, &mut process)?;
+            process.stop();
+        }
+        let cache = self.cache_dir(manifest);
+        if cache.exists() {
+            fs::remove_dir_all(&cache)?;
+        }
+        self.ensure_cached(manifest)?;
+        slot.last_error = None;
+        Ok(())
+    }
+
     pub fn evict_idle(&self) -> Result<(), ManagerError> {
         let slots = self
             .slots
@@ -547,12 +567,7 @@ impl CapabilityManager {
     }
 
     fn ensure_cached(&self, manifest: &BundleManifest) -> Result<PathBuf, ManagerError> {
-        let cache = self
-            .home
-            .join("capabilities/cache")
-            .join(&manifest.namespace)
-            .join(&manifest.version)
-            .join(&manifest.executable_sha256);
+        let cache = self.cache_dir(manifest);
         let executable = cache.join(&manifest.executable);
         if cached_bundle_is_valid(&cache, manifest, &self.verifying_key) {
             return Ok(executable);
@@ -576,6 +591,14 @@ impl CapabilityManager {
         }
         fs::rename(&temporary, &cache)?;
         Ok(executable)
+    }
+
+    fn cache_dir(&self, manifest: &BundleManifest) -> PathBuf {
+        self.home
+            .join("capabilities/cache")
+            .join(&manifest.namespace)
+            .join(&manifest.version)
+            .join(&manifest.executable_sha256)
     }
 
     fn persist_snapshot(
@@ -929,7 +952,8 @@ mod tests {
         let cached = manager.ensure_cached(&manifest).unwrap();
         fs::write(&cached, b"corrupt").unwrap();
 
-        let repaired = manager.ensure_cached(&manifest).unwrap();
+        manager.repair("alpha").unwrap();
+        let repaired = manager.cache_dir(&manifest).join(&manifest.executable);
         assert_eq!(sha256_file(&repaired).unwrap(), manifest.executable_sha256);
     }
 

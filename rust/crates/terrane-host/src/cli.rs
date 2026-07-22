@@ -30,9 +30,16 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["compact", rest @ ..] => run_compact(rest),
         ["cap", "list", rest @ ..] => run_cap_list(rest),
         ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
+        ["cap", "status"] => run_cap_status(),
+        ["cap", "prewarm", namespaces @ ..] if !namespaces.is_empty() => {
+            run_cap_prewarm(namespaces)
+        }
+        ["cap", "evict", "--all"] => run_cap_evict_all(),
+        ["cap", "evict", namespace] => run_cap_evict(namespace),
+        ["cap", "repair", namespace] => run_cap_repair(namespace),
         ["cap", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane cap (list | info <namespace>) [--format json|markdown|skill] [--include-internal]".into())
+            Err("usage: terrane cap (list | info <namespace> | status | prewarm <namespace>... | evict <namespace>|--all | repair <namespace>)".into())
         }
         ["app", "export", app, rest @ ..] => run_app_export(app, rest),
         ["app", "install", path] => run_install(path),
@@ -902,6 +909,69 @@ pub fn run_cap_info(namespace: &str, rest: &[&str]) -> Result<(), String> {
             options.include_internal
         )?
     );
+    Ok(())
+}
+
+pub fn run_cap_status() -> Result<(), String> {
+    let core = crate::open()?;
+    if !core.dynamic_capabilities_enabled() {
+        println!("dynamic capability manager: disabled (static fallback)");
+        return Ok(());
+    }
+    for status in core.capability_status() {
+        let state = match status.status {
+            terrane_cap_manager::CapabilityStatus::Available => "available".to_string(),
+            terrane_cap_manager::CapabilityStatus::Loading => "loading".to_string(),
+            terrane_cap_manager::CapabilityStatus::Ready => "ready".to_string(),
+            terrane_cap_manager::CapabilityStatus::Failed(error) => format!("failed: {error}"),
+        };
+        let keep_alive = if status.keep_alive { " keep-alive" } else { "" };
+        println!(
+            "{} {} {}{}",
+            status.namespace, status.version, state, keep_alive
+        );
+    }
+    Ok(())
+}
+
+pub fn run_cap_prewarm(namespaces: &[&str]) -> Result<(), String> {
+    let core = crate::open()?;
+    let namespaces: Vec<_> = namespaces
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect();
+    core.prepare_capabilities(&namespaces)
+        .map_err(|error| error.to_string())?;
+    println!("prewarmed {}", namespaces.join(", "));
+    Ok(())
+}
+
+pub fn run_cap_evict(namespace: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    if core
+        .evict_capability(namespace)
+        .map_err(|error| error.to_string())?
+    {
+        println!("evicted {namespace}");
+    } else {
+        println!("{namespace} was not evicted (not loaded or kept alive)");
+    }
+    Ok(())
+}
+
+pub fn run_cap_evict_all() -> Result<(), String> {
+    let core = crate::open()?;
+    core.evict_all_capabilities()
+        .map_err(|error| error.to_string())?;
+    println!("evicted all dynamic capabilities");
+    Ok(())
+}
+
+pub fn run_cap_repair(namespace: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    core.repair_capability(namespace)
+        .map_err(|error| error.to_string())?;
+    println!("repaired {namespace} to its exact pinned artifact");
     Ok(())
 }
 
@@ -2747,6 +2817,10 @@ pub fn print_help() {
          \x20 terrane query jmespath <app> <sourceJson> <expression>  read folded state with JMESPath\n\
          \x20 terrane cap list               list capability docs\n\
          \x20 terrane cap info <namespace>   show capability docs\n\
+         \x20 terrane cap status             show dynamic worker status\n\
+         \x20 terrane cap prewarm <ns>...    load capabilities and dependencies\n\
+         \x20 terrane cap evict <ns>|--all   snapshot and stop warm workers\n\
+         \x20 terrane cap repair <namespace> restore the exact pinned artifact\n\
          \x20 terrane contract export        print the public API contract (JSON)\n\
          \x20 terrane help                   this message\n\n\
          Catalog: $TERRANE_HOME/log.bin (binary event log; default ./.terrane/)"

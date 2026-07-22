@@ -1777,6 +1777,36 @@ impl<R: EffectRunner + 'static> Core<R> {
             .map_err(|error| Error::Runtime(error.to_string()))
     }
 
+    pub fn evict_capability(&self, namespace: &str) -> Result<bool> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        manager
+            .evict(namespace)
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    pub fn evict_all_capabilities(&self) -> Result<()> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        manager
+            .evict_all()
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    pub fn repair_capability(&self, namespace: &str) -> Result<()> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        manager
+            .repair(namespace)
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
     /// Core-facing storage projection plan owned by the `kv` capability.
     pub fn kv_storage_plan(&self) -> &KvStoragePlan {
         &self.kv_storage_plan
