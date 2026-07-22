@@ -1,4 +1,5 @@
 use borsh::{BorshDeserialize, BorshSerialize};
+use serde::{Deserialize, Serialize};
 
 /// Identifier for a saved app. Caller-supplied and stable.
 pub type AppId = String;
@@ -8,7 +9,7 @@ pub const LOCAL_OWNER_SUBJECT: &str = "user:local-owner";
 pub const LOCAL_SOURCE: &str = "local";
 
 /// The authority under which a live runtime request executes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionPrincipal {
     pub org: String,
     pub subject: String,
@@ -44,7 +45,7 @@ impl Default for ExecutionPrincipal {
 }
 
 /// Whether a host/control-plane surface admitted a command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CommandAuthority {
     #[default]
     Public,
@@ -59,7 +60,7 @@ impl CommandAuthority {
 
 /// A command as it arrives at the core: a namespaced name like `"app.add"` plus
 /// the caller's argument tokens.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
     pub name: String,
     pub args: Vec<String>,
@@ -93,7 +94,7 @@ impl Request {
 }
 
 /// A recorded event on the wire.
-#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize, Serialize, Deserialize)]
 pub struct EventRecord {
     pub kind: String,
     pub payload: Vec<u8>,
@@ -130,7 +131,7 @@ impl std::error::Error for Error {}
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// What a command resolves to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Decision {
     Commit(Vec<EventRecord>),
     Effect(Effect),
@@ -144,20 +145,20 @@ pub enum Decision {
 }
 
 /// A request for a runtime capability to execute an app backend once.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRequest {
     pub app: String,
     pub input: Vec<String>,
 }
 
 /// The non-record output of one runtime execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeOutput {
     pub output: String,
 }
 
 /// A side effect the engine must perform in the outside world.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Effect {
     HttpGet {
         app: String,
@@ -385,7 +386,7 @@ pub enum Effect {
 /// A content-addressed image input handed to model effect runners. Capabilities
 /// validate these from folded blob metadata or caller-supplied refs; bytes stay
 /// in the host-owned blob CAS and never enter the event/effect payload.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelImagePart {
     pub name: Option<String>,
     pub hash: String,

@@ -4046,6 +4046,7 @@ name = "terrane-cap-interface"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "serde",
 ]
 
 [[package]]
@@ -4101,6 +4102,19 @@ dependencies = [
  "serde_json",
  "terrane-cap-interface",
  "terrane-cap-model",
+]
+
+[[package]]
+name = "terrane-cap-manager"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "terrane-cap-interface",
+ "terrane-cap-protocol",
 ]
 
 [[package]]
@@ -4197,6 +4211,18 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "serde_json",
+ "terrane-cap-interface",
+]
+
+[[package]]
+name = "terrane-cap-protocol"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "terrane-cap-interface",
 ]
 
@@ -4377,6 +4403,19 @@ dependencies = [
  "serde_json",
  "terrane-cap-interface",
  "terrane-cap-net",
+]
+
+[[package]]
+name = "terrane-cap-worker"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "terrane-cap-interface",
+ "terrane-cap-protocol",
+ "terrane-core",
 ]
 
 [[package]]

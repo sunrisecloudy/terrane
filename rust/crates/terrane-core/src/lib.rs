@@ -312,11 +312,15 @@ impl Registry {
         Ok(())
     }
 
-    pub(crate) fn get(&self, namespace: &str) -> Result<&dyn Capability> {
+    pub fn get(&self, namespace: &str) -> Result<&dyn Capability> {
         self.caps
             .get(namespace)
             .map(AsRef::as_ref)
             .ok_or_else(|| Error::InvalidInput(format!("unknown command namespace: {namespace}")))
+    }
+
+    pub fn namespaces(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.caps.keys().copied()
     }
 
     /// Validate the registry-wide declaration surface: command/query names and
@@ -779,7 +783,7 @@ pub fn capability_doc(namespace: &str, include_internal: bool) -> Result<Capabil
 }
 
 /// Offer one recorded event to every capability (broadcast fold).
-pub(crate) fn apply(registry: &Registry, state: &mut State, record: &EventRecord) -> Result<()> {
+pub fn apply(registry: &Registry, state: &mut State, record: &EventRecord) -> Result<()> {
     for capability in registry.caps.values() {
         capability.fold(state, record)?;
     }

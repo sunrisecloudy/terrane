@@ -1,0 +1,16 @@
+[package]
+name = "terrane-cap-manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["std"] }
+getrandom = "0.4.3"
+serde_json.workspace = true
+sha2.workspace = true
+terrane-cap-interface.workspace = true
+terrane-cap-protocol.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

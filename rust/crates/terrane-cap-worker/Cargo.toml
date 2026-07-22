@@ -1,0 +1,28 @@
+[package]
+name = "terrane-cap-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "terrane-cap-worker"
+path = "src/main.rs"
+
+[[bin]]
+name = "terrane-cap-bundle"
+path = "src/bin/bundle.rs"
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["std"] }
+serde_json.workspace = true
+sha2.workspace = true
+terrane-cap-interface.workspace = true
+terrane-cap-protocol.workspace = true
+terrane-core.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
