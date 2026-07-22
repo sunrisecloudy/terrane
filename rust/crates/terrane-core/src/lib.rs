@@ -1471,10 +1471,18 @@ pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
     read_new_log(log_path)
 }
 
+const OLD_LOG_ERROR_MESSAGE: &str =
+    "old-format event log: run `terrane migrate-log` before opening this home";
+
 fn old_log_error() -> Error {
-    Error::Storage(
-        "old-format event log: run `terrane migrate-log` before opening this home".into(),
-    )
+    Error::Storage(OLD_LOG_ERROR_MESSAGE.into())
+}
+
+/// True when opening failed specifically because the log predates recorded
+/// actors. Hosts use this narrow signal to perform the lossless, locked
+/// one-time migration before retrying; other storage failures remain fatal.
+pub fn is_old_format_log_error(error: &Error) -> bool {
+    matches!(error, Error::Storage(message) if message == OLD_LOG_ERROR_MESSAGE)
 }
 
 fn read_new_log(log_path: &Path) -> Result<Vec<EventRecord>> {
@@ -1864,6 +1872,11 @@ pub fn compact_log(log_path: &Path, options: CompactionOptions) -> Result<Compac
 }
 
 pub fn migrate_log(log_path: &Path) -> Result<usize> {
+    // Migration rewrites the authoritative log and must obey the same
+    // single-writer rule as an open Core. Core::open releases its attempted
+    // lock before returning the legacy-format error, so an automatic host
+    // migration can safely acquire it here and hold it through both renames.
+    let _home_lock = filelock::acquire(log_path)?;
     let old_records = read_legacy_log(log_path)?;
     let registry = default_registry();
     let mut old_state = State::default();

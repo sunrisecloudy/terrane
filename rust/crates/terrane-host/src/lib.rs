@@ -212,8 +212,17 @@ fn open_at_log_path_with(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut core =
-        Core::open_with(log_path, runner.with_home(home.clone())).map_err(|e| e.to_string())?;
+    let runner = runner.with_home(home.clone());
+    let mut core = match Core::open_with(log_path.clone(), runner.clone()) {
+        Ok(core) => core,
+        Err(error) if terrane_core::is_old_format_log_error(&error) => {
+            terrane_core::migrate_log(&log_path).map_err(|migration_error| {
+                format!("automatic legacy-log migration failed: {migration_error}")
+            })?;
+            Core::open_with(log_path, runner).map_err(|error| error.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
     if let Some(manager) = configured_capability_manager(&home)? {
         core.attach_capability_manager(manager.clone());
         let records = core.log_records().map_err(|error| error.to_string())?;

@@ -63,39 +63,57 @@ pub(crate) unsafe fn dispatch_on_terrane_handle(
 /// `home` must be null or a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Option<*mut TerraneHandle> {
-        let open_home = if home.is_null() {
-            let home = crate::home_dir();
-            return crate::open_at_home(&home).ok().map(|core| {
-                Box::into_raw(Box::new(TerraneHandle {
-                    inner: Mutex::new(core),
-                    previews: Mutex::new(crate::PreviewStore::new()),
-                    home,
-                }))
-            });
-        } else {
-            let s = CStr::from_ptr(home).to_str().ok()?; // bad UTF-8 → fail
-            if s.is_empty() {
-                let home = crate::home_dir();
-                return crate::open_at_home(&home).ok().map(|core| {
-                    Box::into_raw(Box::new(TerraneHandle {
-                        inner: Mutex::new(core),
-                        previews: Mutex::new(crate::PreviewStore::new()),
-                        home,
-                    }))
-                });
+    terrane_open_with_error(home, ptr::null_mut())
+}
+
+/// Open a workspace and preserve the startup error for native hosts.
+///
+/// # Safety
+/// `home` must be null or a valid NUL-terminated C string. `out_error` must be
+/// null or point to writable `char *` storage; a returned string is freed with
+/// [`terrane_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_open_with_error(
+    home: *const c_char,
+    out_error: *mut *mut c_char,
+) -> *mut TerraneHandle {
+    null_out(out_error);
+    let result = catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut TerraneHandle, String> {
+            let open_home = if home.is_null() {
+                crate::home_dir()
             } else {
-                PathBuf::from(s)
-            }
-        };
-        let core = crate::open_at_home(&open_home).ok()?;
-        Some(Box::into_raw(Box::new(TerraneHandle {
-            inner: Mutex::new(core),
-            previews: Mutex::new(crate::PreviewStore::new()),
-            home: open_home,
-        })))
-    }));
-    result.ok().flatten().unwrap_or(ptr::null_mut())
+                let s = CStr::from_ptr(home)
+                    .to_str()
+                    .map_err(|_| "Terrane home path is not valid UTF-8".to_string())?;
+                if s.is_empty() {
+                    crate::home_dir()
+                } else {
+                    PathBuf::from(s)
+                }
+            };
+            let core = crate::open_at_home(&open_home)?;
+            Ok(Box::into_raw(Box::new(TerraneHandle {
+                inner: Mutex::new(core),
+                previews: Mutex::new(crate::PreviewStore::new()),
+                home: open_home,
+            })))
+        },
+    ));
+    match result {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(error)) => {
+            write_out(out_error, error);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            write_out(
+                out_error,
+                "Terrane panicked while opening the workspace".into(),
+            );
+            ptr::null_mut()
+        }
+    }
 }
 
 /// Run an app backend through its cataloged runtime. On success writes the

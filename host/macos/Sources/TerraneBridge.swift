@@ -71,6 +71,7 @@ struct InteropPickPrompt: Equatable {
 /// `terrane.invoke`, routed by preview id. All paths settle the JS Promise with
 /// backend output or an error string.
 final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
+  private(set) static var lastOpenError: String?
   private var appId = ""
   private var appName = ""
   private var appSource = ""
@@ -97,9 +98,17 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   var selectedAppId: String { appId }
 
   init?(home: URL) {
-    guard let handle = home.path.withCString({ terrane_open($0) }) else {
+    var error: UnsafeMutablePointer<CChar>?
+    guard let handle = home.path.withCString({ terrane_open_with_error($0, &error) }) else {
+      if let error {
+        Self.lastOpenError = String(cString: error)
+        terrane_string_free(error)
+      } else {
+        Self.lastOpenError = "Terrane could not open this workspace."
+      }
       return nil
     }
+    Self.lastOpenError = nil
     self.handle = handle
     super.init()
   }

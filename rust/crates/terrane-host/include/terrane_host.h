@@ -29,6 +29,10 @@ typedef struct TerraneHandle TerraneHandle;
  * the default. Returns a handle, or NULL on failure. */
 TerraneHandle *terrane_open(const char *home);
 
+/* Open a workspace while preserving a diagnostic message on failure. The
+ * caller owns *out_error and frees it with terrane_string_free. */
+TerraneHandle *terrane_open_with_error(const char *home, char **out_error);
+
 /* Run an app backend using its manifest runtime. On success writes the
  * backend's output string to *out_output and returns TERRANE_OK; on failure
  * writes a message to *out_error and returns non-zero. */

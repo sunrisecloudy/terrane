@@ -43,7 +43,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     let config = WKWebViewConfiguration()
     guard let bridge = TerraneBridge(home: home) else {
-      fatalError("terrane-host: cannot open Terrane home at \(home.path)")
+      let alert = NSAlert()
+      alert.alertStyle = .critical
+      alert.messageText = "Terrane could not open this workspace"
+      alert.informativeText = TerraneBridge.lastOpenError
+        ?? "The workspace at \(home.path) could not be opened."
+      alert.addButton(withTitle: "Quit")
+      alert.runModal()
+      NSApp.terminate(nil)
+      return
     }
     self.bridge = bridge
     // Seed the shared i18n catalog if a catalog dir is configured (parity with
