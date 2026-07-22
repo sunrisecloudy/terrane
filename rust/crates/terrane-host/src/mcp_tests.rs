@@ -150,7 +150,9 @@ fn capability_command_and_query_tools_use_core_without_protocol_errors() {
     .unwrap();
     assert!(
         help.contains(r#""isError":false"#)
-            && help.contains(r#"\"argument_order\":[\"id\",\"name\",\"source\",\"runtime\"]"#)
+            && help.contains(
+                r#"\"argument_order\":[\"id\",\"name\",\"source\",\"runtime\",\"refreshSource\"]"#
+            )
             && help.contains("--source")
             && help.contains("help:true never dispatches"),
         "command help: {help}"

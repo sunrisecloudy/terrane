@@ -362,6 +362,88 @@ fn app_capability_rejects_duplicate_and_missing_removes() {
 }
 
 #[test]
+fn native_host_can_refresh_an_existing_app_source_without_replacing_metadata() {
+    let cap = AppCapability;
+    let bus = NoBus;
+    let mut store = Store::default();
+
+    let Decision::Commit(add_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.add",
+            &[
+                "demo".into(),
+                "Demo".into(),
+                "--source".into(),
+                "apps/demo".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("app.add should commit");
+    };
+    for event in &add_events {
+        cap.fold(&mut store, event).unwrap();
+    }
+    store.app.apps.get_mut("demo").unwrap().version = "1.2.3".into();
+
+    let Decision::Commit(refresh_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.add",
+            &[
+                "demo".into(),
+                "Demo".into(),
+                "--source".into(),
+                "/Applications/Terrane.app/Contents/Resources/apps/demo".into(),
+                "--refresh-source".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("source refresh should commit");
+    };
+    assert_eq!(refresh_events.len(), 1);
+    assert_eq!(refresh_events[0].kind, "app.source.updated");
+    cap.fold(&mut store, &refresh_events[0]).unwrap();
+
+    let app = &store.app.apps["demo"];
+    assert_eq!(
+        app.source.as_deref(),
+        Some("/Applications/Terrane.app/Contents/Resources/apps/demo")
+    );
+    assert_eq!(app.version, "1.2.3");
+    assert_eq!(app.name, "Demo");
+
+    let Decision::Commit(no_events) = cap
+        .decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "app.add",
+            &[
+                "demo".into(),
+                "Demo".into(),
+                "--source".into(),
+                "/Applications/Terrane.app/Contents/Resources/apps/demo".into(),
+                "--refresh-source".into(),
+            ],
+        )
+        .unwrap()
+    else {
+        panic!("same source refresh should be an idempotent commit");
+    };
+    assert!(no_events.is_empty());
+}
+
+#[test]
 fn app_import_is_effectful() {
     let cap = AppCapability;
     let bus = NoBus;
@@ -417,6 +499,7 @@ fn app_doc_covers_manifest_and_removal_cleanup_boundary() {
             "app.added".to_string(),
             "app.upgraded".to_string(),
             "app.link.registered".to_string(),
+            "app.source.updated".to_string(),
             "app.removed".to_string()
         ]
     );

@@ -58,6 +58,7 @@ type ParsedAdd = (
     String,
     Vec<String>,
     Vec<LinkRegistration>,
+    bool,
 );
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -91,6 +92,12 @@ struct AddedV1 {
 struct RequirementsResolved {
     app: String,
     required_capabilities: Vec<String>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct SourceUpdated {
+    id: String,
+    source: String,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -163,6 +170,9 @@ impl Capability for AppCapability {
                     kind: "app.requirements.resolved",
                 },
                 EventSpec {
+                    kind: "app.source.updated",
+                },
+                EventSpec {
                     kind: "app.removed",
                 },
             ],
@@ -188,7 +198,8 @@ impl Capability for AppCapability {
                 }))
             }
             "app.add" => {
-                let (id, app_name, source, runtime, interfaces, links) = parse_add(args)?;
+                let (id, app_name, source, runtime, interfaces, links, refresh_source) =
+                    parse_add(args)?;
                 if id.trim().is_empty() {
                     return Err(Error::InvalidInput("app id must not be empty".into()));
                 }
@@ -199,11 +210,30 @@ impl Capability for AppCapability {
                 if runtime.trim().is_empty() {
                     return Err(Error::InvalidInput("app runtime must not be empty".into()));
                 }
-                if state_ref::<AppState>(ctx.state, "app")?
-                    .apps
-                    .contains_key(&id)
-                {
-                    return Err(Error::AppExists(id));
+                if refresh_source && source.is_none() {
+                    return Err(Error::InvalidInput(
+                        "`--refresh-source` requires `--source`".into(),
+                    ));
+                }
+                if let Some(existing) = state_ref::<AppState>(ctx.state, "app")?.apps.get(&id) {
+                    if !refresh_source {
+                        return Err(Error::AppExists(id));
+                    }
+                    let source = source.ok_or_else(|| {
+                        Error::InvalidInput("`--refresh-source` requires `--source`".into())
+                    })?;
+                    if source.trim().is_empty() {
+                        return Err(Error::InvalidInput(
+                            "refreshed app source must not be empty".into(),
+                        ));
+                    }
+                    if existing.source.as_deref() == Some(source.as_str()) {
+                        return Ok(Decision::Commit(Vec::new()));
+                    }
+                    return Ok(Decision::Commit(vec![encode_event(
+                        "app.source.updated",
+                        &SourceUpdated { id, source },
+                    )?]));
                 }
                 let mut events = vec![encode_event(
                     "app.added",
@@ -356,6 +386,14 @@ impl Capability for AppCapability {
                 app.required_capabilities = normalize_capabilities(e.required_capabilities);
                 app.requirements_resolved = true;
             }
+            "app.source.updated" => {
+                let e: SourceUpdated = decode_event(record)?;
+                let app = state_mut::<AppState>(state, "app")?
+                    .apps
+                    .get_mut(&e.id)
+                    .ok_or_else(|| Error::AppNotFound(e.id.clone()))?;
+                app.source = Some(e.source);
+            }
             "app.removed" => {
                 let e: Removed = decode_event(record)?;
                 let state = state_mut::<AppState>(state, "app")?;
@@ -440,6 +478,10 @@ impl Capability for AppCapability {
                     e.required_capabilities.join(",")
                 ))
             }
+            "app.source.updated" => {
+                let e: SourceUpdated = decode_event(record).ok()?;
+                Some(format!("app.source.updated {} [{}]", e.id, e.source))
+            }
             "app.removed" => {
                 let e: Removed = decode_event(record).ok()?;
                 Some(format!("app.removed {}", e.id))
@@ -456,6 +498,7 @@ impl Capability for AppCapability {
             "app.requirements.resolved" => decode_event::<RequirementsResolved>(record)
                 .ok()
                 .map(|e| e.app),
+            "app.source.updated" => decode_event::<SourceUpdated>(record).ok().map(|e| e.id),
             "app.removed" => decode_event::<Removed>(record).ok().map(|e| e.id),
             _ => None,
         }
@@ -562,6 +605,7 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
     let mut runtime = "js".to_string();
     let mut interfaces = Vec::new();
     let mut links = Vec::new();
+    let mut refresh_source = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -620,6 +664,10 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
                 });
                 i += 3;
             }
+            "--refresh-source" => {
+                refresh_source = true;
+                i += 1;
+            }
             word => {
                 name_parts.push(word);
                 i += 1;
@@ -638,6 +686,7 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
         runtime,
         normalize_interfaces(interfaces),
         links,
+        refresh_source,
     ))
 }
 

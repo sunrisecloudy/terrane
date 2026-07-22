@@ -9,6 +9,10 @@ final class AppPackagingTests: XCTestCase {
       contentsOf: root.appendingPathComponent("host/macos/project.yml"),
       encoding: .utf8
     )
+    let bridge = try String(
+      contentsOf: root.appendingPathComponent("host/macos/Sources/TerraneBridge.swift"),
+      encoding: .utf8
+    )
     XCTAssertTrue(project.contains(#"name: "Package built-in apps""#), project)
     XCTAssertTrue(project.contains(#"APP_SOURCE="$SRCROOT/../../apps""#), project)
     XCTAssertTrue(
@@ -29,6 +33,7 @@ final class AppPackagingTests: XCTestCase {
     XCTAssertTrue(project.contains("llama-cpp-sys did not produce libcpp-httplib.a"), project)
     XCTAssertTrue(project.contains(#"DEAD_CODE_STRIPPING: "YES""#), project)
     XCTAssertFalse(project.contains("-lterrane_host"), project)
+    XCTAssertTrue(bridge.contains(#""--refresh-source""#), bridge)
     let manifests = try FileManager.default.contentsOfDirectory(
       at: appsDirectory,
       includingPropertiesForKeys: [.isDirectoryKey],

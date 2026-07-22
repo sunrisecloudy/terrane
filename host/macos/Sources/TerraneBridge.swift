@@ -624,9 +624,9 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     let (ok, payload) = dispatch(
       command: "app.add",
-      argv: [appId, appName, "--source", appSource]
+      argv: [appId, appName, "--source", appSource, "--refresh-source"]
     )
-    if ok || payload == "app already exists: \(appId)" {
+    if ok {
       catalogedAppIds.insert(appId)
     } else {
       NSLog("terrane-host: cannot catalog \(appId): \(payload)")

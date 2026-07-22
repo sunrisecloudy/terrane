@@ -2580,7 +2580,9 @@ fn admit_command(request: &Request) -> Result<()> {
     //   those are deliberately not gated here.
     // - the host-owned edge of `stream` (message ingest, reconnect markers,
     //   and host closes). Apps declare desired state with stream.open/close.
-    let trusted_only = request.name.starts_with("auth.")
+    let trusted_only = (request.name == "app.add"
+        && request.args.iter().any(|arg| arg == "--refresh-source"))
+        || request.name.starts_with("auth.")
         || request.name == "automation.fire"
         || request.name == "automation.suppress"
         || request.name.starts_with("kv.public.")

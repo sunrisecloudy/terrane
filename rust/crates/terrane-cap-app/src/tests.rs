@@ -49,7 +49,8 @@ fn parse_add_collects_multi_word_name_and_optional_source() {
             Some("/tmp/demo".into()),
             "js".into(),
             mandatory_interfaces(),
-            Vec::new()
+            Vec::new(),
+            false
         )
     );
 }
@@ -73,7 +74,8 @@ fn parse_add_accepts_explicit_runtime() {
             Some("/tmp/demo".into()),
             "wasm".into(),
             mandatory_interfaces(),
-            Vec::new()
+            Vec::new(),
+            false
         )
     );
 }
