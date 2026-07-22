@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     home = Self.resolveHome()
+    setenv("TERRANE_HOME", home.path, 1)
     premiumURL = Self.resolvePremiumURL()
     apps = AppCatalog.discover(home: home)
     loopbackHost = Self.resolveRepoAppsDirectory()
