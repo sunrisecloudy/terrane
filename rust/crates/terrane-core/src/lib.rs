@@ -1366,6 +1366,9 @@ fn host_connector_response(
         } => host
             .app_log(&level, &message, &data, &source, &stack, record_error)
             .map(|()| HostConnectorResponse::Ack),
+        HostConnectorRequest::ExecuteEffect { .. } => Err(Error::Runtime(
+            "effect execution is unavailable on the runtime resource connector".into(),
+        )),
     };
     result.unwrap_or_else(|error| HostConnectorResponse::Error {
         message: error.to_string(),
@@ -2071,7 +2074,49 @@ impl<R: EffectRunner + 'static> Core<R> {
         match decision {
             Decision::Commit(records) => self.commit(records, &principal),
             Decision::Effect(effect) => {
-                let records = self.runner.run(&effect, &self.state)?;
+                let records = if let Some(manager) = self
+                    .capability_manager
+                    .as_ref()
+                    .filter(|manager| manager.contains(&namespace))
+                {
+                    let response = manager
+                        .call_with_connector(
+                            &namespace,
+                            &read_log(&self.log_path)?,
+                            WorkerRequest::ExecuteEffect {
+                                effect: effect.clone(),
+                            },
+                            |request| match request {
+                                HostConnectorRequest::ExecuteEffect { effect } => {
+                                    match self.runner.run(&effect, &self.state) {
+                                        Ok(records) => {
+                                            HostConnectorResponse::EffectRecords { records }
+                                        }
+                                        Err(error) => HostConnectorResponse::Error {
+                                            message: error.to_string(),
+                                        },
+                                    }
+                                }
+                                request => HostConnectorResponse::Error {
+                                    message: format!(
+                                        "effect connector received unsupported request {request:?}"
+                                    ),
+                                },
+                            },
+                        )
+                        .map_err(|error| Error::Runtime(error.to_string()))?;
+                    let WorkerResponse::EffectRecords { records } = response else {
+                        return Err(Error::Runtime(format!(
+                            "capability worker {namespace} returned {response:?} for effect"
+                        )));
+                    };
+                    manager
+                        .validate_worker_records(&namespace, &records)
+                        .map_err(|error| Error::Runtime(error.to_string()))?;
+                    records
+                } else {
+                    self.runner.run(&effect, &self.state)?
+                };
                 self.commit(records, &principal)
             }
             // Transient effects only make sense as a resource call (they return a

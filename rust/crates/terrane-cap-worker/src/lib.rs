@@ -66,6 +66,8 @@ pub struct Worker {
     state: WorkerState,
     factory: SelectedFactory,
     background_work: fn(&dyn StateStore) -> bool,
+    headless_effect:
+        fn(&dyn StateStore, &terrane_cap_interface::Effect) -> CapResult<Option<Vec<EventRecord>>>,
     declared_events: BTreeSet<String>,
     applied_records: Vec<EventRecord>,
     last_applied_seq: u64,
@@ -102,6 +104,7 @@ impl Worker {
             state,
             factory,
             background_work: selected.background_work,
+            headless_effect: selected.headless_effect,
             declared_events,
             applied_records: Vec::new(),
             last_applied_seq: 0,
@@ -316,6 +319,7 @@ impl Worker {
         let (state, support) = worker_state(selected.state);
         self.capability = selected.capability;
         self.background_work = selected.background_work;
+        self.headless_effect = selected.headless_effect;
         self.support = support;
         self.state = state;
         self.applied_records.clear();
@@ -413,6 +417,23 @@ impl Worker {
             output,
             records: Vec::new(),
         })
+    }
+
+    fn run_effect_with_connector(
+        &self,
+        effect: terrane_cap_interface::Effect,
+        io: ConnectorIo,
+    ) -> CapResult<WorkerResponse> {
+        if let Some(records) = (self.headless_effect)(&self.state, &effect)? {
+            return Ok(WorkerResponse::EffectRecords { records });
+        }
+        let connector = ConnectorHost::new(io);
+        match connector.call(HostConnectorRequest::ExecuteEffect { effect })? {
+            HostConnectorResponse::EffectRecords { records } => {
+                Ok(WorkerResponse::EffectRecords { records })
+            }
+            response => Err(unexpected_connector_response("execute effect", response)),
+        }
     }
 }
 
@@ -731,6 +752,16 @@ where
                     retryable: matches!(error, Error::Runtime(_) | Error::Storage(_)),
                 },
             },
+            WorkerRequest::ExecuteEffect { effect } => {
+                match worker.run_effect_with_connector(effect, io.clone()) {
+                    Ok(response) => response,
+                    Err(error) => WorkerResponse::Error {
+                        code: error_code(&error).into(),
+                        message: error.to_string(),
+                        retryable: matches!(error, Error::Runtime(_) | Error::Storage(_)),
+                    },
+                }
+            }
             request => worker.handle(request),
         };
         write_frame(

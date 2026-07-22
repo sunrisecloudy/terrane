@@ -88,4 +88,8 @@ or keys a startup error instead of silently using that fallback.
 
 Native workers are trusted first-party code. The process boundary contains
 crashes and avoids Rust ABI coupling; it is not a sandbox for third-party
-binaries. UI and main-thread effects remain parent-host connector operations.
+binaries. Worker-owned headless effects run in the signed process (currently
+wall-clock observation and webhook token rotation). UI, main-thread, secret
+storage, media, model, and platform effects use the versioned parent-host
+connector; their returned events still pass signed-manifest validation before
+commit.

@@ -54,6 +54,26 @@ fn signed_bundle_runs_replays_decides_and_snapshots_out_of_process() {
             })
         }
     );
+    let effect_response = manager
+        .call_with_connector(
+            "time",
+            &records,
+            WorkerRequest::ExecuteEffect {
+                effect: Effect::ObserveTime {
+                    app: "notes".into(),
+                },
+            },
+            |_| panic!("time observation must execute inside the signed worker"),
+        )
+        .unwrap();
+    let WorkerResponse::EffectRecords {
+        records: effect_records,
+    } = effect_response
+    else {
+        panic!("unexpected effect response: {effect_response:?}");
+    };
+    assert_eq!(effect_records.len(), 1);
+    assert_eq!(effect_records[0].kind, "time.observed");
     assert!(manager
         .status()
         .iter()

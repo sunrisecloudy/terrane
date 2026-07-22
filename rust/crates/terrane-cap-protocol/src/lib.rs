@@ -468,6 +468,9 @@ pub enum HostConnectorRequest {
         stack: String,
         record_error: bool,
     },
+    ExecuteEffect {
+        effect: Effect,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +478,7 @@ pub enum HostConnectorRequest {
 pub enum HostConnectorResponse {
     ResourceMethods { methods: Vec<OwnedResourceMethod> },
     ReadValue { value: ReadValue },
+    EffectRecords { records: Vec<EventRecord> },
     Ack,
     Error { message: String },
 }

@@ -67,6 +67,7 @@ ed25519-dalek = { version = "2", features = ["std"] }
 serde_json.workspace = true
 serde.workspace = true
 sha2.workspace = true
+getrandom = "0.4.3"
 terrane-cap-interface.workspace = true
 terrane-cap-protocol.workspace = true
 terrane-cap-app.workspace = true

@@ -1,16 +1,25 @@
 use std::any::Any;
 
-use terrane_cap_interface::Capability;
+use terrane_cap_interface::{Capability, Effect, EventRecord, Result, StateStore};
 
 pub struct SelectedCapability {
     pub capability: Box<dyn Capability>,
     pub state: Option<(&'static str, Box<dyn Any>)>,
     pub background_work: fn(&dyn terrane_cap_interface::StateStore) -> bool,
+    pub headless_effect: fn(&dyn StateStore, &Effect) -> Result<Option<Vec<EventRecord>>>,
 }
 
 #[allow(dead_code)]
 fn no_background_work(_state: &dyn terrane_cap_interface::StateStore) -> bool {
     false
+}
+
+#[allow(dead_code)]
+fn no_headless_effect(
+    _state: &dyn StateStore,
+    _effect: &Effect,
+) -> Result<Option<Vec<EventRecord>>> {
+    Ok(None)
 }
 
 macro_rules! selected {
@@ -21,6 +30,7 @@ macro_rules! selected {
                 capability: Box::new($capability),
                 state: None,
                 background_work: no_background_work,
+                headless_effect: no_headless_effect,
             }
         }
     };
@@ -31,6 +41,7 @@ macro_rules! selected {
                 capability: Box::new($capability),
                 state: Some(($namespace, Box::new(<$state>::default()))),
                 background_work: no_background_work,
+                headless_effect: no_headless_effect,
             }
         }
     };
@@ -41,6 +52,7 @@ macro_rules! selected {
                 capability: Box::new($capability),
                 state: Some(($namespace, Box::new(<$state>::default()))),
                 background_work: $background,
+                headless_effect: no_headless_effect,
             }
         }
     };
@@ -86,6 +98,44 @@ fn stream_background(state: &dyn terrane_cap_interface::StateStore) -> bool {
 fn webhook_background(state: &dyn terrane_cap_interface::StateStore) -> bool {
     terrane_cap_interface::state_ref::<terrane_cap_webhook::WebhookState>(state, "webhook")
         .is_ok_and(|state| state.routes.values().any(|routes| !routes.is_empty()))
+}
+
+#[cfg(feature = "cap-time")]
+fn time_headless(_state: &dyn StateStore, effect: &Effect) -> Result<Option<Vec<EventRecord>>> {
+    let Effect::ObserveTime { app } = effect else {
+        return Ok(None);
+    };
+    let epoch_ms = terrane_cap_time::system_time_to_epoch_ms(std::time::SystemTime::now())?;
+    Ok(Some(vec![terrane_cap_time::observed_event(app, epoch_ms)?]))
+}
+
+#[cfg(feature = "cap-webhook")]
+fn webhook_headless(state: &dyn StateStore, effect: &Effect) -> Result<Option<Vec<EventRecord>>> {
+    let Effect::WebhookRegister { app, name, verb } = effect else {
+        return Ok(None);
+    };
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        terrane_cap_interface::Error::Runtime(format!("mint webhook token: {error}"))
+    })?;
+    let mut token = String::with_capacity(32);
+    for byte in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(token, "{byte:02x}");
+    }
+    let webhook =
+        terrane_cap_interface::state_ref::<terrane_cap_webhook::WebhookState>(state, "webhook")?;
+    let event = if webhook
+        .routes
+        .get(app)
+        .and_then(|routes| routes.get(name))
+        .is_some()
+    {
+        terrane_cap_webhook::rotated_event(app, name, verb, token)?
+    } else {
+        terrane_cap_webhook::registered_event(app, name, verb, token)?
+    };
+    Ok(Some(vec![event]))
 }
 
 selected!(
@@ -284,12 +334,15 @@ selected!(
     terrane_cap_sync::SyncState
 );
 selected!("cap-sysinfo", terrane_cap_sysinfo::SysinfoCapability);
-selected!(
-    "cap-time",
-    terrane_cap_time::TimeCapability,
-    "time",
-    terrane_cap_time::TimeState
-);
+#[cfg(feature = "cap-time")]
+pub fn build() -> SelectedCapability {
+    SelectedCapability {
+        capability: Box::new(terrane_cap_time::TimeCapability),
+        state: Some(("time", Box::new(terrane_cap_time::TimeState::default()))),
+        background_work: no_background_work,
+        headless_effect: time_headless,
+    }
+}
 selected!(
     "cap-tts",
     terrane_cap_tts::TtsCapability,
@@ -306,13 +359,18 @@ selected!(
     "web-publish",
     terrane_cap_web_publish::WebPublishState
 );
-selected!(
-    "cap-webhook",
-    terrane_cap_webhook::WebhookCapability,
-    "webhook",
-    terrane_cap_webhook::WebhookState,
-    webhook_background
-);
+#[cfg(feature = "cap-webhook")]
+pub fn build() -> SelectedCapability {
+    SelectedCapability {
+        capability: Box::new(terrane_cap_webhook::WebhookCapability),
+        state: Some((
+            "webhook",
+            Box::new(terrane_cap_webhook::WebhookState::default()),
+        )),
+        background_work: webhook_background,
+        headless_effect: webhook_headless,
+    }
+}
 
 #[cfg(not(any(
     feature = "cap-agent",
