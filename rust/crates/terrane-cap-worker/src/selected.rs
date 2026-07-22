@@ -2,11 +2,13 @@ use std::any::Any;
 
 use terrane_cap_interface::{Capability, Effect, EventRecord, Result, StateStore};
 
+pub type HeadlessEffect = fn(&dyn StateStore, &Effect) -> Result<Option<Vec<EventRecord>>>;
+
 pub struct SelectedCapability {
     pub capability: Box<dyn Capability>,
     pub state: Option<(&'static str, Box<dyn Any>)>,
     pub background_work: fn(&dyn terrane_cap_interface::StateStore) -> bool,
-    pub headless_effect: fn(&dyn StateStore, &Effect) -> Result<Option<Vec<EventRecord>>>,
+    pub headless_effect: HeadlessEffect,
 }
 
 #[allow(dead_code)]

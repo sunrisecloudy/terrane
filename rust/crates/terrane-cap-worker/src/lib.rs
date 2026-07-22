@@ -66,8 +66,7 @@ pub struct Worker {
     state: WorkerState,
     factory: SelectedFactory,
     background_work: fn(&dyn StateStore) -> bool,
-    headless_effect:
-        fn(&dyn StateStore, &terrane_cap_interface::Effect) -> CapResult<Option<Vec<EventRecord>>>,
+    headless_effect: selected::HeadlessEffect,
     declared_events: BTreeSet<String>,
     applied_records: Vec<EventRecord>,
     last_applied_seq: u64,
