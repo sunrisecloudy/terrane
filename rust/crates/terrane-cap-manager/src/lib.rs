@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read};
+use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -12,15 +12,24 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use terrane_cap_interface::EventRecord;
 use terrane_cap_protocol::{
-    read_frame, sha256_file, validate_dependency_graph, write_frame, BundleManifest,
-    CapabilityLockfile, LockedCapability, ProtocolError, WorkerRequest, WorkerResponse,
-    LOCK_FORMAT_VERSION, PROTOCOL_VERSION,
+    read_frame, validate_dependency_graph, write_frame, BundleManifest, CapabilityLockfile,
+    LockedCapability, ProtocolError, WorkerRequest, WorkerResponse, LOCK_FORMAT_VERSION,
+    PROTOCOL_VERSION,
 };
 
 pub const DEFAULT_MAX_WARM_WORKERS: usize = 8;
 pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MANIFEST_FILE: &str = "manifest.json";
 const LOCK_FILE: &str = "capabilities.lock.json";
+
+pub fn verifying_key_from_hex(value: &str) -> Result<VerifyingKey, ManagerError> {
+    let bytes = decode_hex(value)?;
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| ManagerError::Invalid("verifying key must encode exactly 32 bytes".into()))?;
+    VerifyingKey::from_bytes(&bytes)
+        .map_err(|error| ManagerError::Invalid(format!("invalid verifying key: {error}")))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityStatus {
@@ -171,6 +180,14 @@ impl CapabilityManager {
         self.catalog.keys().map(String::as_str)
     }
 
+    pub fn contains(&self, namespace: &str) -> bool {
+        self.catalog.contains_key(namespace)
+    }
+
+    pub fn manifest(&self, namespace: &str) -> Option<&BundleManifest> {
+        self.catalog.get(namespace)
+    }
+
     pub fn status(&self) -> Vec<CapabilityStatusView> {
         let slots = self
             .slots
@@ -249,6 +266,119 @@ impl CapabilityManager {
         process.call(&request)
     }
 
+    pub fn fold_loaded(&self, first_seq: u64, records: &[EventRecord]) {
+        if records.is_empty() {
+            return;
+        }
+        let slots = self
+            .slots
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let loaded: Vec<_> = slots
+            .iter()
+            .map(|(namespace, slot)| (namespace.clone(), slot.clone()))
+            .collect();
+        drop(slots);
+        for (namespace, slot) in loaded {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(process) = slot.process.as_mut() else {
+                continue;
+            };
+            let mut failed = None;
+            for (offset, record) in records.iter().enumerate() {
+                let seq = first_seq + offset as u64;
+                match process.call(&WorkerRequest::Fold {
+                    seq,
+                    record: record.clone(),
+                    dependencies: BTreeMap::new(),
+                }) {
+                    Ok(WorkerResponse::Ack { last_applied_seq }) if last_applied_seq == seq => {}
+                    Ok(response) => {
+                        failed = Some(format!("fold sequence {seq} returned {response:?}"));
+                        break;
+                    }
+                    Err(error) => {
+                        failed = Some(error.to_string());
+                        break;
+                    }
+                }
+            }
+            if let Some(error) = failed {
+                if let Some(mut process) = slot.process.take() {
+                    let _ = process.child.kill();
+                    let _ = process.child.wait();
+                }
+                slot.last_error = Some(format!("{namespace} fell behind the log: {error}"));
+            }
+        }
+    }
+
+    pub fn validate_worker_records(
+        &self,
+        namespace: &str,
+        records: &[EventRecord],
+    ) -> Result<(), ManagerError> {
+        let manifest = self
+            .catalog
+            .get(namespace)
+            .ok_or_else(|| ManagerError::Invalid(format!("unknown capability {namespace}")))?;
+        let declared: BTreeSet<_> = manifest
+            .declaration
+            .events
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for record in records {
+            let owner = record
+                .kind
+                .split_once('.')
+                .map(|(owner, _)| owner)
+                .ok_or_else(|| {
+                    ManagerError::Invalid(format!(
+                        "worker returned unnamespaced event {}",
+                        record.kind
+                    ))
+                })?;
+            if owner == namespace && !declared.contains(record.kind.as_str()) {
+                return Err(ManagerError::Invalid(format!(
+                    "worker {namespace} returned undeclared event {}",
+                    record.kind
+                )));
+            }
+            if owner != namespace {
+                if !manifest
+                    .declaration
+                    .delegated_events
+                    .iter()
+                    .any(|event| event == &record.kind)
+                {
+                    return Err(ManagerError::Invalid(format!(
+                        "worker {namespace} returned non-delegated foreign event {}",
+                        record.kind
+                    )));
+                }
+                if let Some(owner_manifest) = self.catalog.get(owner) {
+                    if !owner_manifest
+                        .declaration
+                        .events
+                        .iter()
+                        .any(|event| event == &record.kind)
+                    {
+                        return Err(ManagerError::Invalid(format!(
+                            "worker {namespace} returned undeclared foreign event {}",
+                            record.kind
+                        )));
+                    }
+                } else if !terrane_cap_protocol::is_fundamental(owner) {
+                    return Err(ManagerError::Invalid(format!(
+                        "worker {namespace} returned event for unknown namespace {owner}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn set_keep_alive(&self, namespace: &str, keep_alive: bool) -> Result<(), ManagerError> {
         let slot = self.slot(namespace)?;
         slot.lock()
@@ -272,6 +402,18 @@ impl CapabilityManager {
             return Ok(true);
         }
         Ok(false)
+    }
+
+    pub fn evict_all(&self) -> Result<(), ManagerError> {
+        let namespaces: Vec<_> = self.catalog.keys().cloned().collect();
+        for namespace in namespaces {
+            let slot = self.slot(&namespace)?;
+            slot.lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .keep_alive = false;
+            let _ = self.evict(&namespace)?;
+        }
+        Ok(())
     }
 
     pub fn evict_idle(&self) -> Result<(), ManagerError> {
@@ -412,9 +554,7 @@ impl CapabilityManager {
             .join(&manifest.version)
             .join(&manifest.executable_sha256);
         let executable = cache.join(&manifest.executable);
-        if executable.is_file()
-            && sha256_file(&executable).ok().as_deref() == Some(&manifest.executable_sha256)
-        {
+        if cached_bundle_is_valid(&cache, manifest, &self.verifying_key) {
             return Ok(executable);
         }
         let packaged = self.packaged_root.join(&manifest.namespace);
@@ -541,6 +681,18 @@ fn read_catalog(
         }
         let manifest: BundleManifest = serde_json::from_reader(File::open(&path)?)?;
         manifest.validate()?;
+        if manifest.platform != std::env::consts::OS
+            || manifest.architecture != std::env::consts::ARCH
+        {
+            return Err(ManagerError::Invalid(format!(
+                "capability {} targets {}/{}, host is {}/{}",
+                manifest.namespace,
+                manifest.platform,
+                manifest.architecture,
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )));
+        }
         verify_manifest_signature(&manifest, verifying_key)?;
         if catalog
             .insert(manifest.namespace.clone(), manifest)
@@ -581,14 +733,23 @@ fn ensure_lockfile(
                 lock.format_version
             )));
         }
+        let locked_namespaces: BTreeSet<_> = lock.capabilities.keys().collect();
+        let packaged_namespaces: BTreeSet<_> = catalog.keys().collect();
+        if locked_namespaces != packaged_namespaces {
+            return Err(ManagerError::Invalid(
+                "capability lock must pin every packaged namespace exactly".into(),
+            ));
+        }
         for (namespace, locked) in &lock.capabilities {
             let manifest = catalog.get(namespace).ok_or_else(|| {
                 ManagerError::Invalid(format!("locked capability {namespace} is not packaged"))
             })?;
-            if locked.version != manifest.version
+            if locked.namespace != *namespace
+                || locked.version != manifest.version
                 || locked.executable_sha256 != manifest.executable_sha256
                 || locked.platform != manifest.platform
                 || locked.architecture != manifest.architecture
+                || locked.bundle_sha256 != sha256_bundle(&packaged_root.join(namespace), manifest)?
             {
                 return Err(ManagerError::Invalid(format!(
                     "packaged capability {namespace} does not match its exact lock"
@@ -599,7 +760,7 @@ fn ensure_lockfile(
     }
     let mut lock = CapabilityLockfile::default();
     for (namespace, manifest) in catalog {
-        let bundle_sha256 = sha256_directory(&packaged_root.join(namespace))?;
+        let bundle_sha256 = sha256_bundle(&packaged_root.join(namespace), manifest)?;
         lock.capabilities.insert(
             namespace.clone(),
             LockedCapability {
@@ -619,32 +780,22 @@ fn ensure_lockfile(
     Ok(())
 }
 
-fn sha256_directory(path: &Path) -> Result<String, ManagerError> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() {
-            files.push(entry.path());
-        }
-    }
-    files.sort();
+fn cached_bundle_is_valid(
+    cache: &Path,
+    expected: &BundleManifest,
+    verifying_key: &VerifyingKey,
+) -> bool {
+    let manifest = File::open(cache.join(MANIFEST_FILE))
+        .ok()
+        .and_then(|file| serde_json::from_reader::<_, BundleManifest>(file).ok());
+    manifest.as_ref() == Some(expected) && expected.verify_bundle(cache, verifying_key).is_ok()
+}
+
+fn sha256_bundle(path: &Path, manifest: &BundleManifest) -> Result<String, ManagerError> {
     let mut hasher = Sha256::new();
-    for file in files {
-        let name = file
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| ManagerError::Invalid("bundle filename is not UTF-8".into()))?;
-        hasher.update(name.as_bytes());
-        let mut input = File::open(file)?;
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let read = input.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-    }
+    hasher.update(fs::read(path.join(MANIFEST_FILE))?);
+    hasher.update(manifest.executable.as_bytes());
+    hasher.update(manifest.executable_sha256.as_bytes());
     Ok(hex(&hasher.finalize()))
 }
 
@@ -697,7 +848,9 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
-    use terrane_cap_protocol::{ActivationMode, CapabilityDeclaration, BUNDLE_FORMAT_VERSION};
+    use terrane_cap_protocol::{
+        sha256_file, ActivationMode, CapabilityDeclaration, BUNDLE_FORMAT_VERSION,
+    };
 
     fn write_bundle(root: &Path, signing: &SigningKey, namespace: &str, dependencies: Vec<String>) {
         let dir = root.join(namespace);
@@ -710,8 +863,8 @@ mod tests {
             version: "0.1.0".into(),
             protocol_version: PROTOCOL_VERSION,
             state_schema_version: 1,
-            platform: "macos".into(),
-            architecture: "aarch64".into(),
+            platform: std::env::consts::OS.into(),
+            architecture: std::env::consts::ARCH.into(),
             executable: "worker".into(),
             executable_sha256: sha256_file(&executable).unwrap(),
             signature: String::new(),
@@ -762,6 +915,43 @@ mod tests {
                 .unwrap(),
             vec!["alpha", "beta", "gamma"]
         );
+    }
+
+    #[test]
+    fn corrupt_cached_executable_is_repaired_from_the_exact_packaged_bundle() {
+        let packaged = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&[11u8; 32]);
+        write_bundle(packaged.path(), &signing, "alpha", Vec::new());
+        let manager =
+            CapabilityManager::open(home.path(), packaged.path(), signing.verifying_key()).unwrap();
+        let manifest = manager.catalog["alpha"].clone();
+        let cached = manager.ensure_cached(&manifest).unwrap();
+        fs::write(&cached, b"corrupt").unwrap();
+
+        let repaired = manager.ensure_cached(&manifest).unwrap();
+        assert_eq!(sha256_file(&repaired).unwrap(), manifest.executable_sha256);
+    }
+
+    #[test]
+    fn an_existing_lock_must_pin_the_exact_bundle_digest() {
+        let packaged = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let signing = SigningKey::from_bytes(&[12u8; 32]);
+        write_bundle(packaged.path(), &signing, "alpha", Vec::new());
+        drop(
+            CapabilityManager::open(home.path(), packaged.path(), signing.verifying_key()).unwrap(),
+        );
+        let lock_path = home.path().join(LOCK_FILE);
+        let mut lock: CapabilityLockfile =
+            serde_json::from_reader(File::open(&lock_path).unwrap()).unwrap();
+        lock.capabilities.get_mut("alpha").unwrap().bundle_sha256 = "0".repeat(64);
+        fs::write(&lock_path, serde_json::to_vec_pretty(&lock).unwrap()).unwrap();
+
+        let error = CapabilityManager::open(home.path(), packaged.path(), signing.verifying_key())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("exact lock"));
     }
 
     #[test]

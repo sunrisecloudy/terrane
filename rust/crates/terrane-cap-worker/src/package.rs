@@ -141,6 +141,10 @@ fn declaration(registry: &Registry, namespace: &str) -> Result<CapabilityDeclara
             .into_iter()
             .map(|value| value.kind.to_string())
             .collect(),
+        delegated_events: delegated_events(namespace)
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect(),
     })
 }
 
@@ -188,13 +192,20 @@ fn dynamic_dependencies(namespace: &str) -> &'static [&'static str] {
         "js-runtime" => &["web-publish"],
         "local-model" => &["model"],
         "migration" => &["js-runtime"],
-        "query" => &["relational-db"],
+        "query" => &["relational_db"],
         "stream" | "webhook" => &["net"],
         _ => &[],
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
+fn delegated_events(namespace: &str) -> &'static [&'static str] {
+    match namespace {
+        "relational_db" | "search" => &["kv.set", "kv.deleted"],
+        _ => &[],
+    }
+}
+
+pub fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

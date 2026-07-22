@@ -37,6 +37,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+pub use terrane_cap_manager::{CapabilityManager, CapabilityStatusView};
+use terrane_cap_protocol::{WorkerRequest, WorkerResponse};
 
 pub mod domain;
 pub mod filelock;
@@ -1691,6 +1693,8 @@ pub struct Core<R: EffectRunner + 'static = NoEffects> {
     kv_storage_plan: KvStoragePlan,
     runner: std::sync::Arc<R>,
     registry: Registry,
+    capability_manager: Option<Arc<CapabilityManager>>,
+    log_sequence: u64,
     /// String printed by the most recent runtime backend, if any. Not part of
     /// State, never logged or replayed — purely a transport for the host to print.
     last_output: Option<String>,
@@ -1717,6 +1721,7 @@ impl<R: EffectRunner + 'static> Core<R> {
         let home_lock = filelock::acquire(&log_path)?;
         let registry = default_registry();
         let state = load_state_from_storage(&registry, &log_path)?;
+        let log_sequence = read_log(&log_path)?.len() as u64;
         let kv_storage_plan = terrane_cap_kv::storage_plan(&state)?;
         let storage_home = storage_home(&log_path);
         terrane_cap_kv::sync_full_storage(&storage_home, &state.kv)?;
@@ -1731,6 +1736,8 @@ impl<R: EffectRunner + 'static> Core<R> {
             kv_storage_plan,
             runner: Arc::new(runner),
             registry,
+            capability_manager: None,
+            log_sequence,
             last_output: None,
             _home_lock: home_lock,
         })
@@ -1739,6 +1746,35 @@ impl<R: EffectRunner + 'static> Core<R> {
     /// The current world. Reads go through here.
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    pub fn attach_capability_manager(&mut self, manager: Arc<CapabilityManager>) {
+        self.capability_manager = Some(manager);
+    }
+
+    pub fn dynamic_capabilities_enabled(&self) -> bool {
+        self.capability_manager.is_some()
+    }
+
+    pub fn capability_status(&self) -> Vec<CapabilityStatusView> {
+        self.capability_manager
+            .as_ref()
+            .map(|manager| manager.status())
+            .unwrap_or_default()
+    }
+
+    pub fn prepare_capabilities(&self, namespaces: &[String]) -> Result<()> {
+        let Some(manager) = &self.capability_manager else {
+            return Ok(());
+        };
+        let dynamic: Vec<_> = namespaces
+            .iter()
+            .filter(|namespace| manager.contains(namespace))
+            .cloned()
+            .collect();
+        manager
+            .prepare(&dynamic, &read_log(&self.log_path)?)
+            .map_err(|error| Error::Runtime(error.to_string()))
     }
 
     /// Core-facing storage projection plan owned by the `kv` capability.
@@ -1781,14 +1817,41 @@ impl<R: EffectRunner + 'static> Core<R> {
     /// committing, running effects, or invoking runtimes.
     pub fn decide(&self, request: Request) -> Result<Decision> {
         admit_command(&request)?;
-        let namespace = namespace_of(&request.name)?;
+        let namespace = namespace_of(&request.name)?.to_string();
+        if let Some(manager) = self
+            .capability_manager
+            .as_ref()
+            .filter(|manager| manager.contains(&namespace))
+        {
+            let response = manager
+                .call(
+                    &namespace,
+                    &read_log(&self.log_path)?,
+                    WorkerRequest::Decide {
+                        request,
+                        dependencies: BTreeMap::new(),
+                    },
+                )
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            let WorkerResponse::Decision { decision } = response else {
+                return Err(Error::Runtime(format!(
+                    "capability worker {namespace} returned {response:?} for decide"
+                )));
+            };
+            if let Decision::Commit(records) = &decision {
+                manager
+                    .validate_worker_records(&namespace, records)
+                    .map_err(|error| Error::Runtime(error.to_string()))?;
+            }
+            return Ok(decision);
+        }
         let bus = RegistryBus::new(&self.registry, &self.state);
         let ctx = CommandCtx {
             state: &self.state,
             bus: &bus,
         };
         self.registry
-            .get(namespace)?
+            .get(&namespace)?
             .decide(ctx, &request.name, &request.args)
     }
 
@@ -1803,6 +1866,29 @@ impl<R: EffectRunner + 'static> Core<R> {
             }
             None => query,
         };
+        if let Some(manager) = self
+            .capability_manager
+            .as_ref()
+            .filter(|manager| manager.contains(capability))
+        {
+            let response = manager
+                .call(
+                    capability,
+                    &read_log(&self.log_path)?,
+                    WorkerRequest::Query {
+                        name: name.to_string(),
+                        args: args.to_vec(),
+                        dependencies: BTreeMap::new(),
+                    },
+                )
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            let WorkerResponse::QueryValue { value } = response else {
+                return Err(Error::Runtime(format!(
+                    "capability worker {capability} returned {response:?} for query"
+                )));
+            };
+            return Ok(value);
+        }
         let bus = RegistryBus::new(&self.registry, &self.state);
         bus.query(capability, name, args)
     }
@@ -1930,6 +2016,7 @@ impl<R: EffectRunner + 'static> Core<R> {
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
+        self.sync_loaded_workers(&records);
         self.kv_storage_plan = terrane_cap_kv::storage_plan(&self.state)?;
         let home = storage_home(&self.log_path);
         terrane_cap_kv::sync_storage_after_commit(&home, &before_kv, &self.state.kv)?;
@@ -1966,6 +2053,7 @@ impl<R: EffectRunner + 'static> Core<R> {
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
+        self.sync_loaded_workers(&records);
         self.kv_storage_plan = terrane_cap_kv::storage_plan(&self.state)?;
         let home = storage_home(&self.log_path);
         terrane_cap_kv::sync_storage_after_commit(&home, &before_kv, &self.state.kv)?;
@@ -1980,6 +2068,17 @@ impl<R: EffectRunner + 'static> Core<R> {
             )?;
         }
         Ok(records)
+    }
+
+    fn sync_loaded_workers(&mut self, records: &[EventRecord]) {
+        if records.is_empty() {
+            return;
+        }
+        let first_seq = self.log_sequence + 1;
+        self.log_sequence += records.len() as u64;
+        if let Some(manager) = &self.capability_manager {
+            manager.fold_loaded(first_seq, records);
+        }
     }
 
     fn append(&self, records: &[EventRecord]) -> Result<()> {

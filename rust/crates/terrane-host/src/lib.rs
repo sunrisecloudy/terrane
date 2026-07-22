@@ -212,9 +212,81 @@ fn open_at_log_path_with(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut core = Core::open_with(log_path, runner.with_home(home)).map_err(|e| e.to_string())?;
+    let mut core =
+        Core::open_with(log_path, runner.with_home(home.clone())).map_err(|e| e.to_string())?;
+    if let Some(manager) = configured_capability_manager(&home)? {
+        core.attach_capability_manager(manager);
+    }
     ensure_identity(&mut core)?;
     Ok(core)
+}
+
+fn configured_capability_manager(
+    home: &Path,
+) -> Result<Option<std::sync::Arc<terrane_core::CapabilityManager>>, String> {
+    if env::var("TERRANE_CAP_STATIC_FALLBACK").ok().as_deref() == Some("1") {
+        return Ok(None);
+    }
+    let Some(root) = capability_bundle_root() else {
+        if env::var("TERRANE_CAP_REQUIRE_DYNAMIC").ok().as_deref() == Some("1") {
+            return Err(
+                "dynamic capabilities are required but no packaged bundle root exists".into(),
+            );
+        }
+        return Ok(None);
+    };
+    let verifying_key_hex = env::var("TERRANE_CAP_VERIFYING_KEY_HEX")
+        .ok()
+        .or_else(|| option_env!("TERRANE_CAP_VERIFYING_KEY_HEX").map(str::to_string));
+    let Some(verifying_key_hex) = verifying_key_hex else {
+        if env::var("TERRANE_CAP_REQUIRE_DYNAMIC").ok().as_deref() == Some("1") {
+            return Err(
+                "dynamic capabilities are required but no verifying key is configured".into(),
+            );
+        }
+        return Ok(None);
+    };
+    let verifying_key = terrane_cap_manager::verifying_key_from_hex(&verifying_key_hex)
+        .map_err(|error| error.to_string())?;
+    terrane_core::CapabilityManager::open(home, root, verifying_key)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn capability_bundle_root() -> Option<PathBuf> {
+    if let Some(root) = env::var_os("TERRANE_CAP_BUNDLE_DIR").map(PathBuf::from) {
+        return root.is_dir().then_some(root);
+    }
+    let executable = env::current_exe().ok()?;
+    let executable_dir = executable.parent()?;
+    let candidates = [
+        executable_dir.join("capabilities"),
+        executable_dir.join("../Resources/capabilities"),
+    ];
+    candidates.into_iter().find(|candidate| candidate.is_dir())
+}
+
+pub fn prepare_app_capabilities(core: &HostCore, app: &str) -> Result<(), String> {
+    if !core.dynamic_capabilities_enabled() {
+        return Ok(());
+    }
+    let record = core
+        .state()
+        .app
+        .apps
+        .get(app)
+        .ok_or_else(|| format!("no such app: {app}"))?;
+    let runtime = match record.runtime.as_str() {
+        "js" => "js-runtime",
+        "wasm" => "wasm-runtime",
+        other => return Err(format!("unknown app runtime for {app}: {other}")),
+    };
+    let mut namespaces = permission::app_requested_resources(core, app)?;
+    namespaces.push(runtime.to_string());
+    namespaces.sort();
+    namespaces.dedup();
+    core.prepare_capabilities(&namespaces)
+        .map_err(|error| error.to_string())
 }
 
 /// The home directory: `$TERRANE_HOME` (default `./.terrane/`). Holds the event
@@ -582,6 +654,7 @@ pub fn invoke_app_input_checked_with_admin_base_and_source(
     if !core.state().app.apps.contains_key(app) {
         return Err(InvokeFailure::Other(format!("no such app: {app}")));
     }
+    prepare_app_capabilities(core, app).map_err(InvokeFailure::Other)?;
     let operation = input.first().map(String::as_str).unwrap_or("invoke");
     if let Some(required) = permission::request_permission_for_app_with_admin_base(
         core,

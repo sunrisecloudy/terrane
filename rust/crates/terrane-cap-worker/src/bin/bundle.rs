@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 
 use ed25519_dalek::SigningKey;
-use terrane_cap_worker::package::package_all;
+use terrane_cap_worker::package::{hex, package_all};
 
 fn main() {
     if let Err(error) = run() {
@@ -38,6 +38,10 @@ fn run() -> Result<(), String> {
         &architecture.unwrap(),
     )?;
     println!("packaged {} native capability bundles", packaged.len());
+    println!(
+        "verifying key: {}",
+        hex(signing_key.verifying_key().as_bytes())
+    );
     Ok(())
 }
 

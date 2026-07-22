@@ -63,6 +63,8 @@ pub struct CapabilityDeclaration {
     pub resources: Vec<OwnedResourceMethod>,
     pub grant_resources: Vec<OwnedGrantResourceSpec>,
     pub subscriptions: Vec<String>,
+    #[serde(default)]
+    pub delegated_events: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -524,6 +526,18 @@ fn validate_declaration(
             return Err(ProtocolError::Invalid(format!(
                 "grant resource {} has no verbs",
                 grant.selector_schema_id
+            )));
+        }
+    }
+    for event in &declaration.delegated_events {
+        let Some((owner, _)) = event.split_once('.') else {
+            return Err(ProtocolError::Invalid(format!(
+                "delegated event must be namespaced: {event}"
+            )));
+        };
+        if owner == namespace {
+            return Err(ProtocolError::Invalid(format!(
+                "delegated event {event} is already owned by {namespace}"
             )));
         }
     }

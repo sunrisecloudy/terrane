@@ -26,3 +26,4 @@ terrane-core.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+terrane-cap-manager.workspace = true
