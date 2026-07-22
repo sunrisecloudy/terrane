@@ -471,6 +471,10 @@ pub enum HostConnectorRequest {
     ExecuteEffect {
         effect: Effect,
     },
+    LiveSample {
+        domain: String,
+        args: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,6 +483,7 @@ pub enum HostConnectorResponse {
     ResourceMethods { methods: Vec<OwnedResourceMethod> },
     ReadValue { value: ReadValue },
     EffectRecords { records: Vec<EventRecord> },
+    LiveSample { value: String },
     Ack,
     Error { message: String },
 }

@@ -92,4 +92,5 @@ binaries. Worker-owned headless effects run in the signed process (currently
 wall-clock observation and webhook token rotation). UI, main-thread, secret
 storage, media, model, and platform effects use the versioned parent-host
 connector; their returned events still pass signed-manifest validation before
-commit.
+commit. Live, non-recorded observations such as `sysinfo` also cross an
+explicit live-sample connector and remain outside the event log.

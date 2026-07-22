@@ -971,7 +971,7 @@ impl RuntimeHost for RuntimeResourceHost {
     ) -> Result<ReadValue> {
         if let Some(manager) = self.dynamic_manager(namespace) {
             let response = manager
-                .call(
+                .call_with_connector(
                     namespace,
                     &self.base_records,
                     WorkerRequest::ReadResource {
@@ -980,6 +980,27 @@ impl RuntimeHost for RuntimeResourceHost {
                         args: args.to_vec(),
                         overlay_records: self.pending_records(),
                         dependencies: BTreeMap::new(),
+                    },
+                    |request| match request {
+                        HostConnectorRequest::LiveSample { domain, args } => self
+                            .runner
+                            .as_ref()
+                            .and_then(|runner| runner.live())
+                            .ok_or_else(|| {
+                                Error::Runtime(format!(
+                                    "{namespace}.{method} needs a live host sampler"
+                                ))
+                            })
+                            .and_then(|host| host.sample(&domain, &args))
+                            .map(|value| HostConnectorResponse::LiveSample { value })
+                            .unwrap_or_else(|error| HostConnectorResponse::Error {
+                                message: error.to_string(),
+                            }),
+                        request => HostConnectorResponse::Error {
+                            message: format!(
+                                "resource read connector received unsupported request {request:?}"
+                            ),
+                        },
                     },
                 )
                 .map_err(|error| Error::Runtime(error.to_string()))?;
@@ -1368,6 +1389,9 @@ fn host_connector_response(
             .map(|()| HostConnectorResponse::Ack),
         HostConnectorRequest::ExecuteEffect { .. } => Err(Error::Runtime(
             "effect execution is unavailable on the runtime resource connector".into(),
+        )),
+        HostConnectorRequest::LiveSample { .. } => Err(Error::Runtime(
+            "live sampling is unavailable on the runtime resource connector".into(),
         )),
     };
     result.unwrap_or_else(|error| HostConnectorResponse::Error {

@@ -435,6 +435,36 @@ impl Worker {
             response => Err(unexpected_connector_response("execute effect", response)),
         }
     }
+
+    fn read_resource_with_connector(
+        &mut self,
+        app: String,
+        name: String,
+        args: Vec<String>,
+        overlay_records: Vec<EventRecord>,
+        io: ConnectorIo,
+    ) -> CapResult<WorkerResponse> {
+        let connector = ConnectorHost::new(io);
+        self.with_overlay(&overlay_records, |worker| {
+            let bus = WorkerBus::new(
+                worker.capability.as_ref(),
+                &worker.support,
+                &worker.state,
+                &worker.declared_events,
+            );
+            let value = worker.capability.read_resource(
+                ResourceReadCtx {
+                    state: &worker.state,
+                    bus: &bus,
+                    app: &app,
+                    host: Some(&connector),
+                },
+                &name,
+                &args,
+            )?;
+            Ok(WorkerResponse::ReadValue { value })
+        })
+    }
 }
 
 fn capability_accepts(capability: &dyn Capability, record: &EventRecord) -> bool {
@@ -681,6 +711,18 @@ impl RuntimeHost for ConnectorHost {
     }
 }
 
+impl terrane_cap_interface::LiveHost for ConnectorHost {
+    fn sample(&self, domain: &str, args: &[String]) -> CapResult<String> {
+        match self.call(HostConnectorRequest::LiveSample {
+            domain: domain.to_string(),
+            args: args.to_vec(),
+        })? {
+            HostConnectorResponse::LiveSample { value } => Ok(value),
+            response => Err(unexpected_connector_response("live sample", response)),
+        }
+    }
+}
+
 fn unexpected_connector_response(action: &str, response: HostConnectorResponse) -> Error {
     Error::Runtime(format!("host connector returned {response:?} for {action}"))
 }
@@ -762,6 +804,26 @@ where
                     },
                 }
             }
+            WorkerRequest::ReadResource {
+                app,
+                name,
+                args,
+                overlay_records,
+                dependencies: _,
+            } => match worker.read_resource_with_connector(
+                app,
+                name,
+                args,
+                overlay_records,
+                io.clone(),
+            ) {
+                Ok(response) => response,
+                Err(error) => WorkerResponse::Error {
+                    code: error_code(&error).into(),
+                    message: error.to_string(),
+                    retryable: matches!(error, Error::Runtime(_) | Error::Storage(_)),
+                },
+            },
             request => worker.handle(request),
         };
         write_frame(
