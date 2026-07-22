@@ -436,6 +436,37 @@ impl CapabilityManager {
         Ok(())
     }
 
+    pub fn full_replay_hashes(
+        &self,
+        records: &[EventRecord],
+    ) -> Result<BTreeMap<String, String>, ManagerError> {
+        let namespaces: Vec<_> = self.catalog.keys().cloned().collect();
+        let mut hashes = BTreeMap::new();
+        for namespace in namespaces {
+            let response = self.call(&namespace, records, WorkerRequest::Snapshot)?;
+            let WorkerResponse::Snapshot {
+                last_applied_seq,
+                state_sha256,
+                ..
+            } = response
+            else {
+                return Err(ManagerError::Worker(format!(
+                    "capability {namespace} returned {response:?} during replay verification"
+                )));
+            };
+            if last_applied_seq != records.len() as u64 {
+                return Err(ManagerError::Worker(format!(
+                    "capability {namespace} replay cursor {last_applied_seq} does not match log length {}",
+                    records.len()
+                )));
+            }
+            hashes.insert(namespace.clone(), state_sha256);
+            self.set_keep_alive(&namespace, false)?;
+            let _ = self.evict(&namespace)?;
+        }
+        Ok(hashes)
+    }
+
     pub fn evict_idle(&self) -> Result<(), ManagerError> {
         let slots = self
             .slots

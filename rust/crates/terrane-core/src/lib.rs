@@ -37,6 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
 pub use terrane_cap_manager::{CapabilityManager, CapabilityStatusView};
 use terrane_cap_protocol::{WorkerRequest, WorkerResponse};
 
@@ -1805,6 +1806,33 @@ impl<R: EffectRunner + 'static> Core<R> {
         manager
             .repair(namespace)
             .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    pub fn verify_dynamic_replay(&self) -> Result<Vec<String>> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        let records = read_log(&self.log_path)?;
+        let actual = manager
+            .full_replay_hashes(&records)
+            .map_err(|error| Error::Runtime(error.to_string()))?;
+        let mut verified = Vec::new();
+        for (namespace, actual_hash) in actual {
+            let payload = self
+                .registry
+                .get(&namespace)?
+                .snapshot(&self.state)?
+                .unwrap_or_default();
+            let expected_hash = format!("{:x}", Sha256::digest(payload));
+            if actual_hash != expected_hash {
+                return Err(Error::Storage(format!(
+                    "dynamic replay mismatch for {namespace}: expected {expected_hash}, got {actual_hash}"
+                )));
+            }
+            verified.push(namespace);
+        }
+        Ok(verified)
     }
 
     /// Core-facing storage projection plan owned by the `kv` capability.

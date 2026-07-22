@@ -37,9 +37,10 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["cap", "evict", "--all"] => run_cap_evict_all(),
         ["cap", "evict", namespace] => run_cap_evict(namespace),
         ["cap", "repair", namespace] => run_cap_repair(namespace),
+        ["cap", "verify"] => run_cap_verify(),
         ["cap", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane cap (list | info <namespace> | status | prewarm <namespace>... | evict <namespace>|--all | repair <namespace>)".into())
+            Err("usage: terrane cap (list | info <namespace> | status | prewarm <namespace>... | evict <namespace>|--all | repair <namespace> | verify)".into())
         }
         ["app", "export", app, rest @ ..] => run_app_export(app, rest),
         ["app", "install", path] => run_install(path),
@@ -972,6 +973,19 @@ pub fn run_cap_repair(namespace: &str) -> Result<(), String> {
     core.repair_capability(namespace)
         .map_err(|error| error.to_string())?;
     println!("repaired {namespace} to its exact pinned artifact");
+    Ok(())
+}
+
+pub fn run_cap_verify() -> Result<(), String> {
+    let core = crate::open()?;
+    let verified = core
+        .verify_dynamic_replay()
+        .map_err(|error| error.to_string())?;
+    println!(
+        "verified dynamic replay for {} capabilities: {}",
+        verified.len(),
+        verified.join(", ")
+    );
     Ok(())
 }
 
@@ -2821,6 +2835,7 @@ pub fn print_help() {
          \x20 terrane cap prewarm <ns>...    load capabilities and dependencies\n\
          \x20 terrane cap evict <ns>|--all   snapshot and stop warm workers\n\
          \x20 terrane cap repair <namespace> restore the exact pinned artifact\n\
+         \x20 terrane cap verify             compare every worker replay hash\n\
          \x20 terrane contract export        print the public API contract (JSON)\n\
          \x20 terrane help                   this message\n\n\
          Catalog: $TERRANE_HOME/log.bin (binary event log; default ./.terrane/)"
