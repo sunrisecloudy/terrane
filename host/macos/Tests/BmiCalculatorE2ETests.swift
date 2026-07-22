@@ -363,7 +363,18 @@ final class BmiCalculatorE2ETests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(project.contains("NSCameraUsageDescription"), project)
+    XCTAssertTrue(project.contains("NSMicrophoneUsageDescription"), project)
     XCTAssertTrue(project.contains("AVFoundation.framework"), project)
+    XCTAssertTrue(
+      project.contains("CODE_SIGN_ENTITLEMENTS: Sources/TerraneHost.entitlements"), project)
+
+    let entitlements = try String(
+      contentsOf: root.appendingPathComponent(
+        "host/macos/Sources/TerraneHost.entitlements"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(entitlements.contains("com.apple.security.device.camera"), entitlements)
+    XCTAssertTrue(entitlements.contains("com.apple.security.device.audio-input"), entitlements)
 
     let appDelegate = try String(
       contentsOf: root.appendingPathComponent("host/macos/Sources/AppDelegate.swift"),
@@ -377,6 +388,10 @@ final class BmiCalculatorE2ETests: XCTestCase {
     XCTAssertTrue(appDelegate.contains("shouldUseLoopbackFrame"), appDelegate)
     XCTAssertTrue(appDelegate.contains("loopbackHost?.frameURL(for: app)"), appDelegate)
     XCTAssertTrue(appDelegate.contains("requestMediaCapturePermissionFor"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("registerSecureSchemes"), appDelegate)
+    XCTAssertTrue(appDelegate.contains("_registerURLSchemeAsSecure:"), appDelegate)
+    XCTAssertTrue(
+      appDelegate.contains("[AppSchemeHandler.scheme, PreviewSchemeHandler.scheme]"), appDelegate)
     XCTAssertTrue(appDelegate.contains("selectedApp?.browserPermissions"), appDelegate)
     XCTAssertTrue(appDelegate.contains(#"permissions.contains("camera") ? .grant : .deny"#), appDelegate)
     XCTAssertTrue(appDelegate.contains(#"permissions.contains("microphone") ? .grant : .deny"#), appDelegate)

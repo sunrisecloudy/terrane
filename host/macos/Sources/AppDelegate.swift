@@ -123,6 +123,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         completion(["ok": true], nil)
       }
     }
+    // Mark our app-serving custom schemes as secure contexts. WebKit only
+    // exposes powerful web APIs (getUserMedia for camera/mic, etc.) on secure
+    // origins, and a bare WKURLSchemeHandler scheme is not trustworthy by
+    // default — so `getUserMedia` rejects with a NotAllowedError before the
+    // media-capture permission delegate is ever consulted. There is no public
+    // API for this; `_registerURLSchemeAsSecure:` on the process pool is the
+    // established workaround. It's App-Store-disallowed, but this is a local,
+    // ad-hoc-signed host, so it's acceptable here.
+    Self.registerSecureSchemes(
+      [AppSchemeHandler.scheme, PreviewSchemeHandler.scheme], on: config)
+
     bridge.install(into: config.userContentController)
     let appSchemeHandler = AppSchemeHandler(bridge: bridge) { [weak self] in self?.apps ?? [] }
     self.appSchemeHandler = appSchemeHandler
@@ -290,6 +301,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     type: WKMediaCaptureType,
     decisionHandler: @escaping (WKPermissionDecision) -> Void
   ) {
+    // The app must declare the capability in its manifest `browser_permissions`.
+    // When it does, we `.grant` at the WebKit layer: on macOS `.prompt` is
+    // unreliable and surfaces as a NotAllowedError, and macOS still presents its
+    // own TCC camera/microphone consent dialog on first AVCaptureDevice use, so
+    // the OS-level prompt is preserved either way.
     let permissions = Set(selectedApp?.browserPermissions ?? [])
     switch type {
     case .camera:
@@ -301,6 +317,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         permissions.contains("camera") && permissions.contains("microphone") ? .grant : .deny)
     @unknown default:
       decisionHandler(.deny)
+    }
+  }
+
+  /// Register the given custom schemes as secure contexts on the configuration's
+  /// process pool, so WebKit exposes secure-only APIs (camera/microphone) to
+  /// pages served from them. Uses the private `_registerURLSchemeAsSecure:`
+  /// selector; guarded with `responds(to:)` so a WebKit change degrades to the
+  /// prior (insecure) behavior instead of crashing.
+  private static func registerSecureSchemes(_ schemes: [String], on config: WKWebViewConfiguration)
+  {
+    let pool = config.processPool
+    let selector = NSSelectorFromString("_registerURLSchemeAsSecure:")
+    guard pool.responds(to: selector) else {
+      NSLog("terrane: _registerURLSchemeAsSecure: unavailable; camera/mic APIs may be blocked")
+      return
+    }
+    for scheme in schemes {
+      pool.perform(selector, with: scheme as NSString)
     }
   }
 
