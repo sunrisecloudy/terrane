@@ -73,6 +73,18 @@ targets:
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           cd "$SRCROOT/../.."
           cargo build -p terrane-host -p terrane-host-web --release
+    postBuildScripts:
+      - name: "Package signed native capabilities"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          if [ -z "${TERRANE_CAP_SIGNING_KEY_HEX:-}" ]; then
+            echo "Skipping native capabilities: TERRANE_CAP_SIGNING_KEY_HEX is not set"
+            exit 0
+          fi
+          export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          "$SRCROOT/../../scripts/package-native-capabilities.sh" \
+            "$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/capabilities"
   TerraneHostE2ETests:
     type: bundle.unit-test
     platform: macOS

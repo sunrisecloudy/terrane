@@ -63,6 +63,10 @@ a temp app bundle or add preview apps to the catalog.
 Requires `xcodegen` (`brew install xcodegen`), Xcode, and `cargo`. The project
 is defined by `project.yml`; the `.xcodeproj` is generated (gitignored). A
 pre-build phase builds `libterrane_host.a` and the target links it.
+When `TERRANE_CAP_SIGNING_KEY_HEX` is present, a post-build phase packages the
+41 signed native workers under
+`TerraneHost.app/Contents/Resources/capabilities`. Development builds without a
+key retain the one-release static fallback.
 
 ```sh
 cd host/macos

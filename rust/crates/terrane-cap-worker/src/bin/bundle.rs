@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::PathBuf;
 
 use ed25519_dalek::SigningKey;
@@ -31,17 +32,27 @@ fn run() -> Result<(), String> {
     }
     let signing_key = signing_key()?;
     let packaged = package_all(
-        &worker.ok_or_else(|| "--worker is required".to_string())?,
-        &output.ok_or_else(|| "--output is required".to_string())?,
+        worker
+            .as_ref()
+            .ok_or_else(|| "--worker is required".to_string())?,
+        output
+            .as_ref()
+            .ok_or_else(|| "--output is required".to_string())?,
         &signing_key,
         &platform.unwrap(),
         &architecture.unwrap(),
     )?;
+    let verifying_key = hex(signing_key.verifying_key().as_bytes());
+    fs::write(
+        output
+            .as_ref()
+            .ok_or_else(|| "--output is required".to_string())?
+            .join("verifying-key.hex"),
+        format!("{verifying_key}\n"),
+    )
+    .map_err(|error| error.to_string())?;
     println!("packaged {} native capability bundles", packaged.len());
-    println!(
-        "verifying key: {}",
-        hex(signing_key.verifying_key().as_bytes())
-    );
+    println!("verifying key: {verifying_key}");
     Ok(())
 }
 

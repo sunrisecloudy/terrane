@@ -269,7 +269,12 @@ fn configured_capability_manager(
     };
     let verifying_key_hex = env::var("TERRANE_CAP_VERIFYING_KEY_HEX")
         .ok()
-        .or_else(|| option_env!("TERRANE_CAP_VERIFYING_KEY_HEX").map(str::to_string));
+        .or_else(|| option_env!("TERRANE_CAP_VERIFYING_KEY_HEX").map(str::to_string))
+        .or_else(|| {
+            std::fs::read_to_string(root.join("verifying-key.hex"))
+                .ok()
+                .map(|value| value.trim().to_string())
+        });
     let Some(verifying_key_hex) = verifying_key_hex else {
         if env::var("TERRANE_CAP_REQUIRE_DYNAMIC").ok().as_deref() == Some("1") {
             return Err(
