@@ -24,12 +24,17 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host
+        DEAD_CODE_STRIPPING: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../target/release
+          - $(SRCROOT)/../../target/macos-static/release
         OTHER_LDFLAGS:
           - $(inherited)
-          - -lterrane_host
+          - -force_load
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
+          - -lc++
+          - -liconv
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
         CODE_SIGN_ENTITLEMENTS: Sources/TerraneHost.entitlements
         HEADER_SEARCH_PATHS:
@@ -65,15 +70,51 @@ targets:
       - sdk: WebKit.framework
       - sdk: AppKit.framework
       - sdk: AVFoundation.framework
+      - sdk: Accelerate.framework
+      - sdk: CoreLocation.framework
+      - sdk: IOKit.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
         script: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export CARGO_TARGET_DIR="$SRCROOT/../../target/macos-static"
+          export CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake"
           cd "$SRCROOT/../.."
           cargo build -p terrane-host -p terrane-host-web --release
+          HTTP_ARCHIVE="$(find "$CARGO_TARGET_DIR/release/build" -path '*/out/build/vendor/cpp-httplib/libcpp-httplib.a' -type f -print | sort | tail -n 1)"
+          if [ -z "$HTTP_ARCHIVE" ]; then
+            echo "llama-cpp-sys did not produce libcpp-httplib.a" >&2
+            exit 1
+          fi
+          cp "$HTTP_ARCHIVE" "$CARGO_TARGET_DIR/release/libterrane_host_httplib.a"
     postBuildScripts:
+      - name: "Package built-in apps"
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          APP_SOURCE="$SRCROOT/../../apps"
+          APP_DESTINATION="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/apps"
+          if [ ! -d "$APP_SOURCE" ]; then
+            echo "Built-in app source directory is missing: $APP_SOURCE" >&2
+            exit 1
+          fi
+          mkdir -p "$APP_DESTINATION"
+          rsync -a --delete --exclude '.gitignore' --exclude 'node_modules' \
+            "$APP_SOURCE/" "$APP_DESTINATION/"
+          SOURCE_COUNT="$(find "$APP_SOURCE" -mindepth 2 -maxdepth 2 -type f -name manifest.json | wc -l | tr -d ' ')"
+          DESTINATION_COUNT="$(find "$APP_DESTINATION" -mindepth 2 -maxdepth 2 -type f -name manifest.json | wc -l | tr -d ' ')"
+          if [ "$SOURCE_COUNT" -eq 0 ] || [ "$DESTINATION_COUNT" -ne "$SOURCE_COUNT" ]; then
+            echo "Built-in app packaging failed: expected $SOURCE_COUNT manifests, found $DESTINATION_COUNT" >&2
+            exit 1
+          fi
+          echo "Embedded $DESTINATION_COUNT built-in app bundles"
       - name: "Package signed native capabilities"
         basedOnDependencyAnalysis: false
         script: |
@@ -123,13 +164,18 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host.e2e-tests
+        DEAD_CODE_STRIPPING: "YES"
         GENERATE_INFOPLIST_FILE: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../target/release
+          - $(SRCROOT)/../../target/macos-static/release
         OTHER_LDFLAGS:
           - $(inherited)
-          - -lterrane_host
+          - -force_load
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
+          - -lc++
+          - -liconv
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
         CODE_SIGN_ENTITLEMENTS: Sources/TerraneHost.entitlements
         HEADER_SEARCH_PATHS:
@@ -139,14 +185,30 @@ targets:
       - sdk: WebKit.framework
       - sdk: AppKit.framework
       - sdk: AVFoundation.framework
+      - sdk: Accelerate.framework
+      - sdk: CoreLocation.framework
+      - sdk: IOKit.framework
+      - sdk: Metal.framework
+      - sdk: MetalKit.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
+        outputFiles:
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
+          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
         script: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          export CARGO_TARGET_DIR="$SRCROOT/../../target/macos-static"
+          export CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake"
           cd "$SRCROOT/../.."
           cargo build -p terrane-host -p terrane-host-web --release
+          HTTP_ARCHIVE="$(find "$CARGO_TARGET_DIR/release/build" -path '*/out/build/vendor/cpp-httplib/libcpp-httplib.a' -type f -print | sort | tail -n 1)"
+          if [ -z "$HTTP_ARCHIVE" ]; then
+            echo "llama-cpp-sys did not produce libcpp-httplib.a" >&2
+            exit 1
+          fi
+          cp "$HTTP_ARCHIVE" "$CARGO_TARGET_DIR/release/libterrane_host_httplib.a"
 schemes:
   TerraneHost:
     build:
