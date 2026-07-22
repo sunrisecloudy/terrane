@@ -3,7 +3,9 @@
 use tempfile::tempdir;
 use terrane_cap_model::responded_event;
 use terrane_core::Error;
-use terrane_core::{fold_records_in_memory, Core, Effect, EffectRunner, EventRecord, Result, State};
+use terrane_core::{
+    fold_records_in_memory, Core, Effect, EffectRunner, EventRecord, Result, State,
+};
 
 use crate::helpers::req;
 
@@ -92,8 +94,7 @@ fn model_prompt_json_blob_names_normalize_to_content_refs_and_replay() {
     ))
     .unwrap();
 
-    let prompt =
-        r#"{"parts":[{"text":"with-image"},{"blob":"images/a.png"}]}"#;
+    let prompt = r#"{"parts":[{"text":"with-image"},{"blob":"images/a.png"}]}"#;
     core.dispatch(req("model.ask", &["asst", "codex", prompt]))
         .unwrap();
 
@@ -102,10 +103,7 @@ fn model_prompt_json_blob_names_normalize_to_content_refs_and_replay() {
     assert!(turn.prompt.contains("\"mime\":\"image/png\""));
     assert!(!turn.prompt.contains("base64"));
     assert!(core.replay_matches().unwrap());
-    assert_eq!(
-        Core::open(&log).unwrap().state().model,
-        core.state().model
-    );
+    assert_eq!(Core::open(&log).unwrap().state().model, core.state().model);
 }
 
 #[test]

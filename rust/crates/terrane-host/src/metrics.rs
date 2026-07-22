@@ -204,8 +204,7 @@ impl Monitor {
     }
 
     fn processes(&mut self, args: &[String]) -> Value {
-        self.sys
-            .refresh_processes(ProcessesToUpdate::All, true);
+        self.sys.refresh_processes(ProcessesToUpdate::All, true);
         let sort_by = args.first().map(String::as_str).unwrap_or("cpu");
         let limit = args
             .get(1)
@@ -287,12 +286,18 @@ fn parse_pmset() -> Value {
             .or_else(|| t.strip_suffix('%'))
             .and_then(|n| n.parse::<u8>().ok())
     });
-    let state = ["charging", "discharging", "charged", "finishing charge", "AC attached"]
-        .into_iter()
-        .find(|s| line.contains(s));
-    let time_remaining = line.split_whitespace().find(|t| {
-        t.contains(':') && t.chars().next().is_some_and(|c| c.is_ascii_digit())
-    });
+    let state = [
+        "charging",
+        "discharging",
+        "charged",
+        "finishing charge",
+        "AC attached",
+    ]
+    .into_iter()
+    .find(|s| line.contains(s));
+    let time_remaining = line
+        .split_whitespace()
+        .find(|t| t.contains(':') && t.chars().next().is_some_and(|c| c.is_ascii_digit()));
 
     json!({
         "present": true,

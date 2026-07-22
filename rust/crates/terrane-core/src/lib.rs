@@ -45,11 +45,11 @@ pub mod snapshot;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
-    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost, ParamDoc,
-    ModelImagePart, QueryCtx, QueryValue, ReadValue, RecordedCallCap, Request, ResourceDoc, ResourceMethod,
-    ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle,
-    RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT,
-    LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
+    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost,
+    ModelImagePart, ParamDoc, QueryCtx, QueryValue, ReadValue, RecordedCallCap, Request,
+    ResourceDoc, ResourceMethod, ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx,
+    RuntimeHost, RuntimeHostHandle, RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore,
+    LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 const LOG_HEADER: &[u8] = b"TRNLOG\x01\n";
@@ -69,11 +69,9 @@ use terrane_cap_automation::AutomationState;
 use terrane_cap_blob::BlobState;
 use terrane_cap_browser::BrowserState;
 use terrane_cap_builder::BuilderState;
-use terrane_cap_webhook::WebhookState;
-use terrane_cap_web_publish::WebPublishState;
 use terrane_cap_common::CommonState;
-use terrane_cap_crdt::CrdtState;
 use terrane_cap_connection::ConnectionState;
+use terrane_cap_crdt::CrdtState;
 use terrane_cap_document::DocumentState;
 use terrane_cap_geo::GeoState;
 use terrane_cap_harness::HarnessState;
@@ -82,27 +80,29 @@ use terrane_cap_interop::InteropState;
 use terrane_cap_job_queue::JobState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_local_model::LocalModelState;
+use terrane_cap_mcp_client::McpClientState;
 use terrane_cap_media::MediaState;
 use terrane_cap_migration::MigrationState;
-use terrane_cap_mcp_client::McpClientState;
 use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
 use terrane_cap_org::OrgState;
 use terrane_cap_person::PersonState;
 use terrane_cap_presence::PresenceState;
-use terrane_cap_push::PushState;
 use terrane_cap_publish::PublishState;
+use terrane_cap_push::PushState;
 use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_share::ShareState;
+use terrane_cap_stream::StreamState;
 use terrane_cap_stt::SttState;
 use terrane_cap_sync::SyncState;
-use terrane_cap_stream::StreamState;
-use terrane_cap_time::TimeState;
 use terrane_cap_telemetry::TelemetryState;
+use terrane_cap_time::TimeState;
 use terrane_cap_tts::TtsState;
+use terrane_cap_web_publish::WebPublishState;
+use terrane_cap_webhook::WebhookState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -1092,13 +1092,7 @@ impl RuntimeHost for RuntimeResourceHost {
                     .get("telemetry")?
                     .recorded_call_per_run_limit("error"),
             )?;
-            let record = terrane_cap_telemetry::error_event(
-                &self.app,
-                source,
-                msg,
-                stack,
-                data,
-            )?;
+            let record = terrane_cap_telemetry::error_event(&self.app, source, msg, stack, data)?;
             apply(&self.registry, &mut self.state, &record)?;
             self.recorded.push(RecordedWrite {
                 record,
@@ -1114,7 +1108,10 @@ impl RuntimeHost for RuntimeResourceHost {
     }
 
     fn record_count(&self) -> usize {
-        coalesce_keys(&self.recorded).into_iter().filter(|keep| *keep).count()
+        coalesce_keys(&self.recorded)
+            .into_iter()
+            .filter(|keep| *keep)
+            .count()
     }
 }
 
@@ -1392,12 +1389,15 @@ fn restore_snapshot_sections(
     snapshot: &snapshot::SnapshotFile,
 ) -> Result<()> {
     for section in &snapshot.sections {
-        let capability = registry.caps.get(section.namespace.as_str()).ok_or_else(|| {
-            Error::Storage(format!(
-                "snapshot references unknown capability namespace: {}",
-                section.namespace
-            ))
-        })?;
+        let capability = registry
+            .caps
+            .get(section.namespace.as_str())
+            .ok_or_else(|| {
+                Error::Storage(format!(
+                    "snapshot references unknown capability namespace: {}",
+                    section.namespace
+                ))
+            })?;
         capability.restore(state, &section.payload)?;
     }
     Ok(())
@@ -1418,7 +1418,9 @@ fn snapshot_should_apply(log_path: &Path, snapshot: &snapshot::SnapshotFile) -> 
     let seq = usize::try_from(snapshot.header.seq)
         .map_err(|_| Error::Storage("snapshot seq too large".into()))?;
     if seq > archived_count {
-        return Err(Error::Storage("snapshot seq exceeds archived log length".into()));
+        return Err(Error::Storage(
+            "snapshot seq exceeds archived log length".into(),
+        ));
     }
     let live_count = read_log(log_path)?.len();
     Ok(live_count == archived_count.saturating_sub(seq))

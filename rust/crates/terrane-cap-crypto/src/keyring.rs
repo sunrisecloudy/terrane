@@ -41,7 +41,9 @@ static KEYRING: LazyLock<Mutex<HashMap<String, Session>>> =
 fn store() -> std::sync::MutexGuard<'static, HashMap<String, Session>> {
     // Poisoning only means a prior holder panicked; the map itself is still
     // consistent, so recover the guard rather than propagate the panic.
-    KEYRING.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    KEYRING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn new_session_id() -> Option<String> {

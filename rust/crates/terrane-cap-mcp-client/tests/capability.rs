@@ -18,7 +18,10 @@ fn transport_validation_preserves_secret_markers_and_redacts_plain_sensitive_val
     )
     .unwrap();
 
-    assert!(transport.contains(r#""$secret":"linear.header""#), "{transport}");
+    assert!(
+        transport.contains(r#""$secret":"linear.header""#),
+        "{transport}"
+    );
     assert!(!transport.contains("literal-secret"), "{transport}");
     assert!(transport.contains(REDACTED), "{transport}");
     assert!(transport.contains("x-trace"), "{transport}");

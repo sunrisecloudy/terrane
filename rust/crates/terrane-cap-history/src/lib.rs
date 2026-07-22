@@ -132,7 +132,9 @@ impl Capability for HistoryCapability {
                 "App-scoped history reads over the folded event-log projection.",
             )],
             subscriptions: vec![
-                EventPattern { kind: "app.removed" },
+                EventPattern {
+                    kind: "app.removed",
+                },
                 EventPattern { kind: "kv.set" },
                 EventPattern { kind: "kv.deleted" },
             ],
@@ -178,7 +180,9 @@ impl Capability for HistoryCapability {
             "list" => query_list(ctx, args),
             "key" => query_key(ctx, args),
             "at" => query_at(ctx, args),
-            other => Err(Error::InvalidInput(format!("unknown query: history.{other}"))),
+            other => Err(Error::InvalidInput(format!(
+                "unknown query: history.{other}"
+            ))),
         }
     }
 
@@ -192,7 +196,9 @@ impl Capability for HistoryCapability {
             "list" => {
                 let mut scoped = vec![ctx.app.to_string()];
                 scoped.extend(args.iter().cloned());
-                Ok(ReadValue::OptString(Some(json_for_list(ctx.state, &scoped)?)))
+                Ok(ReadValue::OptString(Some(json_for_list(
+                    ctx.state, &scoped,
+                )?)))
             }
             "key" => {
                 let key = arg(args, 0, "key")?;
@@ -205,7 +211,12 @@ impl Capability for HistoryCapability {
             "at" => {
                 let key = arg(args, 0, "key")?;
                 let seq = arg(args, 1, "seq")?;
-                let value = value_at(state_ref::<HistoryState>(ctx.state, "history")?, ctx.app, &key, parse_seq(&seq)?)?;
+                let value = value_at(
+                    state_ref::<HistoryState>(ctx.state, "history")?,
+                    ctx.app,
+                    &key,
+                    parse_seq(&seq)?,
+                )?;
                 Ok(ReadValue::OptString(value))
             }
             other => Err(Error::InvalidInput(format!(
@@ -298,7 +309,9 @@ fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
         "app.removed" => {
             let e = decode_app_removed(record)?;
             history.current_values.remove(&e.id);
-            history.records.push(generic_record(seq, record, Some(e.id), None));
+            history
+                .records
+                .push(generic_record(seq, record, Some(e.id), None));
         }
         KIND_REVERTED => {
             let e: Reverted = decode_event(record)?;
@@ -315,7 +328,9 @@ fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<()> {
             });
         }
         _ => {
-            history.records.push(generic_record(seq, record, None, None));
+            history
+                .records
+                .push(generic_record(seq, record, None, None));
         }
     }
     Ok(())
@@ -375,13 +390,7 @@ fn decide_revert(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         });
     }
     let changed_count = records.len() as u64;
-    records.push(reverted_event(
-        app,
-        to_seq,
-        scope,
-        selector,
-        changed_count,
-    )?);
+    records.push(reverted_event(app, to_seq, scope, selector, changed_count)?);
     Ok(Decision::Commit(records))
 }
 
@@ -397,7 +406,9 @@ fn keys_for_revert(
     match scope {
         "key" => {
             if selector.trim().is_empty() {
-                return Err(Error::InvalidInput("history.revert key selector must not be empty".into()));
+                return Err(Error::InvalidInput(
+                    "history.revert key selector must not be empty".into(),
+                ));
             }
             keys.insert(selector.to_string());
         }
@@ -453,7 +464,12 @@ fn query_at(ctx: QueryCtx<'_>, args: &[String]) -> Result<QueryValue> {
     ensure_app_exists(ctx.bus, &app)?;
     let key = arg(args, 1, "key")?;
     let seq = parse_seq(&arg(args, 2, "seq")?)?;
-    let value = value_at(state_ref::<HistoryState>(ctx.state, "history")?, &app, &key, seq)?;
+    let value = value_at(
+        state_ref::<HistoryState>(ctx.state, "history")?,
+        &app,
+        &key,
+        seq,
+    )?;
     Ok(QueryValue::Json(
         json!({"app": app, "key": key, "seq": seq, "value": value}).to_string(),
     ))
@@ -537,12 +553,19 @@ fn record_matches_filter(record: &HistoryRecord, filter: Option<&str>) -> bool {
         return record.kind == value;
     }
     if let Some(value) = filter.strip_prefix("key-prefix:") {
-        return record.key.as_deref().is_some_and(|key| key.starts_with(value));
+        return record
+            .key
+            .as_deref()
+            .is_some_and(|key| key.starts_with(value));
     }
     if let Some(value) = filter.strip_prefix("actor:") {
         return record.actor == value;
     }
-    record.kind == filter || record.key.as_deref().is_some_and(|key| key.starts_with(filter))
+    record.kind == filter
+        || record
+            .key
+            .as_deref()
+            .is_some_and(|key| key.starts_with(filter))
 }
 
 pub fn value_at(history: &HistoryState, app: &str, key: &str, seq: u64) -> Result<Option<String>> {

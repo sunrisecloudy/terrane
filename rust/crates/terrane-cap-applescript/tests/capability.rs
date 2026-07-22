@@ -2,8 +2,7 @@ use std::any::Any;
 
 use borsh::BorshSerialize;
 use terrane_cap_applescript::{
-    checked_event, ran_event, AppleScriptCapability, AppleScriptState, RunRecord,
-    MAX_RUNS_PER_APP,
+    checked_event, ran_event, AppleScriptCapability, AppleScriptState, RunRecord, MAX_RUNS_PER_APP,
 };
 use terrane_cap_interface::{
     encode_event, CapBus, Capability, CommandCtx, Decision, Effect, Error, QueryValue, StateStore,

@@ -1,7 +1,6 @@
 use terrane_cap_interface::{
     command_doc, event_doc, limit, param, query_doc, resource_method, CapabilityDoc,
-    CapabilityManifestDoc, ResourceDoc, ResourceMethodDoc,
-    ExampleDoc,
+    CapabilityManifestDoc, ExampleDoc, ResourceDoc, ResourceMethodDoc,
 };
 
 pub fn interop_doc(_include_internal: bool) -> CapabilityDoc {

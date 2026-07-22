@@ -202,7 +202,11 @@ fn stt_events() -> Vec<EventDoc> {
                 param("start_ms", "Start offset from session open.", "u64"),
                 param("end_ms", "End offset from session open.", "u64"),
                 param("text", "Finalized transcript text.", STR),
-                param("confidence_milli", "Confidence in thousandths, if known.", "u32?"),
+                param(
+                    "confidence_milli",
+                    "Confidence in thousandths, if known.",
+                    "u32?",
+                ),
                 param("lang", "BCP-47 language code, if known.", STR),
             ],
             "One finalized transcript segment. Applied monotonically with first-wins idempotence.",

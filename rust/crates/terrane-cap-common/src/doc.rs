@@ -7,7 +7,11 @@ fn resource_methods() -> Vec<ResourceMethodDoc> {
     let mut send = resource_method(
         "send",
         "call",
-        &[param("messageJson", "Channel-shaped outbound message JSON.", "json")],
+        &[param(
+            "messageJson",
+            "Channel-shaped outbound message JSON.",
+            "json",
+        )],
         "Validate and record an outbound channel send through the host edge.",
     );
     send.returns = "JSON { message_id, status, error? }".to_string();

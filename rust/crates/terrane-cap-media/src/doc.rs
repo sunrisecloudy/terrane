@@ -3,14 +3,18 @@ use terrane_cap_interface::{
     ExampleDoc, InternalNote, ResourceDoc,
 };
 
-use crate::{MAX_PIXEL_BUDGET, MAX_TRANSFORMS_PER_APP};
 use crate::ops::MAX_OPS;
+use crate::{MAX_PIXEL_BUDGET, MAX_TRANSFORMS_PER_APP};
 
 pub fn media_doc(include_internal: bool) -> CapabilityDoc {
     let mut info = resource_method(
         "info",
         "read",
-        &[param("blobName", "App-local blob name to probe.", "blob_name")],
+        &[param(
+            "blobName",
+            "App-local blob name to probe.",
+            "blob_name",
+        )],
         "Probe image/audio/video metadata at the live edge without recording events.",
     );
     info.returns = "JSON media metadata string.".to_string();

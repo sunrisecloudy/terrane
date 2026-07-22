@@ -60,7 +60,8 @@ fn wav_fixture() -> Option<PathBuf> {
             return Some(PathBuf::from(path));
         }
     }
-    let default = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-16k-mono.wav");
+    let default =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-16k-mono.wav");
     if default.is_file() {
         return Some(default);
     }
@@ -109,18 +110,15 @@ fn native_stt_edge_whisper_transcribes_wav_fixture() {
     assert_eq!(code, TERRANE_OK, "session begin failed");
 
     let session_id = CString::new("s-whisper-1").unwrap();
-    let code = unsafe {
-        terrane_stt_push_pcm(session_id.as_ptr(), pcm.as_ptr(), pcm.len())
-    };
+    let code = unsafe { terrane_stt_push_pcm(session_id.as_ptr(), pcm.as_ptr(), pcm.len()) };
     assert_eq!(code, TERRANE_OK, "push pcm failed");
 
     // Whisper + VAD need time to drain the full utterance on the worker thread.
     thread::sleep(Duration::from_secs(15));
 
     let reason = CString::new("stopped").unwrap();
-    let code = unsafe {
-        terrane_stt_session_end(handle, app.as_ptr(), session.as_ptr(), reason.as_ptr())
-    };
+    let code =
+        unsafe { terrane_stt_session_end(handle, app.as_ptr(), session.as_ptr(), reason.as_ptr()) };
     assert_eq!(code, TERRANE_OK, "session end failed");
 
     unsafe {

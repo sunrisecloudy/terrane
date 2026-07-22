@@ -16,18 +16,7 @@ pub use negotiate::{from_accept_language, from_preferred_list};
 /// matching seed catalog and (if regional) an alias decision in
 /// [`negotiate`]. Codes are a BCP-47 subset.
 pub const SUPPORTED: &[&str] = &[
-    "en",
-    "es",
-    "zh-Hans",
-    "ar",
-    "pt-BR",
-    "fr",
-    "de",
-    "ja",
-    "id",
-    "th-TH",
-    "ko",
-    "vi",
+    "en", "es", "zh-Hans", "ar", "pt-BR", "fr", "de", "ja", "id", "th-TH", "ko", "vi",
 ];
 
 /// The fallback code used when nothing in the request resolves. Always the

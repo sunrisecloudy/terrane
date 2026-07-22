@@ -160,12 +160,7 @@ fn rotate_if_needed(dir: &Path) -> Result<()> {
 /// Tail-read this app's log buffer, newest last, optionally filtered by level.
 /// `tail` caps the number of entries returned. Returns a JSON document
 /// `{"lines":[{"ts":...,"level":"info","msg":"…","data":"…","source":"…"}]}`.
-pub fn read_tail(
-    home: &Path,
-    app: &str,
-    level: &str,
-    tail: usize,
-) -> Result<String> {
+pub fn read_tail(home: &Path, app: &str, level: &str, tail: usize) -> Result<String> {
     let dir = app_dir(home, app);
 
     // Read oldest-first: rotated files KEEP..1 (oldest first), then current.

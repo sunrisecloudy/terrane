@@ -6,8 +6,8 @@ use std::thread;
 use std::time::Duration;
 
 use terrane_host::ffi::{
-    terrane_close, terrane_dispatch, terrane_open, terrane_stt_push_pcm,
-    terrane_stt_session_begin, terrane_stt_session_end, terrane_stt_shutdown, TERRANE_OK,
+    terrane_close, terrane_dispatch, terrane_open, terrane_stt_push_pcm, terrane_stt_session_begin,
+    terrane_stt_session_end, terrane_stt_shutdown, TERRANE_OK,
 };
 use terrane_host::stt_runner::frame_samples;
 
@@ -60,25 +60,20 @@ fn native_stt_edge_stub_records_segment_from_pcm_queue() {
 
     let app = CString::new("scribe").unwrap();
     let session = CString::new("s-edge-1").unwrap();
-    let code = unsafe {
-        terrane_stt_session_begin(handle, app.as_ptr(), session.as_ptr(), 16_000)
-    };
+    let code = unsafe { terrane_stt_session_begin(handle, app.as_ptr(), session.as_ptr(), 16_000) };
     assert_eq!(code, TERRANE_OK, "session begin failed");
 
     let mut pcm = speech_burst(6);
     pcm.extend(close_silence());
     let session_id = CString::new("s-edge-1").unwrap();
-    let code = unsafe {
-        terrane_stt_push_pcm(session_id.as_ptr(), pcm.as_ptr(), pcm.len())
-    };
+    let code = unsafe { terrane_stt_push_pcm(session_id.as_ptr(), pcm.as_ptr(), pcm.len()) };
     assert_eq!(code, TERRANE_OK, "push pcm failed");
 
     thread::sleep(Duration::from_millis(500));
 
     let reason = CString::new("stopped").unwrap();
-    let code = unsafe {
-        terrane_stt_session_end(handle, app.as_ptr(), session.as_ptr(), reason.as_ptr())
-    };
+    let code =
+        unsafe { terrane_stt_session_end(handle, app.as_ptr(), session.as_ptr(), reason.as_ptr()) };
     assert_eq!(code, TERRANE_OK, "session end failed");
 
     unsafe {
@@ -94,8 +89,17 @@ fn native_stt_edge_stub_records_segment_from_pcm_queue() {
         .get("scribe")
         .and_then(|sessions| sessions.get("s-edge-1"));
     let session = session.expect("session missing after stub capture");
-    assert!(!session.segments.is_empty(), "expected at least one segment");
-    let text = session.segments.values().next().expect("segment text").text.clone();
+    assert!(
+        !session.segments.is_empty(),
+        "expected at least one segment"
+    );
+    let text = session
+        .segments
+        .values()
+        .next()
+        .expect("segment text")
+        .text
+        .clone();
     assert!(
         text.starts_with("stub("),
         "default test must use stub ASR, got {text}"

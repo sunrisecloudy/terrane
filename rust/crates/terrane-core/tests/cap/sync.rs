@@ -106,8 +106,6 @@ fn kv_set(origin_peer: &str, origin_seq: u64, app: &str, key: &str, value: &str)
         origin_peer: origin_peer.to_string(),
         origin_seq,
         kind: "kv.set".to_string(),
-        payload: terrane_cap_kv::set_event(app, key, value)
-            .unwrap()
-            .payload,
+        payload: terrane_cap_kv::set_event(app, key, value).unwrap().payload,
     }
 }

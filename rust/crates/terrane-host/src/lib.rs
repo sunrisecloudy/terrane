@@ -26,39 +26,39 @@ use terrane_core::{
 
 pub mod app_log;
 pub mod applescript;
-pub mod automation;
 pub mod asr;
+pub mod automation;
 pub mod backup;
 pub mod blob_store;
 pub mod cap_doc;
 pub mod cli;
+pub mod deep_links;
 pub mod edge;
 pub mod ffi;
 mod geo_edge;
 pub mod home;
 pub mod i18n;
-pub mod deep_links;
 pub mod job;
 mod local_llm;
 pub mod mcp;
-mod metrics;
-mod media_edge;
 pub mod mcp_client;
+mod media_edge;
+mod metrics;
 pub mod native;
 pub mod permission;
 pub mod presence;
 pub mod preview;
-pub mod publish;
 pub mod public_authz;
+pub mod publish;
 pub mod push_watch;
 pub mod scheduler;
 pub mod secret_store;
 pub mod share;
+pub mod stream_edge;
 mod stt_edge;
 pub mod stt_runner;
-pub mod stream_edge;
-mod tts_edge;
 pub mod sync;
+mod tts_edge;
 
 pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};
 pub use home::{home_page, HomePageOptions};
@@ -333,7 +333,10 @@ pub fn ingest_webhook_on_core(
     envelope.insert("name".to_string(), serde_json::Value::String(name.clone()));
     envelope.insert("token".to_string(), serde_json::Value::String(token));
     envelope.insert("method".to_string(), serde_json::Value::String(method));
-    envelope.insert("headers".to_string(), serde_json::Value::Object(header_json));
+    envelope.insert(
+        "headers".to_string(),
+        serde_json::Value::Object(header_json),
+    );
     envelope.insert(
         "received_at".to_string(),
         serde_json::Value::Number(serde_json::Number::from(received_at)),
@@ -343,7 +346,10 @@ pub fn ingest_webhook_on_core(
     }
     match std::str::from_utf8(&body) {
         Ok(text) => {
-            envelope.insert("body".to_string(), serde_json::Value::String(text.to_string()));
+            envelope.insert(
+                "body".to_string(),
+                serde_json::Value::String(text.to_string()),
+            );
         }
         Err(_) => {
             use base64::Engine as _;
@@ -354,10 +360,8 @@ pub fn ingest_webhook_on_core(
         }
     }
     let raw = serde_json::Value::Object(envelope).to_string();
-    let outcome = dispatch_request_on_core(
-        core,
-        Request::trusted_host("webhook.ingest", vec![raw]),
-    )?;
+    let outcome =
+        dispatch_request_on_core(core, Request::trusted_host("webhook.ingest", vec![raw]))?;
     let received = outcome
         .records
         .iter()
@@ -625,7 +629,11 @@ pub fn record_interop_pick(
     dispatch_on_core(
         core,
         "interop.pick",
-        &[caller.to_string(), interface.to_string(), target.to_string()],
+        &[
+            caller.to_string(),
+            interface.to_string(),
+            target.to_string(),
+        ],
     )
     .map(|_| ())
 }
@@ -1136,8 +1144,8 @@ pub fn validate_common_api_bundle(path: &Path) -> Result<(), String> {
     )?;
     let tests_path = path.join("tests.json");
     if tests_path.exists() {
-        let tests = std::fs::read_to_string(&tests_path)
-            .map_err(|e| format!("read tests.json: {e}"))?;
+        let tests =
+            std::fs::read_to_string(&tests_path).map_err(|e| format!("read tests.json: {e}"))?;
         validate_bundle_smoke_tests_source(
             id,
             non_empty_or(manifest.name.clone(), id),
@@ -1163,17 +1171,17 @@ pub fn validate_common_api_bundle_source(
     let mut state = terrane_core::State::default();
     state.app.apps.insert(
         id.to_string(),
-            terrane_cap_app::AppRecord {
-                id: id.to_string(),
-                name,
-                source: None,
-                runtime: "js".to_string(),
-                version: terrane_cap_app::DEFAULT_VERSION.to_string(),
-                history: Vec::new(),
-                interfaces: terrane_cap_app::mandatory_interfaces(),
-                links: Vec::new(),
-            },
-        );
+        terrane_cap_app::AppRecord {
+            id: id.to_string(),
+            name,
+            source: None,
+            runtime: "js".to_string(),
+            version: terrane_cap_app::DEFAULT_VERSION.to_string(),
+            history: Vec::new(),
+            interfaces: terrane_cap_app::mandatory_interfaces(),
+            links: Vec::new(),
+        },
+    );
     let host = RuntimeHostHandle::new(Box::new(
         RuntimeResourceHost::new_with_temporary_resource_grants(
             id.to_string(),
@@ -1200,8 +1208,8 @@ pub fn validate_common_api_bundle_source(
         host.clone(),
     )
     .map_err(|e| format!("common.get bogus-id probe failed: {e}"))?;
-    let get_value: serde_json::Value =
-        serde_json::from_str(&get).map_err(|e| format!("common.get not-found must be JSON: {e}"))?;
+    let get_value: serde_json::Value = serde_json::from_str(&get)
+        .map_err(|e| format!("common.get not-found must be JSON: {e}"))?;
     let code = get_value
         .pointer("/error/code")
         .and_then(serde_json::Value::as_str)

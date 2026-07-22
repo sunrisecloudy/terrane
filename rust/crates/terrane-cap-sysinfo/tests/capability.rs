@@ -44,7 +44,10 @@ struct StubHost {
 impl LiveHost for StubHost {
     fn sample(&self, domain: &str, args: &[String]) -> Result<String> {
         *self.last.borrow_mut() = Some((domain.to_string(), args.to_vec()));
-        Ok(format!("{{\"domain\":\"{domain}\",\"args\":{}}}", args.len()))
+        Ok(format!(
+            "{{\"domain\":\"{domain}\",\"args\":{}}}",
+            args.len()
+        ))
     }
 }
 
@@ -73,7 +76,10 @@ fn read_forwards_the_domain_and_args_to_the_live_host() {
     );
     assert_eq!(
         *host.last.borrow(),
-        Some(("processes".to_string(), vec!["cpu".to_string(), "5".to_string()]))
+        Some((
+            "processes".to_string(),
+            vec!["cpu".to_string(), "5".to_string()]
+        ))
     );
 }
 
@@ -99,14 +105,23 @@ fn read_without_a_live_host_is_a_clear_error() {
 fn unknown_domain_is_rejected_before_reaching_the_host() {
     let host = StubHost::default();
     let err = read(Some(&host), "gpu", &[]).unwrap_err().to_string();
-    assert!(err.contains("unknown resource read"), "unexpected error: {err}");
-    assert!(host.last.borrow().is_none(), "unknown domain must not sample");
+    assert!(
+        err.contains("unknown resource read"),
+        "unexpected error: {err}"
+    );
+    assert!(
+        host.last.borrow().is_none(),
+        "unknown domain must not sample"
+    );
 }
 
 #[test]
 fn capability_declares_only_reads_and_no_recorded_surface() {
     let manifest = SysinfoCapability.manifest();
-    assert!(manifest.commands.is_empty(), "sysinfo must have no commands");
+    assert!(
+        manifest.commands.is_empty(),
+        "sysinfo must have no commands"
+    );
     assert!(manifest.events.is_empty(), "sysinfo must have no events");
     assert_eq!(manifest.resources.len(), DOMAINS.len());
     for method in &manifest.resources {

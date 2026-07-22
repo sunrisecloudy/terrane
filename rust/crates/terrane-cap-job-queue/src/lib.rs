@@ -15,12 +15,11 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde_json::{json, Value};
 use terrane_cap_interface::{
-    arg, command_doc, decode_app_removed, decode_event, encode_event, ensure_app_exists,
-    event_doc, limit, non_empty, param, query_doc, resource_method, state_mut, state_ref,
-    CapManifest, Capability, CapabilityDoc, CommandCtx, CommandSpec,
-    Decision, Error, EventPattern, EventRecord, EventSpec, ExampleDoc, GrantResourceSpec,
-    InternalNote, QueryCtx, QuerySpec, QueryValue, ReadValue, ResourceMethod, ResourceReadCtx,
-    Result, StateStore,
+    arg, command_doc, decode_app_removed, decode_event, encode_event, ensure_app_exists, event_doc,
+    limit, non_empty, param, query_doc, resource_method, state_mut, state_ref, CapManifest,
+    Capability, CapabilityDoc, CommandCtx, CommandSpec, Decision, Error, EventPattern, EventRecord,
+    EventSpec, ExampleDoc, GrantResourceSpec, InternalNote, QueryCtx, QuerySpec, QueryValue,
+    ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
 mod doc;
@@ -151,7 +150,11 @@ pub fn parse_retry_json(raw: &str) -> Result<RetryPolicy> {
         .as_object()
         .ok_or_else(|| Error::InvalidInput("retry_json must be a JSON object".into()))?;
     let policy = RetryPolicy {
-        max_attempts: json_u32(object.get("maxAttempts"), DEFAULT_MAX_ATTEMPTS, "maxAttempts")?,
+        max_attempts: json_u32(
+            object.get("maxAttempts"),
+            DEFAULT_MAX_ATTEMPTS,
+            "maxAttempts",
+        )?,
         base_delay_ms: json_u64(
             object.get("baseDelayMs"),
             DEFAULT_BASE_DELAY_MS,
@@ -235,19 +238,33 @@ impl Capability for JobQueueCapability {
             commands: vec![
                 CommandSpec { name: "job.submit" },
                 CommandSpec { name: "job.cancel" },
-                CommandSpec { name: "job.progress" },
+                CommandSpec {
+                    name: "job.progress",
+                },
                 CommandSpec { name: "job.start" },
                 CommandSpec { name: "job.report" },
                 CommandSpec { name: "job.reap" },
             ],
             events: vec![
-                EventSpec { kind: "job.submitted" },
-                EventSpec { kind: "job.started" },
-                EventSpec { kind: "job.progress" },
-                EventSpec { kind: "job.completed" },
+                EventSpec {
+                    kind: "job.submitted",
+                },
+                EventSpec {
+                    kind: "job.started",
+                },
+                EventSpec {
+                    kind: "job.progress",
+                },
+                EventSpec {
+                    kind: "job.completed",
+                },
                 EventSpec { kind: "job.failed" },
-                EventSpec { kind: "job.stalled" },
-                EventSpec { kind: "job.cancelled" },
+                EventSpec {
+                    kind: "job.stalled",
+                },
+                EventSpec {
+                    kind: "job.cancelled",
+                },
             ],
             queries: vec![QuerySpec { name: "job.due" }],
             resources: resource_methods(),
@@ -256,7 +273,9 @@ impl Capability for JobQueueCapability {
                 &["read", "write", "call"],
                 "Background execution of this app's own backend verbs with retries.",
             )],
-            subscriptions: vec![EventPattern { kind: "app.removed" }],
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
         }
     }
 
@@ -1004,8 +1023,7 @@ fn json_u64(value: Option<&Value>, default: u64, label: &str) -> Result<u64> {
 
 fn json_u32(value: Option<&Value>, default: u32, label: &str) -> Result<u32> {
     let value = json_u64(value, u64::from(default), label)?;
-    u32::try_from(value)
-        .map_err(|_| Error::InvalidInput(format!("retry.{label} must fit in u32")))
+    u32::try_from(value).map_err(|_| Error::InvalidInput(format!("retry.{label} must fit in u32")))
 }
 
 fn truncate_flag(raw: &str, max_bytes: usize) -> (String, bool) {
@@ -1087,15 +1105,32 @@ pub(crate) fn command_docs() -> Vec<terrane_cap_interface::CommandDoc> {
                 param("app", "Existing app id.", "app_id"),
                 param("job_id", "Edge-supplied sortable job id.", "token"),
                 param("verb", "Backend verb to run.", "token"),
-                param("args_json", "JSON string array passed after job id.", "json"),
-                param("retry_json", "Retry policy JSON, or empty for defaults.", "json"),
-                param("submitted_at", "Host-observed epoch milliseconds.", "epoch_ms"),
+                param(
+                    "args_json",
+                    "JSON string array passed after job id.",
+                    "json",
+                ),
+                param(
+                    "retry_json",
+                    "Retry policy JSON, or empty for defaults.",
+                    "json",
+                ),
+                param(
+                    "submitted_at",
+                    "Host-observed epoch milliseconds.",
+                    "epoch_ms",
+                ),
             ],
             "commit",
             "Queue one app-owned backend job.",
         )
         .with_emits(&["job.submitted"])
-        .with_errors(&["app not found", "duplicate job", "invalid retry", "too many jobs"]),
+        .with_errors(&[
+            "app not found",
+            "duplicate job",
+            "invalid retry",
+            "too many jobs",
+        ]),
         command_doc(
             "job.cancel",
             &[
@@ -1130,7 +1165,11 @@ pub(crate) fn command_docs() -> Vec<terrane_cap_interface::CommandDoc> {
                 param("app", "Owning app id.", "app_id"),
                 param("job_id", "Job id.", "token"),
                 param("attempt", "Attempt number.", "integer"),
-                param("started_at", "Host-observed epoch milliseconds.", "epoch_ms"),
+                param(
+                    "started_at",
+                    "Host-observed epoch milliseconds.",
+                    "epoch_ms",
+                ),
                 param("lease_until", "Lease deadline.", "epoch_ms"),
             ],
             "commit",
@@ -1146,8 +1185,16 @@ pub(crate) fn command_docs() -> Vec<terrane_cap_interface::CommandDoc> {
                 param("attempt", "Attempt number.", "integer"),
                 param("outcome", "completed or failed.", "enum"),
                 param("output_or_error", "Terminal output or error.", "string"),
-                param("finished_at", "Host-observed epoch milliseconds.", "epoch_ms"),
-                param("next_attempt_at", "Retry deadline or empty/null.", "epoch_ms?"),
+                param(
+                    "finished_at",
+                    "Host-observed epoch milliseconds.",
+                    "epoch_ms",
+                ),
+                param(
+                    "next_attempt_at",
+                    "Retry deadline or empty/null.",
+                    "epoch_ms?",
+                ),
             ],
             "commit",
             "Trusted host terminal report for one attempt.",
@@ -1172,7 +1219,11 @@ pub(crate) fn command_docs() -> Vec<terrane_cap_interface::CommandDoc> {
 pub(crate) fn query_docs() -> Vec<terrane_cap_interface::QueryDoc> {
     vec![query_doc(
         "job.due",
-        &[param("now_ms", "Caller-supplied epoch milliseconds.", "epoch_ms")],
+        &[param(
+            "now_ms",
+            "Caller-supplied epoch milliseconds.",
+            "epoch_ms",
+        )],
         "JSON array of due start/reap items",
         "Pure host query for queued jobs due to start and running attempts whose lease expired.",
     )
@@ -1183,15 +1234,42 @@ pub(crate) fn event_docs() -> Vec<terrane_cap_interface::EventDoc> {
     vec![
         event_doc(
             "job.submitted",
-            &[param("app", "Owning app id.", "app_id"), param("job_id", "Job id.", "token")],
+            &[
+                param("app", "Owning app id.", "app_id"),
+                param("job_id", "Job id.", "token"),
+            ],
             "Records one queued job.",
         ),
-        event_doc("job.started", &[param("job_id", "Job id.", "token")], "Attempt started."),
-        event_doc("job.progress", &[param("job_id", "Job id.", "token")], "Progress update."),
-        event_doc("job.completed", &[param("job_id", "Job id.", "token")], "Attempt completed."),
-        event_doc("job.failed", &[param("job_id", "Job id.", "token")], "Attempt failed."),
-        event_doc("job.stalled", &[param("job_id", "Job id.", "token")], "Attempt lease expired."),
-        event_doc("job.cancelled", &[param("job_id", "Job id.", "token")], "Job cancelled."),
+        event_doc(
+            "job.started",
+            &[param("job_id", "Job id.", "token")],
+            "Attempt started.",
+        ),
+        event_doc(
+            "job.progress",
+            &[param("job_id", "Job id.", "token")],
+            "Progress update.",
+        ),
+        event_doc(
+            "job.completed",
+            &[param("job_id", "Job id.", "token")],
+            "Attempt completed.",
+        ),
+        event_doc(
+            "job.failed",
+            &[param("job_id", "Job id.", "token")],
+            "Attempt failed.",
+        ),
+        event_doc(
+            "job.stalled",
+            &[param("job_id", "Job id.", "token")],
+            "Attempt lease expired.",
+        ),
+        event_doc(
+            "job.cancelled",
+            &[param("job_id", "Job id.", "token")],
+            "Job cancelled.",
+        ),
     ]
 }
 
@@ -1204,7 +1282,11 @@ pub(crate) fn resource_docs() -> Vec<terrane_cap_interface::ResourceMethodDoc> {
             param("verb", "Backend verb.", "token"),
             param("argsJson", "JSON string array.", "json"),
             param("retryJson", "Retry policy JSON.", "json"),
-            param("submittedAt", "Host-observed epoch milliseconds.", "epoch_ms"),
+            param(
+                "submittedAt",
+                "Host-observed epoch milliseconds.",
+                "epoch_ms",
+            ),
         ],
         "Queue a job and return its id.",
     );
@@ -1260,10 +1342,22 @@ pub(crate) fn constraints() -> Vec<String> {
 
 pub(crate) fn limits() -> Vec<terrane_cap_interface::LimitDoc> {
     vec![
-        limit("running", "2 per app / 8 per host", "Host worker concurrency gate."),
-        limit("non_terminal", "1000 per app", "Enforced before job.submitted."),
+        limit(
+            "running",
+            "2 per app / 8 per host",
+            "Host worker concurrency gate.",
+        ),
+        limit(
+            "non_terminal",
+            "1000 per app",
+            "Enforced before job.submitted.",
+        ),
         limit("args_json", "16 KiB", "JSON string array only."),
-        limit("output/error", "64 KiB", "Truncated before event construction."),
+        limit(
+            "output/error",
+            "64 KiB",
+            "Truncated before event construction.",
+        ),
         limit("note", "1 KiB", "Truncated before event construction."),
         limit("maxAttempts", "10", "Retry policy cap."),
         limit("maxDelayMs", "1 hour", "Retry policy cap."),

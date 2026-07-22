@@ -216,10 +216,7 @@ mod tests {
     #[test]
     fn preferred_list_resolves_in_order() {
         assert_eq!(from_preferred_list(&["fr-CA", "en-US"]), "fr");
-        assert_eq!(
-            from_preferred_list(&["zh-Hant-TW", "zh-Hans"]),
-            "zh-Hans"
-        );
+        assert_eq!(from_preferred_list(&["zh-Hant-TW", "zh-Hans"]), "zh-Hans");
         assert_eq!(from_preferred_list(&[]), DEFAULT);
         assert_eq!(from_preferred_list(&[""]), DEFAULT);
     }

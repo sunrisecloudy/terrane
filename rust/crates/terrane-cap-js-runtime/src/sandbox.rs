@@ -180,9 +180,10 @@ fn execute_migration_js(
         ctx.eval::<(), _>(script_source.as_bytes())
             .catch(&ctx)
             .map_err(|e| caught_to_err(&host, &[], e))?;
-        let migrate: Function = ctx.globals().get("migrate").map_err(|_| {
-            Error::Runtime("migration script must define migrate(ctx)".into())
-        })?;
+        let migrate: Function = ctx
+            .globals()
+            .get("migrate")
+            .map_err(|_| Error::Runtime("migration script must define migrate(ctx)".into()))?;
         let ctx_obj: Object = ctx.globals().get("ctx").map_err(js_err)?;
         let result: Value = migrate
             .call((ctx_obj,))
@@ -211,7 +212,10 @@ fn migration_resources(bundle_resources: &[String]) -> Result<Vec<String>> {
             .split_once(':')
             .map(|(ns, _)| ns)
             .unwrap_or(resource.as_str());
-        if matches!(ns, "net" | "model" | "local-model" | "browser" | "media" | "tts" | "time" | "geo" | "mcp") {
+        if matches!(
+            ns,
+            "net" | "model" | "local-model" | "browser" | "media" | "tts" | "time" | "geo" | "mcp"
+        ) {
             return Err(Error::Runtime(format!(
                 "migration scripts cannot use effectful resource {ns}"
             )));
@@ -255,7 +259,10 @@ fn install_resources(
     let surface: Vec<(String, Vec<ResourceMethod>)> = resources
         .iter()
         .filter_map(|resource| {
-            let ns = resource.split_once(':').map(|(ns, _)| ns).unwrap_or(resource);
+            let ns = resource
+                .split_once(':')
+                .map(|(ns, _)| ns)
+                .unwrap_or(resource);
             let api = install_ctx.host.resource_methods(ns).ok()?;
             (!api.is_empty()).then(|| (ns.to_string(), api))
         })
@@ -493,10 +500,7 @@ fn caught_to_err(host: &RuntimeHostHandle, input: &[String], e: CaughtError<'_>)
 }
 
 fn console_message(vals: &[Value]) -> String {
-    vals.iter()
-        .map(js_log_arg)
-        .collect::<Vec<_>>()
-        .join(" ")
+    vals.iter().map(js_log_arg).collect::<Vec<_>>().join(" ")
 }
 
 fn js_log_arg(v: &Value) -> String {
@@ -526,7 +530,11 @@ fn run_data(input: &[String]) -> String {
         .collect::<Vec<_>>()
         .join(",");
     let verb = input.first().map(|v| v.as_str()).unwrap_or("");
-    format!("{{\"verb\":\"{}\",\"input\":[{}]}}", json_escape(verb), args)
+    format!(
+        "{{\"verb\":\"{}\",\"input\":[{}]}}",
+        json_escape(verb),
+        args
+    )
 }
 
 fn json_escape(s: &str) -> String {

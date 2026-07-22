@@ -4,8 +4,8 @@
 use std::fs;
 use std::path::Path;
 
-use tempfile::tempdir;
 use std::collections::BTreeMap;
+use tempfile::tempdir;
 
 use terrane_cap_net::request::prepare_request;
 use terrane_cap_net::{fetched_event, responded_event, RecordedBody};
@@ -95,7 +95,11 @@ fn net_get_resource_returns_body_but_records_nothing() {
     let records = core
         .dispatch(req(
             "js-runtime.run",
-            &["fetcher", "get", "https://api.pwnedpasswords.com/range/ABCDE"],
+            &[
+                "fetcher",
+                "get",
+                "https://api.pwnedpasswords.com/range/ABCDE",
+            ],
         ))
         .unwrap();
 
@@ -107,7 +111,10 @@ fn net_get_resource_returns_body_but_records_nothing() {
     // …but the transient fetch records NOTHING: no event committed, and no
     // net.fetched folded into state — so the SHA-1 prefix that fetched it, and
     // the response, never enter the log.
-    assert!(records.is_empty(), "net.get must record nothing, got: {records:?}");
+    assert!(
+        records.is_empty(),
+        "net.get must record nothing, got: {records:?}"
+    );
     assert!(
         core.state().net.fetches.is_empty(),
         "net.get must not fold response into state"

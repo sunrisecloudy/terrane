@@ -44,8 +44,20 @@ pub fn call(home: &Path, state: &State, request: McpCallRequest<'_>) -> Result<V
     )
 }
 
-pub fn list_tools(home: &Path, state: &State, app: &str, connection: &str) -> Result<Vec<EventRecord>> {
-    let result = match call_inner(home, state, connection, TOOLS_LIST, "{}", terrane_cap_mcp_client::DEFAULT_TIMEOUT_MS) {
+pub fn list_tools(
+    home: &Path,
+    state: &State,
+    app: &str,
+    connection: &str,
+) -> Result<Vec<EventRecord>> {
+    let result = match call_inner(
+        home,
+        state,
+        connection,
+        TOOLS_LIST,
+        "{}",
+        terrane_cap_mcp_client::DEFAULT_TIMEOUT_MS,
+    ) {
         Ok(result) => result,
         Err(err) => McpResult {
             content: serde_json::json!({"tools":[],"error":err.to_string()}),
@@ -149,8 +161,9 @@ fn call_stdio(transport: &Value, tool: &str, args: &str, timeout_ms: u64) -> Res
     if let Some(args) = obj.get("args").and_then(Value::as_array) {
         for arg in args {
             command.arg(
-                arg.as_str()
-                    .ok_or_else(|| Error::InvalidInput("stdio args items must be strings".into()))?,
+                arg.as_str().ok_or_else(|| {
+                    Error::InvalidInput("stdio args items must be strings".into())
+                })?,
             );
         }
     }
@@ -159,7 +172,10 @@ fn call_stdio(transport: &Value, tool: &str, args: &str, timeout_ms: u64) -> Res
             command.env(name, value_to_string(value)?);
         }
     }
-    command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = command
         .spawn()
         .map_err(|e| Error::Storage(format!("spawn mcp stdio `{cmd}`: {e}")))?;
@@ -218,7 +234,9 @@ fn call_http(transport: &Value, tool: &str, args: &str, timeout_ms: u64) -> Resu
         Ok(resp) => resp,
         Err(ureq::Error::Status(_, resp)) => resp,
         Err(ureq::Error::Transport(transport)) => {
-            return Err(Error::Storage(format!("mcp http {url} failed: {transport}")))
+            return Err(Error::Storage(format!(
+                "mcp http {url} failed: {transport}"
+            )))
         }
     };
     let value: Value = serde_json::from_reader(resp.into_reader())
@@ -324,9 +342,9 @@ fn resolve_transport_secrets(home: &Path, value: &mut Value) -> Result<()> {
         Value::Object(obj) => {
             if obj.len() == 1 {
                 if let Some(secret) = obj.get("$secret") {
-                    let reference = secret
-                        .as_str()
-                        .ok_or_else(|| Error::InvalidInput("$secret value must be a string".into()))?;
+                    let reference = secret.as_str().ok_or_else(|| {
+                        Error::InvalidInput("$secret value must be a string".into())
+                    })?;
                     let (name, field) = terrane_cap_connection::split_secret_ref(reference)?;
                     *value = Value::String(crate::secret_store::get_secret(home, &name, &field)?);
                     return Ok(());
@@ -382,15 +400,21 @@ fn called_at() -> Result<String> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| Error::Storage(format!("system clock before Unix epoch: {e}")))?;
-    Ok(format!("{}.{:03}Z", duration.as_secs(), duration.subsec_millis()))
+    Ok(format!(
+        "{}.{:03}Z",
+        duration.as_secs(),
+        duration.subsec_millis()
+    ))
 }
 
 fn validate_http_target(url: &str) -> Result<()> {
-    let (scheme, rest) = url
-        .split_once("://")
-        .ok_or_else(|| Error::InvalidInput("mcp http URL must include http:// or https://".into()))?;
+    let (scheme, rest) = url.split_once("://").ok_or_else(|| {
+        Error::InvalidInput("mcp http URL must include http:// or https://".into())
+    })?;
     if !matches!(scheme, "http" | "https") {
-        return Err(Error::InvalidInput("mcp http URL must be http or https".into()));
+        return Err(Error::InvalidInput(
+            "mcp http URL must be http or https".into(),
+        ));
     }
     let host_port = rest
         .split(['/', '?', '#'])

@@ -170,11 +170,7 @@ impl Capability for MigrationCapability {
         ctx.host.write_resource(
             "migration",
             "commit",
-            &[
-                from.to_string(),
-                to.to_string(),
-                script_hash,
-            ],
+            &[from.to_string(), to.to_string(), script_hash],
         )?;
         let count = ctx.host.record_count();
         if count > MAX_RECORDED_EVENTS_PER_STEP {
@@ -189,8 +185,9 @@ impl Capability for MigrationCapability {
 fn migration_resources(ctx: &RuntimeCtx) -> Result<Vec<String>> {
     match &ctx.source_files {
         Some(files) => Ok(terrane_cap_js_runtime::read_manifest_from_files(files)?.resources),
-        None => Ok(terrane_cap_js_runtime::read_manifest(std::path::Path::new(&ctx.source))?
-            .resources),
+        None => {
+            Ok(terrane_cap_js_runtime::read_manifest(std::path::Path::new(&ctx.source))?.resources)
+        }
     }
 }
 

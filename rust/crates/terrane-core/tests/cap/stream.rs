@@ -16,7 +16,8 @@ fn stream_open_redacts_request_and_replays() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
-    core.dispatch(req("app.add", &["prices", "Prices"])).unwrap();
+    core.dispatch(req("app.add", &["prices", "Prices"]))
+        .unwrap();
 
     let records = core
         .dispatch(req(
@@ -37,7 +38,10 @@ fn stream_open_redacts_request_and_replays() {
     assert!(meta.request_json_redacted.contains("«redacted»"));
     assert!(!meta.request_json_redacted.contains("Bearer raw"));
     assert!(core.replay_matches().unwrap());
-    assert_eq!(Core::open(&log).unwrap().state().stream, core.state().stream);
+    assert_eq!(
+        Core::open(&log).unwrap().state().stream,
+        core.state().stream
+    );
 }
 
 #[test]
@@ -45,13 +49,16 @@ fn stream_messages_are_monotonic_and_replay_identically() {
     let dir = tempdir().unwrap();
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
-    core.dispatch(req("app.add", &["prices", "Prices"])).unwrap();
+    core.dispatch(req("app.add", &["prices", "Prices"]))
+        .unwrap();
     open_stream(&mut core, "prices", "btc");
 
     let hash = terrane_cap_stream::sha256_hex(b"tick");
     core.dispatch(req(
         "stream.message",
-        &["prices", "btc", "1", "inline", "tick", "false", &hash, "4", "1000"],
+        &[
+            "prices", "btc", "1", "inline", "tick", "false", &hash, "4", "1000",
+        ],
     ))
     .unwrap();
     assert_eq!(core.state().stream.streams["prices"]["btc"].last_seq, 1);
@@ -60,20 +67,26 @@ fn stream_messages_are_monotonic_and_replay_identically() {
     let err = core
         .dispatch(req(
             "stream.message",
-            &["prices", "btc", "1", "inline", "again", "false", &hash, "5", "1001"],
+            &[
+                "prices", "btc", "1", "inline", "again", "false", &hash, "5", "1001",
+            ],
         ))
         .unwrap_err()
         .to_string();
     assert!(err.contains("seq regression"), "{err}");
     assert!(core.replay_matches().unwrap());
-    assert_eq!(Core::open(&log).unwrap().state().stream, core.state().stream);
+    assert_eq!(
+        Core::open(&log).unwrap().state().stream,
+        core.state().stream
+    );
 }
 
 #[test]
 fn stream_reopened_and_closed_fold_without_restreaming() {
     let dir = tempdir().unwrap();
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
-    core.dispatch(req("app.add", &["prices", "Prices"])).unwrap();
+    core.dispatch(req("app.add", &["prices", "Prices"]))
+        .unwrap();
     open_stream(&mut core, "prices", "btc");
     core.dispatch(req("stream.reopened", &["prices", "btc", "0", "1"]))
         .unwrap();
@@ -89,12 +102,18 @@ fn stream_reopened_and_closed_fold_without_restreaming() {
 fn stream_validation_and_trusted_ingest_errors_are_typed() {
     let dir = tempdir().unwrap();
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
-    core.dispatch(req("app.add", &["prices", "Prices"])).unwrap();
+    core.dispatch(req("app.add", &["prices", "Prices"]))
+        .unwrap();
 
     let err = core
         .dispatch(req(
             "stream.open",
-            &["prices", "BadName", "onMessage", r#"{"kind":"sse","url":"https://example.test"}"#],
+            &[
+                "prices",
+                "BadName",
+                "onMessage",
+                r#"{"kind":"sse","url":"https://example.test"}"#,
+            ],
         ))
         .unwrap_err()
         .to_string();
@@ -103,7 +122,12 @@ fn stream_validation_and_trusted_ingest_errors_are_typed() {
     let err = core
         .dispatch(req(
             "stream.open",
-            &["prices", "bad", "onMessage", r#"{"kind":"ws","url":"https://example.test"}"#],
+            &[
+                "prices",
+                "bad",
+                "onMessage",
+                r#"{"kind":"ws","url":"https://example.test"}"#,
+            ],
         ))
         .unwrap_err()
         .to_string();
@@ -114,7 +138,9 @@ fn stream_validation_and_trusted_ingest_errors_are_typed() {
     let err = core
         .dispatch(public_req(
             "stream.message",
-            &["prices", "btc", "1", "inline", "tick", "false", &hash, "4", "1000"],
+            &[
+                "prices", "btc", "1", "inline", "tick", "false", &hash, "4", "1000",
+            ],
         ))
         .unwrap_err()
         .to_string();
@@ -125,12 +151,15 @@ fn stream_validation_and_trusted_ingest_errors_are_typed() {
 fn stream_app_removed_drops_state() {
     let dir = tempdir().unwrap();
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
-    core.dispatch(req("app.add", &["prices", "Prices"])).unwrap();
+    core.dispatch(req("app.add", &["prices", "Prices"]))
+        .unwrap();
     open_stream(&mut core, "prices", "btc");
     let hash = terrane_cap_stream::sha256_hex(b"tick");
     core.dispatch(req(
         "stream.message",
-        &["prices", "btc", "1", "inline", "tick", "false", &hash, "4", "1000"],
+        &[
+            "prices", "btc", "1", "inline", "tick", "false", &hash, "4", "1000",
+        ],
     ))
     .unwrap();
 
@@ -144,7 +173,8 @@ fn stream_app_removed_drops_state() {
 fn stream_open_limit_is_enforced() {
     let dir = tempdir().unwrap();
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
-    core.dispatch(req("app.add", &["prices", "Prices"])).unwrap();
+    core.dispatch(req("app.add", &["prices", "Prices"]))
+        .unwrap();
     for i in 0..terrane_cap_stream::MAX_OPEN_STREAMS_PER_APP {
         open_stream(&mut core, "prices", &format!("s{i}"));
     }

@@ -130,13 +130,18 @@ impl Capability for PushCapability {
 
 pub fn matches_pattern(pattern: &str, kind: &str) -> bool {
     if let Some(ns) = pattern.strip_suffix(".*") {
-        kind.strip_prefix(ns).is_some_and(|tail| tail.starts_with('.'))
+        kind.strip_prefix(ns)
+            .is_some_and(|tail| tail.starts_with('.'))
     } else {
         pattern == kind
     }
 }
 
-pub fn render_template(template: &str, record: &EventRecord, describe: Option<&str>) -> Result<(String, String)> {
+pub fn render_template(
+    template: &str,
+    record: &EventRecord,
+    describe: Option<&str>,
+) -> Result<(String, String)> {
     let payload = payload_json(record);
     let rendered = render_string(template, record, describe, payload.as_ref())?;
     let (title, body) = rendered
@@ -198,7 +203,9 @@ fn payload_json(record: &EventRecord) -> Option<Value> {
                 value: String,
             }
             let decoded: KvSet = terrane_cap_interface::decode_event(record).ok()?;
-            Some(serde_json::json!({"app": decoded.app, "key": decoded.key, "value": decoded.value}))
+            Some(
+                serde_json::json!({"app": decoded.app, "key": decoded.key, "value": decoded.value}),
+            )
         }
         "kv.deleted" => {
             #[derive(borsh::BorshDeserialize)]

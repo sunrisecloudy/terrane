@@ -28,14 +28,11 @@ pub fn render(
     rate_milli: u32,
 ) -> Result<Vec<EventRecord>> {
     ensure_macos("tts.render")?;
-    let dir = tempfile::tempdir()
-        .map_err(|e| Error::Storage(format!("create tts temp dir: {e}")))?;
+    let dir =
+        tempfile::tempdir().map_err(|e| Error::Storage(format!("create tts temp dir: {e}")))?;
     let out_path = dir.path().join("tts.wav");
     let mut command = say_command(text, voice, rate_milli);
-    command
-        .arg("-o")
-        .arg(&out_path)
-        .arg("--data-format=LEI16");
+    command.arg("-o").arg(&out_path).arg("--data-format=LEI16");
     let status = command
         .status()
         .map_err(|e| Error::Storage(format!("run /usr/bin/say: {e}")))?;
@@ -92,8 +89,7 @@ pub fn voices_json() -> Result<String> {
         .lines()
         .filter_map(parse_voice_line)
         .collect::<Vec<_>>();
-    serde_json::to_string(&voices)
-        .map_err(|e| Error::Runtime(format!("encode tts voices: {e}")))
+    serde_json::to_string(&voices).map_err(|e| Error::Runtime(format!("encode tts voices: {e}")))
 }
 
 fn say_command(text: &str, voice: Option<&str>, rate_milli: u32) -> Command {
@@ -101,7 +97,9 @@ fn say_command(text: &str, voice: Option<&str>, rate_milli: u32) -> Command {
     if let Some(voice) = voice {
         command.arg("-v").arg(voice);
     }
-    command.arg("-r").arg(words_per_minute(rate_milli).to_string());
+    command
+        .arg("-r")
+        .arg(words_per_minute(rate_milli).to_string());
     command.arg(text);
     command
 }

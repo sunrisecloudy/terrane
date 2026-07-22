@@ -53,18 +53,14 @@ fn two_apps_call_each_other_and_resolve_item_uri() {
     for (id, path) in [("target-app", &target), ("caller-app", &caller)] {
         let (ok, _, err) = terrane(
             home,
-            &[
-                "app",
-                "add",
-                id,
-                id,
-                "--source",
-                path.to_str().unwrap(),
-            ],
+            &["app", "add", id, id, "--source", path.to_str().unwrap()],
         );
         assert!(ok, "app add {id} failed: {err}");
     }
-    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "target-app", "kv"]);
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "target-app", "kv"],
+    );
     assert!(ok, "grant target kv failed: {err}");
     let (ok, _, err) = terrane(
         home,
@@ -90,7 +86,10 @@ fn two_apps_call_each_other_and_resolve_item_uri() {
 
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
-    assert!(log.contains("interop.called caller-app -> target-app common.get"), "log: {log}");
+    assert!(
+        log.contains("interop.called caller-app -> target-app common.get"),
+        "log: {log}"
+    );
 }
 
 #[test]
@@ -161,7 +160,10 @@ fn interop_send_picks_default_target_then_delivers_to_receive() {
         home,
         &["js-runtime", "run", "sender-app", "ship", "text", "hi"],
     );
-    assert!(!ok, "send should raise the picker before a target is chosen");
+    assert!(
+        !ok,
+        "send should raise the picker before a target is chosen"
+    );
     assert!(err.contains("interop_pick_required:"), "err: {err}");
     assert!(err.contains("mailbox-app"), "picker candidates: {err}");
 

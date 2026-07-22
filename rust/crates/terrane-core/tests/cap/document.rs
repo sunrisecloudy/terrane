@@ -37,20 +37,14 @@ fn document_create_patch_append_delete_replays_identically() {
         ],
     ))
     .unwrap();
-    core.dispatch(req(
-        "document.append",
-        &["notes", "daily-1", "\nDone."],
-    ))
-    .unwrap();
+    core.dispatch(req("document.append", &["notes", "daily-1", "\nDone."]))
+        .unwrap();
 
     let doc = &core.state().document.docs["notes"]["daily-1"];
     assert_eq!(doc.title, "Daily updated");
     assert_eq!(doc.body, "# Daily\n\nDone.");
     let metadata: serde_json::Value = serde_json::from_str(&doc.metadata_json).unwrap();
-    assert_eq!(
-        metadata,
-        json!({"status":"ready","tags":["work"]})
-    );
+    assert_eq!(metadata, json!({"status":"ready","tags":["work"]}));
     assert!(core.replay_matches().unwrap());
     assert_eq!(
         Core::open(&log).unwrap().state().document,
@@ -104,10 +98,7 @@ fn document_validation_errors_are_typed() {
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
 
     assert!(matches!(
-        core.dispatch(req(
-            "document.create",
-            &["notes", "-bad", "Bad", "", "{}"]
-        )),
+        core.dispatch(req("document.create", &["notes", "-bad", "Bad", "", "{}"])),
         Err(Error::InvalidInput(_))
     ));
     assert!(matches!(

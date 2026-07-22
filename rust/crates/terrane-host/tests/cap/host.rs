@@ -163,19 +163,26 @@ fn scribe_app_reads_transcript_and_records_selection() {
     let home = dir.path();
     let src = app_source("scribe");
 
+    let (ok, _, err) = terrane(home, &["app", "add", "scribe", "Scribe", "--source", &src]);
+    assert!(ok, "app add failed: {err}");
     let (ok, _, err) = terrane(
         home,
-        &["app", "add", "scribe", "Scribe", "--source", &src],
+        &["auth", "grant", "user:local-owner", "scribe", "stt"],
     );
-    assert!(ok, "app add failed: {err}");
-    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "scribe", "stt"]);
     assert!(ok, "auth grant failed: {err}");
 
     // Host edge: open a session, append two finalized segments.
     let (ok, out, err) = terrane(
         home,
         &[
-            "stt", "open", "scribe", "s1", "host1", "host1", "whisper-tiny", "16000",
+            "stt",
+            "open",
+            "scribe",
+            "s1",
+            "host1",
+            "host1",
+            "whisper-tiny",
+            "16000",
         ],
     );
     assert!(ok, "stt open failed: {err}");
@@ -187,9 +194,7 @@ fn scribe_app_reads_transcript_and_records_selection() {
     assert!(ok, "stt append 1 failed: {err}");
     let (ok, _, err) = terrane(
         home,
-        &[
-            "stt", "append", "scribe", "s1", "2", "500", "900", "world",
-        ],
+        &["stt", "append", "scribe", "s1", "2", "500", "900", "world"],
     );
     assert!(ok, "stt append 2 failed: {err}");
 
@@ -202,7 +207,14 @@ fn scribe_app_reads_transcript_and_records_selection() {
     let (ok, out, err) = terrane(
         home,
         &[
-            "js-runtime", "run", "scribe", "select", "s1", "1", "2", "clipboard",
+            "js-runtime",
+            "run",
+            "scribe",
+            "select",
+            "s1",
+            "1",
+            "2",
+            "clipboard",
         ],
     );
     assert!(ok, "select failed: {err}");

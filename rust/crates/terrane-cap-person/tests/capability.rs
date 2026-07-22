@@ -146,13 +146,24 @@ fn rotate_accepts_old_key_signature_and_rejects_bad_signature() {
     cap.fold(&mut store, &created_event(&old_pubkey).unwrap())
         .unwrap();
 
-    let bad_sig = hex(&new.sign(&rotation_message(&person_id, &new_pubkey).unwrap()).to_bytes());
+    let bad_sig = hex(&new
+        .sign(&rotation_message(&person_id, &new_pubkey).unwrap())
+        .to_bytes());
     let bad = rotated_event(&person_id, &new_pubkey, &bad_sig).unwrap();
-    assert!(cap.fold(&mut store, &bad).unwrap_err().to_string().contains("signature"));
+    assert!(cap
+        .fold(&mut store, &bad)
+        .unwrap_err()
+        .to_string()
+        .contains("signature"));
 
-    let sig = hex(&old.sign(&rotation_message(&person_id, &new_pubkey).unwrap()).to_bytes());
-    cap.fold(&mut store, &rotated_event(&person_id, &new_pubkey, &sig).unwrap())
-        .unwrap();
+    let sig = hex(&old
+        .sign(&rotation_message(&person_id, &new_pubkey).unwrap())
+        .to_bytes());
+    cap.fold(
+        &mut store,
+        &rotated_event(&person_id, &new_pubkey, &sig).unwrap(),
+    )
+    .unwrap();
     assert_eq!(store.person.persons[&person_id].pubkey, new_pubkey);
     assert_eq!(
         store.person.persons[&person_id].rotated_to.as_deref(),
@@ -179,7 +190,8 @@ fn validation_errors_are_typed() {
     let signing = key(10);
     let pubkey = hex(signing.verifying_key().as_bytes());
     let mut store = Store::default();
-    cap.fold(&mut store, &created_event(&pubkey).unwrap()).unwrap();
+    cap.fold(&mut store, &created_event(&pubkey).unwrap())
+        .unwrap();
     let person_id = person_id_for_pubkey(&pubkey).unwrap();
     assert!(cap
         .decide(

@@ -138,7 +138,9 @@ impl Capability for MediaCapability {
             }
             "app.removed" => {
                 let e = decode_app_removed(record)?;
-                state_mut::<MediaState>(state, "media")?.transforms.remove(&e.id);
+                state_mut::<MediaState>(state, "media")?
+                    .transforms
+                    .remove(&e.id);
             }
             _ => {}
         }

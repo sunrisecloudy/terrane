@@ -4,7 +4,7 @@ use terrane_cap_interface::{
     StateStore,
 };
 
-use crate::types::{AppleScriptState, MAX_RUNS_PER_APP, RunRecord};
+use crate::types::{AppleScriptState, RunRecord, MAX_RUNS_PER_APP};
 
 #[derive(BorshSerialize, BorshDeserialize)]
 pub(crate) struct Ran {
@@ -151,7 +151,13 @@ pub fn runs_json_for_app(state: &dyn StateStore, app: &str) -> Result<String> {
     Ok(json_run_records(&runs))
 }
 
-fn json_run_result(ok: bool, output: &str, error: &str, exit_code: i32, duration_ms: u64) -> String {
+fn json_run_result(
+    ok: bool,
+    output: &str,
+    error: &str,
+    exit_code: i32,
+    duration_ms: u64,
+) -> String {
     format!(
         "{{\"ok\":{},\"output\":{},\"error\":{},\"exitCode\":{},\"durationMs\":{}}}",
         json_bool(ok),
@@ -189,7 +195,11 @@ fn json_run_records(runs: &[RunRecord]) -> String {
 }
 
 fn json_bool(v: bool) -> &'static str {
-    if v { "true" } else { "false" }
+    if v {
+        "true"
+    } else {
+        "false"
+    }
 }
 
 fn json_string(s: &str) -> String {

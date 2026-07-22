@@ -123,8 +123,7 @@ impl Capability for ModelCapability {
                     return Err(Error::InvalidInput("prompt must not be empty".into()));
                 }
                 enforce_spend_limit(ctx.state, &app)?;
-                let (prompt, image_parts) =
-                    normalize_prompt_json(ctx.state, &app, &prompt, true)?;
+                let (prompt, image_parts) = normalize_prompt_json(ctx.state, &app, &prompt, true)?;
                 Ok(Decision::Effect(Effect::ModelCall {
                     app,
                     agent,
@@ -272,7 +271,9 @@ fn normalize_prompt(
         reject_inline_bytes(part_obj)?;
         if let Some(text) = part_obj.get("text") {
             if !text.is_string() {
-                return Err(Error::InvalidInput("model text part must be a string".into()));
+                return Err(Error::InvalidInput(
+                    "model text part must be a string".into(),
+                ));
             }
             continue;
         }
@@ -310,11 +311,7 @@ fn normalize_prompt(
     })
 }
 
-fn image_part_from_blob(
-    state: &dyn StateStore,
-    app: &str,
-    blob: &Value,
-) -> Result<ModelImagePart> {
+fn image_part_from_blob(state: &dyn StateStore, app: &str, blob: &Value) -> Result<ModelImagePart> {
     if let Some(name) = blob.as_str() {
         let meta = state_ref::<BlobState>(state, "blob")?
             .blobs
@@ -339,7 +336,10 @@ fn image_part_from_blob(
         .and_then(Value::as_u64)
         .ok_or_else(|| Error::InvalidInput("model blob part size must be a u64".into()))?;
     let mime = string_member(obj, "mime")?;
-    let name = obj.get("name").and_then(Value::as_str).map(ToString::to_string);
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
     Ok(ModelImagePart {
         name,
         hash,

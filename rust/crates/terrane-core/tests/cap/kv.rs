@@ -1,9 +1,9 @@
 //! Engine tests for the `kv` capability, including the broadcast-fold cascade.
 
 use tempfile::tempdir;
+use terrane_cap_kv::DEFAULT_KV_STORAGE_PATH;
 use terrane_cap_kv::{KvStorageBackend, KvStorageBinding, PUBLIC_BUCKET_APP_ID};
 use terrane_core::{Core, Error, ExecutionPrincipal, ReadValue, RuntimeHost, RuntimeResourceHost};
-use terrane_cap_kv::DEFAULT_KV_STORAGE_PATH;
 
 use crate::helpers::{public_req, req};
 
@@ -176,7 +176,10 @@ fn public_rm_missing_key_errors() {
 
     assert_eq!(
         core.dispatch(req("kv.public.rm", &["ghost"])),
-        Err(Error::KeyNotFound(PUBLIC_BUCKET_APP_ID.into(), "ghost".into()))
+        Err(Error::KeyNotFound(
+            PUBLIC_BUCKET_APP_ID.into(),
+            "ghost".into()
+        ))
     );
 }
 
@@ -188,8 +191,11 @@ fn public_replay_matches_and_reopens_identically() {
 
     core.dispatch(req("kv.public.set", &["i18n/en/system.hello", "Hello"]))
         .unwrap();
-    core.dispatch(req("kv.public.import", &[r#"{"i18n/es/a":"x","i18n/de/a":"y"}"#]))
-        .unwrap();
+    core.dispatch(req(
+        "kv.public.import",
+        &[r#"{"i18n/es/a":"x","i18n/de/a":"y"}"#],
+    ))
+    .unwrap();
     core.dispatch(req("kv.public.rm", &["i18n/de/a"])).unwrap();
 
     assert!(core.replay_matches().unwrap());
@@ -224,7 +230,8 @@ fn public_survives_app_removed_cascade() {
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
 
-    core.dispatch(req("kv.public.set", &["shared", "v"])).unwrap();
+    core.dispatch(req("kv.public.set", &["shared", "v"]))
+        .unwrap();
     core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
     core.dispatch(req("kv.set", &["notes", "theme", "dark"]))
         .unwrap();
@@ -267,13 +274,7 @@ fn public_projected_to_default_sqlite_backend() {
     let sqlite_path = home.join(DEFAULT_KV_STORAGE_PATH);
     assert!(sqlite_path.is_file(), "default sqlite projection exists");
     let rows = sqlite_rows(&sqlite_path, PUBLIC_BUCKET_APP_ID);
-    assert_eq!(
-        rows,
-        vec![(
-            "i18n/en/system.hello".into(),
-            "Hello".into()
-        )]
-    );
+    assert_eq!(rows, vec![("i18n/en/system.hello".into(), "Hello".into())]);
 }
 
 #[test]

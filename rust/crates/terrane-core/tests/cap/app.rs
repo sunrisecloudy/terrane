@@ -1,8 +1,8 @@
 //! Engine tests for the `app` capability (and core dispatch/routing).
 
 use tempfile::tempdir;
-use terrane_core::{Core, Effect, EffectRunner, EventRecord, Result};
 use terrane_core::Error;
+use terrane_core::{Core, Effect, EffectRunner, EventRecord, Result};
 
 use crate::helpers::req;
 
@@ -83,8 +83,7 @@ fn upgrade_effect_batch_replays_identically() {
         terrane_cap_kv::delete_event("notes", "__terrane/app-bundle/old.js").unwrap(),
     ];
     let mut core = Core::open_with(&log, UpgradeBatch { records: batch }).unwrap();
-    core.dispatch(req("app.add", &["notes", "Notes"]))
-        .unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
     core.dispatch(req("app.upgrade", &["notes", "/tmp/notes-v2"]))
         .unwrap();
 

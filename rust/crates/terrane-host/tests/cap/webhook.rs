@@ -14,7 +14,10 @@ fn webhook_cli_register_rotate_and_list_routes() {
         &["webhook", "register", "receiver", "github", "receive"],
     );
     assert!(ok, "webhook register failed: {err}");
-    assert!(out.contains(r#""url_path":"/hook/receiver/github/"#), "out: {out}");
+    assert!(
+        out.contains(r#""url_path":"/hook/receiver/github/"#),
+        "out: {out}"
+    );
     assert!(
         out.contains("deliveries arrive only while a listening Terrane web/mac host is running"),
         "out: {out}"

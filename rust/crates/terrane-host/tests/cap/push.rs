@@ -10,12 +10,8 @@ fn push_delivery_queues_native_notification_and_records_outcome() {
     let mut core = open_at_home(dir.path()).unwrap();
 
     observe_notifications(&mut core);
-    terrane_host::dispatch_on_core(
-        &mut core,
-        "app.add",
-        &["notes".into(), "Notes".into()],
-    )
-    .unwrap();
+    terrane_host::dispatch_on_core(&mut core, "app.add", &["notes".into(), "Notes".into()])
+        .unwrap();
     terrane_host::dispatch_on_core(
         &mut core,
         "push.subscribe",
@@ -51,16 +47,17 @@ fn push_delivery_is_deduped_for_same_record() {
     let mut core = open_at_home(dir.path()).unwrap();
 
     observe_notifications(&mut core);
-    terrane_host::dispatch_on_core(
-        &mut core,
-        "app.add",
-        &["notes".into(), "Notes".into()],
-    )
-    .unwrap();
+    terrane_host::dispatch_on_core(&mut core, "app.add", &["notes".into(), "Notes".into()])
+        .unwrap();
     terrane_host::dispatch_on_core(
         &mut core,
         "push.subscribe",
-        &["notes".into(), "kv.*".into(), "Changed".into(), "sub-1".into()],
+        &[
+            "notes".into(),
+            "kv.*".into(),
+            "Changed".into(),
+            "sub-1".into(),
+        ],
     )
     .unwrap();
     let records = terrane_host::dispatch_on_core(
@@ -88,12 +85,7 @@ fn synced_push_subscription_delivers_on_target_home() {
 
     for core in [&mut a, &mut b] {
         observe_notifications(core);
-        terrane_host::dispatch_on_core(
-            core,
-            "app.add",
-            &["notes".into(), "Notes".into()],
-        )
-        .unwrap();
+        terrane_host::dispatch_on_core(core, "app.add", &["notes".into(), "Notes".into()]).unwrap();
     }
 
     let a_peer = sync::local_peer_hex(&a).unwrap();
@@ -104,7 +96,12 @@ fn synced_push_subscription_delivers_on_target_home() {
     terrane_host::dispatch_on_core(
         &mut a,
         "push.subscribe",
-        &["notes".into(), "kv.*".into(), "Changed {key}".into(), "sub-1".into()],
+        &[
+            "notes".into(),
+            "kv.*".into(),
+            "Changed {key}".into(),
+            "sub-1".into(),
+        ],
     )
     .unwrap();
     let batch = sync::event_batch_since(&a, "notes", 0).unwrap();
@@ -117,7 +114,10 @@ fn synced_push_subscription_delivers_on_target_home() {
         &["notes".into(), "theme".into(), "dark".into()],
     )
     .unwrap();
-    let cursor = match b.query("sync", "cursor", &[a_peer, "notes".into()]).unwrap() {
+    let cursor = match b
+        .query("sync", "cursor", &[a_peer, "notes".into()])
+        .unwrap()
+    {
         terrane_core::QueryValue::U64(Some(value)) => value,
         _ => 0,
     };

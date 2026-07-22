@@ -1,6 +1,4 @@
-use terrane_cap_interface::{
-    arg, Error, ReadValue, ResourceMethod, ResourceReadCtx, Result,
-};
+use terrane_cap_interface::{arg, Error, ReadValue, ResourceMethod, ResourceReadCtx, Result};
 
 use crate::types::{document_list_json, export_markdown, get_document_json};
 
@@ -41,7 +39,9 @@ pub(crate) fn read(ctx: ResourceReadCtx<'_>, name: &str, args: &[String]) -> Res
     match name {
         "get" => {
             let id = arg(args, 0, "id")?;
-            Ok(ReadValue::OptString(get_document_json(ctx.state, ctx.app, &id)?))
+            Ok(ReadValue::OptString(get_document_json(
+                ctx.state, ctx.app, &id,
+            )?))
         }
         "list" => Ok(ReadValue::OptString(Some(document_list_json(
             ctx.state, ctx.app,

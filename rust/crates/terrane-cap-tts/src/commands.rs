@@ -86,7 +86,9 @@ fn parse_args(
 
 fn validate_text(text: &str, command: &str) -> Result<()> {
     if text.trim().is_empty() {
-        return Err(Error::InvalidInput(format!("{command} text must not be empty")));
+        return Err(Error::InvalidInput(format!(
+            "{command} text must not be empty"
+        )));
     }
     if text.len() > MAX_TEXT_BYTES {
         return Err(Error::InvalidInput(format!(
@@ -114,8 +116,11 @@ fn parse_rate_milli(raw: &str) -> Result<u32> {
     let value = if let Some((whole, frac)) = raw.split_once('.') {
         parse_decimal_rate(whole, frac, raw)?
     } else {
-        raw.parse::<u32>()
-            .map_err(|_| Error::InvalidInput(format!("rate must be 500-2000 milli or 0.5-2.0, got {raw:?}")))?
+        raw.parse::<u32>().map_err(|_| {
+            Error::InvalidInput(format!(
+                "rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"
+            ))
+        })?
     };
     if !(MIN_RATE_MILLI..=MAX_RATE_MILLI).contains(&value) {
         return Err(Error::InvalidInput(format!(
@@ -131,13 +136,17 @@ fn parse_decimal_rate(whole: &str, frac: &str, raw: &str) -> Result<u32> {
             "rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"
         )));
     }
-    let whole = whole
-        .parse::<u32>()
-        .map_err(|_| Error::InvalidInput(format!("rate must be 500-2000 milli or 0.5-2.0, got {raw:?}")))?;
+    let whole = whole.parse::<u32>().map_err(|_| {
+        Error::InvalidInput(format!(
+            "rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"
+        ))
+    })?;
     let frac_len = frac.len();
-    let frac = frac
-        .parse::<u32>()
-        .map_err(|_| Error::InvalidInput(format!("rate must be 500-2000 milli or 0.5-2.0, got {raw:?}")))?;
+    let frac = frac.parse::<u32>().map_err(|_| {
+        Error::InvalidInput(format!(
+            "rate must be 500-2000 milli or 0.5-2.0, got {raw:?}"
+        ))
+    })?;
     let scale = 10u32.pow(u32::try_from(frac_len).unwrap_or(3));
     Ok(whole * 1000 + (frac * 1000) / scale)
 }

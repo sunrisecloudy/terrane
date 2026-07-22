@@ -107,7 +107,9 @@ impl Capability for WebPublishCapability {
             }],
             resources: Vec::new(),
             grant_resources: Vec::new(),
-            subscriptions: vec![EventPattern { kind: "app.removed" }],
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
         }
     }
 

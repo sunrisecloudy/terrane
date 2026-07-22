@@ -194,9 +194,9 @@ fn run_opencode(workdir: &Path, model: &str, prompt: &str) -> Result<String, Str
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let mut child = command.spawn().map_err(|e| {
-        format!("could not launch opencode (is it installed and on PATH?): {e}")
-    })?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("could not launch opencode (is it installed and on PATH?): {e}"))?;
 
     let mut stdout_pipe = child
         .stdout

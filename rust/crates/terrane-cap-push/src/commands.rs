@@ -5,8 +5,7 @@ use terrane_cap_interface::{
 
 use crate::events::{delivered_event, failed_event, subscribed_event, unsubscribed_event};
 use crate::types::{
-    PushState, MAX_DETAIL_BYTES, MAX_PATTERN_BYTES, MAX_SUBSCRIPTIONS_PER_APP,
-    MAX_TEMPLATE_BYTES,
+    PushState, MAX_DETAIL_BYTES, MAX_PATTERN_BYTES, MAX_SUBSCRIPTIONS_PER_APP, MAX_TEMPLATE_BYTES,
 };
 
 pub(crate) fn decide(ctx: CommandCtx<'_>, name: &str, args: &[String]) -> Result<Decision> {
@@ -30,7 +29,9 @@ fn decide_subscribe(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let state = state_ref::<PushState>(ctx.state, "push")?;
     let existing = state.subscriptions.get(&app);
     let replaces_existing = existing.is_some_and(|subs| subs.contains_key(&sub_id));
-    if !replaces_existing && existing.map(|subs| subs.len()).unwrap_or_default() >= MAX_SUBSCRIPTIONS_PER_APP {
+    if !replaces_existing
+        && existing.map(|subs| subs.len()).unwrap_or_default() >= MAX_SUBSCRIPTIONS_PER_APP
+    {
         return Err(Error::InvalidInput(format!(
             "push supports at most {MAX_SUBSCRIPTIONS_PER_APP} subscriptions per app"
         )));
@@ -56,7 +57,9 @@ fn decide_record_delivery(args: &[String]) -> Result<Decision> {
     let event_seq = parse_event_seq(&arg(args, 2, "event_seq")?)?;
     let status = arg(args, 3, "status")?;
     match status.as_str() {
-        "delivered" => Ok(Decision::Commit(vec![delivered_event(&app, &sub_id, event_seq)?])),
+        "delivered" => Ok(Decision::Commit(vec![delivered_event(
+            &app, &sub_id, event_seq,
+        )?])),
         "failed" => {
             let detail = validate_detail(args.get(4).map(String::as_str).unwrap_or("failed"))?;
             Ok(Decision::Commit(vec![failed_event(
@@ -85,7 +88,8 @@ pub fn validate_pattern(raw: &str) -> Result<String> {
     };
     if !ok {
         return Err(Error::InvalidInput(
-            "event_pattern must be an exact kind like kv.set or namespace wildcard like kv.*".into(),
+            "event_pattern must be an exact kind like kv.set or namespace wildcard like kv.*"
+                .into(),
         ));
     }
     Ok(value)
@@ -101,7 +105,11 @@ pub fn validate_template(raw: &str) -> Result<String> {
     let mut open = false;
     for ch in value.chars() {
         match ch {
-            '{' if open => return Err(Error::InvalidInput("template has nested placeholder".into())),
+            '{' if open => {
+                return Err(Error::InvalidInput(
+                    "template has nested placeholder".into(),
+                ))
+            }
             '{' => open = true,
             '}' if !open => return Err(Error::InvalidInput("template has unmatched }".into())),
             '}' => open = false,
@@ -116,7 +124,11 @@ pub fn validate_template(raw: &str) -> Result<String> {
 
 fn validate_sub_id(raw: &str) -> Result<String> {
     let value = non_empty(raw.to_string(), "sub_id")?;
-    if value.len() > 96 || !value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
+    if value.len() > 96
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
         return Err(Error::InvalidInput(
             "sub_id must use 1..96 ASCII letters, digits, '-' or '_'".into(),
         ));
@@ -127,7 +139,9 @@ fn validate_sub_id(raw: &str) -> Result<String> {
 fn validate_detail(raw: &str) -> Result<String> {
     let value = raw.trim();
     if value.len() > MAX_DETAIL_BYTES {
-        return Err(Error::InvalidInput(format!("detail exceeds {MAX_DETAIL_BYTES} bytes")));
+        return Err(Error::InvalidInput(format!(
+            "detail exceeds {MAX_DETAIL_BYTES} bytes"
+        )));
     }
     Ok(value.to_string())
 }

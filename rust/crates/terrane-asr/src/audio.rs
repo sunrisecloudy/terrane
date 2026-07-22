@@ -13,7 +13,10 @@ pub fn pcm_i16_to_f32_mono_16k(pcm: &[i16], sample_rate_hz: u32) -> Result<Vec<f
     if pcm.is_empty() {
         return Ok(Vec::new());
     }
-    let floats = pcm.iter().map(|&sample| sample as f32 / 32768.0).collect::<Vec<_>>();
+    let floats = pcm
+        .iter()
+        .map(|&sample| sample as f32 / 32768.0)
+        .collect::<Vec<_>>();
     if sample_rate_hz == WHISPER_SAMPLE_RATE_HZ {
         return Ok(floats);
     }

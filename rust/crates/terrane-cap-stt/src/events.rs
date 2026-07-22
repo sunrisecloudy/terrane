@@ -208,24 +208,28 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
                 .entry(e.app)
                 .or_default();
             // First-wins: a replay of an already-open session is a no-op.
-            app_sessions.entry(e.session_id.clone()).or_insert(SttSession {
-                session_id: e.session_id,
-                host_id: e.host_id,
-                executor_host_id: e.executor_host_id,
-                origin_replica: e.origin_replica,
-                model: e.model,
-                sample_rate_hz: e.sample_rate_hz,
-                status: SttStatus::Open,
-                closed_reason: None,
-                segments: BTreeMap::new(),
-                last_segment_seq: 0,
-                dropped_before_seq: 0,
-                selections: BTreeMap::new(),
-            });
+            app_sessions
+                .entry(e.session_id.clone())
+                .or_insert(SttSession {
+                    session_id: e.session_id,
+                    host_id: e.host_id,
+                    executor_host_id: e.executor_host_id,
+                    origin_replica: e.origin_replica,
+                    model: e.model,
+                    sample_rate_hz: e.sample_rate_hz,
+                    status: SttStatus::Open,
+                    closed_reason: None,
+                    segments: BTreeMap::new(),
+                    last_segment_seq: 0,
+                    dropped_before_seq: 0,
+                    selections: BTreeMap::new(),
+                });
         }
         "stt.segment.appended" => {
             let e: SegmentAppended = decode_event(record)?;
-            let app_sessions = state_mut::<SttState>(state, "stt")?.sessions.get_mut(&e.app);
+            let app_sessions = state_mut::<SttState>(state, "stt")?
+                .sessions
+                .get_mut(&e.app);
             let Some(session) = app_sessions.and_then(|m| m.get_mut(&e.session_id)) else {
                 // Unknown app/session: nothing to attach. Segments are only
                 // meaningful inside an open, owned session.
@@ -256,7 +260,9 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
         }
         "stt.session.closed" => {
             let e: SessionClosed = decode_event(record)?;
-            let app_sessions = state_mut::<SttState>(state, "stt")?.sessions.get_mut(&e.app);
+            let app_sessions = state_mut::<SttState>(state, "stt")?
+                .sessions
+                .get_mut(&e.app);
             if let Some(session) = app_sessions.and_then(|m| m.get_mut(&e.session_id)) {
                 // First close wins; a later close (e.g. duplicate dispatch) is a no-op.
                 if session.status.is_open() {
@@ -267,33 +273,43 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
         }
         "stt.selection.made" => {
             let e: SelectionMade = decode_event(record)?;
-            let app_sessions = state_mut::<SttState>(state, "stt")?.sessions.get_mut(&e.app);
+            let app_sessions = state_mut::<SttState>(state, "stt")?
+                .sessions
+                .get_mut(&e.app);
             if let Some(session) = app_sessions.and_then(|m| m.get_mut(&e.session_id)) {
                 // First-wins by selection_id: re-dispatching the same selection
                 // (same range + sink) is idempotent.
-                session.selections.entry(e.selection_id.clone()).or_insert(SttSelection {
-                    selection_id: e.selection_id,
-                    from_segment_seq: e.from_segment_seq,
-                    to_segment_seq: e.to_segment_seq,
-                    text: e.text,
-                    sink: e.sink,
-                });
+                session
+                    .selections
+                    .entry(e.selection_id.clone())
+                    .or_insert(SttSelection {
+                        selection_id: e.selection_id,
+                        from_segment_seq: e.from_segment_seq,
+                        to_segment_seq: e.to_segment_seq,
+                        text: e.text,
+                        sink: e.sink,
+                    });
             }
         }
         "stt.retention.trimmed" => {
             let e: RetentionTrimmed = decode_event(record)?;
-            let app_sessions = state_mut::<SttState>(state, "stt")?.sessions.get_mut(&e.app);
+            let app_sessions = state_mut::<SttState>(state, "stt")?
+                .sessions
+                .get_mut(&e.app);
             if let Some(session) = app_sessions.and_then(|m| m.get_mut(&e.session_id)) {
                 if e.dropped_before_seq > session.dropped_before_seq {
                     session.dropped_before_seq = e.dropped_before_seq;
-                    session.segments.retain(|seq, _| *seq >= e.dropped_before_seq);
+                    session
+                        .segments
+                        .retain(|seq, _| *seq >= e.dropped_before_seq);
                 }
             }
         }
         "stt.session.purged" => {
             let e: SessionPurged = decode_event(record)?;
-            if let Some(app_sessions) =
-                state_mut::<SttState>(state, "stt")?.sessions.get_mut(&e.app)
+            if let Some(app_sessions) = state_mut::<SttState>(state, "stt")?
+                .sessions
+                .get_mut(&e.app)
             {
                 app_sessions.remove(&e.session_id);
             }
@@ -358,10 +374,7 @@ pub(crate) fn describe(record: &EventRecord) -> Option<String> {
         }
         "stt.session.purged" => {
             let e: SessionPurged = decode_event(record).ok()?;
-            Some(format!(
-                "stt.session.purged {}/{}",
-                e.app, e.session_id
-            ))
+            Some(format!("stt.session.purged {}/{}", e.app, e.session_id))
         }
         _ => None,
     }

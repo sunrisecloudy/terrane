@@ -109,10 +109,9 @@ pub(crate) fn parse_spec_json(raw: &str) -> Result<ScheduleSpec> {
             values
                 .iter()
                 .map(|value| {
-                    value
-                        .as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| Error::InvalidInput("spec.args entries must be strings".into()))
+                    value.as_str().map(str::to_string).ok_or_else(|| {
+                        Error::InvalidInput("spec.args entries must be strings".into())
+                    })
                 })
                 .collect::<Result<Vec<_>>>()
         })

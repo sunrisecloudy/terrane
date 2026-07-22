@@ -104,17 +104,33 @@ fn stream_commands() -> Vec<CommandDoc> {
             &[
                 param("app", "Existing app id.", "app_id"),
                 param("name", "App-local stream name.", "stream_name"),
-                param("verb", "Backend verb to run after each recorded message.", "token"),
-                param("request_json", "JSON with kind, url, headers, sensitiveHeaders.", "json"),
+                param(
+                    "verb",
+                    "Backend verb to run after each recorded message.",
+                    "token",
+                ),
+                param(
+                    "request_json",
+                    "JSON with kind, url, headers, sensitiveHeaders.",
+                    "json",
+                ),
             ],
             "commit",
             "Validate and record desired outbound stream state.",
         )
-        .with_errors(&["app not found", "invalid name", "invalid request JSON", "open stream limit"])
+        .with_errors(&[
+            "app not found",
+            "invalid name",
+            "invalid request JSON",
+            "open stream limit",
+        ])
         .with_emits(&["stream.opened"]),
         command_doc(
             "stream.close",
-            &[param("app", "Existing app id.", "app_id"), param("name", "Stream name.", "stream_name")],
+            &[
+                param("app", "Existing app id.", "app_id"),
+                param("name", "Stream name.", "stream_name"),
+            ],
             "commit",
             "Close desired stream state at app request.",
         )
@@ -136,7 +152,11 @@ fn stream_commands() -> Vec<CommandDoc> {
             "commit",
             "Trusted host ingest of one observed stream message.",
         )
-        .with_errors(&["requires trusted host authority", "seq regression", "message too large"])
+        .with_errors(&[
+            "requires trusted host authority",
+            "seq regression",
+            "message too large",
+        ])
         .with_emits(&["stream.message"]),
         command_doc(
             "stream.reopened",
@@ -161,7 +181,11 @@ fn stream_commands() -> Vec<CommandDoc> {
             "commit",
             "Trusted host close used for remote, rate, and size violations.",
         )
-        .with_errors(&["requires trusted host authority", "unknown stream", "invalid reason"])
+        .with_errors(&[
+            "requires trusted host authority",
+            "unknown stream",
+            "invalid reason",
+        ])
         .with_emits(&["stream.closed"]),
     ]
 }

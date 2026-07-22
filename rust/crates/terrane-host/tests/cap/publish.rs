@@ -51,7 +51,10 @@ fn publish_export_install_round_trip_records_provenance_and_replays() {
     assert!(ok, "log failed: {err}");
     assert!(log.contains("publish.trusted"), "log: {log}");
     assert!(log.contains("publish.installed demo 1.0.0"), "log: {log}");
-    assert!(log.contains("kv.set demo/__terrane/app-bundle/main.js"), "log: {log}");
+    assert!(
+        log.contains("kv.set demo/__terrane/app-bundle/main.js"),
+        "log: {log}"
+    );
     assert!(!log.contains("ed25519"), "log leaked secret marker: {log}");
 
     let (ok, out, err) = terrane_file_secret_store(receiver.path(), &["replay"]);
@@ -67,11 +70,13 @@ fn publish_install_rejects_tampered_archive_without_log_events() {
     write_bundle(&bundle, "1.0.0", "first");
     assert!(terrane_file_secret_store(publisher.path(), &["app", "install-kv", path(&bundle)]).0);
     let archive = publisher.path().join("demo.terrane");
-    assert!(terrane_file_secret_store(
-        publisher.path(),
-        &["app", "export", "demo", "-o", path(&archive)]
-    )
-    .0);
+    assert!(
+        terrane_file_secret_store(
+            publisher.path(),
+            &["app", "export", "demo", "-o", path(&archive)]
+        )
+        .0
+    );
 
     let mut bytes = std::fs::read(&archive).unwrap();
     let last = bytes.len() - 1;
@@ -104,21 +109,29 @@ fn publish_install_stops_on_publisher_key_change_for_existing_app() {
     let bundle_b = publisher_b.path().join("demo-v2");
     write_bundle(&bundle_a, "1.0.0", "first");
     write_bundle(&bundle_b, "1.1.0", "second");
-    assert!(terrane_file_secret_store(publisher_a.path(), &["app", "install-kv", path(&bundle_a)]).0);
-    assert!(terrane_file_secret_store(publisher_b.path(), &["app", "install-kv", path(&bundle_b)]).0);
+    assert!(
+        terrane_file_secret_store(publisher_a.path(), &["app", "install-kv", path(&bundle_a)]).0
+    );
+    assert!(
+        terrane_file_secret_store(publisher_b.path(), &["app", "install-kv", path(&bundle_b)]).0
+    );
 
     let archive_a = publisher_a.path().join("demo-a.terrane");
     let archive_b = publisher_b.path().join("demo-b.terrane");
-    assert!(terrane_file_secret_store(
-        publisher_a.path(),
-        &["app", "export", "demo", "-o", path(&archive_a)]
-    )
-    .0);
-    assert!(terrane_file_secret_store(
-        publisher_b.path(),
-        &["app", "export", "demo", "-o", path(&archive_b)]
-    )
-    .0);
+    assert!(
+        terrane_file_secret_store(
+            publisher_a.path(),
+            &["app", "export", "demo", "-o", path(&archive_a)]
+        )
+        .0
+    );
+    assert!(
+        terrane_file_secret_store(
+            publisher_b.path(),
+            &["app", "export", "demo", "-o", path(&archive_b)]
+        )
+        .0
+    );
     assert!(terrane_file_secret_store(receiver.path(), &["app", "install", path(&archive_a)]).0);
 
     let (ok, out, err) =

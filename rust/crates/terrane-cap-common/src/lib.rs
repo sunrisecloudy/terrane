@@ -8,10 +8,9 @@ use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
-    AppId, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error,
-    EventPattern, EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, QueryCtx,
-    QuerySpec, QueryValue, ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
-    LOCAL_OWNER_SUBJECT,
+    AppId, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern,
+    EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, QueryCtx, QuerySpec, QueryValue,
+    ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore, LOCAL_OWNER_SUBJECT,
 };
 
 mod doc;
@@ -177,10 +176,14 @@ impl Capability for CommonCapability {
                 let e: Sent = decode_event(record)?;
                 let attempt_at = parse_sent_at(&e.sent_at)?;
                 let common = state_mut::<CommonState>(state, "common")?;
-                common.attempts.entry(e.app.clone()).or_default().push(SendAttempt {
-                    channel: e.channel.clone(),
-                    sent_at: attempt_at,
-                });
+                common
+                    .attempts
+                    .entry(e.app.clone())
+                    .or_default()
+                    .push(SendAttempt {
+                        channel: e.channel.clone(),
+                        sent_at: attempt_at,
+                    });
                 common.sent.entry(e.app).or_default().insert(
                     e.message_id,
                     SentMeta {
@@ -248,7 +251,9 @@ impl Capability for CommonCapability {
                     .and_then(|messages| messages.get(&message_id));
                 Ok(ReadValue::OptString(meta.map(status_json)))
             }
-            "channels" => Ok(ReadValue::OptString(Some(channels_json(ctx.state, ctx.app)?))),
+            "channels" => Ok(ReadValue::OptString(Some(channels_json(
+                ctx.state, ctx.app,
+            )?))),
             other => Err(Error::InvalidInput(format!(
                 "unknown resource read: common.{other}"
             ))),
@@ -318,7 +323,9 @@ pub fn prepare_send(state: &dyn StateStore, app: &str, raw: &str) -> Result<Prep
     }
     let text = string_field(obj, "text")?;
     if text.is_empty() {
-        return Err(Error::InvalidInput("email text body must not be empty".into()));
+        return Err(Error::InvalidInput(
+            "email text body must not be empty".into(),
+        ));
     }
     if text.len() > MAX_EMAIL_TEXT_BYTES {
         return Err(Error::InvalidInput(format!(
@@ -337,8 +344,8 @@ pub fn prepare_send(state: &dyn StateStore, app: &str, raw: &str) -> Result<Prep
     }
     let attachments = attachments(state, app, obj.get("attachments"))?;
     let record_body = optional_bool(obj, "recordBody")?.unwrap_or(false);
-    let connection = optional_string(obj, "connection")?
-        .unwrap_or_else(|| DEFAULT_EMAIL_CONNECTION.to_string());
+    let connection =
+        optional_string(obj, "connection")?.unwrap_or_else(|| DEFAULT_EMAIL_CONNECTION.to_string());
     terrane_cap_connection::validate_name(&connection)?;
     let body_hash = sha256_hex(body_bytes(&text, html.as_deref()).as_slice());
     let (body_kind, body, body_blob) = recorded_body(&text, html.as_deref(), record_body)?;
@@ -439,7 +446,13 @@ fn enforce_rate_limit(
         .map(Vec::as_slice)
         .unwrap_or_default();
     let now = candidate_sent_at
-        .or_else(|| attempts.iter().map(|attempt| attempt.sent_at).max().map(|v| v + 1))
+        .or_else(|| {
+            attempts
+                .iter()
+                .map(|attempt| attempt.sent_at)
+                .max()
+                .map(|v| v + 1)
+        })
         .unwrap_or(0);
     let hour_start = now.saturating_sub(60 * 60);
     let day_start = now.saturating_sub(24 * 60 * 60);
@@ -569,7 +582,9 @@ fn recipient_array(value: &Value, name: &str) -> Result<Vec<String>> {
 
 fn validate_email_addr(addr: &str) -> Result<()> {
     let Some((local, domain)) = addr.split_once('@') else {
-        return Err(Error::InvalidInput(format!("invalid email recipient: {addr}")));
+        return Err(Error::InvalidInput(format!(
+            "invalid email recipient: {addr}"
+        )));
     };
     if local.is_empty()
         || domain.is_empty()
@@ -580,7 +595,9 @@ fn validate_email_addr(addr: &str) -> Result<()> {
         || !domain.contains('.')
         || addr.chars().any(char::is_whitespace)
     {
-        return Err(Error::InvalidInput(format!("invalid email recipient: {addr}")));
+        return Err(Error::InvalidInput(format!(
+            "invalid email recipient: {addr}"
+        )));
     }
     Ok(())
 }

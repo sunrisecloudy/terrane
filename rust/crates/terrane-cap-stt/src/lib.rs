@@ -19,9 +19,9 @@ mod resources;
 mod types;
 
 pub use events::{
-    retention_trimmed_event, segment_appended_event, selection_made_event,
-    session_closed_event, session_opened_event, session_purged_event, SegmentAppendedRecord,
-    SelectionMadeRecord, SessionOpenedRecord,
+    retention_trimmed_event, segment_appended_event, selection_made_event, session_closed_event,
+    session_opened_event, session_purged_event, SegmentAppendedRecord, SelectionMadeRecord,
+    SessionOpenedRecord,
 };
 pub use types::{
     SttSegment, SttSelection, SttSession, SttState, SttStatus, DEFAULT_SAMPLE_RATE_HZ,
@@ -52,12 +52,8 @@ impl Capability for SttCapability {
                 CommandSpec {
                     name: "stt.session.purge",
                 },
-                CommandSpec {
-                    name: "stt.select",
-                },
-                CommandSpec {
-                    name: "stt.stop",
-                },
+                CommandSpec { name: "stt.select" },
+                CommandSpec { name: "stt.stop" },
             ],
             events: vec![
                 EventSpec {
@@ -135,7 +131,9 @@ impl Capability for SttCapability {
         records: &[EventRecord],
     ) -> Result<ReadValue> {
         match method {
-            "select" => Ok(ReadValue::OptString(events::selection_text_from_records(records))),
+            "select" => Ok(ReadValue::OptString(events::selection_text_from_records(
+                records,
+            ))),
             "stop" => Ok(ReadValue::OptString(Some("ok".to_string()))),
             other => Err(Error::InvalidInput(format!(
                 "stt.{other} is not a callable resource"

@@ -271,9 +271,17 @@ fn app_events() -> Vec<EventDoc> {
             "app.upgraded",
             &[
                 param("id", "App id whose bundle changed.", "app_id"),
-                param("from_version", "Previously folded manifest.version.", "semver"),
+                param(
+                    "from_version",
+                    "Previously folded manifest.version.",
+                    "semver",
+                ),
                 param("to_version", "Incoming manifest.version.", "semver"),
-                param("bundle_hash", "Stable SHA-256 hash of the canonical bundle archive.", "sha256"),
+                param(
+                    "bundle_hash",
+                    "Stable SHA-256 hash of the canonical bundle archive.",
+                    "sha256",
+                ),
             ],
             "Records an atomic app bundle upgrade after any migration events in the same batch.",
         )
@@ -285,7 +293,11 @@ fn app_events() -> Vec<EventDoc> {
             "app.link.registered",
             &[
                 param("app", "App id owning the route or file type.", "app_id"),
-                param("kind", "Registration kind: scheme-route or filetype.", "string"),
+                param(
+                    "kind",
+                    "Registration kind: scheme-route or filetype.",
+                    "string",
+                ),
                 param("spec", "Route pattern or ext:mime filetype spec.", "string"),
             ],
             "Records a deterministic host-edge entry point advertised by the app catalog.",

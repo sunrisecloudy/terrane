@@ -3,8 +3,8 @@
 
 use terrane_cap_crypto::{
     base32_decode, derive_key, hotp, new_vault, open, passphrase, password, random_id, seal,
-    sha1_hex, strength, totp, unlock, verifier, verify_key, Algorithm, KdfParams, PassphraseOptions,
-    PasswordOptions, VaultMeta,
+    sha1_hex, strength, totp, unlock, verifier, verify_key, Algorithm, KdfParams,
+    PassphraseOptions, PasswordOptions, VaultMeta,
 };
 
 /// Cheap KDF params so tests that derive a key stay fast.
@@ -128,7 +128,10 @@ fn random_id_is_unique_128_bit_hex() {
 #[test]
 fn sha1_hex_matches_known_vectors_for_hibp() {
     // The HIBP range API keys on uppercase hex, split 5 (prefix) + 35 (suffix).
-    assert_eq!(sha1_hex("password"), "5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8");
+    assert_eq!(
+        sha1_hex("password"),
+        "5BAA61E4C9B93F3F0682250B6CF8331B7EE68FD8"
+    );
     assert_eq!(sha1_hex(""), "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709");
     let h = sha1_hex("password");
     assert_eq!(&h[..5], "5BAA6");

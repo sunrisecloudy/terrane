@@ -18,10 +18,7 @@ fn backup_create_restore_preserves_replay_state() {
     let (ok, _, err) = terrane(source, &["kv", "set", "notes", "theme", "dark"]);
     assert!(ok, "kv set failed: {err}");
 
-    let (ok, out, err) = terrane(
-        source,
-        &["backup", "create", archive.to_str().unwrap()],
-    );
+    let (ok, out, err) = terrane(source, &["backup", "create", archive.to_str().unwrap()]);
     assert!(ok, "backup create failed: {err}");
     assert!(out.contains("backup created"), "out: {out}");
 
@@ -157,10 +154,7 @@ fn export_import_round_trips_one_app_and_refuses_existing_id() {
     assert!(terrane(source, &["kv", "set", "notes", "theme", "dark"]).0);
     assert!(terrane(source, &["kv", "set", "other", "theme", "light"]).0);
 
-    let (ok, out, err) = terrane(
-        source,
-        &["export", "notes", archive.to_str().unwrap()],
-    );
+    let (ok, out, err) = terrane(source, &["export", "notes", archive.to_str().unwrap()]);
     assert!(ok, "export failed: {err}");
     assert!(out.contains("exported notes"), "out: {out}");
 

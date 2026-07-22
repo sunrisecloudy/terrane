@@ -9,7 +9,10 @@ fn tts_cli_validation_paths_are_typed_and_local() {
 
     let (ok, out, err) = terrane(home, &["tts", "render", "ghost", "hello"]);
     assert!(!ok, "missing app should fail: {out}");
-    assert!(err.contains("app not found") || out.contains("app not found"), "out={out} err={err}");
+    assert!(
+        err.contains("app not found") || out.contains("app not found"),
+        "out={out} err={err}"
+    );
 
     let (ok, _, err) = terrane(home, &["app", "add", "demo", "Demo"]);
     assert!(ok, "app add failed: {err}");
@@ -21,9 +24,15 @@ fn tts_cli_validation_paths_are_typed_and_local() {
         "out={out} err={err}"
     );
 
-    let (ok, out, err) = terrane(home, &["tts", "render", "demo", "--voice", "bad voice", "hello"]);
+    let (ok, out, err) = terrane(
+        home,
+        &["tts", "render", "demo", "--voice", "bad voice", "hello"],
+    );
     assert!(!ok, "bad voice should fail: {out}");
-    assert!(err.contains("voice") || out.contains("voice"), "out={out} err={err}");
+    assert!(
+        err.contains("voice") || out.contains("voice"),
+        "out={out} err={err}"
+    );
 }
 
 #[test]

@@ -8,7 +8,7 @@ use terrane_cap_interface::{
 };
 use terrane_cap_kv::{
     storage_binding, storage_plan, KvCapability, KvState, KvStorageBackend, KvStorageBinding,
-    PUBLIC_BUCKET_APP_ID, DEFAULT_KV_STORAGE_PATH,
+    DEFAULT_KV_STORAGE_PATH, PUBLIC_BUCKET_APP_ID,
 };
 
 #[derive(Default)]
@@ -297,10 +297,7 @@ fn fold_commit(
 ) -> Vec<terrane_cap_interface::EventRecord> {
     let decision = cap
         .decide(
-            CommandCtx {
-                state: store,
-                bus,
-            },
+            CommandCtx { state: store, bus },
             name,
             &args.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
         )
@@ -315,7 +312,13 @@ fn fold_commit(
     records
 }
 
-fn read_public(cap: &KvCapability, store: &Store, bus: &AppBus, method: &str, args: &[&str]) -> ReadValue {
+fn read_public(
+    cap: &KvCapability,
+    store: &Store,
+    bus: &AppBus,
+    method: &str,
+    args: &[&str],
+) -> ReadValue {
     cap.read_resource(
         ResourceReadCtx {
             state: store,
@@ -382,7 +385,10 @@ fn public_set_rejects_empty_key() {
     let store = Store::default();
     assert_eq!(
         cap.decide(
-            CommandCtx { state: &store, bus: &bus },
+            CommandCtx {
+                state: &store,
+                bus: &bus
+            },
             "kv.public.set",
             &["   ".into(), "v".into()],
         )
@@ -400,13 +406,11 @@ fn public_rm_missing_key_errors() {
 
     // Removing an existing public key folds a kv.deleted and empties the entry.
     fold_commit(&cap, &mut store, &bus, "kv.public.rm", &["k"]);
-    assert!(
-        store
-            .kv
-            .data
-            .get(PUBLIC_BUCKET_APP_ID)
-            .is_none_or(|m| m.is_empty())
-    );
+    assert!(store
+        .kv
+        .data
+        .get(PUBLIC_BUCKET_APP_ID)
+        .is_none_or(|m| m.is_empty()));
 
     // Removing a key that is not present errors (mirrors kv.rm).
     assert_eq!(
@@ -433,7 +437,10 @@ fn public_import_emits_sorted_records_and_is_deterministic() {
     let json = r#"{"b":"2","a":"1","c":"3"}"#;
     let records_a = match cap
         .decide(
-            CommandCtx { state: &store, bus: &bus },
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
             "kv.public.import",
             &[json.into()],
         )
@@ -444,7 +451,10 @@ fn public_import_emits_sorted_records_and_is_deterministic() {
     };
     let records_b = match cap
         .decide(
-            CommandCtx { state: &store, bus: &bus },
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
             "kv.public.import",
             &[json.into()],
         )
@@ -454,7 +464,10 @@ fn public_import_emits_sorted_records_and_is_deterministic() {
         _ => panic!("import should commit"),
     };
 
-    assert_eq!(records_a, records_b, "identical input must yield identical events");
+    assert_eq!(
+        records_a, records_b,
+        "identical input must yield identical events"
+    );
     // All emitted as ordinary kv.set into the public bucket.
     assert!(records_a.iter().all(|r| r.kind == "kv.set"));
     assert_eq!(records_a.len(), 3);
@@ -488,7 +501,10 @@ fn public_import_accepts_escapes_and_unicode() {
     let json = r#"{"k":"a\"b\\c\n\u00e9\uD83D\uDE00"}"#;
     let records = match cap
         .decide(
-            CommandCtx { state: &store, bus: &bus },
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
             "kv.public.import",
             &[json.into()],
         )
@@ -507,11 +523,23 @@ fn public_import_rejects_non_string_values_and_nested() {
     let bus = AppBus { exists: true };
     let store = Store::default();
 
-    for bad in ["{", r#"{"k":1}"#, r#"{"k":true}"#, r#"{"k":null}"#, r#"{"k":["a"]}"#, r#"{"k":{"a":"b"}}"#, "[]", r#""x""#] {
+    for bad in [
+        "{",
+        r#"{"k":1}"#,
+        r#"{"k":true}"#,
+        r#"{"k":null}"#,
+        r#"{"k":["a"]}"#,
+        r#"{"k":{"a":"b"}}"#,
+        "[]",
+        r#""x""#,
+    ] {
         assert!(
             matches!(
                 cap.decide(
-                    CommandCtx { state: &store, bus: &bus },
+                    CommandCtx {
+                        state: &store,
+                        bus: &bus
+                    },
                     "kv.public.import",
                     &[bad.into()],
                 ),
@@ -529,7 +557,10 @@ fn public_import_rejects_empty_key() {
     let store = Store::default();
     assert_eq!(
         cap.decide(
-            CommandCtx { state: &store, bus: &bus },
+            CommandCtx {
+                state: &store,
+                bus: &bus
+            },
             "kv.public.import",
             &[r#"{"   ":"v"}"#.into()],
         )
@@ -617,10 +648,7 @@ fn public_bucket_survives_app_removed_cascade() {
 
     // The private app data is gone; the public bucket is intact.
     assert!(!store.kv.data.contains_key("demo"));
-    assert_eq!(
-        store.kv.data[PUBLIC_BUCKET_APP_ID]["shared"],
-        "v"
-    );
+    assert_eq!(store.kv.data[PUBLIC_BUCKET_APP_ID]["shared"], "v");
 }
 
 #[test]

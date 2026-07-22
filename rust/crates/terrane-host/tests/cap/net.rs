@@ -66,8 +66,14 @@ fn respond(mut stream: TcpStream, status: &str, headers: &[(&str, &str)], body: 
 #[test]
 fn net_request_posts_redacts_and_replays_on_loopback() {
     let (base, server) = loopback_server(1, |request, stream| {
-        assert!(request.starts_with("POST /items?token=query HTTP/1.1"), "{request}");
-        assert!(request.contains("authorization: Bearer raw-secret"), "{request}");
+        assert!(
+            request.starts_with("POST /items?token=query HTTP/1.1"),
+            "{request}"
+        );
+        assert!(
+            request.contains("authorization: Bearer raw-secret"),
+            "{request}"
+        );
         assert!(request.ends_with("{\"ok\":true}"), "{request}");
         respond(
             stream,
@@ -98,7 +104,10 @@ fn net_request_posts_redacts_and_replays_on_loopback() {
     assert!(ok, "log failed; stderr: {err}");
     assert!(log.contains("net.responded web POST 127.0.0.1:"));
     assert!(!log.contains("raw-secret"), "log leaked secret: {log}");
-    assert!(!log.contains("token=query"), "log leaked query string: {log}");
+    assert!(
+        !log.contains("token=query"),
+        "log leaked query string: {log}"
+    );
     let (ok, out, err) = terrane(home, &["replay"]);
     assert!(ok, "replay failed; stdout: {out}; stderr: {err}");
 }
@@ -163,7 +172,10 @@ fn net_request_offloads_binary_response_to_blob() {
     let (ok, blobs, err) = terrane(home, &["blob", "ls", "web", "__net__/"]);
     assert!(ok, "blob ls failed; stderr: {err}");
     assert!(blobs.contains("application/octet-stream"), "{blobs}");
-    assert!(!blobs.contains(&expected), "blob metadata should not inline bytes: {blobs}");
+    assert!(
+        !blobs.contains(&expected),
+        "blob metadata should not inline bytes: {blobs}"
+    );
 }
 
 #[test]

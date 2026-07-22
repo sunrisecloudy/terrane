@@ -1,6 +1,6 @@
 use terrane_cap_interface::{
-    event_doc, limit, param, resource_method, CapabilityDoc, CapabilityManifestDoc,
-    EventDoc, ExampleDoc, InternalNote, ParamDoc, ResourceDoc, ResourceMethodDoc, SchemaDoc,
+    event_doc, limit, param, resource_method, CapabilityDoc, CapabilityManifestDoc, EventDoc,
+    ExampleDoc, InternalNote, ParamDoc, ResourceDoc, ResourceMethodDoc, SchemaDoc,
 };
 
 fn telemetry_resource_methods() -> Vec<ResourceMethodDoc> {
@@ -22,10 +22,16 @@ fn telemetry_resource_methods() -> Vec<ResourceMethodDoc> {
         m.returns = "null".to_string();
         m
     }
-    let debug = mk("debug", "Ring-buffer only; never recorded and never permission-gated when granted.");
+    let debug = mk(
+        "debug",
+        "Ring-buffer only; never recorded and never permission-gated when granted.",
+    );
     let info = mk("info", "Ring-buffer only; never recorded.");
     let warn = mk("warn", "Ring-buffer only; never recorded.");
-    let error = mk("error", "Ring-buffer + one recorded telemetry.error event (the crash fact worth its bytes).");
+    let error = mk(
+        "error",
+        "Ring-buffer + one recorded telemetry.error event (the crash fact worth its bytes).",
+    );
     let mut read = resource_method(
         "read",
         "read",

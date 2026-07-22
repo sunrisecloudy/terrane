@@ -79,11 +79,23 @@ fn agent_commands() -> Vec<CommandDoc> {
             &[
                 param("id", "Safe slug id for the agent.", "string"),
                 param("name", "Display name (trailing words or --name).", "string"),
-                param("personality", "--personality: standing instruction.", "string"),
+                param(
+                    "personality",
+                    "--personality: standing instruction.",
+                    "string",
+                ),
                 param("model", "--model: provider/model to run on.", "string"),
-                param("harness", "--harness: harness that runs the agent.", "string"),
+                param(
+                    "harness",
+                    "--harness: harness that runs the agent.",
+                    "string",
+                ),
                 param("color", "--color: avatar #rrggbb.", "string"),
-                param("cap", "--cap: an allowed capability (repeatable).", "string"),
+                param(
+                    "cap",
+                    "--cap: an allowed capability (repeatable).",
+                    "string",
+                ),
             ],
             "commit",
             "Register a new agent definition, filling defaults.",

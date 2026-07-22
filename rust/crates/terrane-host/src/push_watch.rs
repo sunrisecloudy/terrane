@@ -44,20 +44,16 @@ pub fn process_committed_records(core: &mut HostCore, records: &[EventRecord]) -
 }
 
 fn event_seq_for_record(log: &[EventRecord], record: &EventRecord) -> Result<Option<u64>> {
-    let Some(index) = log
-        .iter()
-        .position(|candidate| {
-            candidate.kind == record.kind
-                && candidate.payload == record.payload
-                && candidate.actor == record.actor
-        })
-    else {
+    let Some(index) = log.iter().position(|candidate| {
+        candidate.kind == record.kind
+            && candidate.payload == record.payload
+            && candidate.actor == record.actor
+    }) else {
         return Ok(None);
     };
-    Ok(Some(
-        u64::try_from(index + 1)
-            .map_err(|_| Error::Storage("push event sequence overflow".into()))?,
-    ))
+    Ok(Some(u64::try_from(index + 1).map_err(|_| {
+        Error::Storage("push event sequence overflow".into())
+    })?))
 }
 
 fn collect_matches(

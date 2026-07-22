@@ -88,7 +88,10 @@ fn telemetry_debug_is_transient_and_top_level_rejected() {
     let decision = core
         .decide(req("telemetry.debug", &["notes", "only buffer"]))
         .unwrap();
-    assert!(matches!(decision, Decision::TransientEffect(Effect::AppLog { .. })));
+    assert!(matches!(
+        decision,
+        Decision::TransientEffect(Effect::AppLog { .. })
+    ));
 
     let err = core
         .dispatch(req("telemetry.debug", &["notes", "only buffer"]))

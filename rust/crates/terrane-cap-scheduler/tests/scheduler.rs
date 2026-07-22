@@ -49,7 +49,10 @@ fn commit(
     name: &str,
     args: &[&str],
 ) -> Vec<EventRecord> {
-    let args = args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>();
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
     let records = match cap
         .decide(
             CommandCtx {

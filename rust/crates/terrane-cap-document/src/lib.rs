@@ -106,7 +106,11 @@ fn decide_create(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     types::validate_document_id(&id)?;
     types::validate_title(&title)?;
     types::validate_body(&body)?;
-    types::enforce_document_quota(state_ref::<DocumentState>(ctx.state, "document")?, &app, &id)?;
+    types::enforce_document_quota(
+        state_ref::<DocumentState>(ctx.state, "document")?,
+        &app,
+        &id,
+    )?;
     Ok(Decision::Commit(vec![events::created_event(
         app,
         id,
@@ -182,11 +186,7 @@ fn decide_delete(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     Ok(Decision::Commit(vec![events::deleted_event(app, id)?]))
 }
 
-fn document_for<'a>(
-    state: &'a dyn StateStore,
-    app: &str,
-    id: &str,
-) -> Result<&'a Document> {
+fn document_for<'a>(state: &'a dyn StateStore, app: &str, id: &str) -> Result<&'a Document> {
     state_ref::<DocumentState>(state, "document")?
         .docs
         .get(app)

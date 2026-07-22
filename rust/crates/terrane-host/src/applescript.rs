@@ -100,7 +100,10 @@ fn run_with_stdin(
 
     let deadline = started + timeout;
     let status = loop {
-        match child.try_wait().map_err(|e| Error::Runtime(e.to_string()))? {
+        match child
+            .try_wait()
+            .map_err(|e| Error::Runtime(e.to_string()))?
+        {
             Some(status) => break status,
             None if Instant::now() >= deadline => {
                 kill_child(&mut child);

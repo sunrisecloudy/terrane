@@ -165,7 +165,11 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
             resource_method(
                 "check",
                 "call",
-                &[param("script", "AppleScript source to compile-check.", "string")],
+                &[param(
+                    "script",
+                    "AppleScript source to compile-check.",
+                    "string",
+                )],
                 "Compile-check AppleScript via osacompile; records applescript.checked.",
             ),
             "string (JSON {ok, error}) | null",

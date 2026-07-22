@@ -50,8 +50,14 @@ fn define_drop_fold_and_replay() {
         .unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].kind, "presence.channel.defined");
-    assert_eq!(core.state().presence.channels["demo"]["cursor"].max_payload, 2048);
-    assert_eq!(core.state().presence.channels["demo"]["cursor"].max_rate, 10);
+    assert_eq!(
+        core.state().presence.channels["demo"]["cursor"].max_payload,
+        2048
+    );
+    assert_eq!(
+        core.state().presence.channels["demo"]["cursor"].max_rate,
+        10
+    );
 
     let records = core
         .dispatch(req("presence.channel.drop", &["demo", "cursor"]))
@@ -60,7 +66,10 @@ fn define_drop_fold_and_replay() {
     assert_eq!(records[0].kind, "presence.channel.dropped");
     assert!(core.state().presence.channels.is_empty());
     assert!(core.replay_matches().unwrap());
-    assert_eq!(Core::open(&log).unwrap().state().presence, core.state().presence);
+    assert_eq!(
+        Core::open(&log).unwrap().state().presence,
+        core.state().presence
+    );
 }
 
 #[test]
@@ -69,10 +78,7 @@ fn publish_decides_to_transient_effect() {
     let mut core = Core::open_with(dir.path().join("log.bin"), PresenceRunner).unwrap();
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
     let decision = core
-        .decide(req(
-            "presence.publish",
-            &["demo", "cursor", r#"{"x":1}"#],
-        ))
+        .decide(req("presence.publish", &["demo", "cursor", r#"{"x":1}"#]))
         .unwrap();
     assert!(matches!(
         decision,
@@ -122,10 +128,7 @@ fn validation_errors_are_typed() {
         Err(Error::InvalidInput(_))
     ));
     assert!(matches!(
-        core.dispatch(req(
-            "presence.channel.define",
-            &["demo", "cursor", "65537"],
-        )),
+        core.dispatch(req("presence.channel.define", &["demo", "cursor", "65537"],)),
         Err(Error::InvalidInput(_))
     ));
     assert!(matches!(
@@ -140,10 +143,7 @@ fn top_level_publish_is_refused_before_log_commit() {
     let mut core = Core::open_with(dir.path().join("log.bin"), PresenceRunner).unwrap();
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
     let err = core
-        .dispatch(req(
-            "presence.publish",
-            &["demo", "cursor", r#"{"x":1}"#],
-        ))
+        .dispatch(req("presence.publish", &["demo", "cursor", r#"{"x":1}"#]))
         .unwrap_err();
     assert!(err.to_string().contains("transient effects are only valid"));
     assert!(core.replay_matches().unwrap());

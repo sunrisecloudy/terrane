@@ -73,9 +73,9 @@ pub fn import_i18n_dir(core: &mut HostCore, root: &Path) -> Result<I18nImportOut
             .map_err(|e| format!("{}: {e}", file.path.display()))?;
         let value: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", file.path.display()))?;
-        let obj = value.as_object().ok_or_else(|| {
-            format!("{}: expected a JSON object", file.path.display())
-        })?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| format!("{}: expected a JSON object", file.path.display()))?;
 
         let code = terrane_i18n::canonical(&file.code_stem).ok_or_else(|| {
             format!(
@@ -163,8 +163,8 @@ fn discover_catalogs(root: &Path) -> Result<Vec<CatalogFile>, String> {
     collect_domain_dir(root, &root.join("i18n").join("system"), "system", &mut out)?;
     let apps_dir = root.join("apps");
     if apps_dir.is_dir() {
-        for app_entry in std::fs::read_dir(&apps_dir)
-            .map_err(|e| format!("read {}: {e}", apps_dir.display()))?
+        for app_entry in
+            std::fs::read_dir(&apps_dir).map_err(|e| format!("read {}: {e}", apps_dir.display()))?
         {
             let app_entry = app_entry.map_err(|e| format!("read apps dir: {e}"))?;
             if !app_entry

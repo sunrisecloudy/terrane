@@ -16,29 +16,31 @@ use std::time::{Duration, Instant};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
+use sha2::{Digest as _, Sha256};
+use terrane_cap_browser::request::RenderOutput;
 use terrane_cap_builder as builder;
 use terrane_cap_harness as harness;
 use terrane_cap_js_runtime::{run_js_bundle, JsRuntimeBundle};
-use sha2::{Digest as _, Sha256};
 use terrane_cap_kv::{
-    app_bundle_app_id, app_bundle_files, app_bundle_key, app_bundle_source, delete_event, set_event,
-    storage_configured_event, KvStorageBackend,
+    app_bundle_app_id, app_bundle_files, app_bundle_key, app_bundle_source, delete_event,
+    set_event, storage_configured_event, KvStorageBackend,
 };
 use terrane_cap_model::responded_event;
 use terrane_cap_net::fetched_event;
 use terrane_cap_net::request::{RedirectPolicy, RequestBody, RequestValue, ResponseBodyMode};
-use terrane_cap_browser::request::RenderOutput;
-use terrane_cap_org::{created_event as org_created_event, member_granted_event, org_id_for_pubkey, role_grant_message};
+use terrane_cap_org::{
+    created_event as org_created_event, member_granted_event, org_id_for_pubkey, role_grant_message,
+};
 use terrane_cap_person::{
     attestation_message, attested_event, created_event, hex as hex_lower, rotated_event,
     rotation_message, validate_person_id,
 };
 use terrane_cap_replica::initialized_event;
-use terrane_core::{Effect, EffectRunner, LiveHost};
-use terrane_core::{Error, EventRecord, Result};
 use terrane_core::{
     local_owner_principal, ExecutionPrincipal, RuntimeHostHandle, RuntimeResourceHost,
 };
+use terrane_core::{Effect, EffectRunner, LiveHost};
+use terrane_core::{Error, EventRecord, Result};
 
 /// Results a host computed on its own worker thread, waiting to be committed.
 ///
@@ -123,9 +125,7 @@ impl EffectRunner for EdgeRunner {
                 Ok(vec![fetched_event(app, url, status, body)?])
             }
             Effect::HttpRequest { app, request } => http_request(self.home()?, state, app, request),
-            Effect::BrowserRender { app, request } => {
-                browser_render(self.home()?, app, request)
-            }
+            Effect::BrowserRender { app, request } => browser_render(self.home()?, app, request),
             Effect::AppleScriptRun { app, script } => {
                 let outcome = crate::applescript::run(script)?;
                 Ok(vec![terrane_cap_applescript::ran_event(
@@ -179,9 +179,7 @@ impl EffectRunner for EdgeRunner {
                 storage_backend,
                 storage_path,
             } => import_app_bundle(source, storage_backend, storage_path, state),
-            Effect::UpgradeAppBundle { id, source } => {
-                upgrade_app_bundle(self, id, source, state)
-            }
+            Effect::UpgradeAppBundle { id, source } => upgrade_app_bundle(self, id, source, state),
             Effect::InstallSignedBundle { source } => {
                 crate::publish::install_signed_bundle(self, state, source)
             }
@@ -321,19 +319,24 @@ impl EffectRunner for EdgeRunner {
                 draft_model.clone(),
                 embed_preset.as_deref(),
             ),
-Effect::LocalModelEmbed {
-            app,
-            model,
-            texts,
-            query,
-        } => crate::local_llm::embed(app, model, texts, *query, state),
+            Effect::LocalModelEmbed {
+                app,
+                model,
+                texts,
+                query,
+            } => crate::local_llm::embed(app, model, texts, *query, state),
             Effect::ObserveTime { app } => {
                 let epoch_ms =
                     terrane_cap_time::system_time_to_epoch_ms(std::time::SystemTime::now())?;
                 Ok(vec![terrane_cap_time::observed_event(app, epoch_ms)?])
             }
             Effect::GeoLocate { app, precision } => crate::geo_edge::locate(app, precision),
-            Effect::AppLog { app, level, msg, data } => {
+            Effect::AppLog {
+                app,
+                level,
+                msg,
+                data,
+            } => {
                 let home = self.home()?;
                 crate::app_log::append(home, app, level, msg, data)?;
                 if level == "error" {
@@ -412,8 +415,7 @@ Effect::LocalModelEmbed {
 
 fn mint_webhook_token() -> Result<String> {
     let mut bytes = [0u8; 16];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| Error::Runtime(format!("mint webhook token: {e}")))?;
+    getrandom::fill(&mut bytes).map_err(|e| Error::Runtime(format!("mint webhook token: {e}")))?;
     let mut out = String::with_capacity(32);
     for byte in bytes {
         use std::fmt::Write as _;
@@ -424,8 +426,7 @@ fn mint_webhook_token() -> Result<String> {
 
 pub fn mint_invite_token() -> Result<String> {
     let mut bytes = [0u8; terrane_cap_share::INVITE_TOKEN_BYTES];
-    getrandom::fill(&mut bytes)
-        .map_err(|e| Error::Runtime(format!("mint invite token: {e}")))?;
+    getrandom::fill(&mut bytes).map_err(|e| Error::Runtime(format!("mint invite token: {e}")))?;
     Ok(to_hex(&bytes))
 }
 
@@ -466,8 +467,7 @@ pub(crate) fn load_person_key(home: &Path, person_id: &str) -> Result<SigningKey
 
 fn new_person_key() -> Result<SigningKey> {
     let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed)
-        .map_err(|e| Error::Runtime(format!("mint person keypair: {e}")))?;
+    getrandom::fill(&mut seed).map_err(|e| Error::Runtime(format!("mint person keypair: {e}")))?;
     Ok(SigningKey::from_bytes(&seed))
 }
 
@@ -484,7 +484,12 @@ fn person_sign(home: &Path, person_id: &str, kind: &str, claim: &str) -> Result<
     let signing = load_person_key(home, person_id)?;
     let message = attestation_message(person_id, kind, claim)?;
     let sig = signing.sign(&message);
-    Ok(vec![attested_event(person_id, kind, claim, &hex_lower(&sig.to_bytes()))?])
+    Ok(vec![attested_event(
+        person_id,
+        kind,
+        claim,
+        &hex_lower(&sig.to_bytes()),
+    )?])
 }
 
 fn org_secret_name(org_id: &str) -> Result<String> {
@@ -502,8 +507,7 @@ fn store_org_seed(home: &Path, org_id: &str, seed: &[u8; 32]) -> Result<()> {
 
 fn new_org_key() -> Result<SigningKey> {
     let mut seed = [0u8; 32];
-    getrandom::fill(&mut seed)
-        .map_err(|e| Error::Runtime(format!("mint org keypair: {e}")))?;
+    getrandom::fill(&mut seed).map_err(|e| Error::Runtime(format!("mint org keypair: {e}")))?;
     Ok(SigningKey::from_bytes(&seed))
 }
 
@@ -538,7 +542,9 @@ fn org_role_sign(
         signer,
     )?];
     if let Some(token_hash) = redeem_token_hash {
-        records.push(terrane_cap_org::invite_redeemed_event(org_id, token_hash, member)?);
+        records.push(terrane_cap_org::invite_redeemed_event(
+            org_id, token_hash, member,
+        )?);
     }
     Ok(records)
 }
@@ -567,7 +573,11 @@ fn person_rotate(home: &Path, person_id: &str) -> Result<Vec<EventRecord>> {
     let message = rotation_message(person_id, &new_pubkey)?;
     let sig = old.sign(&message);
     store_person_seed(home, person_id, new.as_bytes())?;
-    Ok(vec![rotated_event(person_id, &new_pubkey, &hex_lower(&sig.to_bytes()))?])
+    Ok(vec![rotated_event(
+        person_id,
+        &new_pubkey,
+        &hex_lower(&sig.to_bytes()),
+    )?])
 }
 
 fn run_app_call(
@@ -610,19 +620,21 @@ fn run_app_call(
             principal,
             bundle.resources.clone(),
         )
-            .with_runner(std::sync::Arc::new(runner.clone_for_nested()))
-            .with_interop_chain({
-                let mut next = chain.to_vec();
-                next.push(target.to_string());
-                next
-            }),
+        .with_runner(std::sync::Arc::new(runner.clone_for_nested()))
+        .with_interop_chain({
+            let mut next = chain.to_vec();
+            next.push(target.to_string());
+            next
+        }),
     ));
     let result = run_js_bundle(target, &input, &bundle, host.clone());
     let mut records = host.take_records();
     let caller = chain.last().map(String::as_str).unwrap_or("");
     match result {
         Ok(reply) => {
-            records.extend(interop_reply_records(runner, caller, target, verb, args, &reply, true)?);
+            records.extend(interop_reply_records(
+                runner, caller, target, verb, args, &reply, true,
+            )?);
             Ok(records)
         }
         Err(err) => {
@@ -965,7 +977,9 @@ fn send_email(
         .connection
         .connections
         .get(&prepared.connection)
-        .ok_or_else(|| Error::InvalidInput(format!("unknown connection: {}", prepared.connection)))?;
+        .ok_or_else(|| {
+            Error::InvalidInput(format!("unknown connection: {}", prepared.connection))
+        })?;
     if meta.kind != "smtp" {
         return Err(Error::InvalidInput(format!(
             "connection {} is {}, expected smtp",
@@ -973,12 +987,8 @@ fn send_email(
         )));
     }
     let resource_id = terrane_cap_connection::connection_resource_id(&prepared.connection)?;
-    if !terrane_cap_auth::resource_granted(
-        state,
-        &local_owner_principal(state),
-        app,
-        &resource_id,
-    )? {
+    if !terrane_cap_auth::resource_granted(state, &local_owner_principal(state), app, &resource_id)?
+    {
         return Err(Error::InvalidInput(format!(
             "permission required: grant {resource_id} to {app} for {}",
             local_owner_principal(state).subject
@@ -995,7 +1005,10 @@ fn send_email(
         .and_then(|v| v.as_str())
         .ok_or_else(|| Error::InvalidInput("smtp config missing username".into()))?;
     let port = config.get("port").and_then(|v| v.as_u64()).unwrap_or(25);
-    let from = config.get("from").and_then(|v| v.as_str()).unwrap_or(username);
+    let from = config
+        .get("from")
+        .and_then(|v| v.as_str())
+        .unwrap_or(username);
     let password = crate::secret_store::get_secret(home, &prepared.connection, "password")
         .or_else(|_| crate::secret_store::get_secret(home, &prepared.connection, "key"))?;
     let mime = build_email_message(home, from, prepared, message_id)?;
@@ -1017,7 +1030,10 @@ fn build_email_message(
     message_id: &str,
 ) -> Result<String> {
     let mut headers = String::new();
-    headers.push_str(&format!("Message-ID: <{}>\r\n", sanitize_header(message_id)));
+    headers.push_str(&format!(
+        "Message-ID: <{}>\r\n",
+        sanitize_header(message_id)
+    ));
     headers.push_str(&format!("From: {}\r\n", sanitize_header(from)));
     headers.push_str(&format!("To: {}\r\n", prepared.to.join(", ")));
     if !prepared.cc.is_empty() {
@@ -1091,14 +1107,22 @@ fn smtp_submit(
         let auth = B64.encode(format!("\0{username}\0{password}"));
         smtp_cmd(&mut stream, &format!("AUTH PLAIN {auth}\r\n"), &[235, 503])?;
     }
-    smtp_cmd(&mut stream, &format!("MAIL FROM:<{}>\r\n", smtp_addr(from)?), &[250])?;
+    smtp_cmd(
+        &mut stream,
+        &format!("MAIL FROM:<{}>\r\n", smtp_addr(from)?),
+        &[250],
+    )?;
     for rcpt in prepared
         .to
         .iter()
         .chain(prepared.cc.iter())
         .chain(prepared.bcc.iter())
     {
-        smtp_cmd(&mut stream, &format!("RCPT TO:<{}>\r\n", smtp_addr(rcpt)?), &[250, 251])?;
+        smtp_cmd(
+            &mut stream,
+            &format!("RCPT TO:<{}>\r\n", smtp_addr(rcpt)?),
+            &[250, 251],
+        )?;
     }
     smtp_cmd(&mut stream, "DATA\r\n", &[354])?;
     let data = dot_stuff(message);
@@ -1161,7 +1185,9 @@ fn read_smtp_line(stream: &mut TcpStream) -> Result<String> {
 
 fn smtp_addr(value: &str) -> Result<String> {
     if value.contains(['\r', '\n', '<', '>']) {
-        return Err(Error::InvalidInput("smtp address contains unsafe characters".into()));
+        return Err(Error::InvalidInput(
+            "smtp address contains unsafe characters".into(),
+        ));
     }
     Ok(value.to_string())
 }
@@ -1171,9 +1197,7 @@ fn sanitize_header(value: &str) -> String {
 }
 
 fn dot_stuff(message: &str) -> String {
-    message
-        .replace("\r\n.", "\r\n..")
-        .replace("\n.", "\n..")
+    message.replace("\r\n.", "\r\n..").replace("\n.", "\n..")
 }
 
 fn system_epoch_seconds() -> Result<u64> {
@@ -1328,8 +1352,8 @@ pub(crate) fn import_app_bundle_files(
             &id, &link.kind, &link.spec,
         )?);
     }
-    let file_types = crate::manifest_file_types_arg(&manifest.file_types)
-        .map_err(Error::InvalidInput)?;
+    let file_types =
+        crate::manifest_file_types_arg(&manifest.file_types).map_err(Error::InvalidInput)?;
     for spec in file_types.split(',').filter(|spec| !spec.is_empty()) {
         records.push(terrane_cap_app::link_registered_event(
             &id, "filetype", spec,
@@ -1469,7 +1493,9 @@ fn resolve_upgrade_files(
             .get(id)
             .and_then(|names| names.get(&name))
             .map(|meta| meta.hash.as_str())
-            .ok_or_else(|| Error::InvalidInput(format!("app {id} has no archived version {version}")))?;
+            .ok_or_else(|| {
+                Error::InvalidInput(format!("app {id} has no archived version {version}"))
+            })?;
         let bytes = crate::blob_store::read_verified(home, hash)?;
         return decode_bundle_archive(&bytes);
     }
@@ -1525,7 +1551,10 @@ fn validate_common_api_files(
     let source = files
         .get(&manifest.backend)
         .ok_or_else(|| {
-            Error::InvalidInput(format!("bundle backend file is missing: {}", manifest.backend))
+            Error::InvalidInput(format!(
+                "bundle backend file is missing: {}",
+                manifest.backend
+            ))
         })?
         .clone();
     crate::validate_common_api_bundle_source(
@@ -1560,10 +1589,17 @@ fn run_upgrade_migrations(
             .migrations
             .iter()
             .find(|step| step.to == next)
-            .ok_or_else(|| Error::InvalidInput(format!("manifest is missing migration step to {next}")))?;
+            .ok_or_else(|| {
+                Error::InvalidInput(format!("manifest is missing migration step to {next}"))
+            })?;
         let script = incoming_files
             .get(&step.script)
-            .ok_or_else(|| Error::InvalidInput(format!("migration script missing from bundle: {}", step.script)))?
+            .ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "migration script missing from bundle: {}",
+                    step.script
+                ))
+            })?
             .clone();
         let script_hash = terrane_cap_migration::sha256_hex(script.as_bytes());
         let host = RuntimeHostHandle::new(Box::new(
@@ -1607,7 +1643,8 @@ fn archive_bundle_events(
         id,
         format!("__app__/{id}/{version}"),
         hash,
-        u64::try_from(bytes.len()).map_err(|_| Error::Storage("bundle archive too large".into()))?,
+        u64::try_from(bytes.len())
+            .map_err(|_| Error::Storage("bundle archive too large".into()))?,
         "application/vnd.terrane.app-bundle".to_string(),
     )?])
 }
@@ -1620,7 +1657,11 @@ fn bundle_diff_events(
     let mut records = Vec::new();
     for (path, value) in incoming {
         if current.get(path) != Some(value) {
-            records.push(set_event(id.to_string(), app_bundle_key(path)?, value.clone())?);
+            records.push(set_event(
+                id.to_string(),
+                app_bundle_key(path)?,
+                value.clone(),
+            )?);
         }
     }
     for path in current.keys() {
@@ -1666,9 +1707,11 @@ pub(crate) fn decode_bundle_archive(bytes: &[u8]) -> Result<BTreeMap<String, Str
         let path_end = i
             .checked_add(path_len)
             .ok_or_else(|| Error::Storage("bundle archive path length overflow".into()))?;
-        let path = std::str::from_utf8(bytes.get(i..path_end).ok_or_else(|| {
-            Error::Storage("bundle archive truncated path".into())
-        })?)
+        let path = std::str::from_utf8(
+            bytes
+                .get(i..path_end)
+                .ok_or_else(|| Error::Storage("bundle archive truncated path".into()))?,
+        )
         .map_err(|e| Error::Storage(format!("bundle archive path utf8: {e}")))?
         .to_string();
         i = path_end;
@@ -1678,9 +1721,11 @@ pub(crate) fn decode_bundle_archive(bytes: &[u8]) -> Result<BTreeMap<String, Str
         let content_end = i
             .checked_add(content_len)
             .ok_or_else(|| Error::Storage("bundle archive content length overflow".into()))?;
-        let content = std::str::from_utf8(bytes.get(i..content_end).ok_or_else(|| {
-            Error::Storage("bundle archive truncated content".into())
-        })?)
+        let content = std::str::from_utf8(
+            bytes
+                .get(i..content_end)
+                .ok_or_else(|| Error::Storage("bundle archive truncated content".into()))?,
+        )
         .map_err(|e| Error::Storage(format!("bundle archive content utf8: {e}")))?
         .to_string();
         i = content_end;
@@ -2022,7 +2067,12 @@ fn http_get(url: &str) -> Result<(u16, String)> {
     }
 }
 
-fn http_request(home: &Path, state: &terrane_core::State, app: &str, request: &str) -> Result<Vec<EventRecord>> {
+fn http_request(
+    home: &Path,
+    state: &terrane_core::State,
+    app: &str,
+    request: &str,
+) -> Result<Vec<EventRecord>> {
     let prepared = terrane_cap_net::request::prepare_request(request)?;
     let execution_request = if prepared.has_unresolved_secret {
         crate::secret_store::resolve_net_request(home, state, app, request)?
@@ -2053,8 +2103,13 @@ fn http_request(home: &Path, state: &terrane_core::State, app: &str, request: &s
     let body_size = u64::try_from(bytes.len())
         .map_err(|_| Error::Storage("HTTP response body length overflow".into()))?;
     let body_hash = terrane_cap_net::request::sha256_hex(&bytes);
-    let recorded_body =
-        choose_recorded_body(&prepared.response_body, &bytes, &body_hash, body_size, &mime)?;
+    let recorded_body = choose_recorded_body(
+        &prepared.response_body,
+        &bytes,
+        &body_hash,
+        body_size,
+        &mime,
+    )?;
 
     let mut records = Vec::new();
     if recorded_body.kind == "blob" {
@@ -2163,8 +2218,9 @@ impl EphemeralProfile {
             std::process::id(),
             unix_nanos()
         ));
-        std::fs::create_dir(&path)
-            .map_err(|e| Error::Storage(format!("create browser profile {}: {e}", path.display())))?;
+        std::fs::create_dir(&path).map_err(|e| {
+            Error::Storage(format!("create browser profile {}: {e}", path.display()))
+        })?;
         Ok(Self { path })
     }
 }
@@ -2211,7 +2267,10 @@ fn run_chromium_render(
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         format!("--user-data-dir={}", profile.path.display()),
-        format!("--window-size={},{}", prepared.viewport_w, prepared.viewport_h),
+        format!(
+            "--window-size={},{}",
+            prepared.viewport_w, prepared.viewport_h
+        ),
         format!("--virtual-time-budget={}", prepared.wait_ms),
     ];
     match (&prepared.output, &output_file) {
@@ -2225,20 +2284,31 @@ fn run_chromium_render(
         (RenderOutput::Text | RenderOutput::Html, None) => {
             args.push("--dump-dom".to_string());
         }
-        _ => return Err(Error::Runtime("invalid browser render output path state".into())),
+        _ => {
+            return Err(Error::Runtime(
+                "invalid browser render output path state".into(),
+            ))
+        }
     }
     args.push(prepared.url.clone());
 
-    let mut output = run_command_with_timeout(&chrome, &args, Duration::from_millis(
-        terrane_cap_browser::request::TOTAL_TIMEOUT_MS,
-    ))?;
+    let mut output = run_command_with_timeout(
+        &chrome,
+        &args,
+        Duration::from_millis(terrane_cap_browser::request::TOTAL_TIMEOUT_MS),
+    )?;
     if !output.status.success() {
         let mut legacy_args = args.clone();
-        if let Some(headless) = legacy_args.iter_mut().find(|arg| arg.as_str() == "--headless=new") {
+        if let Some(headless) = legacy_args
+            .iter_mut()
+            .find(|arg| arg.as_str() == "--headless=new")
+        {
             *headless = "--headless".to_string();
-            output = run_command_with_timeout(&chrome, &legacy_args, Duration::from_millis(
-                terrane_cap_browser::request::TOTAL_TIMEOUT_MS,
-            ))?;
+            output = run_command_with_timeout(
+                &chrome,
+                &legacy_args,
+                Duration::from_millis(terrane_cap_browser::request::TOTAL_TIMEOUT_MS),
+            )?;
         }
     }
     if !output.status.success() {
@@ -2416,10 +2486,7 @@ fn extract_html_title(html: &str) -> String {
     html[body_start..body_start + end_rel].trim().to_string()
 }
 
-fn validate_browser_target(
-    url: &str,
-    allowed_hosts: &[String],
-) -> Result<()> {
+fn validate_browser_target(url: &str, allowed_hosts: &[String]) -> Result<()> {
     let (scheme, rest) = split_url_scheme(url)?;
     if !matches!(scheme, "http" | "https") {
         return Err(Error::InvalidInput(format!(
@@ -2714,8 +2781,9 @@ fn url_scheme(url: &str) -> Result<&str> {
 }
 
 fn split_url_scheme(url: &str) -> Result<(&str, &str)> {
-    url.split_once("://")
-        .ok_or_else(|| Error::InvalidInput("net request URL must include http:// or https://".into()))
+    url.split_once("://").ok_or_else(|| {
+        Error::InvalidInput("net request URL must include http:// or https://".into())
+    })
 }
 
 fn split_host_port(host_port: &str, scheme: &str) -> Result<(String, u16)> {

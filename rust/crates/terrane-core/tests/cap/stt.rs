@@ -9,9 +9,8 @@ use std::path::Path;
 
 use tempfile::tempdir;
 use terrane_cap_stt::{
-    retention_trimmed_event, segment_appended_event, selection_made_event,
-    session_closed_event, session_opened_event, SegmentAppendedRecord, SelectionMadeRecord,
-    SessionOpenedRecord,
+    retention_trimmed_event, segment_appended_event, selection_made_event, session_closed_event,
+    session_opened_event, SegmentAppendedRecord, SelectionMadeRecord, SessionOpenedRecord,
 };
 use terrane_core::{fold_records_in_memory, Core, Error, State, LOCAL_OWNER_SUBJECT};
 
@@ -38,7 +37,14 @@ fn append_segment(
 ) {
     core.dispatch(req(
         "stt.segment.append",
-        &[app, sid, &seq.to_string(), &start_ms.to_string(), &end_ms.to_string(), text],
+        &[
+            app,
+            sid,
+            &seq.to_string(),
+            &start_ms.to_string(),
+            &end_ms.to_string(),
+            text,
+        ],
     ))
     .unwrap();
 }
@@ -116,7 +122,10 @@ fn append_rejects_missing_or_closed_sessions() {
 
     // No session yet.
     assert!(matches!(
-        core.dispatch(req("stt.segment.append", &["demo", "ghost", "1", "0", "10", "x"])),
+        core.dispatch(req(
+            "stt.segment.append",
+            &["demo", "ghost", "1", "0", "10", "x"]
+        )),
         Err(Error::InvalidInput(_))
     ));
     open_session(&mut core, "demo", "s1");
@@ -124,7 +133,10 @@ fn append_rejects_missing_or_closed_sessions() {
         .unwrap();
     // Closed session cannot accept segments.
     assert!(matches!(
-        core.dispatch(req("stt.segment.append", &["demo", "s1", "1", "0", "10", "x"])),
+        core.dispatch(req(
+            "stt.segment.append",
+            &["demo", "s1", "1", "0", "10", "x"]
+        )),
         Err(Error::InvalidInput(_))
     ));
 }
@@ -287,8 +299,11 @@ fn trusted_verbs_require_trusted_host_authority() {
     // But the app-callable verbs are admitted publicly (they only validate state).
     open_session(&mut core, "demo", "s1");
     append_segment(&mut core, "demo", "s1", 1, 0, 10, "hi");
-    core.dispatch(public_req("stt.select", &["demo", "s1", "1", "1", "clipboard"]))
-        .unwrap();
+    core.dispatch(public_req(
+        "stt.select",
+        &["demo", "s1", "1", "1", "clipboard"],
+    ))
+    .unwrap();
     core.dispatch(public_req("stt.stop", &["demo", "s1"]))
         .unwrap();
     assert!(!core.state().stt.sessions["demo"]["s1"].status.is_open());
@@ -303,13 +318,16 @@ fn session_close_is_first_wins() {
 
     core.dispatch(req("stt.session.close-host", &["demo", "s1", "idle"]))
         .unwrap();
-    let reason = core.state().stt.sessions["demo"]["s1"].closed_reason.clone();
+    let reason = core.state().stt.sessions["demo"]["s1"]
+        .closed_reason
+        .clone();
     assert_eq!(reason.as_deref(), Some("idle"));
     // A second close (app stop) does not overwrite the first close reason.
-    core.dispatch(req("stt.stop", &["demo", "s1"]))
-        .unwrap();
+    core.dispatch(req("stt.stop", &["demo", "s1"])).unwrap();
     assert_eq!(
-        core.state().stt.sessions["demo"]["s1"].closed_reason.as_deref(),
+        core.state().stt.sessions["demo"]["s1"]
+            .closed_reason
+            .as_deref(),
         Some("idle")
     );
 }
@@ -471,10 +489,7 @@ fn js_backend_reads_transcript_selects_and_stops_without_inference() {
 
     core.dispatch(req("js-runtime.run", &["scribe", "transcript", "s1"]))
         .unwrap();
-    assert_eq!(
-        core.take_last_output().as_deref(),
-        Some("the quick brown")
-    );
+    assert_eq!(core.take_last_output().as_deref(), Some("the quick brown"));
 
     // select() records the slice and returns the re-derived text to JS.
     core.dispatch(req(
@@ -482,10 +497,7 @@ fn js_backend_reads_transcript_selects_and_stops_without_inference() {
         &["scribe", "select", "s1", "1", "2", "clipboard"],
     ))
     .unwrap();
-    assert_eq!(
-        core.take_last_output().as_deref(),
-        Some("the quick brown")
-    );
+    assert_eq!(core.take_last_output().as_deref(), Some("the quick brown"));
     assert_eq!(
         core.state().stt.sessions["scribe"]["s1"].selections.len(),
         1
@@ -510,9 +522,7 @@ fn js_backend_reads_transcript_selects_and_stops_without_inference() {
     assert!(core.replay_matches().unwrap());
     let reopened = Core::open(&log).unwrap();
     assert_eq!(
-        reopened.state().stt.sessions["scribe"]["s1"]
-            .segments
-            .len(),
+        reopened.state().stt.sessions["scribe"]["s1"].segments.len(),
         2
     );
     assert_eq!(
@@ -536,7 +546,8 @@ fn session_purge_drops_closed_session_from_live_state() {
         .unwrap();
     assert!(core.state().stt.sessions["demo"].contains_key("s1"));
 
-    core.dispatch(req("stt.session.purge", &["demo", "s1"])).unwrap();
+    core.dispatch(req("stt.session.purge", &["demo", "s1"]))
+        .unwrap();
     assert!(!core.state().stt.sessions["demo"].contains_key("s1"));
     assert!(core.replay_matches().unwrap());
 

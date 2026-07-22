@@ -11,7 +11,10 @@ fn system_domain_reports_host_identity_and_uptime() {
     let json = EdgeRunner::default().sample("system", &[]).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     assert!(
-        value.get("uptimeSeconds").and_then(|v| v.as_u64()).is_some(),
+        value
+            .get("uptimeSeconds")
+            .and_then(|v| v.as_u64())
+            .is_some(),
         "system should report uptime: {json}"
     );
     assert!(value.get("arch").is_some(), "system should report arch");

@@ -1,9 +1,7 @@
 use tempfile::{tempdir, TempDir};
 
 use terrane_cap_common::{decode_prepared_send, sent_event};
-use terrane_core::{
-    Core, Effect, EffectRunner, Error, EventRecord, State, LOCAL_OWNER_SUBJECT,
-};
+use terrane_core::{Core, Effect, EffectRunner, Error, EventRecord, State, LOCAL_OWNER_SUBJECT};
 
 use crate::helpers::req;
 
@@ -95,7 +93,8 @@ fn email_rate_limit_counts_recorded_attempts() {
             r#"{{"channel":"email","to":["a@example.com"],"text":"Hello","sentAt":{}}}"#,
             1000 + i
         );
-        core.dispatch(req("common.send", &["mailbot", &msg])).unwrap();
+        core.dispatch(req("common.send", &["mailbot", &msg]))
+            .unwrap();
     }
 
     let err = core

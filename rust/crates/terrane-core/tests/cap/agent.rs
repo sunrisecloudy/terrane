@@ -39,8 +39,11 @@ fn update_is_a_partial_change() {
 
     core.dispatch(req("agent.create", &["max", "Max"])).unwrap();
     // Change only the model; everything else stays put.
-    core.dispatch(req("agent.update", &["max", "--model", "opencode/big-pickle"]))
-        .unwrap();
+    core.dispatch(req(
+        "agent.update",
+        &["max", "--model", "opencode/big-pickle"],
+    ))
+    .unwrap();
 
     let max = &core.state().agent.agents["max"];
     assert_eq!(max.name, "Max");
@@ -67,7 +70,8 @@ fn removes_and_rejects_bad_input() {
     let log = dir.path().join("log.bin");
     let mut core = Core::open(&log).unwrap();
 
-    core.dispatch(req("agent.create", &["iris", "Iris"])).unwrap();
+    core.dispatch(req("agent.create", &["iris", "Iris"]))
+        .unwrap();
     // Duplicate id is rejected.
     assert!(matches!(
         core.dispatch(req("agent.create", &["iris", "Again"])),

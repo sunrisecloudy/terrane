@@ -46,7 +46,9 @@ impl CapBus for TestBus {
     fn query(&self, cap: &str, name: &str, args: &[String]) -> Result<QueryValue> {
         match (cap, name, args.first()) {
             ("app", "exists", Some(app)) => Ok(QueryValue::Bool(self.apps.contains(app))),
-            _ => Err(Error::InvalidInput(format!("unexpected query {cap}.{name}"))),
+            _ => Err(Error::InvalidInput(format!(
+                "unexpected query {cap}.{name}"
+            ))),
         }
     }
 }
@@ -103,14 +105,7 @@ fn query_json(state: &TestState, name: &str, args: &[&str]) -> Value {
     let bus = TestBus::new(&["notes"]);
     let args = args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
     match cap
-        .query(
-            QueryCtx {
-                state,
-                bus: &bus,
-            },
-            name,
-            &args,
-        )
+        .query(QueryCtx { state, bus: &bus }, name, &args)
         .unwrap()
     {
         QueryValue::Json(json) => serde_json::from_str(&json).unwrap(),

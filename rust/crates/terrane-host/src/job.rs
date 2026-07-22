@@ -27,7 +27,11 @@ pub fn run_due_at(core: &mut HostCore, tick_epoch_ms: u64) -> Result<Vec<JobRunO
         dispatch_on_core(
             core,
             "job.reap",
-            &[item.app.clone(), item.job_id.clone(), tick_epoch_ms.to_string()],
+            &[
+                item.app.clone(),
+                item.job_id.clone(),
+                tick_epoch_ms.to_string(),
+            ],
         )?;
     }
 

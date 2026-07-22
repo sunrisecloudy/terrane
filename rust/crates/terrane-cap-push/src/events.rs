@@ -89,10 +89,7 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
         "push.delivered" => {
             let event: Delivered = decode_event(record)?;
             let state = state_mut::<PushState>(state, "push")?;
-            let history = state
-                .deliveries
-                .entry(event.app)
-                .or_default();
+            let history = state.deliveries.entry(event.app).or_default();
             history.entry(event.sub_id).or_default().insert(
                 event.event_seq,
                 PushDelivery {
@@ -105,10 +102,7 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
         "push.failed" => {
             let event: Failed = decode_event(record)?;
             let state = state_mut::<PushState>(state, "push")?;
-            let history = state
-                .deliveries
-                .entry(event.app)
-                .or_default();
+            let history = state.deliveries.entry(event.app).or_default();
             history.entry(event.sub_id).or_default().insert(
                 event.event_seq,
                 PushDelivery {

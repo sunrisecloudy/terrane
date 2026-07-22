@@ -286,7 +286,9 @@ impl Capability for StreamCapability {
             "stream.close" => decide_close(ctx, args, "requested", "app"),
             "stream.message" => decide_message(ctx, args),
             "stream.reopened" => decide_reopened(ctx, args),
-            "stream.close-host" => decide_close(ctx, args, arg(args, 2, "reason")?.as_str(), "host"),
+            "stream.close-host" => {
+                decide_close(ctx, args, arg(args, 2, "reason")?.as_str(), "host")
+            }
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }
@@ -298,7 +300,9 @@ impl Capability for StreamCapability {
         _args: &[String],
     ) -> Result<ReadValue> {
         match name {
-            "list" => Ok(ReadValue::OptString(Some(stream_list_json(ctx.state, ctx.app)?))),
+            "list" => Ok(ReadValue::OptString(Some(stream_list_json(
+                ctx.state, ctx.app,
+            )?))),
             other => Err(Error::InvalidInput(format!(
                 "unknown resource read: stream.{other}"
             ))),
@@ -332,10 +336,12 @@ impl Capability for StreamCapability {
                     .streams
                     .get_mut(&e.app)
                     .and_then(|streams| streams.get_mut(&e.name))
-                    .ok_or_else(|| Error::InvalidInput(format!(
-                        "stream.message for unknown stream: {}/{}",
-                        e.app, e.name
-                    )))?;
+                    .ok_or_else(|| {
+                        Error::InvalidInput(format!(
+                            "stream.message for unknown stream: {}/{}",
+                            e.app, e.name
+                        ))
+                    })?;
                 if e.seq <= stream.last_seq {
                     return Err(Error::InvalidInput(format!(
                         "stream.message seq regression for {}/{}: got {}, last {}",
@@ -343,22 +349,18 @@ impl Capability for StreamCapability {
                     )));
                 }
                 stream.last_seq = e.seq;
-                state
-                    .messages
-                    .entry(e.app)
-                    .or_default()
-                    .insert(
-                        e.name,
-                        StreamMessage {
-                            seq: e.seq,
-                            data_kind: e.data_kind,
-                            data: e.data,
-                            data_is_base64: e.data_is_base64,
-                            data_hash: e.data_hash,
-                            data_size: e.data_size,
-                            received_at: e.received_at,
-                        },
-                    );
+                state.messages.entry(e.app).or_default().insert(
+                    e.name,
+                    StreamMessage {
+                        seq: e.seq,
+                        data_kind: e.data_kind,
+                        data: e.data,
+                        data_is_base64: e.data_is_base64,
+                        data_hash: e.data_hash,
+                        data_size: e.data_size,
+                        received_at: e.received_at,
+                    },
+                );
             }
             "stream.reopened" => {
                 let e: Reopened = decode_event(record)?;
@@ -453,12 +455,7 @@ fn decide_open(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     )?]))
 }
 
-fn decide_close(
-    ctx: CommandCtx<'_>,
-    args: &[String],
-    reason: &str,
-    by: &str,
-) -> Result<Decision> {
+fn decide_close(ctx: CommandCtx<'_>, args: &[String], reason: &str, by: &str) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
     let name = validate_name(&arg(args, 1, "name")?)?;
     ensure_stream_exists(ctx.state, &app, &name)?;
@@ -510,17 +507,19 @@ fn decide_message(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
             "blob stream message data must be empty or a __stream__/ blob name".into(),
         ));
     }
-    Ok(Decision::Commit(vec![message_event(StreamMessageRecord {
-        app,
-        name,
-        seq,
-        data_kind,
-        data,
-        data_is_base64,
-        data_hash,
-        data_size,
-        received_at,
-    })?]))
+    Ok(Decision::Commit(vec![message_event(
+        StreamMessageRecord {
+            app,
+            name,
+            seq,
+            data_kind,
+            data,
+            data_is_base64,
+            data_hash,
+            data_size,
+            received_at,
+        },
+    )?]))
 }
 
 fn decide_reopened(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
@@ -589,7 +588,10 @@ fn validate_stream_url(kind: StreamKind, url: &str) -> Result<()> {
     if url.trim().is_empty() {
         return Err(Error::InvalidInput("url must not be empty".into()));
     }
-    let scheme = url.split_once("://").map(|(scheme, _)| scheme).unwrap_or("");
+    let scheme = url
+        .split_once("://")
+        .map(|(scheme, _)| scheme)
+        .unwrap_or("");
     let ok = match kind {
         StreamKind::Sse => matches!(scheme, "http" | "https"),
         StreamKind::Ws => matches!(scheme, "ws" | "wss"),
@@ -717,7 +719,9 @@ fn validate_hash(hash: &str) -> Result<String> {
     if hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(hash.to_ascii_lowercase())
     } else {
-        Err(Error::InvalidInput("stream data_hash must be sha256 hex".into()))
+        Err(Error::InvalidInput(
+            "stream data_hash must be sha256 hex".into(),
+        ))
     }
 }
 
@@ -730,7 +734,9 @@ fn parse_bool(raw: &str, label: &str) -> Result<bool> {
     match raw {
         "true" => Ok(true),
         "false" => Ok(false),
-        _ => Err(Error::InvalidInput(format!("{label} must be true or false"))),
+        _ => Err(Error::InvalidInput(format!(
+            "{label} must be true or false"
+        ))),
     }
 }
 
@@ -792,10 +798,14 @@ fn headers_redacted(value: Option<&Value>, sensitive: &[String]) -> Result<Map<S
         }
         let value = if is_secret_marker(value)? {
             value.clone()
-        } else if terrane_cap_net::request::is_sensitive_header(&name, &sensitive.iter().cloned().collect()) {
+        } else if terrane_cap_net::request::is_sensitive_header(
+            &name,
+            &sensitive.iter().cloned().collect(),
+        ) {
             Value::String(REDACTED.to_string())
         } else {
-            value.as_str()
+            value
+                .as_str()
                 .map(|s| Value::String(s.to_string()))
                 .ok_or_else(|| {
                     Error::InvalidInput(

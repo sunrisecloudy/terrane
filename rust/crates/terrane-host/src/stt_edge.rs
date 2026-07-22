@@ -14,9 +14,7 @@ use std::time::Duration;
 
 use terrane_core::Result as TerraneResult;
 
-use crate::stt_runner::{
-    AsrEngine, AsrOutput, PcmRing, SegmentSink, SessionConfig, SttRunner,
-};
+use crate::stt_runner::{AsrEngine, AsrOutput, PcmRing, SegmentSink, SessionConfig, SttRunner};
 
 const HOST_ID: &str = "macos-host";
 const DEFAULT_MODEL: &str = "whisper-tiny";
@@ -213,20 +211,13 @@ pub(crate) fn session_end(
         .lock()
         .map_err(|_| "native stt session registry poisoned".to_string())?
         .remove(session_id);
-    let args = vec![
-        app.to_string(),
-        session_id.to_string(),
-        reason.to_string(),
-    ];
+    let args = vec![app.to_string(), session_id.to_string(), reason.to_string()];
     dispatch_on_handle(handle, "stt.session.close-host", &args)
 }
 
 fn ensure_worker() {
     let hub = hub();
-    let mut guard = hub
-        .worker
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut guard = hub.worker.lock().unwrap_or_else(|e| e.into_inner());
     if guard.is_some() {
         return;
     }
@@ -290,7 +281,11 @@ fn dispatch_on_handle(
     }
     // SAFETY: callers pass a live TerraneHandle* from terrane_open for the process lifetime.
     unsafe {
-        crate::ffi::dispatch_on_terrane_handle(handle as *mut crate::ffi::TerraneHandle, command, args)
+        crate::ffi::dispatch_on_terrane_handle(
+            handle as *mut crate::ffi::TerraneHandle,
+            command,
+            args,
+        )
     }
 }
 
@@ -313,7 +308,12 @@ fn segment_args(
         args.push("--confidence".into());
         args.push(confidence.to_string());
     }
-    if let Some(lang) = output.lang.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(lang) = output
+        .lang
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         args.push("--lang".into());
         args.push(lang.to_string());
     }

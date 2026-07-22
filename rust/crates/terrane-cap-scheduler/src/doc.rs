@@ -9,8 +9,16 @@ fn scheduler_resource_methods() -> Vec<ResourceMethodDoc> {
         "set",
         "write",
         &[
-            param("name", "Stable schedule name within the app.", "scheduler_name"),
-            param("specJson", "Canonical one-shot or cron schedule JSON.", "json"),
+            param(
+                "name",
+                "Stable schedule name within the app.",
+                "scheduler_name",
+            ),
+            param(
+                "specJson",
+                "Canonical one-shot or cron schedule JSON.",
+                "json",
+            ),
         ],
         "Create or replace one app-owned schedule.",
     );
@@ -114,11 +122,18 @@ pub fn scheduler_doc(include_internal: bool) -> CapabilityDoc {
 fn scheduler_queries() -> Vec<QueryDoc> {
     vec![query_doc(
         "scheduler.due",
-        &[param("now_ms", "Caller-supplied epoch milliseconds.", "epoch_ms")],
+        &[param(
+            "now_ms",
+            "Caller-supplied epoch milliseconds.",
+            "epoch_ms",
+        )],
         "JSON array of due {app,name,scheduled_for,skipped} objects",
         "Pure host query for schedules due at the supplied time.",
     )
-    .with_errors(&["now_ms must be an unsigned integer", "invalid folded schedule spec"])]
+    .with_errors(&[
+        "now_ms must be an unsigned integer",
+        "invalid folded schedule spec",
+    ])]
 }
 
 fn scheduler_commands() -> Vec<CommandDoc> {
@@ -151,9 +166,17 @@ fn scheduler_commands() -> Vec<CommandDoc> {
             &[
                 param("app", "Existing app id.", "app_id"),
                 param("name", "Schedule name.", "scheduler_name"),
-                param("scheduled_for", "Observed due epoch milliseconds.", "epoch_ms"),
+                param(
+                    "scheduled_for",
+                    "Observed due epoch milliseconds.",
+                    "epoch_ms",
+                ),
                 param("fired_at", "Observed fire epoch milliseconds.", "epoch_ms"),
-                param("skipped", "Older missed occurrences collapsed into this fire.", "integer"),
+                param(
+                    "skipped",
+                    "Older missed occurrences collapsed into this fire.",
+                    "integer",
+                ),
             ],
             "commit",
             "Trusted host fact for one timer firing.",
@@ -187,7 +210,11 @@ fn scheduler_events() -> Vec<EventDoc> {
             &[
                 param("app", "Owning app id.", "app_id"),
                 param("name", "Schedule name within the app.", "scheduler_name"),
-                param("scheduled_for", "Observed due epoch milliseconds.", "epoch_ms"),
+                param(
+                    "scheduled_for",
+                    "Observed due epoch milliseconds.",
+                    "epoch_ms",
+                ),
                 param("fired_at", "Observed fire epoch milliseconds.", "epoch_ms"),
                 param("skipped", "Older missed occurrences.", "integer"),
             ],

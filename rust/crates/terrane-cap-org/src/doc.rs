@@ -113,7 +113,11 @@ fn org_commands() -> Vec<terrane_cap_interface::CommandDoc> {
     vec![
         command_doc(
             "org.create",
-            &[param("founder", "Person id of the founding owner.", "person_id")],
+            &[param(
+                "founder",
+                "Person id of the founding owner.",
+                "person_id",
+            )],
             "effect",
             "Mint the org keypair once and record the org home plus the founder's owner grant.",
         )
@@ -128,9 +132,21 @@ fn org_commands() -> Vec<terrane_cap_interface::CommandDoc> {
             "org.invite",
             &[
                 param("org_id", "Existing org id.", "org_id"),
-                param("role", "Role the invite grants on redemption (owner/admin/member).", "string"),
-                param("token_hash", "sha256 hex of the invite token; the host mints the token out-of-band.", "hex"),
-                param("note", "Optional human-readable note (empty allowed).", "string"),
+                param(
+                    "role",
+                    "Role the invite grants on redemption (owner/admin/member).",
+                    "string",
+                ),
+                param(
+                    "token_hash",
+                    "sha256 hex of the invite token; the host mints the token out-of-band.",
+                    "hex",
+                ),
+                param(
+                    "note",
+                    "Optional human-readable note (empty allowed).",
+                    "string",
+                ),
             ],
             "commit",
             "Record an open org invite for a role.",
@@ -147,7 +163,11 @@ fn org_commands() -> Vec<terrane_cap_interface::CommandDoc> {
             "org.join",
             &[
                 param("org_id", "Existing org id.", "org_id"),
-                param("token_hash", "sha256 hex of the invite token being redeemed.", "hex"),
+                param(
+                    "token_hash",
+                    "sha256 hex of the invite token being redeemed.",
+                    "hex",
+                ),
                 param("member", "Person id of the joining member.", "person_id"),
             ],
             "effect",
@@ -165,7 +185,11 @@ fn org_commands() -> Vec<terrane_cap_interface::CommandDoc> {
             "org.leave",
             &[
                 param("org_id", "Existing org id.", "org_id"),
-                param("member", "Person id of the member leaving the org.", "person_id"),
+                param(
+                    "member",
+                    "Person id of the member leaving the org.",
+                    "person_id",
+                ),
             ],
             "commit",
             "Mark a folded org membership inactive.",
@@ -178,7 +202,11 @@ fn org_commands() -> Vec<terrane_cap_interface::CommandDoc> {
                 param("org_id", "Existing org id.", "org_id"),
                 param("member", "Person id of the target member.", "person_id"),
                 param("role", "New role to grant (owner/admin/member).", "string"),
-                param("signer", "Person id of the admin/owner signing the grant.", "person_id"),
+                param(
+                    "signer",
+                    "Person id of the admin/owner signing the grant.",
+                    "person_id",
+                ),
             ],
             "effect",
             "Issue a person-signed role grant, replacing the member's current role.",
@@ -198,14 +226,22 @@ fn org_queries() -> Vec<terrane_cap_interface::QueryDoc> {
     vec![
         query_doc(
             "org.info",
-            &[param("org_id", "Optional org id; defaults to the primary org.", "org_id")],
+            &[param(
+                "org_id",
+                "Optional org id; defaults to the primary org.",
+                "org_id",
+            )],
             "json|null",
             "Return the folded org record or null when no org exists.",
         )
         .with_errors(&["invalid org_id", "invalid folded org JSON serialization"]),
         query_doc(
             "org.members",
-            &[param("org_id", "Optional org id; defaults to the primary org.", "org_id")],
+            &[param(
+                "org_id",
+                "Optional org id; defaults to the primary org.",
+                "org_id",
+            )],
             "json",
             "Return the folded membership list for an org (member, role, signer, active).",
         )

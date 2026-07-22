@@ -10,11 +10,17 @@ fn mcp_resource_methods() -> Vec<ResourceMethodDoc> {
         &[
             param("connection", "Named external MCP server.", "string"),
             param("tool", "External MCP tool name.", "string"),
-            param("argsJson", "Tool arguments JSON object; may include sensitiveArgs JSON pointers.", "json"),
+            param(
+                "argsJson",
+                "Tool arguments JSON object; may include sensitiveArgs JSON pointers.",
+                "json",
+            ),
         ],
         "Recorded external MCP tools/call. Replay folds mcp.called and never contacts the server.",
     );
-    call.returns = "the MCP content array as canonical JSON, or a blob reference error for offloaded results".to_string();
+    call.returns =
+        "the MCP content array as canonical JSON, or a blob reference error for offloaded results"
+            .to_string();
     let mut tools = resource_method(
         "tools",
         "call",
@@ -109,13 +115,21 @@ fn mcp_commands() -> Vec<CommandDoc> {
             "mcp.connect",
             &[
                 param("name", "Connection name.", "string"),
-                param("transport_json", "stdio or http transport JSON with optional $secret markers.", "json"),
+                param(
+                    "transport_json",
+                    "stdio or http transport JSON with optional $secret markers.",
+                    "json",
+                ),
             ],
             "commit",
             "Validate and record a redacted external MCP transport registry entry.",
         )
         .with_emits(&["mcp.connected"])
-        .with_errors(&["invalid name", "invalid transport JSON", "connection limit exceeded"]),
+        .with_errors(&[
+            "invalid name",
+            "invalid transport JSON",
+            "connection limit exceeded",
+        ]),
         command_doc(
             "mcp.disconnect",
             &[param("name", "Connection name.", "string")],
@@ -127,7 +141,11 @@ fn mcp_commands() -> Vec<CommandDoc> {
         command_doc(
             "mcp.call",
             &[
-                param("app", "Existing app id that owns the recorded call.", "app_id"),
+                param(
+                    "app",
+                    "Existing app id that owns the recorded call.",
+                    "app_id",
+                ),
                 param("connection", "External MCP connection name.", "string"),
                 param("tool", "Tool name.", "string"),
                 param("args_json", "Tool arguments JSON object.", "json"),
@@ -137,7 +155,12 @@ fn mcp_commands() -> Vec<CommandDoc> {
         )
         .with_effects(&["McpCall"])
         .with_emits(&["mcp.called", "blob.stored when result offloads"])
-        .with_errors(&["app not found", "unknown mcp connection", "missing mcp:<name> grant", "invalid args JSON"]),
+        .with_errors(&[
+            "app not found",
+            "unknown mcp connection",
+            "missing mcp:<name> grant",
+            "invalid args JSON",
+        ]),
         command_doc(
             "mcp.tools",
             &[
@@ -148,7 +171,11 @@ fn mcp_commands() -> Vec<CommandDoc> {
             "List tools on a live external MCP server without recording the response.",
         )
         .with_effects(&["McpTools"])
-        .with_errors(&["app not found", "unknown mcp connection", "missing mcp:<name> grant"]),
+        .with_errors(&[
+            "app not found",
+            "unknown mcp connection",
+            "missing mcp:<name> grant",
+        ]),
     ]
 }
 
@@ -158,7 +185,11 @@ fn mcp_events() -> Vec<EventDoc> {
             "mcp.connected",
             &[
                 param("name", "Connection name.", "string"),
-                param("transport_json_redacted", "Redacted stdio/http transport JSON.", "json"),
+                param(
+                    "transport_json_redacted",
+                    "Redacted stdio/http transport JSON.",
+                    "json",
+                ),
             ],
             "Records an operator-defined external MCP connection.",
         ),
@@ -173,14 +204,30 @@ fn mcp_events() -> Vec<EventDoc> {
                 param("app", "App id that requested the call.", "app_id"),
                 param("connection", "External MCP connection name.", "string"),
                 param("tool", "Tool name.", "string"),
-                param("args_json_redacted", "Canonical arguments after sensitiveArgs redaction.", "json"),
+                param(
+                    "args_json_redacted",
+                    "Canonical arguments after sensitiveArgs redaction.",
+                    "json",
+                ),
                 param("result_kind", "inline or blob.", "string"),
-                param("result", "Canonical MCP content JSON or empty for blob.", "json|string"),
-                param("result_is_base64", "True when inline result is base64 encoded.", "bool"),
+                param(
+                    "result",
+                    "Canonical MCP content JSON or empty for blob.",
+                    "json|string",
+                ),
+                param(
+                    "result_is_base64",
+                    "True when inline result is base64 encoded.",
+                    "bool",
+                ),
                 param("result_hash", "SHA-256 of result bytes.", "sha256"),
                 param("result_size", "Result byte length.", "u64"),
                 param("is_error", "MCP isError flag or transport failure.", "bool"),
-                param("called_at", "Host timestamp recorded at the edge.", "string"),
+                param(
+                    "called_at",
+                    "Host timestamp recorded at the edge.",
+                    "string",
+                ),
             ],
             "Records an observed external MCP tool result for replay.",
         )

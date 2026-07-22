@@ -26,14 +26,7 @@ fn add_bundle(home: &Path, id: &str, resources: &str, backend: &str) {
     let source = write_bundle(home, id, resources, backend);
     let (ok, out, err) = terrane(
         home,
-        &[
-            "app",
-            "add",
-            id,
-            id,
-            "--source",
-            source.to_str().unwrap(),
-        ],
+        &["app", "add", id, id, "--source", source.to_str().unwrap()],
     );
     assert!(ok && out.contains("app.added"), "app add: {out} {err}");
 }
@@ -104,7 +97,10 @@ fn thrown_exception_writes_buffer_and_records_error_fact_when_granted() {
 
     let (ok, out, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
-    assert!(out.contains("telemetry.error crashy source=exception"), "log: {out}");
+    assert!(
+        out.contains("telemetry.error crashy source=exception"),
+        "log: {out}"
+    );
 }
 
 #[test]

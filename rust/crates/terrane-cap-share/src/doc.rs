@@ -127,7 +127,11 @@ fn events() -> Vec<EventDoc> {
             &[
                 param("app", "Shared app id.", "app_id"),
                 param("rights", "read or write.", "read|write"),
-                param("token_hash", "SHA-256 lowercase hex invite token hash.", "hex"),
+                param(
+                    "token_hash",
+                    "SHA-256 lowercase hex invite token hash.",
+                    "hex",
+                ),
                 param("note", "Optional note.", "string"),
             ],
             "Records an open invite without the plaintext token.",

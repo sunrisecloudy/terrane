@@ -4,12 +4,7 @@ use terrane_cap_interface::{
 };
 
 /// Like [`resource_method`], but records the return shape the docs require.
-fn method(
-    name: &str,
-    params: &[ParamDoc],
-    returns: &str,
-    summary: &str,
-) -> ResourceMethodDoc {
+fn method(name: &str, params: &[ParamDoc], returns: &str, summary: &str) -> ResourceMethodDoc {
     let mut doc = resource_method(name, "read", params, summary);
     doc.returns = returns.to_string();
     doc

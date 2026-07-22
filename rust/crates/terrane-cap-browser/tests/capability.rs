@@ -164,10 +164,9 @@ fn browser_rejects_invalid_inputs() {
         MAX_WAIT_MS + 1
     ))
     .is_err());
-    assert!(prepare_render(
-        r#"{"url":"https://example.test","viewport":{"w":3841,"h":800}}"#
-    )
-    .is_err());
+    assert!(
+        prepare_render(r#"{"url":"https://example.test","viewport":{"w":3841,"h":800}}"#).is_err()
+    );
 }
 
 #[test]

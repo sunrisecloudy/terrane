@@ -150,7 +150,13 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
                 }
             }
             if let Some((operation_id, input_json, result_json)) = registration_update {
-                fold_registration_completion(state, &event.app, &operation_id, &input_json, &result_json);
+                fold_registration_completion(
+                    state,
+                    &event.app,
+                    &operation_id,
+                    &input_json,
+                    &result_json,
+                );
             }
             enforce_retention(state, &event.app);
         }

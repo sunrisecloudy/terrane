@@ -286,8 +286,12 @@ fn applescript_commands_are_grant_gated_for_public_callers() {
     app(&mut core, "demo");
 
     assert_eq!(
-        authorize_public_command(&core, "applescript.run", &["demo".into(), "return 1".into()])
-            .unwrap(),
+        authorize_public_command(
+            &core,
+            "applescript.run",
+            &["demo".into(), "return 1".into()]
+        )
+        .unwrap(),
         PublicCommandAuthz::NeedsGrant {
             app: "demo".into(),
             namespace: "applescript".into()
@@ -296,8 +300,12 @@ fn applescript_commands_are_grant_gated_for_public_callers() {
 
     grant(&mut core, "demo", "applescript");
     assert_eq!(
-        authorize_public_command(&core, "applescript.check", &["demo".into(), "return 1".into()])
-            .unwrap(),
+        authorize_public_command(
+            &core,
+            "applescript.check",
+            &["demo".into(), "return 1".into()]
+        )
+        .unwrap(),
         PublicCommandAuthz::Allow
     );
 }

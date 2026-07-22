@@ -111,9 +111,9 @@ impl Capability for SyncCapability {
 
     fn query(&self, ctx: QueryCtx<'_>, name: &str, args: &[String]) -> Result<QueryValue> {
         match name {
-            "peers" => Ok(QueryValue::Json(peers_json(
-                state_ref::<SyncState>(ctx.state, "sync")?,
-            ))),
+            "peers" => Ok(QueryValue::Json(peers_json(state_ref::<SyncState>(
+                ctx.state, "sync",
+            )?))),
             "cursor" => {
                 let peer = arg(args, 0, "peer")?;
                 let app = arg(args, 1, "app")?;
@@ -139,7 +139,10 @@ impl Capability for SyncCapability {
             }
             "sync.peer.unpaired" => {
                 let e: PeerUnpaired = decode_event(record)?;
-                if let Some(peer) = state_mut::<SyncState>(state, "sync")?.peers.get_mut(&e.peer) {
+                if let Some(peer) = state_mut::<SyncState>(state, "sync")?
+                    .peers
+                    .get_mut(&e.peer)
+                {
                     peer.paired = false;
                 }
             }
@@ -220,7 +223,9 @@ fn decide_apply(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         .get(&peer)
         .is_some_and(|p| p.paired)
     {
-        return Err(Error::InvalidInput(format!("sync peer is not paired: {peer}")));
+        return Err(Error::InvalidInput(format!(
+            "sync peer is not paired: {peer}"
+        )));
     }
     let from_seq = parse_seq(args, 2, "from_seq")?;
     let to_seq = parse_seq(args, 3, "to_seq")?;
@@ -336,9 +341,9 @@ pub fn from_hex(value: &str) -> Result<Vec<u8>> {
 }
 
 fn parse_seq(args: &[String], index: usize, label: &str) -> Result<u64> {
-    arg(args, index, label)?.parse::<u64>().map_err(|_| {
-        Error::InvalidInput(format!("{label} must be a non-negative integer"))
-    })
+    arg(args, index, label)?
+        .parse::<u64>()
+        .map_err(|_| Error::InvalidInput(format!("{label} must be a non-negative integer")))
 }
 
 fn cursor_for(state: &dyn StateStore, peer: &str, app: &str) -> Result<u64> {

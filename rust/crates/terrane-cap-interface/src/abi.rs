@@ -413,7 +413,9 @@ pub fn parse_item_uri(uri: &str) -> Result<ItemUri> {
         )));
     };
     if app.is_empty() {
-        return Err(Error::InvalidInput("item URI app id must not be empty".into()));
+        return Err(Error::InvalidInput(
+            "item URI app id must not be empty".into(),
+        ));
     }
     Ok(ItemUri {
         app: app.to_string(),

@@ -68,7 +68,10 @@ fn app_removed_clears_share_state() {
         &mut store,
         &EventRecord {
             kind: "app.removed".to_string(),
-            payload: borsh::to_vec(&AppRemoved { id: "notes".to_string() }).unwrap(),
+            payload: borsh::to_vec(&AppRemoved {
+                id: "notes".to_string(),
+            })
+            .unwrap(),
             actor: String::new(),
         },
     )

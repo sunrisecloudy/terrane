@@ -200,7 +200,11 @@ fn transform_image(
                 max_width,
                 max_height,
             } => {
-                image = image.resize(*max_width, *max_height, image::imageops::FilterType::Lanczos3);
+                image = image.resize(
+                    *max_width,
+                    *max_height,
+                    image::imageops::FilterType::Lanczos3,
+                );
             }
             terrane_cap_media::ops::MediaOp::Crop {
                 x,
@@ -211,7 +215,9 @@ fn transform_image(
                 if x.saturating_add(*width) > image.width()
                     || y.saturating_add(*height) > image.height()
                 {
-                    return Err(Error::InvalidInput("crop rectangle exceeds image bounds".into()));
+                    return Err(Error::InvalidInput(
+                        "crop rectangle exceeds image bounds".into(),
+                    ));
                 }
                 image = image.crop_imm(*x, *y, *width, *height);
             }

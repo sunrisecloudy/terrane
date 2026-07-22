@@ -104,7 +104,11 @@ fn commands() -> Vec<CommandDoc> {
             "commit",
             "Record a durable app subscription.",
         )
-        .with_errors(&["unknown app", "invalid event pattern", "too many subscriptions"])
+        .with_errors(&[
+            "unknown app",
+            "invalid event pattern",
+            "too many subscriptions",
+        ])
         .with_emits(&["push.subscribed"]),
         command_doc(
             "push.unsubscribe",
@@ -122,7 +126,11 @@ fn commands() -> Vec<CommandDoc> {
             &[
                 param("app", "App id.", "string"),
                 param("subId", "Subscription id.", "string"),
-                param("eventSeq", "Local log sequence of the matched event.", "u64"),
+                param(
+                    "eventSeq",
+                    "Local log sequence of the matched event.",
+                    "u64",
+                ),
                 param("status", "delivered or failed.", "string"),
                 param("detail", "Optional failure detail.", "string"),
             ],
@@ -141,7 +149,11 @@ fn events() -> Vec<EventDoc> {
             &[
                 param("app", "App id.", "string"),
                 param("subId", "Subscription id.", "string"),
-                param("eventPattern", "Exact kind or namespace wildcard.", "string"),
+                param(
+                    "eventPattern",
+                    "Exact kind or namespace wildcard.",
+                    "string",
+                ),
                 param("template", "Notification template.", "string"),
             ],
             "Upsert a synced subscription fact.",
@@ -186,27 +198,36 @@ fn resources() -> Vec<ResourceDoc> {
 
 fn resource_methods() -> Vec<ResourceMethodDoc> {
     vec![
-        method_returns(resource_method(
-            "subscribe",
-            "call",
-            &[
-                param("pattern", "Exact kind or namespace wildcard.", "string"),
-                param("template", "Notification template.", "string"),
-            ],
-            "Subscribe this app to matching data changes.",
-        ), "subId string"),
-        method_returns(resource_method(
-            "unsubscribe",
-            "call",
-            &[param("subId", "Subscription id.", "string")],
-            "Remove a subscription.",
-        ), "JSON subscription list"),
-        method_returns(resource_method(
-            "list",
-            "read",
-            &[],
-            "Return this app's subscriptions as JSON.",
-        ), "JSON subscription list"),
+        method_returns(
+            resource_method(
+                "subscribe",
+                "call",
+                &[
+                    param("pattern", "Exact kind or namespace wildcard.", "string"),
+                    param("template", "Notification template.", "string"),
+                ],
+                "Subscribe this app to matching data changes.",
+            ),
+            "subId string",
+        ),
+        method_returns(
+            resource_method(
+                "unsubscribe",
+                "call",
+                &[param("subId", "Subscription id.", "string")],
+                "Remove a subscription.",
+            ),
+            "JSON subscription list",
+        ),
+        method_returns(
+            resource_method(
+                "list",
+                "read",
+                &[],
+                "Return this app's subscriptions as JSON.",
+            ),
+            "JSON subscription list",
+        ),
     ]
 }
 

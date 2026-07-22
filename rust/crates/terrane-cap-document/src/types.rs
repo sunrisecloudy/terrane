@@ -222,7 +222,9 @@ fn parse_json_object(raw: &str, label: &str) -> Result<Map<String, Value>> {
     let value: Value = serde_json::from_str(raw)
         .map_err(|e| Error::InvalidInput(format!("{label} is invalid JSON: {e}")))?;
     let Value::Object(object) = value else {
-        return Err(Error::InvalidInput(format!("{label} must be a JSON object")));
+        return Err(Error::InvalidInput(format!(
+            "{label} must be a JSON object"
+        )));
     };
     Ok(object)
 }

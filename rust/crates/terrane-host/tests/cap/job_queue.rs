@@ -50,23 +50,21 @@ fn job_submit_tick_complete_and_replay() {
         ],
     );
     assert!(ok, "app add failed: {err}");
-    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "job-app", "job"]);
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "job-app", "job"],
+    );
     assert!(ok, "job grant failed: {err}");
-    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "job-app", "kv"]);
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "job-app", "kv"],
+    );
     assert!(ok, "kv grant failed: {err}");
 
     let (ok, out, err) = terrane(
         home,
         &[
-            "job",
-            "submit",
-            "job-app",
-            "work",
-            "--job-id",
-            "job-1",
-            "--now-ms",
-            "1000",
-            "alpha",
+            "job", "submit", "job-app", "work", "--job-id", "job-1", "--now-ms", "1000", "alpha",
         ],
     );
     assert!(ok, "job submit failed: {err}");
@@ -132,23 +130,18 @@ fn failing_job_records_retry_backoff_and_terminal_failure() {
         ],
     );
     assert!(ok, "app add failed: {err}");
-    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "job-app", "job"]);
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "job-app", "job"],
+    );
     assert!(ok, "job grant failed: {err}");
 
     let retry = r#"{"maxAttempts":2,"baseDelayMs":100,"factor":2,"maxDelayMs":1000}"#;
     let (ok, _, err) = terrane(
         home,
         &[
-            "job",
-            "submit",
-            "job-app",
-            "fail",
-            "--job-id",
-            "job-err",
-            "--now-ms",
-            "1000",
-            "--retry",
-            retry,
+            "job", "submit", "job-app", "fail", "--job-id", "job-err", "--now-ms", "1000",
+            "--retry", retry,
         ],
     );
     assert!(ok, "job submit failed: {err}");

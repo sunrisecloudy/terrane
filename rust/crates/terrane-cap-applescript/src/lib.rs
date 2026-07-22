@@ -114,7 +114,9 @@ impl Capability for AppleScriptCapability {
     ) -> Result<ReadValue> {
         match method {
             "run" => Ok(ReadValue::OptString(events::run_json_from_records(records))),
-            "check" => Ok(ReadValue::OptString(events::check_json_from_records(records))),
+            "check" => Ok(ReadValue::OptString(events::check_json_from_records(
+                records,
+            ))),
             other => Err(Error::InvalidInput(format!(
                 "applescript.{other} is not a callable resource"
             ))),

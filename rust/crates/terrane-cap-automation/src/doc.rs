@@ -9,7 +9,11 @@ fn automation_resource_methods() -> Vec<ResourceMethodDoc> {
         "set",
         "write",
         &[
-            param("name", "Stable rule name within the app.", "automation_name"),
+            param(
+                "name",
+                "Stable rule name within the app.",
+                "automation_name",
+            ),
             param("ruleJson", "Event trigger rule JSON.", "json"),
         ],
         "Create or replace one app-owned event automation rule.",
@@ -167,13 +171,21 @@ fn automation_commands() -> Vec<CommandDoc> {
                 param("app", "Existing app id.", "app_id"),
                 param("name", "Rule name.", "automation_name"),
                 param("rule_hash", "Hash of the canonical rule.", "sha256"),
-                param("event_ref", "Stable hash of the triggering event.", "sha256"),
+                param(
+                    "event_ref",
+                    "Stable hash of the triggering event.",
+                    "sha256",
+                ),
                 param("fired_at", "Observed fire epoch milliseconds.", "epoch_ms"),
             ],
             "commit",
             "Trusted host fact for one rule firing.",
         )
-        .with_errors(&["unknown rule", "stale rule hash", "requires trusted host authority"])
+        .with_errors(&[
+            "unknown rule",
+            "stale rule hash",
+            "requires trusted host authority",
+        ])
         .with_emits(&["automation.fired"]),
         command_doc(
             "automation.suppress",
@@ -181,14 +193,26 @@ fn automation_commands() -> Vec<CommandDoc> {
                 param("app", "Existing app id.", "app_id"),
                 param("name", "Rule name.", "automation_name"),
                 param("rule_hash", "Hash of the canonical rule.", "sha256"),
-                param("event_ref", "Stable hash of the triggering event.", "sha256"),
-                param("suppressed_at", "Observed suppression epoch milliseconds.", "epoch_ms"),
+                param(
+                    "event_ref",
+                    "Stable hash of the triggering event.",
+                    "sha256",
+                ),
+                param(
+                    "suppressed_at",
+                    "Observed suppression epoch milliseconds.",
+                    "epoch_ms",
+                ),
                 param("reason", "Suppression reason.", "token"),
             ],
             "commit",
             "Trusted host fact for a visible skipped firing.",
         )
-        .with_errors(&["unknown rule", "stale rule hash", "requires trusted host authority"])
+        .with_errors(&[
+            "unknown rule",
+            "stale rule hash",
+            "requires trusted host authority",
+        ])
         .with_emits(&["automation.suppressed"]),
     ]
 }

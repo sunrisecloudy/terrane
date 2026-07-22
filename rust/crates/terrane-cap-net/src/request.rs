@@ -126,14 +126,8 @@ pub fn prepare_request(raw: &str) -> Result<PreparedRequest> {
         response_body,
         sensitive: &sensitive,
     };
-    let canonical = request_json(
-        &request,
-        false,
-    );
-    let redacted = request_json(
-        &request,
-        true,
-    );
+    let canonical = request_json(&request, false);
+    let redacted = request_json(&request, true);
     let canonical_json = serde_json::to_string(&canonical)
         .map_err(|e| Error::InvalidInput(format!("canonicalize net request: {e}")))?;
     let redacted_json = serde_json::to_string(&redacted)
@@ -231,7 +225,9 @@ fn parse_body(value: Option<&Value>) -> Result<Option<RequestBody>> {
         return Ok(Some(RequestBody::Secret(secret)));
     }
     let obj = value.as_object().ok_or_else(|| {
-        Error::InvalidInput("body must be a string, {\"$base64\":\"...\"}, or {\"$secret\":\"name\"}".into())
+        Error::InvalidInput(
+            "body must be a string, {\"$base64\":\"...\"}, or {\"$secret\":\"name\"}".into(),
+        )
     })?;
     if obj.len() == 1 {
         if let Some(raw) = obj.get("$base64") {

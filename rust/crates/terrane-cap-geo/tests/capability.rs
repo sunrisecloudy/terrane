@@ -67,7 +67,11 @@ fn locate_and_peek_return_recorded_and_transient_effects() {
     let bus = Bus;
 
     let decision = cap
-        .decide(ctx(&store, &bus), "geo.locate", &["demo".into(), "exact".into()])
+        .decide(
+            ctx(&store, &bus),
+            "geo.locate",
+            &["demo".into(), "exact".into()],
+        )
         .unwrap();
     assert_eq!(
         decision,
@@ -78,7 +82,11 @@ fn locate_and_peek_return_recorded_and_transient_effects() {
     );
 
     let decision = cap
-        .decide(ctx(&store, &bus), "geo.peek", &["demo".into(), "coarse".into()])
+        .decide(
+            ctx(&store, &bus),
+            "geo.peek",
+            &["demo".into(), "coarse".into()],
+        )
         .unwrap();
     assert_eq!(
         decision,
@@ -96,11 +104,19 @@ fn invalid_precision_and_missing_app_are_typed_errors() {
     let bus = Bus;
 
     assert!(matches!(
-        cap.decide(ctx(&store, &bus), "geo.locate", &["demo".into(), "fine".into()]),
+        cap.decide(
+            ctx(&store, &bus),
+            "geo.locate",
+            &["demo".into(), "fine".into()]
+        ),
         Err(Error::InvalidInput(_))
     ));
     assert_eq!(
-        cap.decide(ctx(&store, &bus), "geo.locate", &["ghost".into(), "coarse".into()]),
+        cap.decide(
+            ctx(&store, &bus),
+            "geo.locate",
+            &["ghost".into(), "coarse".into()]
+        ),
         Err(Error::AppNotFound("ghost".into()))
     );
 }
@@ -112,8 +128,7 @@ fn fold_keeps_last_twenty_and_last_resource_returns_json() {
     for i in 0..25 {
         cap.fold(
             &mut store,
-            &observed_event("demo", 100 + i, 200 + i, 5, "exact", i as u64 * 10_000)
-                .unwrap(),
+            &observed_event("demo", 100 + i, 200 + i, 5, "exact", i as u64 * 10_000).unwrap(),
         )
         .unwrap();
     }

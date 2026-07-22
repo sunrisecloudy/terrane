@@ -117,7 +117,9 @@ pub struct RecordedBody {
     pub mime: String,
 }
 
-pub fn decode_recorded_response(record: &EventRecord) -> Result<(String, String, RecordedResponse)> {
+pub fn decode_recorded_response(
+    record: &EventRecord,
+) -> Result<(String, String, RecordedResponse)> {
     let e: Responded = decode_event(record)?;
     Ok((
         e.app,
@@ -316,8 +318,12 @@ impl Capability for NetCapability {
             }
             "net.responded" => {
                 let e: Responded = decode_event(record).ok()?;
-                let request: serde_json::Value = serde_json::from_str(&e.request_json_redacted).ok()?;
-                let method = request.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
+                let request: serde_json::Value =
+                    serde_json::from_str(&e.request_json_redacted).ok()?;
+                let method = request
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("GET");
                 let host_path = request
                     .get("url")
                     .and_then(|v| v.as_str())

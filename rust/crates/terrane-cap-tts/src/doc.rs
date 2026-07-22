@@ -82,27 +82,45 @@ fn tts_commands() -> Vec<CommandDoc> {
             &[
                 param("app", "Owning app id.", STR),
                 param("--voice", "Optional host voice token.", STR),
-                param("--rate", "Rate in thousandths (500-2000) or multiplier (0.5-2.0).", "u32"),
+                param(
+                    "--rate",
+                    "Rate in thousandths (500-2000) or multiplier (0.5-2.0).",
+                    "u32",
+                ),
                 param("text", "Text to play aloud.", STR),
             ],
             "transient effect; no event",
             "Speak text aloud now. Live-only; records nothing.",
         )
-        .with_errors(&["app not found", "text too large", "invalid voice", "unsupported host"])
+        .with_errors(&[
+            "app not found",
+            "text too large",
+            "invalid voice",
+            "unsupported host",
+        ])
         .with_effects(&["TtsSpeak"]),
         command_doc(
             "tts.render",
             &[
                 param("app", "Owning app id.", STR),
                 param("--voice", "Optional host voice token.", STR),
-                param("--rate", "Rate in thousandths (500-2000) or multiplier (0.5-2.0).", "u32"),
+                param(
+                    "--rate",
+                    "Rate in thousandths (500-2000) or multiplier (0.5-2.0).",
+                    "u32",
+                ),
                 param("text", "Text to synthesize.", STR),
             ],
             "tts.rendered + blob.stored",
             "Render text to audio bytes at the edge, store bytes in the blob CAS, and record the \
-             produced artifact reference."
+             produced artifact reference.",
         )
-        .with_errors(&["app not found", "text too large", "invalid voice", "unsupported host"])
+        .with_errors(&[
+            "app not found",
+            "text too large",
+            "invalid voice",
+            "unsupported host",
+        ])
         .with_effects(&["TtsRender"])
         .with_emits(&["tts.rendered", "blob.stored"]),
     ]

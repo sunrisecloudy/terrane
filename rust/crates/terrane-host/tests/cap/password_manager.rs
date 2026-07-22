@@ -31,7 +31,14 @@ const SECRET: &str = "SENTINEL-never-logged-42";
 fn install(home: &Path, src: &str, namespaces: &[&str]) {
     let (ok, out, err) = terrane(
         home,
-        &["app", "add", "password-manager", "Password Manager", "--source", src],
+        &[
+            "app",
+            "add",
+            "password-manager",
+            "Password Manager",
+            "--source",
+            src,
+        ],
     );
     assert!(ok && out.contains("app.added"), "app add: {out} {err}");
     for ns in namespaces {
@@ -67,8 +74,18 @@ fn password_manager_vault_lifecycle_and_no_plaintext_in_log() {
     assert!(out.contains("vault_exists"), "double init: {out}");
 
     // Add a login. Ids are random now, so refer to items by name afterwards.
-    let out = run(&["add-login", MASTER, "GitHub", "octocat", SECRET, "https://github.com"]);
-    assert!(out.contains("\"ok\":true") && out.contains("GitHub"), "add-login: {out}");
+    let out = run(&[
+        "add-login",
+        MASTER,
+        "GitHub",
+        "octocat",
+        SECRET,
+        "https://github.com",
+    ]);
+    assert!(
+        out.contains("\"ok\":true") && out.contains("GitHub"),
+        "add-login: {out}"
+    );
 
     // List returns metadata but never the secret.
     let out = run(&["list", MASTER]);
@@ -90,7 +107,10 @@ fn password_manager_vault_lifecycle_and_no_plaintext_in_log() {
 
     // Generators need no unlock.
     let out = run(&["generate", "{\"length\":24,\"symbols\":false}"]);
-    assert!(out.contains("\"ok\":true") && out.contains("password"), "generate: {out}");
+    assert!(
+        out.contains("\"ok\":true") && out.contains("password"),
+        "generate: {out}"
+    );
 
     // The audit trail is readable without a password and logged the reveal.
     let out = run(&["audit"]);
@@ -104,9 +124,15 @@ fn password_manager_vault_lifecycle_and_no_plaintext_in_log() {
         "change-master: {out}"
     );
     let out = run(&["get", MASTER, "GitHub"]);
-    assert!(out.contains("bad_password"), "old master should fail: {out}");
+    assert!(
+        out.contains("bad_password"),
+        "old master should fail: {out}"
+    );
     let out = run(&["get", new_master, "GitHub"]);
-    assert!(out.contains(SECRET), "new master should reveal secret: {out}");
+    assert!(
+        out.contains(SECRET),
+        "new master should reveal secret: {out}"
+    );
     assert!(out.contains("octocat"), "new master get: {out}");
 
     // The vault is stored in a CRDT doc (so it can sync); audit stays in kv.
@@ -156,21 +182,43 @@ fn password_manager_syncs_encrypted_vault_across_homes() {
 
     // Device A creates the vault and adds an item.
     assert!(run(a, &["init", MASTER]).contains("\"ok\":true"));
-    assert!(run(a, &["add-login", MASTER, "GitHub", "octocat", SECRET, "https://github.com"])
-        .contains("GitHub"));
+    assert!(run(
+        a,
+        &[
+            "add-login",
+            MASTER,
+            "GitHub",
+            "octocat",
+            SECRET,
+            "https://github.com"
+        ]
+    )
+    .contains("GitHub"));
 
     // Device B has no vault yet.
-    assert!(run(b, &["status"]).contains("\"exists\":false"), "B should start empty");
+    assert!(
+        run(b, &["status"]).contains("\"exists\":false"),
+        "B should start empty"
+    );
 
     // B pulls A's encrypted vault (meta + item) over the CRDT sync.
-    let (ok, out, err) = terrane(b, &["sync", "password-manager", "--from", a.to_str().unwrap()]);
+    let (ok, out, err) = terrane(
+        b,
+        &["sync", "password-manager", "--from", a.to_str().unwrap()],
+    );
     assert!(ok, "sync failed: {err}");
     assert!(out.contains("synced"), "sync out: {out}");
 
     // Now B sees the vault and, with the SAME master password, decrypts the item.
-    assert!(run(b, &["status"]).contains("\"exists\":true"), "B should see the synced vault");
+    assert!(
+        run(b, &["status"]).contains("\"exists\":true"),
+        "B should see the synced vault"
+    );
     let out = run(b, &["get", MASTER, "GitHub"]);
-    assert!(out.contains(SECRET), "B should decrypt the synced item: {out}");
+    assert!(
+        out.contains(SECRET),
+        "B should decrypt the synced item: {out}"
+    );
     assert!(out.contains("octocat"), "B get: {out}");
 
     // The synced data on B is ciphertext only — the secret/name never hit B's log.
@@ -192,16 +240,42 @@ fn password_manager_breach_check_flags_a_known_pwned_password() {
     let src = app_source();
     install(home, &src, &["kv", "crypto", "crdt", "net"]);
 
-    terrane(home, &["js-runtime", "run", "password-manager", "init", MASTER]);
+    terrane(
+        home,
+        &["js-runtime", "run", "password-manager", "init", MASTER],
+    );
     // "password" is famously in every breach corpus.
     terrane(
         home,
-        &["js-runtime", "run", "password-manager", "add-login", MASTER, "Test", "user", "password", "https://x.test"],
+        &[
+            "js-runtime",
+            "run",
+            "password-manager",
+            "add-login",
+            MASTER,
+            "Test",
+            "user",
+            "password",
+            "https://x.test",
+        ],
     );
 
-    let (ok, out, err) = terrane(home, &["js-runtime", "run", "password-manager", "breach", MASTER, "Test"]);
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "js-runtime",
+            "run",
+            "password-manager",
+            "breach",
+            MASTER,
+            "Test",
+        ],
+    );
     assert!(ok, "breach failed: {err}");
-    assert!(out.contains("\"breached\":true"), "breach should flag it: {out}");
+    assert!(
+        out.contains("\"breached\":true"),
+        "breach should flag it: {out}"
+    );
 
     // And the breach check must NOT have recorded the response or the prefix.
     let raw = std::fs::read(home.join("log.bin")).unwrap();
@@ -222,11 +296,24 @@ fn password_manager_ask_reads_master_from_stdin_not_argv() {
     install(home, &src, &["kv", "crypto", "crdt"]);
 
     // Setup: create the vault + an item (master on argv is fine for setup).
-    let (ok, out, err) = terrane(home, &["js-runtime", "run", "password-manager", "init", MASTER]);
+    let (ok, out, err) = terrane(
+        home,
+        &["js-runtime", "run", "password-manager", "init", MASTER],
+    );
     assert!(ok && out.contains("\"ok\":true"), "init: {out} {err}");
     let (ok, out, _) = terrane(
         home,
-        &["js-runtime", "run", "password-manager", "add-login", MASTER, "GitHub", "octocat", SECRET, "https://github.com"],
+        &[
+            "js-runtime",
+            "run",
+            "password-manager",
+            "add-login",
+            MASTER,
+            "GitHub",
+            "octocat",
+            SECRET,
+            "https://github.com",
+        ],
     );
     assert!(ok && out.contains("GitHub"), "add-login: {out}");
 
@@ -238,7 +325,10 @@ fn password_manager_ask_reads_master_from_stdin_not_argv() {
         &format!("{MASTER}\n"),
     );
     assert!(ok, "run --ask failed: {err}");
-    assert!(out.contains(SECRET), "ask-unlock should reveal the secret: {out}");
+    assert!(
+        out.contains(SECRET),
+        "ask-unlock should reveal the secret: {out}"
+    );
     assert!(out.contains("octocat"), "ask-unlock get: {out}");
 
     // A wrong password piped in is refused, just like the argv path.

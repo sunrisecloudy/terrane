@@ -2,7 +2,9 @@
 
 use tempfile::tempdir;
 use terrane_cap_applescript::ran_event;
-use terrane_core::{fold_records_in_memory, Core, Effect, EffectRunner, Error, EventRecord, Result, State};
+use terrane_core::{
+    fold_records_in_memory, Core, Effect, EffectRunner, Error, EventRecord, Result, State,
+};
 
 use crate::helpers::req;
 
@@ -11,9 +13,9 @@ struct StubAppleScript;
 impl EffectRunner for StubAppleScript {
     fn run(&self, effect: &Effect, _state: &State) -> Result<Vec<EventRecord>> {
         match effect {
-            Effect::AppleScriptRun { app, script } => Ok(vec![ran_event(
-                app, script, true, "4", "", 0, 5,
-            )?]),
+            Effect::AppleScriptRun { app, script } => {
+                Ok(vec![ran_event(app, script, true, "4", "", 0, 5)?])
+            }
             other => Err(Error::InvalidInput(format!(
                 "stub runner cannot perform {other:?}"
             ))),

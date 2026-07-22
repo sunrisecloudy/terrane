@@ -126,12 +126,7 @@ fn native_capture_stub_executor_links_blobs_and_completes() {
     let home = dir.path();
     let mut core = terrane_host::open_at_home(home).unwrap();
 
-    terrane_host::dispatch_on_core(
-        &mut core,
-        "app.add",
-        &["demo".into(), "Demo".into()],
-    )
-    .unwrap();
+    terrane_host::dispatch_on_core(&mut core, "app.add", &["demo".into(), "Demo".into()]).unwrap();
     terrane_host::dispatch_on_core(
         &mut core,
         "native.platform.observe",
@@ -287,7 +282,13 @@ fn native_cli_records_v2_requests_and_stub_completion() {
     assert!(out.contains("native.requested"), "out: {out}");
     let (ok, _, err) = terrane(
         home,
-        &["native", "complete", "demo", "tray-1", r#"{"installed":true}"#],
+        &[
+            "native",
+            "complete",
+            "demo",
+            "tray-1",
+            r#"{"installed":true}"#,
+        ],
     );
     assert!(ok, "tray complete failed: {err}");
 

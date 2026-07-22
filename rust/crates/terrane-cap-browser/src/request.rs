@@ -61,11 +61,12 @@ impl RenderOutput {
 }
 
 pub fn prepare_render(raw: &str) -> Result<PreparedRender> {
-    let value: Value = serde_json::from_str(raw)
-        .map_err(|e| Error::InvalidInput(format!("browser render request must be JSON object: {e}")))?;
-    let obj = value
-        .as_object()
-        .ok_or_else(|| Error::InvalidInput("browser render request must be a JSON object".into()))?;
+    let value: Value = serde_json::from_str(raw).map_err(|e| {
+        Error::InvalidInput(format!("browser render request must be JSON object: {e}"))
+    })?;
+    let obj = value.as_object().ok_or_else(|| {
+        Error::InvalidInput("browser render request must be a JSON object".into())
+    })?;
 
     let url = obj
         .get("url")
@@ -175,7 +176,9 @@ fn parse_string_list(value: Option<&Value>, name: &str) -> Result<Vec<String>> {
     for item in array {
         let item = string_field(item, &format!("{name} item"))?.to_ascii_lowercase();
         if item.trim().is_empty() {
-            return Err(Error::InvalidInput(format!("{name} items must not be empty")));
+            return Err(Error::InvalidInput(format!(
+                "{name} items must not be empty"
+            )));
         }
         out.push(item);
     }
@@ -193,7 +196,9 @@ fn positive_u64(value: &Value, name: &str) -> Result<u64> {
         .as_u64()
         .ok_or_else(|| Error::InvalidInput(format!("{name} must be a positive integer")))?;
     if value == 0 {
-        return Err(Error::InvalidInput(format!("{name} must be greater than zero")));
+        return Err(Error::InvalidInput(format!(
+            "{name} must be greater than zero"
+        )));
     }
     Ok(value)
 }
@@ -217,8 +222,14 @@ struct RequestJsonInput<'a> {
 
 fn request_json(request: &RequestJsonInput<'_>, redact: bool) -> Value {
     let mut obj = Map::new();
-    obj.insert("url".to_string(), Value::String(redact_url(request.url, redact)));
-    obj.insert("output".to_string(), Value::String(request.output.as_str().to_string()));
+    obj.insert(
+        "url".to_string(),
+        Value::String(redact_url(request.url, redact)),
+    );
+    obj.insert(
+        "output".to_string(),
+        Value::String(request.output.as_str().to_string()),
+    );
     obj.insert(
         "waitMs".to_string(),
         Value::Number(serde_json::Number::from(request.wait_ms)),
@@ -246,7 +257,14 @@ fn request_json(request: &RequestJsonInput<'_>, redact: bool) -> Value {
     );
     obj.insert(
         "sensitiveHeaders".to_string(),
-        Value::Array(request.sensitive.iter().cloned().map(Value::String).collect()),
+        Value::Array(
+            request
+                .sensitive
+                .iter()
+                .cloned()
+                .map(Value::String)
+                .collect(),
+        ),
     );
     Value::Object(obj)
 }

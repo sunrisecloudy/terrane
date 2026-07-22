@@ -87,7 +87,10 @@ fn os_monitor_without_grant_reports_ungranted() {
         &["app", "add", "os-monitor", "OS Monitor", "--source", &src],
     );
     let (ok, out, err) = terrane(home, &["js-runtime", "run", "os-monitor", "cpu"]);
-    assert!(ok, "backend should return a string even when ungranted: {err}");
+    assert!(
+        ok,
+        "backend should return a string even when ungranted: {err}"
+    );
     assert!(
         out.contains("sysinfo not granted"),
         "expected grant hint, got: {out}"

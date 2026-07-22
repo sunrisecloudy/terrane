@@ -40,11 +40,7 @@ where
         .map_err(|e| Error::Storage(format!("snapshot {namespace}: {e}")))
 }
 
-pub fn restore_state<T>(
-    state: &mut dyn StateStore,
-    namespace: &str,
-    payload: &[u8],
-) -> Result<()>
+pub fn restore_state<T>(state: &mut dyn StateStore, namespace: &str, payload: &[u8]) -> Result<()>
 where
     T: BorshDeserialize + 'static,
 {

@@ -114,12 +114,7 @@ fn open_file_on_core(core: &mut HostCore, path: &Path) -> Result<OpenOutcome, St
         .ok_or_else(|| format!("file name is not valid UTF-8: {}", path.display()))?
         .to_string();
     let hash = terrane_cap_interop::sha256_hex(&bytes);
-    let args = vec![
-        app.clone(),
-        name.clone(),
-        mime.clone(),
-        B64.encode(&bytes),
-    ];
+    let args = vec![app.clone(), name.clone(), mime.clone(), B64.encode(&bytes)];
     dispatch_on_core(core, "blob.put", &args)?;
     let payload = json!({
         "name": name,

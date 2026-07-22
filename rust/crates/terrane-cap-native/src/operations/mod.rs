@@ -57,8 +57,7 @@ pub const MAX_TRAY_ITEMS: usize = 20;
 pub const MAX_TRAY_LABEL_CHARS: usize = 64;
 pub const MAX_SHORTCUTS_PER_APP: usize = 5;
 pub const NATIVE_OPERATION_SELECTOR_SCHEMA_ID: &str = "native.operation.v1";
-pub const NATIVE_OPERATION_SELECTOR_SCHEMA_JSON: &str =
-    r#"{"type":"object","required":["namespace","operation"],"properties":{"namespace":{"const":"native"},"operation":{"type":"string"}},"additionalProperties":false}"#;
+pub const NATIVE_OPERATION_SELECTOR_SCHEMA_JSON: &str = r#"{"type":"object","required":["namespace","operation"],"properties":{"namespace":{"const":"native"},"operation":{"type":"string"}},"additionalProperties":false}"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OperationCatalogEntry {

@@ -49,7 +49,14 @@ pub struct AppState {
     pub links: BTreeMap<AppId, Vec<LinkRegistration>>,
 }
 
-type ParsedAdd = (String, String, Option<String>, String, Vec<String>, Vec<LinkRegistration>);
+type ParsedAdd = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Vec<String>,
+    Vec<LinkRegistration>,
+);
 
 #[derive(BorshSerialize, BorshDeserialize)]
 struct Added {
@@ -169,10 +176,7 @@ impl Capability for AppCapability {
                         interfaces,
                     },
                 )?];
-                for link in default_scheme_links(&id)
-                    .into_iter()
-                    .chain(links)
-                {
+                for link in default_scheme_links(&id).into_iter().chain(links) {
                     validate_link_registration(&link.kind, &link.spec)?;
                     events.push(link_registered_event(&id, &link.kind, &link.spec)?);
                 }
@@ -339,7 +343,10 @@ impl Capability for AppCapability {
             }
             "app.link.registered" => {
                 let e: LinkRegistered = decode_event(record).ok()?;
-                Some(format!("app.link.registered {} {} {}", e.app, e.kind, e.spec))
+                Some(format!(
+                    "app.link.registered {} {} {}",
+                    e.app, e.kind, e.spec
+                ))
             }
             "app.removed" => {
                 let e: Removed = decode_event(record).ok()?;
@@ -453,9 +460,9 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
                 i += 2;
             }
             "--interfaces" => {
-                let value = args
-                    .get(i + 1)
-                    .ok_or_else(|| Error::InvalidInput("`--interfaces` needs a comma-separated list".into()))?;
+                let value = args.get(i + 1).ok_or_else(|| {
+                    Error::InvalidInput("`--interfaces` needs a comma-separated list".into())
+                })?;
                 interfaces = value
                     .split(',')
                     .map(str::trim)
@@ -465,10 +472,14 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
                 i += 2;
             }
             "--file-types" => {
-                let value = args
-                    .get(i + 1)
-                    .ok_or_else(|| Error::InvalidInput("`--file-types` needs ext:mime entries".into()))?;
-                for spec in value.split(',').map(str::trim).filter(|spec| !spec.is_empty()) {
+                let value = args.get(i + 1).ok_or_else(|| {
+                    Error::InvalidInput("`--file-types` needs ext:mime entries".into())
+                })?;
+                for spec in value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|spec| !spec.is_empty())
+                {
                     links.push(LinkRegistration {
                         kind: "filetype".to_string(),
                         spec: spec.to_string(),

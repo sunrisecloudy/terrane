@@ -31,7 +31,9 @@ fn invite_redeem_revoke_are_replayable_and_hash_only() {
     core.dispatch(req("share.redeem", &["notes", HASH, "replica:abc"]))
         .unwrap();
     let shares = core.query("share", "list", &["notes".into()]).unwrap();
-    assert!(matches!(shares, QueryValue::Json(json) if json.contains("\"grantee\":\"replica:abc\"") && json.contains("\"rights\":\"write\"")));
+    assert!(
+        matches!(shares, QueryValue::Json(json) if json.contains("\"grantee\":\"replica:abc\"") && json.contains("\"rights\":\"write\""))
+    );
 
     let err = core
         .dispatch(req("share.redeem", &["notes", HASH, "replica:def"]))

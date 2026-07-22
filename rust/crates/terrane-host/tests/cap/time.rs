@@ -60,7 +60,10 @@ fn time_now_records_observation_and_replays_without_a_clock() {
     assert!(ok, "js-runtime run failed: {err}");
     let parts: Vec<&str> = out.trim().split(';').collect();
     assert_eq!(parts.len(), 2, "expected two epoch-ms values, got: {out}");
-    assert!(parts.iter().all(|p| is_epoch_ms(p)), "epoch-ms parts: {out:?}");
+    assert!(
+        parts.iter().all(|p| is_epoch_ms(p)),
+        "epoch-ms parts: {out:?}"
+    );
 
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");

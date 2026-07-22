@@ -108,7 +108,9 @@ fn validate_state_limits(
     let existing = state.shortcuts.get(app);
     let replaces_existing = existing.is_some_and(|shortcuts| shortcuts.contains_key(accelerator));
     if !replaces_existing
-        && existing.map(|shortcuts| shortcuts.len()).unwrap_or_default()
+        && existing
+            .map(|shortcuts| shortcuts.len())
+            .unwrap_or_default()
             >= crate::operations::MAX_SHORTCUTS_PER_APP
     {
         return Err(Error::InvalidInput(format!(
@@ -171,11 +173,7 @@ fn active_supported_host(state: &NativeState, operation_id: &str) -> Result<Stri
     Ok(host_id.clone())
 }
 
-fn pending_record(
-    ctx: CommandCtx<'_>,
-    app: &str,
-    request_id: &str,
-) -> Result<NativeRequestRecord> {
+fn pending_record(ctx: CommandCtx<'_>, app: &str, request_id: &str) -> Result<NativeRequestRecord> {
     let state = state_ref::<NativeState>(ctx.state, "native")?;
     let record = state
         .requests
@@ -309,7 +307,9 @@ fn valid_json(raw: String, label: &str) -> Result<String> {
 
 fn expect_no_extra(args: &[String], max_len: usize, label: &str) -> Result<()> {
     if args.len() > max_len {
-        return Err(Error::InvalidInput(format!("{label} takes no payload arguments")));
+        return Err(Error::InvalidInput(format!(
+            "{label} takes no payload arguments"
+        )));
     }
     Ok(())
 }
@@ -327,9 +327,9 @@ fn validate_tray_items(raw: &str) -> Result<Vec<serde_json::Value>> {
     }
     let mut out = Vec::with_capacity(items.len());
     for item in items {
-        let object = item.as_object().ok_or_else(|| {
-            Error::InvalidInput("tray.setMenu items must be objects".into())
-        })?;
+        let object = item
+            .as_object()
+            .ok_or_else(|| Error::InvalidInput("tray.setMenu items must be objects".into()))?;
         let id = object
             .get("id")
             .and_then(|value| value.as_str())
@@ -375,7 +375,11 @@ fn validate_completion_result(operation_id: &str, raw: &str) -> Result<()> {
             let object = value.as_object().ok_or_else(|| {
                 Error::InvalidInput("dialog.saveFile result must be an object".into())
             })?;
-            if object.get("saved").and_then(|value| value.as_bool()).is_none() {
+            if object
+                .get("saved")
+                .and_then(|value| value.as_bool())
+                .is_none()
+            {
                 return Err(Error::InvalidInput(
                     "dialog.saveFile result saved bool is required".into(),
                 ));
@@ -524,7 +528,11 @@ fn require_bool(value: &serde_json::Value, field: &str, label: &str) -> Result<(
     let object = value
         .as_object()
         .ok_or_else(|| Error::InvalidInput(format!("{label} result must be an object")))?;
-    if object.get(field).and_then(|value| value.as_bool()).is_none() {
+    if object
+        .get(field)
+        .and_then(|value| value.as_bool())
+        .is_none()
+    {
         return Err(Error::InvalidInput(format!(
             "{label} result {field} bool is required"
         )));

@@ -62,10 +62,7 @@ fn scheduler_public_state_replays_and_cleanup_on_app_remove() {
     assert!(core.replay_matches().unwrap());
     assert!(!core.state().scheduler.schedules["ops"].contains_key("quickjs-ops-heartbeat"));
 
-    core.dispatch(Request::trusted_host(
-        "app.remove",
-        vec!["ops".into()],
-    ))
-    .unwrap();
+    core.dispatch(Request::trusted_host("app.remove", vec!["ops".into()]))
+        .unwrap();
     assert!(!core.state().scheduler.schedules.contains_key("ops"));
 }

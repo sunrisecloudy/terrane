@@ -75,7 +75,8 @@ pub fn write_snapshot(
         },
         sections,
     };
-    let bytes = borsh::to_vec(&body).map_err(|e| Error::Storage(format!("snapshot encode: {e}")))?;
+    let bytes =
+        borsh::to_vec(&body).map_err(|e| Error::Storage(format!("snapshot encode: {e}")))?;
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .write(true)

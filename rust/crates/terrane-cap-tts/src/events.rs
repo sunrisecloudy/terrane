@@ -59,10 +59,7 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
             let e: Rendered = decode_event(record)?;
             let app = e.app.clone();
             let state = state_mut::<TtsState>(state, "tts")?;
-            let renders = state
-                .renders
-                .entry(app)
-                .or_default();
+            let renders = state.renders.entry(app).or_default();
             let order = state.order.entry(e.app.clone()).or_default();
             order.retain(|hash| hash != &e.text_hash);
             order.push(e.text_hash.clone());

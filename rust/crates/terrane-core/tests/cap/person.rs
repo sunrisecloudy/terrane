@@ -38,7 +38,9 @@ impl EffectRunner for PersonEdge {
             Effect::PersonKeygen => {
                 self.created.set(true);
                 let signing = SigningKey::from_bytes(&[self.create_seed; 32]);
-                Ok(vec![created_event(&hex(signing.verifying_key().as_bytes()))?])
+                Ok(vec![created_event(&hex(signing
+                    .verifying_key()
+                    .as_bytes()))?])
             }
             Effect::PersonSign {
                 person_id,
@@ -59,7 +61,11 @@ impl EffectRunner for PersonEdge {
                 let new = SigningKey::from_bytes(&[self.rotate_seed; 32]);
                 let new_pubkey = hex(new.verifying_key().as_bytes());
                 let sig = old.sign(&rotation_message(person_id, &new_pubkey)?);
-                Ok(vec![rotated_event(person_id, &new_pubkey, &hex(&sig.to_bytes()))?])
+                Ok(vec![rotated_event(
+                    person_id,
+                    &new_pubkey,
+                    &hex(&sig.to_bytes()),
+                )?])
             }
             other => Err(terrane_core::Error::Runtime(format!(
                 "unexpected effect: {other:?}"
@@ -71,8 +77,7 @@ impl EffectRunner for PersonEdge {
 #[test]
 fn person_create_attest_rotate_replays_from_public_events() {
     let dir = tempdir().unwrap();
-    let mut core =
-        Core::open_with(dir.path().join("log.bin"), PersonEdge::new(11, 12)).unwrap();
+    let mut core = Core::open_with(dir.path().join("log.bin"), PersonEdge::new(11, 12)).unwrap();
 
     let created = core.dispatch(req("person.create", &[])).unwrap();
     assert_eq!(created.len(), 1);
@@ -107,8 +112,7 @@ fn person_create_attest_rotate_replays_from_public_events() {
 #[test]
 fn person_queries_return_json_or_null() {
     let dir = tempdir().unwrap();
-    let mut core =
-        Core::open_with(dir.path().join("log.bin"), PersonEdge::new(13, 14)).unwrap();
+    let mut core = Core::open_with(dir.path().join("log.bin"), PersonEdge::new(13, 14)).unwrap();
 
     assert_eq!(
         core.query("person", "whoami", &[]).unwrap(),
@@ -128,7 +132,9 @@ fn local_owner_rebinds_to_person_for_new_events_without_rewriting_old_log() {
     let log = dir.path().join("log.bin");
     let mut core = Core::open_with(&log, PersonEdge::new(21, 22)).unwrap();
 
-    let pre_person = core.dispatch(req("app.add", &["before", "Before"])).unwrap();
+    let pre_person = core
+        .dispatch(req("app.add", &["before", "Before"]))
+        .unwrap();
     assert_eq!(pre_person[0].actor, LOCAL_OWNER_SUBJECT);
 
     let created = core.dispatch(req("person.create", &[])).unwrap();
@@ -175,13 +181,14 @@ fn local_owner_rebinds_to_person_for_new_events_without_rewriting_old_log() {
     let records = core.log_records().unwrap();
     assert_eq!(records[0].kind, "app.added");
     assert_eq!(records[0].actor, LOCAL_OWNER_SUBJECT);
-    assert!(
-        records
-            .iter()
-            .any(|record| record.kind == "app.added" && record.actor == owner_subject)
-    );
+    assert!(records
+        .iter()
+        .any(|record| record.kind == "app.added" && record.actor == owner_subject));
     assert!(core.replay_matches().unwrap());
     let reopened = Core::open_with(&log, PersonEdge::new(21, 22)).unwrap();
-    assert_eq!(reopened.log_records().unwrap()[0].actor, LOCAL_OWNER_SUBJECT);
+    assert_eq!(
+        reopened.log_records().unwrap()[0].actor,
+        LOCAL_OWNER_SUBJECT
+    );
     assert_eq!(reopened.state(), core.state());
 }

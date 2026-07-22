@@ -7,7 +7,7 @@ use terrane_cap_interface::{
     QueryValue, Request, StateStore,
 };
 use terrane_cap_org::{
-    created_event, invited_event, invite_redeemed_event, member_granted_event, member_left_event,
+    created_event, invite_redeemed_event, invited_event, member_granted_event, member_left_event,
     OrgCapability, OrgRecord, OrgState,
 };
 use terrane_cap_person::{PersonRecord, PersonState};
@@ -30,9 +30,15 @@ fn manifest_lists_org_commands_events_queries() {
 
 #[test]
 fn validation_helpers_reject_invalid_inputs() {
-    assert!(matches!(terrane_cap_org::validate_org_id("short"), Err(Error::InvalidInput(_))));
+    assert!(matches!(
+        terrane_cap_org::validate_org_id("short"),
+        Err(Error::InvalidInput(_))
+    ));
     assert!(terrane_cap_org::validate_role("owner").is_ok());
-    assert!(matches!(terrane_cap_org::validate_role("guest"), Err(Error::InvalidInput(_))));
+    assert!(matches!(
+        terrane_cap_org::validate_role("guest"),
+        Err(Error::InvalidInput(_))
+    ));
     assert!(matches!(
         terrane_cap_org::validate_token_hash("nothex"),
         Err(Error::InvalidInput(_))
@@ -47,7 +53,8 @@ fn validation_helpers_reject_invalid_inputs() {
 #[test]
 fn role_grant_message_is_stable() {
     let message =
-        terrane_cap_org::role_grant_message("0123456789abcdef", "aabbccddeeff0011", "owner").unwrap();
+        terrane_cap_org::role_grant_message("0123456789abcdef", "aabbccddeeff0011", "owner")
+            .unwrap();
     assert_eq!(
         message,
         b"terrane.org.role.v1\norg_id=0123456789abcdef\nmember=aabbccddeeff0011\nrole=owner"
@@ -69,27 +76,26 @@ fn signed_role_grant_round_trips_and_rejects_tampered_role_or_member() {
     // Tampering with the role breaks verification.
     assert!(terrane_cap_org::verify_role_sig(&pubkey, &org_id, &member, "owner", &sig).is_err());
     // Tampering with the member breaks verification.
-    assert!(terrane_cap_org::verify_role_sig(&pubkey, &org_id, "aabbccddeeff0012", "admin", &sig).is_err());
+    assert!(
+        terrane_cap_org::verify_role_sig(&pubkey, &org_id, "aabbccddeeff0012", "admin", &sig)
+            .is_err()
+    );
 }
 
 #[test]
 fn event_constructors_validate_payloads() {
     assert!(terrane_cap_org::created_event("bad", &"0".repeat(64), "aabbccddeeff0011").is_err());
-    assert!(
-        terrane_cap_org::created_event("0123456789abcdef", &"0".repeat(64), "bad").is_err()
-    );
+    assert!(terrane_cap_org::created_event("0123456789abcdef", &"0".repeat(64), "bad").is_err());
     assert!(
         terrane_cap_org::invited_event("0123456789abcdef", "guest", &"0".repeat(64), "").is_err()
     );
-    assert!(
-        terrane_cap_org::invited_event(
-            "0123456789abcdef",
-            "owner",
-            &"0".repeat(64),
-            &"x".repeat(terrane_cap_org::MAX_INVITE_NOTE_BYTES + 1)
-        )
-        .is_err()
-    );
+    assert!(terrane_cap_org::invited_event(
+        "0123456789abcdef",
+        "owner",
+        &"0".repeat(64),
+        &"x".repeat(terrane_cap_org::MAX_INVITE_NOTE_BYTES + 1)
+    )
+    .is_err());
 }
 
 #[test]
@@ -98,7 +104,10 @@ fn doc_has_commands_events_and_internal_notes() {
     assert_eq!(doc.namespace, "org");
     assert!(!doc.commands.is_empty());
     assert!(!doc.events.is_empty());
-    assert!(doc.internal.iter().any(|note| note.title == "Secret storage"));
+    assert!(doc
+        .internal
+        .iter()
+        .any(|note| note.title == "Secret storage"));
     let public = cap().doc(false);
     assert!(public.internal.is_empty());
 }
@@ -145,27 +154,49 @@ fn fold_member_granted_requires_known_signer_person() {
 
     // Fold the grant before the signer exists in person state -> signer lookup fails.
     {
-        let mut store = TwoSlice { org: &mut state, person: &mut person };
-        let err = cap().fold(&mut store as &mut dyn StateStore, &granted).unwrap_err();
+        let mut store = TwoSlice {
+            org: &mut state,
+            person: &mut person,
+        };
+        let err = cap()
+            .fold(&mut store as &mut dyn StateStore, &granted)
+            .unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }
 
     seed_person(&mut person, &founder, &pubkey);
     {
-        let mut store = TwoSlice { org: &mut state, person: &mut person };
-        cap().fold(&mut store as &mut dyn StateStore, &created).unwrap();
-        cap().fold(&mut store as &mut dyn StateStore, &granted).unwrap();
+        let mut store = TwoSlice {
+            org: &mut state,
+            person: &mut person,
+        };
+        cap()
+            .fold(&mut store as &mut dyn StateStore, &created)
+            .unwrap();
+        cap()
+            .fold(&mut store as &mut dyn StateStore, &granted)
+            .unwrap();
     }
 
     assert!(state.orgs.contains_key(&org_id));
-    assert!(state.members.contains_key(&(org_id.clone(), founder.clone())));
-    assert_eq!(state.members[&(org_id.clone(), founder.clone())].role, "owner");
+    assert!(state
+        .members
+        .contains_key(&(org_id.clone(), founder.clone())));
+    assert_eq!(
+        state.members[&(org_id.clone(), founder.clone())].role,
+        "owner"
+    );
 
     // A leave event marks the membership inactive.
     let left = member_left_event(&org_id, &founder).unwrap();
     {
-        let mut store = TwoSlice { org: &mut state, person: &mut person };
-        cap().fold(&mut store as &mut dyn StateStore, &left).unwrap();
+        let mut store = TwoSlice {
+            org: &mut state,
+            person: &mut person,
+        };
+        cap()
+            .fold(&mut store as &mut dyn StateStore, &left)
+            .unwrap();
     }
     assert!(!state.members[&(org_id, founder)].active);
 }
@@ -189,9 +220,16 @@ fn fold_rejects_tampered_signer_in_member_granted() {
     let mut person = PersonState::default();
     seed_person(&mut person, &founder, &pubkey);
     {
-        let mut store = TwoSlice { org: &mut state, person: &mut person };
-        cap().fold(&mut store as &mut dyn StateStore, &created).unwrap();
-        let err = cap().fold(&mut store as &mut dyn StateStore, &granted).unwrap_err();
+        let mut store = TwoSlice {
+            org: &mut state,
+            person: &mut person,
+        };
+        cap()
+            .fold(&mut store as &mut dyn StateStore, &created)
+            .unwrap();
+        let err = cap()
+            .fold(&mut store as &mut dyn StateStore, &granted)
+            .unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }
     assert!(state.orgs.contains_key(&org_id));
@@ -217,13 +255,23 @@ fn fold_invited_redeemed_marks_invite_closed() {
     );
     let mut person = PersonState::default();
     {
-        let mut store = TwoSlice { org: &mut state, person: &mut person };
-        cap().fold(&mut store as &mut dyn StateStore, &invited).unwrap();
+        let mut store = TwoSlice {
+            org: &mut state,
+            person: &mut person,
+        };
+        cap()
+            .fold(&mut store as &mut dyn StateStore, &invited)
+            .unwrap();
     }
     assert!(state.invites[&(org_id.clone(), token_hash.clone())].open);
     {
-        let mut store = TwoSlice { org: &mut state, person: &mut person };
-        cap().fold(&mut store as &mut dyn StateStore, &redeemed).unwrap();
+        let mut store = TwoSlice {
+            org: &mut state,
+            person: &mut person,
+        };
+        cap()
+            .fold(&mut store as &mut dyn StateStore, &redeemed)
+            .unwrap();
     }
     assert!(!state.invites[&(org_id, token_hash)].open);
 }
@@ -232,7 +280,10 @@ fn fold_invited_redeemed_marks_invite_closed() {
 fn decide_create_returns_org_keygen_effect_when_founder_known() {
     let mut state = OrgState::default();
     let mut person = PersonState::default();
-    let mut store = TwoSlice { org: &mut state, person: &mut person };
+    let mut store = TwoSlice {
+        org: &mut state,
+        person: &mut person,
+    };
     let ctx = CommandCtx {
         state: &mut store as &mut dyn StateStore,
         bus: &FakeBus,
@@ -246,7 +297,10 @@ fn decide_create_returns_org_keygen_effect_when_founder_known() {
 fn decide_role_set_requires_existing_org() {
     let mut state = OrgState::default();
     let mut person = PersonState::default();
-    let mut store = TwoSlice { org: &mut state, person: &mut person };
+    let mut store = TwoSlice {
+        org: &mut state,
+        person: &mut person,
+    };
     let ctx = CommandCtx {
         state: &mut store as &mut dyn StateStore,
         bus: &FakeBus,
@@ -255,7 +309,12 @@ fn decide_role_set_requires_existing_org() {
         .decide(
             ctx,
             "org.role.set",
-            &args(&["0123456789abcdef", "aabbccddeeff0011", "owner", "aabbccddeeff0011"]),
+            &args(&[
+                "0123456789abcdef",
+                "aabbccddeeff0011",
+                "owner",
+                "aabbccddeeff0011",
+            ]),
         )
         .unwrap_err();
     assert!(matches!(err, Error::InvalidInput(_)));
@@ -273,7 +332,10 @@ fn decide_join_requires_an_open_invite() {
         },
     );
     let mut person = PersonState::default();
-    let mut store = TwoSlice { org: &mut state, person: &mut person };
+    let mut store = TwoSlice {
+        org: &mut state,
+        person: &mut person,
+    };
     let ctx = CommandCtx {
         state: &mut store as &mut dyn StateStore,
         bus: &FakeBus,
@@ -313,7 +375,10 @@ fn query_info_and_members_return_json_or_empty() {
         },
     );
     let person = PersonState::default();
-    let store = TwoSliceRead { org: &state, person: &person };
+    let store = TwoSliceRead {
+        org: &state,
+        person: &person,
+    };
     let ctx = QueryCtx {
         state: &store as &dyn StateStore,
         bus: &FakeBus,
@@ -367,7 +432,12 @@ impl<'a> StateStore for TwoSliceRead<'a> {
 struct FakeBus;
 
 impl CapBus for FakeBus {
-    fn query(&self, _cap: &str, _name: &str, _args: &[String]) -> terrane_cap_interface::Result<QueryValue> {
+    fn query(
+        &self,
+        _cap: &str,
+        _name: &str,
+        _args: &[String],
+    ) -> terrane_cap_interface::Result<QueryValue> {
         Err(Error::Runtime("fake bus".into()))
     }
 }

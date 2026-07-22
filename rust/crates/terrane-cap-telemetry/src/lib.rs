@@ -13,13 +13,13 @@
 use std::collections::BTreeMap;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+pub use doc::telemetry_doc;
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
-    truncate, CapManifest, Capability, CommandCtx, Decision, Effect,
-    Error, EventPattern, EventRecord, EventSpec, GrantResourceSpec, ReadValue,
-    RecordedCallCap, ResourceMethod, ResourceReadCtx, Result, StateStore,
+    truncate, CapManifest, Capability, CommandCtx, Decision, Effect, Error, EventPattern,
+    EventRecord, EventSpec, GrantResourceSpec, ReadValue, RecordedCallCap, ResourceMethod,
+    ResourceReadCtx, Result, StateStore,
 };
-pub use doc::telemetry_doc;
 
 pub mod doc;
 

@@ -13,20 +13,32 @@ fn web_publish_cli_records_status_domain_and_disable() {
         home,
         &["web-publish", "enable", "demo", "interactive", "demo-live"],
     );
-    assert!(ok, "web-publish enable failed; stdout: {out}; stderr: {err}");
+    assert!(
+        ok,
+        "web-publish enable failed; stdout: {out}; stderr: {err}"
+    );
     assert!(out.contains("web-publish.enabled"), "out: {out}");
 
     let (ok, out, err) = terrane(
         home,
         &["web-publish", "domain", "set", "demo", "demo.example.com"],
     );
-    assert!(ok, "web-publish domain set failed; stdout: {out}; stderr: {err}");
+    assert!(
+        ok,
+        "web-publish domain set failed; stdout: {out}; stderr: {err}"
+    );
     assert!(out.contains("web-publish.domain.set"), "out: {out}");
 
     let (ok, out, err) = terrane(home, &["web-publish", "status", "demo"]);
-    assert!(ok, "web-publish status failed; stdout: {out}; stderr: {err}");
+    assert!(
+        ok,
+        "web-publish status failed; stdout: {out}; stderr: {err}"
+    );
     assert!(out.contains(r#""mode":"interactive""#), "out: {out}");
-    assert!(out.contains(r#""url":"https://demo.example.com""#), "out: {out}");
+    assert!(
+        out.contains(r#""url":"https://demo.example.com""#),
+        "out: {out}"
+    );
 
     let (ok, _, err) = terrane(home, &["web-publish", "disable", "demo"]);
     assert!(ok, "web-publish disable failed: {err}");

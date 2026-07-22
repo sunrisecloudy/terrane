@@ -84,7 +84,9 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["org", "members"] => run_org_members(None),
         ["org", "members", org_id] => run_org_members(Some(org_id)),
         ["org", "invite", org_id, role, rest @ ..] => run_org_invite(org_id, role, rest),
-        ["org", "join", org_id, token_or_hash, member] => run_org_join(org_id, token_or_hash, member),
+        ["org", "join", org_id, token_or_hash, member] => {
+            run_org_join(org_id, token_or_hash, member)
+        }
         ["org", "leave", org_id, member] => dispatch("org.leave", &[org_id, member]),
         ["org", "role", "set", org_id, member, role, signer] => {
             dispatch("org.role.set", &[org_id, member, role, signer])
@@ -381,7 +383,9 @@ pub fn run_app_export(app: &str, rest: &[&str]) -> Result<(), String> {
 
 pub fn run_app_upgrade(app: &str, rest: &[&str]) -> Result<(), String> {
     if rest.is_empty() {
-        return Err("usage: terrane app upgrade <id> <bundle|--to-version v|--from-draft d>".into());
+        return Err(
+            "usage: terrane app upgrade <id> <bundle|--to-version v|--from-draft d>".into(),
+        );
     }
     let mut args = vec![app.to_string()];
     args.extend(rest.iter().map(|part| (*part).to_string()));
@@ -473,7 +477,11 @@ fn run_person_whoami() -> Result<(), String> {
     let core = crate::open()?;
     match crate::query_on_core(&core, "person", "whoami", &[])? {
         terrane_core::QueryValue::Json(json) => println!("{json}"),
-        other => return Err(format!("person.whoami returned unexpected value: {other:?}")),
+        other => {
+            return Err(format!(
+                "person.whoami returned unexpected value: {other:?}"
+            ))
+        }
     }
     Ok(())
 }
@@ -658,13 +666,8 @@ fn run_mcp_call(app: &str, connection: &str, tool: &str, args_json: &str) -> Res
 
 fn run_mcp_tools(app: &str, connection: &str) -> Result<(), String> {
     let core = crate::open()?;
-    let records = crate::mcp_client::list_tools(
-        &crate::home_dir(),
-        core.state(),
-        app,
-        connection,
-    )
-    .map_err(|e| e.to_string())?;
+    let records = crate::mcp_client::list_tools(&crate::home_dir(), core.state(), app, connection)
+        .map_err(|e| e.to_string())?;
     let record = records
         .iter()
         .find(|record| record.kind == "mcp.called")
@@ -830,7 +833,9 @@ pub fn run_backup_restore(path: &str, rest: &[&str]) -> Result<(), String> {
         if outcome.cloned { "clone" } else { "restore" }
     );
     if !outcome.cloned {
-        println!("warning: restored home keeps replica identity; use --clone for a second live copy");
+        println!(
+            "warning: restored home keeps replica identity; use --clone for a second live copy"
+        );
     }
     Ok(())
 }
@@ -993,11 +998,7 @@ pub fn run_state() -> Result<(), String> {
         for (call_key, call) in calls {
             println!(
                 "  {app} {call_key} {}.{} {} ({} bytes) error={}",
-                call.connection,
-                call.tool,
-                call.result_kind,
-                call.result_size,
-                call.is_error
+                call.connection, call.tool, call.result_kind, call.result_size, call.is_error
             );
         }
     }
@@ -1191,7 +1192,8 @@ pub fn run_compact(args: &[&str]) -> Result<(), String> {
 
 pub fn run_migrate_status(app: &str) -> Result<(), String> {
     let core = crate::open()?;
-    let state_version = terrane_cap_migration::version(core.state(), app).map_err(|e| e.to_string())?;
+    let state_version =
+        terrane_cap_migration::version(core.state(), app).map_err(|e| e.to_string())?;
     let bundle = migration_bundle(core.state(), app)?;
     let manifest_version = crate::manifest_data_version(&bundle.manifest);
     let pending: Vec<u64> = bundle
@@ -1358,7 +1360,12 @@ pub fn run_stt_dispatch(command: &str, rest: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn run_stream_open(app: &str, name: &str, verb: &str, request_json: &str) -> Result<(), String> {
+pub fn run_stream_open(
+    app: &str,
+    name: &str,
+    verb: &str,
+    request_json: &str,
+) -> Result<(), String> {
     let args = vec![
         app.to_string(),
         name.to_string(),
@@ -1396,7 +1403,9 @@ pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<()
         }
     }
     if text.is_empty() {
-        return Err("usage: terrane stream ingest-text <app> <name> [--received-at ts] <text>".into());
+        return Err(
+            "usage: terrane stream ingest-text <app> <name> [--received-at ts] <text>".into(),
+        );
     }
     let received_at = received_at.unwrap_or_else(now_unix_millis);
     let mut core = crate::open()?;
@@ -1440,7 +1449,10 @@ pub fn run_stream_list(app: &str) -> Result<(), String> {
             }));
         }
     }
-    println!("{}", serde_json::to_string(&rows).map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        serde_json::to_string(&rows).map_err(|e| e.to_string())?
+    );
     Ok(())
 }
 
@@ -1480,7 +1492,10 @@ pub fn run_tts_render(app: &str, rest: &[&str]) -> Result<(), String> {
 }
 
 pub fn run_tts_voices() -> Result<(), String> {
-    println!("{}", crate::tts_edge::voices_json().map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        crate::tts_edge::voices_json().map_err(|e| e.to_string())?
+    );
     Ok(())
 }
 
@@ -1615,11 +1630,10 @@ pub fn run_scheduler_tick(now_ms: Option<&str>) -> Result<(), String> {
     let mut core = crate::open()?;
     crate::ensure_identity(&mut core)?;
     let parsed_now = match now_ms {
-        Some(raw) => {
-            Some(raw
-                .parse::<u64>()
-                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?)
-        }
+        Some(raw) => Some(
+            raw.parse::<u64>()
+                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?,
+        ),
         None => None,
     };
     let outcomes = match parsed_now {
@@ -1691,11 +1705,10 @@ pub fn run_job_submit(app: &str, verb: &str, rest: &[&str]) -> Result<(), String
                 let Some(value) = rest.get(i + 1) else {
                     return Err("--now-ms requires a value".into());
                 };
-                now_ms = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| format!("--now-ms must be an unsigned integer, got {value:?}"))?,
-                );
+                now_ms =
+                    Some(value.parse::<u64>().map_err(|_| {
+                        format!("--now-ms must be an unsigned integer, got {value:?}")
+                    })?);
                 i += 2;
             }
             "--args-json" => {
@@ -1899,7 +1912,11 @@ pub fn run_history(app: &str, rest: &[&str]) -> Result<(), String> {
     let value = crate::query_on_core(&core, "history", query, &args.into_query_args())?;
     match value {
         terrane_core::QueryValue::Json(json) => println!("{json}"),
-        other => return Err(format!("history.{query} returned unexpected value: {other:?}")),
+        other => {
+            return Err(format!(
+                "history.{query} returned unexpected value: {other:?}"
+            ))
+        }
     }
     Ok(())
 }
@@ -1915,10 +1932,7 @@ pub fn run_revert(app: &str, rest: &[&str]) -> Result<(), String> {
         )?);
     } else {
         let dry = crate::dry_run_on_core(&core, "history.revert", &parsed.command_args)?;
-        println!(
-            "would append {} event(s); pass --yes to apply",
-            dry.records
-        );
+        println!("would append {} event(s); pass --yes to apply", dry.records);
     }
     Ok(())
 }
@@ -2068,9 +2082,7 @@ pub fn run_web_publish_enable(app: &str, rest: &[&str]) -> Result<(), String> {
 
 pub fn run_web_publish_status(app: Option<&str>) -> Result<(), String> {
     let core = crate::open()?;
-    let args = app
-        .map(|app| vec![app.to_string()])
-        .unwrap_or_default();
+    let args = app.map(|app| vec![app.to_string()]).unwrap_or_default();
     match crate::query_on_core(&core, "web-publish", "status", &args)? {
         terrane_core::QueryValue::Json(json) => {
             println!("{json}");
@@ -2082,7 +2094,11 @@ pub fn run_web_publish_status(app: Option<&str>) -> Result<(), String> {
     }
 }
 
-fn print_webhook_route(core: &terrane_core::Core<crate::EdgeRunner>, app: &str, name: &str) -> Result<(), String> {
+fn print_webhook_route(
+    core: &terrane_core::Core<crate::EdgeRunner>,
+    app: &str,
+    name: &str,
+) -> Result<(), String> {
     let meta = core
         .state()
         .webhook
