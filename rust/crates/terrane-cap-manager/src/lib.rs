@@ -258,12 +258,45 @@ impl CapabilityManager {
     ) -> Result<WorkerResponse, ManagerError> {
         self.ensure_loaded(namespace, records)?;
         let slot = self.slot(namespace)?;
-        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let process = slot
-            .process
-            .as_mut()
-            .ok_or_else(|| ManagerError::Worker(format!("{namespace} is not loaded")))?;
-        process.call(&request)
+        let first = {
+            let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let process = slot
+                .process
+                .as_mut()
+                .ok_or_else(|| ManagerError::Worker(format!("{namespace} is not loaded")))?;
+            process.call(&request)
+        };
+        match first {
+            Ok(response) => Ok(response),
+            Err(error @ (ManagerError::Io(_) | ManagerError::Protocol(_))) => {
+                {
+                    let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some(mut process) = slot.process.take() {
+                        let _ = process.child.kill();
+                        let _ = process.child.wait();
+                    }
+                    slot.last_error = Some(format!("worker exited; restarting once: {error}"));
+                }
+                self.ensure_loaded(namespace, records)?;
+                let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let process = slot
+                    .process
+                    .as_mut()
+                    .ok_or_else(|| ManagerError::Worker(format!("{namespace} did not restart")))?;
+                match process.call(&request) {
+                    Ok(response) => Ok(response),
+                    Err(error) => {
+                        if let Some(mut process) = slot.process.take() {
+                            let _ = process.child.kill();
+                            let _ = process.child.wait();
+                        }
+                        slot.last_error = Some(format!("worker restart failed: {error}"));
+                        Err(error)
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn fold_loaded(&self, first_seq: u64, records: &[EventRecord]) {
@@ -465,6 +498,19 @@ impl CapabilityManager {
             let _ = self.evict(&namespace)?;
         }
         Ok(hashes)
+    }
+
+    /// Force a loaded worker to exit so trusted diagnostics can verify the
+    /// one-restart recovery path. The next request performs restore + replay.
+    pub fn terminate_for_diagnostics(&self, namespace: &str) -> Result<bool, ManagerError> {
+        let slot = self.slot(namespace)?;
+        let mut slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(process) = slot.process.as_mut() else {
+            return Ok(false);
+        };
+        process.child.kill()?;
+        let _ = process.child.wait();
+        Ok(true)
     }
 
     pub fn evict_idle(&self) -> Result<(), ManagerError> {

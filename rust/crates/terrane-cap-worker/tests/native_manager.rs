@@ -58,6 +58,19 @@ fn signed_bundle_runs_replays_decides_and_snapshots_out_of_process() {
         .iter()
         .any(|status| { status.namespace == "time" && status.status == CapabilityStatus::Ready }));
 
+    assert!(manager.terminate_for_diagnostics("time").unwrap());
+    let restarted = manager
+        .call(
+            "time",
+            &records,
+            WorkerRequest::Decide {
+                request: Request::new("time.now", vec!["notes".into()]),
+                dependencies: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(restarted, response);
+
     assert!(manager.evict("time").unwrap());
     assert!(home.join("capabilities/state/time.json").is_file());
 }
