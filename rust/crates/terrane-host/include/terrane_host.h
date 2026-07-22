@@ -44,6 +44,13 @@ int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,
 int terrane_dispatch(TerraneHandle *h, const char *name, size_t argc,
                      const char *const *argv, char **out_output, char **out_error);
 
+/* Handle one MCP JSON-RPC message against this native host's live Core.
+ * Notifications return an empty output string; requests return JSON. This lets
+ * MCP clients attach to the GUI owner instead of opening a second home writer. */
+int terrane_mcp_handle_json_rpc(TerraneHandle *h, const char *raw,
+                                const char *admin_base_url,
+                                char **out_output, char **out_error);
+
 /* Route a Terrane URL or file path through the deep-link host edge. On success
  * writes a short human summary. */
 int terrane_open_target(TerraneHandle *h, const char *target, char **out_output,

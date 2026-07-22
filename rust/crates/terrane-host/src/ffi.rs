@@ -200,6 +200,54 @@ pub unsafe extern "C" fn terrane_dispatch(
     finish(code, out_error)
 }
 
+/// Handle one MCP JSON-RPC message against the live Core owned by a native
+/// host. This is the bridge used by the macOS loopback MCP endpoint: external
+/// MCP clients attach to the GUI process instead of attempting to open a
+/// second writer for the same Terrane home.
+///
+/// Notifications succeed with an empty output string. Requests return their
+/// JSON-RPC response in `out_output`.
+///
+/// # Safety
+/// `raw` and `admin_base_url` must be valid C strings. `out_output` and
+/// `out_error` follow the ownership rules documented for [`terrane_host_run`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_mcp_handle_json_rpc(
+    h: *mut TerraneHandle,
+    raw: *const c_char,
+    admin_base_url: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let raw = match read_str(raw) {
+            Ok(raw) => raw,
+            Err(code) => return code,
+        };
+        let admin_base_url = match read_str(admin_base_url) {
+            Ok(url) => url,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let response = crate::mcp::handle_json_rpc_with_source_and_admin_base(
+            &mut core,
+            &raw,
+            "mcp_gui",
+            &admin_base_url,
+        )
+        .unwrap_or_default();
+        write_out(out_output, response);
+        TERRANE_OK
+    }));
+    finish(code, out_error)
+}
+
 /// Route a Terrane URL or file path through the deep-link host edge. On success
 /// writes a short human summary.
 ///
