@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::Capability;
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, restore_state, snapshot_state, state_mut, state_ref, AppId,
-    CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec,
-    QueryCtx, QuerySpec, QueryValue, Result, StateStore,
+    arg, decode_event, encode_event, snapshot_state, state_mut, state_ref, AppId, CapManifest,
+    CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec,
+    QueryValue, Result, StateStore,
 };
 use terrane_cap_kv::RESERVED_PREFIX;
 
@@ -27,6 +27,8 @@ pub struct AppRecord {
     pub history: Vec<VersionEntry>,
     pub interfaces: Vec<String>,
     pub links: Vec<LinkRegistration>,
+    pub required_capabilities: Vec<String>,
+    pub requirements_resolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -65,6 +67,16 @@ struct Added {
     source: Option<String>,
     runtime: String,
     interfaces: Vec<String>,
+    required_capabilities: Option<Vec<String>>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct AddedV2 {
+    id: String,
+    name: String,
+    source: Option<String>,
+    runtime: String,
+    interfaces: Vec<String>,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -73,6 +85,30 @@ struct AddedV1 {
     name: String,
     source: Option<String>,
     runtime: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct RequirementsResolved {
+    app: String,
+    required_capabilities: Vec<String>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct LegacyAppRecord {
+    id: AppId,
+    name: String,
+    source: Option<String>,
+    runtime: String,
+    version: String,
+    history: Vec<VersionEntry>,
+    interfaces: Vec<String>,
+    links: Vec<LinkRegistration>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct LegacyAppState {
+    apps: BTreeMap<AppId, LegacyAppRecord>,
+    links: BTreeMap<AppId, Vec<LinkRegistration>>,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -122,6 +158,9 @@ impl Capability for AppCapability {
                 },
                 EventSpec {
                     kind: "app.link.registered",
+                },
+                EventSpec {
+                    kind: "app.requirements.resolved",
                 },
                 EventSpec {
                     kind: "app.removed",
@@ -174,6 +213,7 @@ impl Capability for AppCapability {
                         source,
                         runtime,
                         interfaces,
+                        required_capabilities: None,
                     },
                 )?];
                 for link in default_scheme_links(&id).into_iter().chain(links) {
@@ -265,6 +305,10 @@ impl Capability for AppCapability {
                         history: Vec::new(),
                         interfaces: normalize_interfaces(e.interfaces),
                         links: Vec::new(),
+                        required_capabilities: normalize_capabilities(
+                            e.required_capabilities.clone().unwrap_or_default(),
+                        ),
+                        requirements_resolved: e.required_capabilities.is_some(),
                     },
                 );
             }
@@ -303,6 +347,15 @@ impl Capability for AppCapability {
                     }
                 }
             }
+            "app.requirements.resolved" => {
+                let e: RequirementsResolved = decode_event(record)?;
+                let app = state_mut::<AppState>(state, "app")?
+                    .apps
+                    .get_mut(&e.app)
+                    .ok_or_else(|| Error::AppNotFound(e.app.clone()))?;
+                app.required_capabilities = normalize_capabilities(e.required_capabilities);
+                app.requirements_resolved = true;
+            }
             "app.removed" => {
                 let e: Removed = decode_event(record)?;
                 let state = state_mut::<AppState>(state, "app")?;
@@ -319,7 +372,38 @@ impl Capability for AppCapability {
     }
 
     fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
-        restore_state::<AppState>(state, self.namespace(), payload)
+        if let Ok(restored) = borsh::from_slice::<AppState>(payload) {
+            *state_mut::<AppState>(state, self.namespace())? = restored;
+            return Ok(());
+        }
+        let legacy = borsh::from_slice::<LegacyAppState>(payload)
+            .map_err(|error| Error::Storage(format!("restore app snapshot: {error}")))?;
+        let apps = legacy
+            .apps
+            .into_iter()
+            .map(|(id, app)| {
+                (
+                    id,
+                    AppRecord {
+                        id: app.id,
+                        name: app.name,
+                        source: app.source,
+                        runtime: app.runtime,
+                        version: app.version,
+                        history: app.history,
+                        interfaces: app.interfaces,
+                        links: app.links,
+                        required_capabilities: Vec::new(),
+                        requirements_resolved: false,
+                    },
+                )
+            })
+            .collect();
+        *state_mut::<AppState>(state, self.namespace())? = AppState {
+            apps,
+            links: legacy.links,
+        };
+        Ok(())
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {
@@ -348,6 +432,14 @@ impl Capability for AppCapability {
                     e.app, e.kind, e.spec
                 ))
             }
+            "app.requirements.resolved" => {
+                let e: RequirementsResolved = decode_event(record).ok()?;
+                Some(format!(
+                    "app.requirements.resolved {} [{}]",
+                    e.app,
+                    e.required_capabilities.join(",")
+                ))
+            }
             "app.removed" => {
                 let e: Removed = decode_event(record).ok()?;
                 Some(format!("app.removed {}", e.id))
@@ -361,6 +453,9 @@ impl Capability for AppCapability {
             "app.added" => decode_added(record).ok().map(|e| e.id),
             "app.upgraded" => decode_event::<Upgraded>(record).ok().map(|e| e.id),
             "app.link.registered" => decode_event::<LinkRegistered>(record).ok().map(|e| e.app),
+            "app.requirements.resolved" => decode_event::<RequirementsResolved>(record)
+                .ok()
+                .map(|e| e.app),
             "app.removed" => decode_event::<Removed>(record).ok().map(|e| e.id),
             _ => None,
         }
@@ -410,6 +505,17 @@ pub fn added_event_with_interfaces(
     runtime: impl Into<String>,
     interfaces: Vec<String>,
 ) -> Result<EventRecord> {
+    added_event_with_requirements(id, name, source, runtime, interfaces, None)
+}
+
+pub fn added_event_with_requirements(
+    id: impl Into<String>,
+    name: impl Into<String>,
+    source: Option<String>,
+    runtime: impl Into<String>,
+    interfaces: Vec<String>,
+    required_capabilities: Option<Vec<String>>,
+) -> Result<EventRecord> {
     encode_event(
         "app.added",
         &Added {
@@ -418,6 +524,20 @@ pub fn added_event_with_interfaces(
             source,
             runtime: runtime.into(),
             interfaces,
+            required_capabilities: required_capabilities.map(normalize_capabilities),
+        },
+    )
+}
+
+pub fn requirements_resolved_event(
+    app: impl Into<String>,
+    required_capabilities: Vec<String>,
+) -> Result<EventRecord> {
+    encode_event(
+        "app.requirements.resolved",
+        &RequirementsResolved {
+            app: app.into(),
+            required_capabilities: normalize_capabilities(required_capabilities),
         },
     )
 }
@@ -525,6 +645,16 @@ fn decode_added(record: &EventRecord) -> Result<Added> {
     match decode_event::<Added>(record) {
         Ok(event) => Ok(event),
         Err(_) => {
+            if let Ok(old) = decode_event::<AddedV2>(record) {
+                return Ok(Added {
+                    id: old.id,
+                    name: old.name,
+                    source: old.source,
+                    runtime: old.runtime,
+                    interfaces: old.interfaces,
+                    required_capabilities: None,
+                });
+            }
             let old: AddedV1 = decode_event(record)?;
             Ok(Added {
                 id: old.id,
@@ -532,9 +662,17 @@ fn decode_added(record: &EventRecord) -> Result<Added> {
                 source: old.source,
                 runtime: old.runtime,
                 interfaces: mandatory_interfaces(),
+                required_capabilities: None,
             })
         }
     }
+}
+
+pub fn normalize_capabilities(mut capabilities: Vec<String>) -> Vec<String> {
+    capabilities.retain(|capability| !capability.trim().is_empty());
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
 }
 
 pub fn normalize_interfaces(mut interfaces: Vec<String>) -> Vec<String> {

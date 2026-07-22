@@ -218,7 +218,39 @@ fn open_at_log_path_with(
         core.attach_capability_manager(manager);
     }
     ensure_identity(&mut core)?;
+    migrate_legacy_app_requirements(&mut core)?;
     Ok(core)
+}
+
+fn migrate_legacy_app_requirements(core: &mut HostCore) -> Result<(), String> {
+    let unresolved: Vec<_> = core
+        .state()
+        .app
+        .apps
+        .values()
+        .filter(|app| !app.requirements_resolved)
+        .map(|app| (app.id.clone(), app.source.is_some()))
+        .collect();
+    let mut records = Vec::new();
+    for (app, has_source) in unresolved {
+        let resources = if has_source {
+            match permission::app_requested_resources(core, &app) {
+                Ok(resources) => resources,
+                Err(_) => continue,
+            }
+        } else {
+            Vec::new()
+        };
+        let mut record = terrane_cap_app::requirements_resolved_event(app, resources)
+            .map_err(|error| error.to_string())?;
+        record.actor = terrane_cap_interface::LOCAL_OWNER_SUBJECT.to_string();
+        records.push(record);
+    }
+    if !records.is_empty() {
+        core.append_recorded(records)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn configured_capability_manager(
@@ -281,7 +313,11 @@ pub fn prepare_app_capabilities(core: &HostCore, app: &str) -> Result<(), String
         "wasm" => "wasm-runtime",
         other => return Err(format!("unknown app runtime for {app}: {other}")),
     };
-    let mut namespaces = permission::app_requested_resources(core, app)?;
+    let mut namespaces = if record.requirements_resolved {
+        record.required_capabilities.clone()
+    } else {
+        permission::app_requested_resources(core, app)?
+    };
     namespaces.push(runtime.to_string());
     namespaces.sort();
     namespaces.dedup();
@@ -1253,6 +1289,8 @@ pub fn validate_common_api_bundle_source(
             history: Vec::new(),
             interfaces: terrane_cap_app::mandatory_interfaces(),
             links: Vec::new(),
+            required_capabilities: resources.clone(),
+            requirements_resolved: true,
         },
     );
     let host = RuntimeHostHandle::new(Box::new(
@@ -1335,6 +1373,8 @@ pub fn validate_bundle_smoke_tests_source(
             history: Vec::new(),
             interfaces: terrane_cap_app::mandatory_interfaces(),
             links: Vec::new(),
+            required_capabilities: resources.clone(),
+            requirements_resolved: true,
         },
     );
     let host = RuntimeHostHandle::new(Box::new(

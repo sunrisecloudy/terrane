@@ -1332,12 +1332,13 @@ pub(crate) fn import_app_bundle_files(
         ));
     }
 
-    records.push(terrane_cap_app::added_event_with_interfaces(
+    records.push(terrane_cap_app::added_event_with_requirements(
         id.clone(),
         name,
         Some(app_bundle_source(&id)),
         manifest.runtime,
         terrane_cap_app::normalize_interfaces(manifest.interfaces),
+        Some(manifest.resources),
     )?);
     if manifest.version != terrane_cap_app::DEFAULT_VERSION {
         records.push(terrane_cap_app::upgraded_event(

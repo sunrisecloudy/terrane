@@ -123,4 +123,54 @@ fn add_event_describes_and_folds_into_state() {
     assert_eq!(store.app.apps["demo"].name, "Demo");
     assert_eq!(store.app.apps["demo"].runtime, "js");
     assert_eq!(store.app.apps["demo"].links.len(), 3);
+    assert!(!store.app.apps["demo"].requirements_resolved);
+}
+
+#[test]
+fn required_capabilities_are_persisted_and_normalized() {
+    let cap = AppCapability;
+    let mut store = Store::default();
+    let event = added_event_with_requirements(
+        "demo",
+        "Demo",
+        None,
+        "js",
+        mandatory_interfaces(),
+        Some(vec!["net".into(), "kv".into(), "net".into()]),
+    )
+    .unwrap();
+    cap.fold(&mut store, &event).unwrap();
+    assert_eq!(
+        store.app.apps["demo"].required_capabilities,
+        vec!["kv", "net"]
+    );
+    assert!(store.app.apps["demo"].requirements_resolved);
+}
+
+#[test]
+fn legacy_snapshot_restores_as_unresolved_without_data_loss() {
+    let cap = AppCapability;
+    let mut legacy = LegacyAppState {
+        apps: BTreeMap::new(),
+        links: BTreeMap::new(),
+    };
+    legacy.apps.insert(
+        "demo".into(),
+        LegacyAppRecord {
+            id: "demo".into(),
+            name: "Demo".into(),
+            source: Some("/tmp/demo".into()),
+            runtime: "js".into(),
+            version: DEFAULT_VERSION.into(),
+            history: Vec::new(),
+            interfaces: mandatory_interfaces(),
+            links: Vec::new(),
+        },
+    );
+    let mut store = Store::default();
+    cap.restore(&mut store, &borsh::to_vec(&legacy).unwrap())
+        .unwrap();
+
+    assert_eq!(store.app.apps["demo"].source.as_deref(), Some("/tmp/demo"));
+    assert!(!store.app.apps["demo"].requirements_resolved);
 }

@@ -146,6 +146,8 @@ impl PreviewStore {
                 history: Vec::new(),
                 interfaces: terrane_cap_app::normalize_interfaces(manifest.interfaces.clone()),
                 links: Vec::new(),
+                required_capabilities: manifest.resources.clone(),
+                requirements_resolved: true,
             },
         );
         let bundle = JsRuntimeBundle {

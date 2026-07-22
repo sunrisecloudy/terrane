@@ -291,6 +291,8 @@ fn registry_bus_exposes_app_exists_and_replica_peer_queries() {
             history: Vec::new(),
             interfaces: terrane_cap_app::mandatory_interfaces(),
             links: Vec::new(),
+            required_capabilities: Vec::new(),
+            requirements_resolved: true,
         },
     );
 
