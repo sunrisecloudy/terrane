@@ -63,39 +63,57 @@ pub(crate) unsafe fn dispatch_on_terrane_handle(
 /// `home` must be null or a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn terrane_open(home: *const c_char) -> *mut TerraneHandle {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Option<*mut TerraneHandle> {
-        let open_home = if home.is_null() {
-            let home = crate::home_dir();
-            return crate::open_at_home(&home).ok().map(|core| {
-                Box::into_raw(Box::new(TerraneHandle {
-                    inner: Mutex::new(core),
-                    previews: Mutex::new(crate::PreviewStore::new()),
-                    home,
-                }))
-            });
-        } else {
-            let s = CStr::from_ptr(home).to_str().ok()?; // bad UTF-8 → fail
-            if s.is_empty() {
-                let home = crate::home_dir();
-                return crate::open_at_home(&home).ok().map(|core| {
-                    Box::into_raw(Box::new(TerraneHandle {
-                        inner: Mutex::new(core),
-                        previews: Mutex::new(crate::PreviewStore::new()),
-                        home,
-                    }))
-                });
+    terrane_open_with_error(home, ptr::null_mut())
+}
+
+/// Open a workspace and preserve the startup error for native hosts.
+///
+/// # Safety
+/// `home` must be null or a valid NUL-terminated C string. `out_error` must be
+/// null or point to writable `char *` storage; a returned string is freed with
+/// [`terrane_string_free`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_open_with_error(
+    home: *const c_char,
+    out_error: *mut *mut c_char,
+) -> *mut TerraneHandle {
+    null_out(out_error);
+    let result = catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut TerraneHandle, String> {
+            let open_home = if home.is_null() {
+                crate::home_dir()
             } else {
-                PathBuf::from(s)
-            }
-        };
-        let core = crate::open_at_home(&open_home).ok()?;
-        Some(Box::into_raw(Box::new(TerraneHandle {
-            inner: Mutex::new(core),
-            previews: Mutex::new(crate::PreviewStore::new()),
-            home: open_home,
-        })))
-    }));
-    result.ok().flatten().unwrap_or(ptr::null_mut())
+                let s = CStr::from_ptr(home)
+                    .to_str()
+                    .map_err(|_| "Terrane home path is not valid UTF-8".to_string())?;
+                if s.is_empty() {
+                    crate::home_dir()
+                } else {
+                    PathBuf::from(s)
+                }
+            };
+            let core = crate::open_at_home(&open_home)?;
+            Ok(Box::into_raw(Box::new(TerraneHandle {
+                inner: Mutex::new(core),
+                previews: Mutex::new(crate::PreviewStore::new()),
+                home: open_home,
+            })))
+        },
+    ));
+    match result {
+        Ok(Ok(handle)) => handle,
+        Ok(Err(error)) => {
+            write_out(out_error, error);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            write_out(
+                out_error,
+                "Terrane panicked while opening the workspace".into(),
+            );
+            ptr::null_mut()
+        }
+    }
 }
 
 /// Run an app backend through its cataloged runtime. On success writes the
@@ -178,6 +196,54 @@ pub unsafe extern "C" fn terrane_dispatch(
             out_output,
             out_error,
         )
+    }));
+    finish(code, out_error)
+}
+
+/// Handle one MCP JSON-RPC message against the live Core owned by a native
+/// host. This is the bridge used by the macOS loopback MCP endpoint: external
+/// MCP clients attach to the GUI process instead of attempting to open a
+/// second writer for the same Terrane home.
+///
+/// Notifications succeed with an empty output string. Requests return their
+/// JSON-RPC response in `out_output`.
+///
+/// # Safety
+/// `raw` and `admin_base_url` must be valid C strings. `out_output` and
+/// `out_error` follow the ownership rules documented for [`terrane_host_run`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_mcp_handle_json_rpc(
+    h: *mut TerraneHandle,
+    raw: *const c_char,
+    admin_base_url: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let raw = match read_str(raw) {
+            Ok(raw) => raw,
+            Err(code) => return code,
+        };
+        let admin_base_url = match read_str(admin_base_url) {
+            Ok(url) => url,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let response = crate::mcp::handle_json_rpc_with_source_and_admin_base(
+            &mut core,
+            &raw,
+            "mcp_gui",
+            &admin_base_url,
+        )
+        .unwrap_or_default();
+        write_out(out_output, response);
+        TERRANE_OK
     }));
     finish(code, out_error)
 }

@@ -4067,6 +4067,7 @@ name = "terrane-cap-interface"
 version = "0.1.0"
 dependencies = [
  "borsh",
+ "serde",
 ]
 
 [[package]]
@@ -4122,6 +4123,24 @@ dependencies = [
  "serde_json",
  "terrane-cap-interface",
  "terrane-cap-model",
+]
+
+[[package]]
+name = "terrane-cap-manager"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "terrane-cap-interface",
+ "terrane-cap-protocol",
+ "ureq",
+ "zstd",
 ]
 
 [[package]]
@@ -4218,6 +4237,18 @@ version = "0.1.0"
 dependencies = [
  "borsh",
  "serde_json",
+ "terrane-cap-interface",
+]
+
+[[package]]
+name = "terrane-cap-protocol"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
  "terrane-cap-interface",
 ]
 
@@ -4401,6 +4432,69 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-worker"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+ "getrandom 0.4.3",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "terrane-cap-agent",
+ "terrane-cap-app",
+ "terrane-cap-applescript",
+ "terrane-cap-automation",
+ "terrane-cap-blob",
+ "terrane-cap-browser",
+ "terrane-cap-build",
+ "terrane-cap-builder",
+ "terrane-cap-common",
+ "terrane-cap-crdt",
+ "terrane-cap-crypto",
+ "terrane-cap-document",
+ "terrane-cap-geo",
+ "terrane-cap-harness",
+ "terrane-cap-history",
+ "terrane-cap-interface",
+ "terrane-cap-interop",
+ "terrane-cap-job-queue",
+ "terrane-cap-js-runtime",
+ "terrane-cap-local-model",
+ "terrane-cap-manager",
+ "terrane-cap-mcp-client",
+ "terrane-cap-media",
+ "terrane-cap-migration",
+ "terrane-cap-model",
+ "terrane-cap-native",
+ "terrane-cap-net",
+ "terrane-cap-org",
+ "terrane-cap-person",
+ "terrane-cap-presence",
+ "terrane-cap-protocol",
+ "terrane-cap-publish",
+ "terrane-cap-push",
+ "terrane-cap-query",
+ "terrane-cap-relational-db",
+ "terrane-cap-replica",
+ "terrane-cap-scheduler",
+ "terrane-cap-search",
+ "terrane-cap-share",
+ "terrane-cap-stream",
+ "terrane-cap-stt",
+ "terrane-cap-sync",
+ "terrane-cap-sysinfo",
+ "terrane-cap-time",
+ "terrane-cap-tts",
+ "terrane-cap-wasm-runtime",
+ "terrane-cap-web-publish",
+ "terrane-cap-webhook",
+ "terrane-core",
+ "zstd",
+]
+
+[[package]]
 name = "terrane-core"
 version = "0.1.0"
 dependencies = [
@@ -4435,6 +4529,7 @@ dependencies = [
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-local-model",
+ "terrane-cap-manager",
  "terrane-cap-mcp-client",
  "terrane-cap-media",
  "terrane-cap-migration",
@@ -4444,6 +4539,7 @@ dependencies = [
  "terrane-cap-org",
  "terrane-cap-person",
  "terrane-cap-presence",
+ "terrane-cap-protocol",
  "terrane-cap-publish",
  "terrane-cap-push",
  "terrane-cap-query",
@@ -4515,6 +4611,7 @@ dependencies = [
  "terrane-cap-js-runtime",
  "terrane-cap-kv",
  "terrane-cap-local-model",
+ "terrane-cap-manager",
  "terrane-cap-mcp-client",
  "terrane-cap-media",
  "terrane-cap-migration",
@@ -4558,11 +4655,13 @@ version = "0.1.0"
 dependencies = [
  "nanoserde",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "terrane-api",
  "terrane-core",
  "terrane-host",
+ "ureq",
 ]
 
 [[package]]

@@ -2,11 +2,13 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::abi::{EventRecord, Result, RuntimeRequest};
 use crate::manifest::GrantResourceSpec;
 
 /// A read-only value returned by a capability query.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum QueryValue {
     Bool(bool),
     U64(Option<u64>),
@@ -79,7 +81,7 @@ pub struct ResourceReadCtx<'a> {
 }
 
 /// A value a resource read hands back to backend JS/WASM.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadValue {
     OptString(Option<String>),
     StringMap(BTreeMap<String, String>),

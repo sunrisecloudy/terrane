@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var appSchemeHandler: AppSchemeHandler?
   private var previewSchemeHandler: PreviewSchemeHandler?
   private var loopbackHost: LoopbackAppHost?
+  private var mcpServer: McpLoopbackServer?
   private var home: URL!
   private var apps: [TerraneApp] = []
   private var premiumURL: URL?
@@ -36,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     home = Self.resolveHome()
+    setenv("TERRANE_HOME", home.path, 1)
     premiumURL = Self.resolvePremiumURL()
     apps = AppCatalog.discover(home: home)
     loopbackHost = Self.resolveRepoAppsDirectory()
@@ -43,9 +45,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     let config = WKWebViewConfiguration()
     guard let bridge = TerraneBridge(home: home) else {
-      fatalError("terrane-host: cannot open Terrane home at \(home.path)")
+      let alert = NSAlert()
+      alert.alertStyle = .critical
+      alert.messageText = "Terrane could not open this workspace"
+      alert.informativeText = TerraneBridge.lastOpenError
+        ?? "The workspace at \(home.path) could not be opened."
+      alert.addButton(withTitle: "Quit")
+      alert.runModal()
+      NSApp.terminate(nil)
+      return
     }
     self.bridge = bridge
+    for app in apps {
+      let result = bridge.catalog(appId: app.id, name: app.name, source: app.directory.path)
+      if !result.0 {
+        NSLog("terrane-host: cannot catalog \(app.id) for MCP: \(result.1)")
+      }
+    }
+    let mcpServer = McpLoopbackServer(home: home, bridge: bridge)
+    do {
+      try mcpServer.start()
+      self.mcpServer = mcpServer
+    } catch {
+      NSLog("terrane-host: MCP loopback unavailable: \(error)")
+    }
     // Seed the shared i18n catalog if a catalog dir is configured (parity with
     // the web host's startup seed); idempotent and best-effort. Any host or the
     // CLI seeding this home also suffices.
@@ -58,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     chromeMessages = bridge.i18nBundle(code: currentLocale, appId: "")
     bridge.onDocumentSet = { [weak self] name in
       DispatchQueue.main.async { self?.applyDocumentFromApp(name) }
+    }
+    bridge.onSidebarSectionSet = { [weak self] section in
+      DispatchQueue.main.async { self?.appSidebar?.setAppSection(section) }
     }
     bridge.onPermissionRequired = { [weak self, weak bridge] prompt, completion in
       DispatchQueue.main.async {
@@ -175,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     sttCapture?.stop(reason: "host-exit")
     cameraFrameStreamer?.stop()
     loopbackHost?.stop()
+    mcpServer?.stop()
     terrane_stt_shutdown()
     bridge?.close()
     // Cached local-model engines must be released before ggml's static
@@ -354,8 +381,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     appSidebar.onToggleCollapse = { [weak self] in
       self?.toggleSidebar()
     }
-    appSidebar.localModelPanel.configure(home: home)
-
+    appSidebar.onSectionItemSelect = { [weak self] id in
+      self?.pushSidebarAction(kind: "select", id: id)
+    }
+    appSidebar.onSectionCreate = { [weak self] in
+      self?.pushSidebarAction(kind: "create")
+    }
     let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false
 
@@ -536,6 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     cameraFrameStreamer?.stop()
     cameraFrameStreamer = nil
     selectedApp = app
+    appSidebar.setAppSection(nil)
     bridge?.select(app: app)
     sttCapture = nil
     window.title = "\(app.name) - Terrane"
@@ -583,6 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       sttCapture?.stop(reason: "stopped")
     }
     selectedApp = nil
+    appSidebar.setAppSection(nil)
     bridge?.clearSelection()
     sttCapture = nil
     window.title = "\(app.name) - Terrane Premium"
@@ -635,6 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       return
     }
     selectedApp = nil
+    appSidebar.setAppSection(nil)
     bridge?.clearSelection()
     window.title = "Terrane"
     appSidebar.select(appId: nil)
@@ -832,6 +866,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       dir: TerraneBridge.dir(for: currentLocale)
     )
     webView.evaluateJavaScript(js)
+  }
+
+  private func pushSidebarAction(kind: String, id: String? = nil) {
+    var payload: [String: String] = ["kind": kind]
+    if let id { payload["id"] = id }
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    webView.evaluateJavaScript(
+      "window.__terrane_sidebar_action && window.__terrane_sidebar_action(\(json));")
   }
 
   /// A native-chrome string for `key` from the shell-chrome bundle, else the

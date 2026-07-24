@@ -247,6 +247,7 @@ final class BmiCalculatorE2ETests: XCTestCase {
       XCTAssertEqual(buttons.map(\.toolTip), ["", "pixel-paint", "todo", "hold-dear-route-shop"])
       XCTAssertEqual(buttons.map(\.isSelected), [false, false, true, false])
       XCTAssertTrue(buttons.allSatisfy { $0.image != nil })
+      XCTAssertTrue(subviews(ofType: LocalModelPanel.self, in: sidebar).isEmpty)
 
       sidebar.selectApp(at: 0)
       XCTAssertEqual(selected?.id, "pixel-paint")
@@ -267,6 +268,142 @@ final class BmiCalculatorE2ETests: XCTestCase {
 
       sidebar.setCollapsed(false)
       XCTAssertEqual(buttons.map(\.title), ["Home", "Pixel Paint", "Todo", "Hold Dear Route Shop"])
+    }
+  }
+
+  func testAppSidebarResetsAppsScrollOnlyWhenSelectionChanges() throws {
+    try runOnMainThread {
+      let base = URL(fileURLWithPath: "/tmp/terrane-sidebar-scroll-test")
+      let apps = (0..<16).map { index in
+        TerraneApp(
+          id: "app-\(index)",
+          name: "App \(index)",
+          directory: base.appendingPathComponent("app-\(index)"),
+          uiURL: base.appendingPathComponent("app-\(index)/index.html"),
+          iconPath: nil,
+          iconURL: nil,
+          browserPermissions: []
+        )
+      }
+      let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 232, height: 420))
+      sidebar.render(apps: apps, selectedAppId: "app-0")
+      sidebar.layoutSubtreeIfNeeded()
+
+      let appsScroll = try XCTUnwrap(
+        subviews(ofType: NSScrollView.self, in: sidebar).first { scrollView in
+          guard let documentView = scrollView.documentView else { return false }
+          return !subviews(ofType: AppSidebarButton.self, in: documentView).isEmpty
+        })
+      appsScroll.layoutSubtreeIfNeeded()
+      let documentView = try XCTUnwrap(appsScroll.documentView)
+      documentView.layoutSubtreeIfNeeded()
+      let appButtons = subviews(ofType: AppSidebarButton.self, in: documentView)
+      XCTAssertTrue(documentView.isFlipped)
+      XCTAssertLessThan(try XCTUnwrap(appButtons.first).frame.minY, try XCTUnwrap(appButtons.last).frame.minY)
+      let topY =
+        documentView.isFlipped
+        ? CGFloat(0)
+        : max(0, documentView.bounds.height - appsScroll.contentView.bounds.height)
+      let awayFromTopY =
+        documentView.isFlipped
+        ? max(0, documentView.bounds.height - appsScroll.contentView.bounds.height)
+        : CGFloat(0)
+      appsScroll.contentView.scroll(to: NSPoint(x: 0, y: awayFromTopY))
+      appsScroll.reflectScrolledClipView(appsScroll.contentView)
+      let deliberateScrollY = appsScroll.contentView.bounds.origin.y
+      XCTAssertNotEqual(deliberateScrollY, topY)
+
+      sidebar.select(appId: "app-0")
+      XCTAssertEqual(appsScroll.contentView.bounds.origin.y, deliberateScrollY)
+
+      sidebar.select(appId: "app-1")
+      XCTAssertEqual(appsScroll.contentView.bounds.origin.y, topY)
+    }
+  }
+
+  func testChatEmptyStateStartsAtTopAndClearsStaleScroll() throws {
+    let html = try String(
+      contentsOf: repoRoot().appendingPathComponent("apps/chat/index.html"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(
+      html.contains(
+        """
+              #empty {
+                opacity: 0.55;
+                text-align: center;
+                align-self: stretch;
+                margin: 0;
+        """))
+    XCTAssertTrue(
+      html.contains(
+        """
+                  emptyEl.hidden = false;
+                  logEl.scrollTop = 0;
+                  return;
+        """))
+  }
+
+  func testAppSidebarHostsGenericSelectableSection() throws {
+    try runOnMainThread {
+      let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 232, height: 680))
+      var selectedItem: String?
+      var created = false
+      sidebar.onSectionItemSelect = { selectedItem = $0 }
+      sidebar.onSectionCreate = { created = true }
+      sidebar.setAppSection(
+        AppSidebarSection(
+          title: "Documents",
+          items: [
+            AppSidebarSectionItem(
+              id: "first", title: "First", subtitle: "2 items", systemImage: "doc"),
+            AppSidebarSectionItem(
+              id: "second", title: "Second", subtitle: nil, systemImage: nil),
+          ],
+          selectedItemId: "second",
+          createLabel: "New document"
+        ))
+      sidebar.layoutSubtreeIfNeeded()
+
+      let rows = subviews(ofType: AppSidebarItemButton.self, in: sidebar)
+      XCTAssertEqual(rows.map(\.title), ["First", "Second"])
+      XCTAssertEqual(rows.map(\.isSelected), [false, true])
+      XCTAssertNotNil(rows[0].image)
+      XCTAssertNil(rows[1].image)
+      rows[0].performClick(nil)
+      XCTAssertEqual(selectedItem, "first")
+
+      let create = try XCTUnwrap(
+        subviews(ofType: NSButton.self, in: sidebar).first {
+          $0.accessibilityLabel() == "New document"
+        })
+      create.performClick(nil)
+      XCTAssertTrue(created)
+
+      let split = try XCTUnwrap(subviews(ofType: NSSplitView.self, in: sidebar).first)
+      let detailHeader = try XCTUnwrap(
+        subviews(ofType: NSButton.self, in: sidebar).first { $0.title == "Documents" })
+      detailHeader.performClick(nil)
+      sidebar.layoutSubtreeIfNeeded()
+      XCTAssertLessThanOrEqual(split.subviews[1].frame.height, 40)
+      XCTAssertGreaterThanOrEqual(split.subviews[0].frame.height, split.bounds.height - 40)
+
+      let appsHeader = try XCTUnwrap(
+        subviews(ofType: NSButton.self, in: sidebar).first { $0.title == "Apps" })
+      appsHeader.performClick(nil)
+      appsHeader.performClick(nil)
+      sidebar.layoutSubtreeIfNeeded()
+      XCTAssertLessThanOrEqual(split.subviews[1].frame.height, 40)
+      XCTAssertGreaterThanOrEqual(split.subviews[0].frame.height, split.bounds.height - 40)
+
+      sidebar.setCollapsed(true)
+      sidebar.setCollapsed(false)
+      sidebar.layoutSubtreeIfNeeded()
+      XCTAssertFalse(detailHeader.isHidden)
+      XCTAssertLessThanOrEqual(split.subviews[1].frame.height, 40)
+
+      sidebar.setAppSection(nil)
+      XCTAssertTrue(subviews(ofType: AppSidebarItemButton.self, in: sidebar).isEmpty)
     }
   }
 

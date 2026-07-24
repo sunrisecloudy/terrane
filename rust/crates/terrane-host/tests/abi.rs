@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::ptr;
 
+use borsh::BorshSerialize;
 use tempfile::tempdir;
 use terrane_core::{fold_records_in_memory, local_owner_subject, read_log, Core, State};
 use terrane_host::ffi::*;
@@ -43,6 +44,26 @@ function handle(input) {
     return "?";
 }
 "#;
+
+#[derive(BorshSerialize)]
+struct LegacyEventRecord {
+    kind: String,
+    payload: Vec<u8>,
+}
+
+fn write_legacy_log(path: &Path, records: &[terrane_core::EventRecord]) {
+    let mut bytes = Vec::new();
+    for record in records {
+        let payload = borsh::to_vec(&LegacyEventRecord {
+            kind: record.kind.clone(),
+            payload: record.payload.clone(),
+        })
+        .unwrap();
+        bytes.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+        bytes.extend_from_slice(&payload);
+    }
+    fs::write(path, bytes).unwrap();
+}
 
 fn write_bundle(dir: &Path) -> String {
     let bundle = dir.join("bundle");
@@ -239,6 +260,48 @@ fn open_host_run_output_free_round_trip() {
 
         terrane_close(h);
     }
+}
+
+#[test]
+fn open_reports_diagnostics_instead_of_erasing_them() {
+    let dir = tempdir().unwrap();
+    let blocking_file = dir.path().join("not-a-directory");
+    fs::write(&blocking_file, b"block").unwrap();
+    let home = CString::new(blocking_file.join("home").to_str().unwrap()).unwrap();
+
+    unsafe {
+        let mut error = ptr::null_mut();
+        let handle = terrane_open_with_error(home.as_ptr(), &mut error);
+        assert!(handle.is_null());
+        let message = take_c_string(error).expect("open failure should include a diagnostic");
+        assert!(
+            message.contains("storage error") || message.contains("Not a directory"),
+            "{message}"
+        );
+    }
+}
+
+#[test]
+fn host_open_automatically_migrates_a_legacy_actor_log() {
+    let dir = tempdir().unwrap();
+    let log = dir.path().join("log.bin");
+    let record = terrane_cap_app::added_event("legacy", "Legacy", None, "js").unwrap();
+    write_legacy_log(&log, &[record]);
+    let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+
+    unsafe {
+        let mut error = ptr::null_mut();
+        let handle = terrane_open_with_error(home.as_ptr(), &mut error);
+        let message = take_c_string(error);
+        assert!(!handle.is_null(), "automatic migration failed: {message:?}");
+        terrane_close(handle);
+    }
+
+    assert!(dir.path().join("log.bin.pre-actor").is_file());
+    let records = read_log(&log).unwrap();
+    assert!(records.iter().any(|record| {
+        record.kind == "app.added" && record.actor == terrane_core::LOCAL_OWNER_SUBJECT
+    }));
 }
 
 #[test]
@@ -591,6 +654,7 @@ fn checked_in_c_header_declares_the_exported_abi() {
     ));
     for needle in [
         "TerraneHandle *terrane_open(",
+        "TerraneHandle *terrane_open_with_error(",
         "int terrane_host_run(",
         "int terrane_dispatch(",
         "int terrane_preview_create(",

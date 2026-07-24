@@ -189,6 +189,45 @@ fn public_link_delivery_requires_trusted_host_authority() {
 }
 
 #[test]
+fn public_source_refresh_requires_trusted_host_authority() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo", "--source", "apps/demo"]))
+        .unwrap();
+
+    let err = core
+        .dispatch(terrane_core::Request::new(
+            "app.add",
+            vec![
+                "demo".into(),
+                "Demo".into(),
+                "--source".into(),
+                "/Applications/Terrane.app/Contents/Resources/apps/demo".into(),
+                "--refresh-source".into(),
+            ],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("trusted host authority"), "{err}");
+
+    core.dispatch(req(
+        "app.add",
+        &[
+            "demo",
+            "Demo",
+            "--source",
+            "/Applications/Terrane.app/Contents/Resources/apps/demo",
+            "--refresh-source",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.state().app.apps["demo"].source.as_deref(),
+        Some("/Applications/Terrane.app/Contents/Resources/apps/demo")
+    );
+}
+
+#[test]
 fn rejects_reserved_or_unsafe_app_ids() {
     let dir = tempdir().unwrap();
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();

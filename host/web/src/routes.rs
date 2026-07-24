@@ -1143,6 +1143,11 @@ fn serve_ui(
     rel: &str,
     live_reload: bool,
 ) -> Resp {
+    if core.state().app.apps.contains_key(id) {
+        if let Err(error) = terrane_host::prepare_app_capabilities(core, id) {
+            return json_error(503, &format!("capability preparation failed: {error}"));
+        }
+    }
     let Some(source) = app_source(core, dev_apps, id) else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };

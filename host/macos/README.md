@@ -62,7 +62,18 @@ a temp app bundle or add preview apps to the catalog.
 
 Requires `xcodegen` (`brew install xcodegen`), Xcode, and `cargo`. The project
 is defined by `project.yml`; the `.xcodeproj` is generated (gitignored). A
-pre-build phase builds `libterrane_host.a` and the target links it.
+pre-build phase builds `libterrane_host.a` in a dedicated static target and
+stages llama's non-TLS HTTP helper archive. The target force-loads the Rust
+archive by explicit path, so the finished app has neither a repository dylib
+dependency nor a Homebrew OpenSSL dependency.
+When `TERRANE_CAP_BUNDLE_DIR` points to a verified release bundle directory, a
+post-build phase embeds its index, verifying key, and 41 signed native workers
+under `TerraneHost.app/Contents/Resources/capabilities`. Alternatively,
+`TERRANE_CAP_SIGNING_KEY_HEX` packages the workers from source. Development
+builds without either setting retain the one-release static fallback. Every
+build also embeds the checked-in first-party app bundles under
+`TerraneHost.app/Contents/Resources/apps`, so a normal Finder or LaunchServices
+launch does not depend on a repository working directory or shell environment.
 
 ```sh
 cd host/macos
@@ -74,10 +85,12 @@ xcodebuild -project Terrane.xcodeproj -scheme TerraneHost -configuration Debug \
 
 ## Run
 
-The app needs to find (a) the workspace log and (b) local app UI bundles:
+The app needs to find the workspace log; built-in app UI bundles ship inside
+the application. Development overrides remain available:
 
 - `TERRANE_HOME` — the workspace dir (holds `log.bin`); default `~/.terrane`.
-- `TERRANE_REPO` — repo root, so it can resolve `apps/<id>/<manifest.ui>`.
+- `TERRANE_REPO` — optional repo root for live-editing `apps/<id>/<manifest.ui>`
+  ahead of the packaged copy.
 
 ```sh
 # launch on the landing page with a native sidebar switcher

@@ -103,6 +103,14 @@ impl Capability for LocalModelCapability {
                     params: &["model", "prompt"],
                 },
                 ResourceMethod::Call {
+                    name: "chatThread",
+                    params: &["thread", "prompt"],
+                },
+                ResourceMethod::Call {
+                    name: "chatThreadModel",
+                    params: &["thread", "model", "prompt"],
+                },
+                ResourceMethod::Call {
                     name: "embed",
                     params: &["text"],
                 },
@@ -121,6 +129,10 @@ impl Capability for LocalModelCapability {
                 ResourceMethod::Call {
                     name: "resetChat",
                     params: &[],
+                },
+                ResourceMethod::Call {
+                    name: "resetChatThread",
+                    params: &["thread"],
                 },
                 ResourceMethod::Read {
                     name: "models",
@@ -156,10 +168,13 @@ impl Capability for LocalModelCapability {
             "local-model.askJson" => commands::decide_ask_json(ctx, args),
             "local-model.chat" => commands::decide_chat(ctx, args),
             "local-model.chatModel" => commands::decide_chat_model(ctx, args),
+            "local-model.chatThread" => commands::decide_chat_thread(ctx, args),
+            "local-model.chatThreadModel" => commands::decide_chat_thread_model(ctx, args),
             "local-model.embedQuery" => commands::decide_embed_query(ctx, args),
             "local-model.embedModel" => commands::decide_embed_model(ctx, args),
             "local-model.pullModel" => commands::decide_pull_model(ctx, args),
             "local-model.resetChat" => commands::decide_reset_chat(ctx, args),
+            "local-model.resetChatThread" => commands::decide_reset_chat_thread(ctx, args),
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
     }
@@ -194,9 +209,10 @@ impl Capability for LocalModelCapability {
         records: &[EventRecord],
     ) -> Result<ReadValue> {
         match method {
-            "ask" | "askModel" | "askJson" | "chat" | "chatModel" => Ok(ReadValue::OptString(
-                events::response_text_from_records(records),
-            )),
+            "ask" | "askModel" | "askJson" | "chat" | "chatModel" | "chatThread"
+            | "chatThreadModel" => Ok(ReadValue::OptString(events::response_text_from_records(
+                records,
+            ))),
             // Single-text resource calls: hand back the one vector as a JSON
             // array of floats (`null` if nothing was produced).
             "embed" | "embedQuery" | "embedModel" => {
@@ -213,7 +229,7 @@ impl Capability for LocalModelCapability {
             "pullModel" => Ok(ReadValue::OptString(events::registered_id_from_records(
                 records,
             ))),
-            "resetChat" => Ok(ReadValue::OptString(Some("ok".to_string()))),
+            "resetChat" | "resetChatThread" => Ok(ReadValue::OptString(Some("ok".to_string()))),
             other => Err(Error::InvalidInput(format!(
                 "local-model.{other} is not a callable resource"
             ))),
@@ -228,6 +244,8 @@ impl Capability for LocalModelCapability {
                 | "askJson"
                 | "chat"
                 | "chatModel"
+                | "chatThread"
+                | "chatThreadModel"
                 | "embed"
                 | "embedQuery"
                 | "embedModel"

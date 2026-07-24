@@ -239,6 +239,7 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
     let mut explicit_model = None;
     let mut system = None;
     let mut continued = false;
+    let mut thread = None;
     let mut schema = None;
     let mut grammar = None;
     let mut i = 1;
@@ -259,6 +260,10 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
             "--continue" => {
                 continued = true;
                 i += 1;
+            }
+            "--thread" => {
+                thread = Some(thread_id(args, i + 1)?);
+                i += 2;
             }
             "--schema" => {
                 schema = Some(json_object_schema(arg(args, i + 1, "--schema value")?)?);
@@ -295,17 +300,23 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
         )));
     }
     let prompt = required_tail(args, i, "prompt")?;
+    let transcript_app = thread
+        .as_deref()
+        .map(|thread| threaded_app_key(&app, thread))
+        .unwrap_or_else(|| app.clone());
+    // Thread isolation must not multiply the app's recorded generation budget:
+    // the existing per-app limit covers the legacy transcript plus all threads.
     enforce_spend_limit(local, &app)?;
     let (prompt, image_parts) =
         terrane_cap_model::normalize_prompt_json(ctx.state, &app, &prompt, false)?;
     let history = if continued {
-        conversation_history(local, &app, &model)
+        conversation_history(local, &transcript_app, &model)
     } else {
         Vec::new()
     };
 
     Ok(Decision::Effect(Effect::LocalModelCall {
-        app,
+        app: transcript_app,
         model,
         prompt,
         image_parts,
@@ -317,7 +328,13 @@ pub(crate) fn decide_ask(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decisio
 }
 
 fn enforce_spend_limit(local: &LocalModelState, app: &str) -> Result<()> {
-    let count = local.turns.get(app).map(Vec::len).unwrap_or(0);
+    let thread_prefix = format!("{app}::thread::");
+    let count: usize = local
+        .turns
+        .iter()
+        .filter(|(key, _)| key.as_str() == app || key.starts_with(&thread_prefix))
+        .map(|(_, turns)| turns.len())
+        .sum();
     if count >= MAX_LOCAL_MODEL_CALLS_PER_APP {
         return Err(Error::InvalidInput(format!(
             "local-model.ask per-app recorded call limit exceeded: {MAX_LOCAL_MODEL_CALLS_PER_APP}"
@@ -365,6 +382,41 @@ pub(crate) fn decide_chat_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<
     let model = arg(args, 1, "model")?;
     let rest = args.get(2..).unwrap_or_default();
     let mut rewritten = vec![app, "--model".to_string(), model, "--continue".to_string()];
+    rewritten.extend(rest.iter().cloned());
+    decide_ask(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].chatThread(thread, prompt)` — the same chat
+/// behavior as `chat`, with recorded context isolated to one app-owned thread.
+pub(crate) fn decide_chat_thread(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let thread = arg(args, 1, "thread")?;
+    let rest = args.get(2..).unwrap_or_default();
+    let mut rewritten = vec![
+        app,
+        "--thread".to_string(),
+        thread,
+        "--continue".to_string(),
+    ];
+    rewritten.extend(rest.iter().cloned());
+    decide_ask(ctx, &rewritten)
+}
+
+/// `ctx.resource["local-model"].chatThreadModel(thread, model, prompt)` —
+/// a named-model turn isolated to one app-owned thread.
+pub(crate) fn decide_chat_thread_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let thread = arg(args, 1, "thread")?;
+    let model = arg(args, 2, "model")?;
+    let rest = args.get(3..).unwrap_or_default();
+    let mut rewritten = vec![
+        app,
+        "--thread".to_string(),
+        thread,
+        "--model".to_string(),
+        model,
+        "--continue".to_string(),
+    ];
     rewritten.extend(rest.iter().cloned());
     decide_ask(ctx, &rewritten)
 }
@@ -506,6 +558,36 @@ pub(crate) fn decide_pull_model(ctx: CommandCtx<'_>, args: &[String]) -> Result<
 pub(crate) fn decide_reset_chat(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let app = arg(args, 0, "app")?;
     Ok(Decision::Commit(vec![chat_cleared_event(&app)?]))
+}
+
+/// `ctx.resource["local-model"].resetChatThread(thread)` — clear only one
+/// app-owned conversation transcript.
+pub(crate) fn decide_reset_chat_thread(_ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
+    let app = arg(args, 0, "app")?;
+    let thread = thread_id(args, 1)?;
+    Ok(Decision::Commit(vec![chat_cleared_event(
+        &threaded_app_key(&app, &thread),
+    )?]))
+}
+
+const THREAD_KEY_MARKER: &str = "::thread::";
+
+fn threaded_app_key(app: &str, thread: &str) -> String {
+    format!("{app}{THREAD_KEY_MARKER}{thread}")
+}
+
+fn thread_id(args: &[String], index: usize) -> Result<String> {
+    let thread = arg(args, index, "thread")?;
+    if thread.len() > 80
+        || !thread
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(Error::InvalidInput(
+            "thread must be 1-80 ASCII letters, digits, '-' or '_'".into(),
+        ));
+    }
+    Ok(thread)
 }
 
 /// `ctx.resource["local-model"].models()` — the registered models as a JSON

@@ -24,6 +24,28 @@ struct PermissionRequiredPrompt: Equatable {
       message: error
     )
   }
+
+  static func parse(mcpResponse: String) -> PermissionRequiredPrompt? {
+    guard let data = mcpResponse.data(using: .utf8),
+      let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let result = root["result"] as? [String: Any],
+      result["isError"] as? Bool == true,
+      let content = result["structuredContent"] as? [String: Any],
+      content["type"] as? String == "permission_required",
+      let app = content["app"] as? String,
+      !app.isEmpty,
+      let resources = content["missingResources"] as? [String],
+      !resources.isEmpty
+    else {
+      return nil
+    }
+    return PermissionRequiredPrompt(
+      appId: app,
+      appName: (content["appName"] as? String) ?? app,
+      missingResources: resources,
+      message: (content["message"] as? String) ?? "permission required"
+    )
+  }
 }
 
 /// A candidate app for the interop powerbox picker — an app declaring the
@@ -71,6 +93,7 @@ struct InteropPickPrompt: Equatable {
 /// `terrane.invoke`, routed by preview id. All paths settle the JS Promise with
 /// backend output or an error string.
 final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
+  private(set) static var lastOpenError: String?
   private var appId = ""
   private var appName = ""
   private var appSource = ""
@@ -82,6 +105,9 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// Called when a page renames its document via `terrane.setDocument(...)`.
   /// The host owns the top bar, so it updates the breadcrumb (and persists).
   var onDocumentSet: ((String) -> Void)?
+  /// Called when the selected app publishes or clears its host-owned secondary
+  /// sidebar section. Only the main frame may drive native chrome.
+  var onSidebarSectionSet: ((AppSidebarSection?) -> Void)?
   var onPermissionRequired: ((PermissionRequiredPrompt, @escaping (Bool) -> Void) -> Void)?
   /// Present the powerbox picker. The completion carries the chosen target app
   /// id, or `nil` if the user cancelled.
@@ -97,9 +123,17 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   var selectedAppId: String { appId }
 
   init?(home: URL) {
-    guard let handle = home.path.withCString({ terrane_open($0) }) else {
+    var error: UnsafeMutablePointer<CChar>?
+    guard let handle = home.path.withCString({ terrane_open_with_error($0, &error) }) else {
+      if let error {
+        Self.lastOpenError = String(cString: error)
+        terrane_string_free(error)
+      } else {
+        Self.lastOpenError = "Terrane could not open this workspace."
+      }
       return nil
     }
+    Self.lastOpenError = nil
     self.handle = handle
     super.init()
   }
@@ -190,6 +224,24 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
       if message.frameInfo.isMainFrame {
         onDocumentSet?((body["name"] as? String) ?? "")
       }
+      replyHandler("ok", nil)
+    case "sidebar:set":
+      guard message.frameInfo.isMainFrame else {
+        replyHandler(nil, "terrane: sidebar sections are only available to the selected app frame")
+        return
+      }
+      if body["section"] is NSNull || body["section"] == nil {
+        onSidebarSectionSet?(nil)
+        replyHandler("ok", nil)
+        return
+      }
+      guard let raw = body["section"] as? [String: Any],
+        let section = Self.sidebarSection(from: raw)
+      else {
+        replyHandler(nil, "terrane: malformed sidebar section")
+        return
+      }
+      onSidebarSectionSet?(section)
       replyHandler("ok", nil)
     case "camera:capturePhoto":
       guard message.frameInfo.isMainFrame else {
@@ -442,6 +494,44 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     dispatch(command: "auth.grant", argv: ["user:local-owner", app, namespace])
   }
 
+  /// Keep every GUI-discovered bundle visible to CLI and MCP clients, even
+  /// before a user selects it in the sidebar. `--refresh-source` is idempotent
+  /// when the catalog already points at the same bundle.
+  func catalog(appId: String, name: String, source: String) -> (Bool, String) {
+    let result = dispatch(
+      command: "app.add",
+      argv: [appId, name, "--source", source, "--refresh-source"]
+    )
+    if result.0 {
+      catalogedAppIds.insert(appId)
+    }
+    return result
+  }
+
+  /// Route one MCP JSON-RPC message through the same live Core used by the GUI.
+  /// The loopback listener calls this from its serial queue, while the Rust
+  /// handle mutex coalesces it with app-frame invocations.
+  func handleMcp(request: String, adminBaseURL: String) -> (Bool, String) {
+    request.withCString { requestC in
+      adminBaseURL.withCString { adminC in
+        var out: UnsafeMutablePointer<CChar>?
+        var err: UnsafeMutablePointer<CChar>?
+        let rc = terrane_mcp_handle_json_rpc(handle, requestC, adminC, &out, &err)
+        return output(rc: rc, out: out, err: err, label: "terrane_mcp_handle_json_rpc")
+      }
+    }
+  }
+
+  /// Ask the trusted native UI to resolve a permission request produced by an
+  /// attached MCP client. The MCP transport never receives a grant primitive.
+  func requestPermission(_ prompt: PermissionRequiredPrompt, completion: @escaping (Bool) -> Void) {
+    guard let onPermissionRequired else {
+      completion(false)
+      return
+    }
+    onPermissionRequired(prompt, completion)
+  }
+
   private func replyInvokingSelectedApp(
     verb: String,
     args: [String],
@@ -613,13 +703,8 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   private func ensureSelectedAppCataloged() {
     guard !appId.isEmpty, !catalogedAppIds.contains(appId) else { return }
 
-    let (ok, payload) = dispatch(
-      command: "app.add",
-      argv: [appId, appName, "--source", appSource]
-    )
-    if ok || payload == "app already exists: \(appId)" {
-      catalogedAppIds.insert(appId)
-    } else {
+    let (ok, payload) = catalog(appId: appId, name: appName, source: appSource)
+    if !ok {
       NSLog("terrane-host: cannot catalog \(appId): \(payload)")
     }
   }
@@ -740,6 +825,46 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return []
   }
 
+  private static func sidebarSection(from raw: [String: Any]) -> AppSidebarSection? {
+    let title = ((raw["title"] as? String) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty, title.count <= 80,
+      let rawItems = raw["items"] as? [[String: Any]], rawItems.count <= 250
+    else {
+      return nil
+    }
+    var seen = Set<String>()
+    let items = rawItems.compactMap { item -> AppSidebarSectionItem? in
+      let id = ((item["id"] as? String) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let itemTitle = ((item["title"] as? String) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !id.isEmpty, id.count <= 160, !itemTitle.isEmpty, itemTitle.count <= 160,
+        seen.insert(id).inserted
+      else {
+        return nil
+      }
+      return AppSidebarSectionItem(
+        id: id,
+        title: itemTitle,
+        subtitle: (item["subtitle"] as? String)?.prefix(240).description,
+        systemImage: (item["systemImage"] as? String)?.prefix(80).description
+      )
+    }
+    guard items.count == rawItems.count else { return nil }
+    let selected = raw["selectedItemId"] as? String
+    guard selected == nil || items.contains(where: { $0.id == selected }) else { return nil }
+    let createLabel = (raw["createLabel"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .prefix(80).description
+    return AppSidebarSection(
+      title: title,
+      items: items,
+      selectedItemId: selected,
+      createLabel: createLabel?.isEmpty == true ? nil : createLabel
+    )
+  }
+
   private static func jsonObject(from text: String) -> [String: Any]? {
     guard let data = text.data(using: .utf8),
       let parsed = try? JSONSerialization.jsonObject(with: data)
@@ -776,6 +901,8 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
       var themeSubs = [];
       var localeSubs = [];
       var messagesSubs = [];
+      var sidebarSelectSubs = [];
+      var sidebarCreateSubs = [];
       function notify(subs, value) {
         for (var i = 0; i < subs.length; i++) {
           try { subs[i](value); } catch (_) {}
@@ -832,6 +959,14 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
           dirState = state.dir === "rtl" ? "rtl" : "ltr";
         }
       };
+      window.__terrane_sidebar_action = function (action) {
+        if (!action || typeof action.kind !== "string") return;
+        if (action.kind === "select") {
+          notify(sidebarSelectSubs, String(action.id == null ? "" : action.id));
+        } else if (action.kind === "create") {
+          notify(sidebarCreateSubs, null);
+        }
+      };
 
       var api = Object.freeze({
         invoke: function (verb) {
@@ -883,6 +1018,21 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
           var clean = String(name == null ? "" : name);
           docState = clean;
           post({ kind: "document:set", name: clean });
+        },
+        // --- Optional app-provided section in the host-owned sidebar --------
+        setSidebarSection: function (section) {
+          if (section == null) return post({ kind: "sidebar:set", section: null });
+          return post({ kind: "sidebar:set", section: section });
+        },
+        onSidebarItemSelect: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          sidebarSelectSubs.push(cb);
+          return unsubscriber(sidebarSelectSubs, cb);
+        },
+        onSidebarCreate: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          sidebarCreateSubs.push(cb);
+          return unsubscriber(sidebarCreateSubs, cb);
         },
         onDocument: function (cb) {
           if (typeof cb !== "function") return function () {};
