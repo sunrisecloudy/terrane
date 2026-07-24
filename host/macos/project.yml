@@ -129,13 +129,13 @@ targets:
               exit 1
             fi
             BUNDLE_COUNT="$(find "$TERRANE_CAP_BUNDLE_DIR" -maxdepth 1 -type f -name '*.tcap' | wc -l | tr -d ' ')"
-            if [ "$BUNDLE_COUNT" -ne 41 ]; then
-              echo "Invalid native capability bundle directory: expected 41 .tcap files, found $BUNDLE_COUNT" >&2
+            if [ "$BUNDLE_COUNT" -ne 42 ]; then
+              echo "Invalid native capability bundle directory: expected 42 .tcap files, found $BUNDLE_COUNT" >&2
               exit 1
             fi
             mkdir -p "$CAPABILITY_DESTINATION"
             rsync -a --delete "$TERRANE_CAP_BUNDLE_DIR/" "$CAPABILITY_DESTINATION/"
-            echo "Embedded 41 prebuilt signed native capabilities from $TERRANE_CAP_BUNDLE_DIR"
+            echo "Embedded 42 prebuilt signed native capabilities from $TERRANE_CAP_BUNDLE_DIR"
             exit 0
           fi
           if [ -z "${TERRANE_CAP_SIGNING_KEY_HEX:-}" ]; then
