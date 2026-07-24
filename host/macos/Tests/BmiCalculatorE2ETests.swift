@@ -297,6 +297,9 @@ final class BmiCalculatorE2ETests: XCTestCase {
       appsScroll.layoutSubtreeIfNeeded()
       let documentView = try XCTUnwrap(appsScroll.documentView)
       documentView.layoutSubtreeIfNeeded()
+      let appButtons = subviews(ofType: AppSidebarButton.self, in: documentView)
+      XCTAssertTrue(documentView.isFlipped)
+      XCTAssertLessThan(try XCTUnwrap(appButtons.first).frame.minY, try XCTUnwrap(appButtons.last).frame.minY)
       let topY =
         documentView.isFlipped
         ? CGFloat(0)
