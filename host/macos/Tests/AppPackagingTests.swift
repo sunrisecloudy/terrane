@@ -43,7 +43,7 @@ final class AppPackagingTests: XCTestCase {
         && FileManager.default.fileExists(
           atPath: directory.appendingPathComponent("manifest.json").path)
     }
-    XCTAssertEqual(manifests.count, 12, "all checked-in app bundles must be packaged")
+    XCTAssertEqual(manifests.count, 14, "all checked-in app bundles must be packaged")
   }
 
   private func repositoryRoot() -> URL {

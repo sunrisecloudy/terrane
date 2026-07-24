@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Tomorrow — Make tomorrow kinder.</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to the journey</a>
+  <div id="app">
+    <header class="topbar">
+      <a class="brand" href="#" id="brand-home" aria-label="Tomorrow home">
+        <span class="brand-mark" aria-hidden="true">T</span>
+        <span><strong>Tomorrow</strong><small>Make tomorrow kinder.</small></span>
+      </a>
+      <div class="top-actions">
+        <span id="mode-badge" class="pill soft">Local templates</span>
+        <button id="settings-shortcut" class="icon-button" type="button" aria-label="Open settings">⚙</button>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1">
+      <section id="onboarding" class="onboarding" aria-labelledby="welcome-title">
+        <div class="welcome-copy">
+          <p class="eyebrow">A gentle seven-day journey</p>
+          <h1 id="welcome-title">Make tomorrow <em>kinder.</em></h1>
+          <p class="lede">Tomorrow does not demand perfection, optimize you, or expect much. It takes the next seven days slowly, with you.</p>
+          <div class="promise-row" aria-label="Tomorrow's promises">
+            <span>Opt in, always</span><span>Local by default</span><span>You stay in control</span>
+          </div>
+        </div>
+
+        <div class="onboarding-card" id="intent-step">
+          <div class="step-meta"><span>01</span><span>Choose an intention</span></div>
+          <h2>What would you like tomorrow to feel like?</h2>
+          <p>There is no best answer. Pick the one that feels useful today.</p>
+          <div class="intent-grid" role="radiogroup" aria-label="Choose an intention">
+            <label class="intent-option"><input type="radio" name="intent" value="a kinder tomorrow"><span>♡</span><strong>A kinder tomorrow</strong><small>A little more care, including for yourself.</small></label>
+            <label class="intent-option"><input type="radio" name="intent" value="a more interesting tomorrow"><span>✦</span><strong>A more interesting tomorrow</strong><small>Make room for curiosity and surprise.</small></label>
+            <label class="intent-option"><input type="radio" name="intent" value="a more productive tomorrow"><span>↗</span><strong>A more productive tomorrow</strong><small>Choose a few things worth finishing.</small></label>
+            <label class="intent-option"><input type="radio" name="intent" value="own"><span>…</span><strong>My own intention</strong><small>Name what tomorrow needs from you.</small></label>
+          </div>
+          <label id="custom-intent-wrap" class="field hidden">Your intention
+            <input id="custom-intent" type="text" maxlength="120" placeholder="a more spacious tomorrow">
+          </label>
+          <button id="continue-intent" class="primary wide" type="button">Let’s start together <span aria-hidden="true">→</span></button>
+        </div>
+
+        <div class="onboarding-card hidden" id="questions-step">
+          <div class="step-meta"><span>02</span><span>A few light questions</span></div>
+          <h2>Enough context to make a useful first plan.</h2>
+          <p>Skip anything that does not help. These answers stay in this Terrane profile.</p>
+          <label class="field">How is your energy likely to be?
+            <select id="energy"><option value="low">Low — keep it very light</option><option value="steady" selected>Steady — a balanced day</option><option value="bright">Bright — room for a little more</option></select>
+          </label>
+          <label class="field">One thing that would feel quietly worthwhile
+            <input id="anchor" type="text" maxlength="120" placeholder="send the thoughtful note">
+          </label>
+          <fieldset class="field"><legend>How much open space should we protect?</legend>
+            <div class="segmented"><label><input type="radio" name="space" value="plenty of" checked><span>Plenty</span></label><label><input type="radio" name="space" value="a little"><span>A little</span></label><label><input type="radio" name="space" value="just enough"><span>Just enough</span></label></div>
+          </fieldset>
+          <div class="button-row"><button id="back-intent" class="secondary" type="button">Back</button><button id="create-plan" class="primary" type="button">Create tomorrow’s plan</button></div>
+        </div>
+
+        <aside class="week-preview" aria-labelledby="preview-title">
+          <p class="eyebrow">A possible rhythm</p>
+          <h2 id="preview-title">Seven days, held lightly.</h2>
+          <p>Each day responds to what you enter. Nothing is scheduled or sent for you.</p>
+          <ol id="preview-list"></ol>
+          <p class="template-note"><strong>Personalization:</strong> local, thoughtfully written templates are active. A connected AI harness is used only after Terrane verifies the connection and you choose it.</p>
+        </aside>
+      </section>
+
+      <section id="journey" class="journey hidden">
+        <div class="journey-heading">
+          <div><p id="day-eyebrow" class="eyebrow">Day 1 of 7</p><h1 id="day-title">Begin softly</h1><p id="day-preview"></p></div>
+          <div class="day-ring" aria-hidden="true"><span id="day-ring-number">1</span><small>/ 7</small></div>
+        </div>
+        <div id="carried-insight" class="carried hidden"></div>
+        <nav class="tabs" aria-label="Journey views">
+          <button class="tab active" data-view="plan" type="button">Today’s plan</button>
+          <button class="tab" data-view="reflection" type="button">Evening reflection</button>
+          <button class="tab" data-view="connections" type="button">Connections</button>
+          <button class="tab" data-view="settings" type="button">Settings</button>
+        </nav>
+
+        <section id="view-plan" class="view active" aria-labelledby="plan-title">
+          <div class="section-heading"><div><p class="eyebrow">Made with you, not for you</p><h2 id="plan-title">A plan you can keep changing</h2></div><button id="add-item" class="primary" type="button">+ Add to plan</button></div>
+          <p class="support-copy">Reorder, edit, add meetings or tasks, and mark things complete. Tomorrow never moves your day silently.</p>
+          <div id="plan-list" class="plan-list"></div>
+          <div id="plan-empty" class="empty hidden"><span>☼</span><h3>This day is still open.</h3><p>Add only what would help.</p><button id="add-empty" class="secondary" type="button">Add something</button></div>
+        </section>
+
+        <section id="view-reflection" class="view" aria-labelledby="reflection-title">
+          <div class="reflection-layout">
+            <div><p class="eyebrow">Two quiet minutes</p><h2 id="reflection-title">How did today meet you?</h2><p class="support-copy">This is not a score. A short note is enough, and it can gently inform the next day.</p></div>
+            <form id="reflection-form" class="reflection-card">
+              <label class="field">One thing worth remembering
+                <textarea id="reflection-text" rows="6" maxlength="1000" placeholder="The small walk helped me come back to myself…"></textarea>
+              </label>
+              <label class="check-row"><input id="want-encouragement" type="checkbox" checked><span><strong>Offer a little encouragement</strong><small>Use a warm local template. No message is sent anywhere.</small></span></label>
+              <button class="primary wide" type="submit">Save tonight’s reflection</button>
+              <div id="encouragement" class="encouragement hidden" aria-live="polite"></div>
+            </form>
+          </div>
+        </section>
+
+        <section id="view-connections" class="view" aria-labelledby="connections-title">
+          <p class="eyebrow">Optional, never assumed</p><h2 id="connections-title">Connections stay off until you say otherwise.</h2>
+          <p class="support-copy">Tomorrow is fully usable without Calendar or Gmail. This build has no verified connector integration, so both remain disconnected.</p>
+          <div class="connection-grid">
+            <article class="connection-card"><div class="connection-icon">◫</div><div><h3>Calendar</h3><span class="status-dot">Not connected</span><p>Potential request: read event titles and times for a date you choose. No creating, moving, or deleting events.</p><button class="secondary review-connection" data-service="Calendar" type="button">Review requested access</button></div></article>
+            <article class="connection-card"><div class="connection-icon">✉</div><div><h3>Gmail</h3><span class="status-dot">Not connected</span><p>Potential request: read message metadata you explicitly select. No sending, deleting, archiving, or broad mailbox access.</p><button class="secondary review-connection" data-service="Gmail" type="button">Review requested access</button></div></article>
+          </div>
+          <div class="privacy-callout"><strong>Your default is private.</strong><p>Journey data stays in Terrane’s local KV store. Tomorrow holds no raw secrets and performs no automatic scheduling or external sending.</p></div>
+        </section>
+
+        <section id="view-settings" class="view" aria-labelledby="settings-title">
+          <p class="eyebrow">Assistance, your choice</p><h2 id="settings-title">Choose only from verified Terrane connections.</h2>
+          <div class="settings-grid">
+            <div class="settings-card"><label class="field">Preferred assistance
+              <select id="harness-select"><option value="templates">Local templates — active</option></select>
+            </label><p class="support-copy">No verified AI harness connection is available in this profile. Tomorrow remains fully usable.</p>
+            <div class="future-list" aria-label="Examples that require a verified connection"><span>Codex</span><span>Claude Code</span><span>OpenCode</span></div>
+            <button id="save-settings" class="primary" type="button">Save preference</button></div>
+            <div class="settings-card"><h3>What each part owns</h3><dl><dt>Terrane</dt><dd>The journey, interface, local data, permissions, and every user-controlled change.</dd><dt>Connected AI</dt><dd>Personalized wording only after a verified connection is selected.</dd><dt>No connected AI</dt><dd>High-quality local templates, with the complete journey still available.</dd></dl></div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <dialog id="item-dialog" aria-labelledby="item-dialog-title">
+      <form id="item-form" method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">You stay in control</p><h2 id="item-dialog-title">Add to the plan</h2></div><button class="icon-button close-dialog" value="cancel" aria-label="Close">×</button></div>
+        <input id="item-id" type="hidden">
+        <label class="field">Type<select id="item-type"><option value="task">Task</option><option value="meeting">Meeting</option><option value="pause">Pause</option></select></label>
+        <label class="field">Name<input id="item-title" maxlength="140" required placeholder="A gentle next step"></label>
+        <label class="field">Time or moment<input id="item-time" maxlength="80" placeholder="After lunch, or 2:00 pm"></label>
+        <label class="field">Optional note<textarea id="item-note" rows="3" maxlength="240" placeholder="Anything that would make this easier"></textarea></label>
+        <div class="button-row"><button class="secondary close-dialog" value="cancel">Cancel</button><button id="save-item" class="primary" value="default">Save to plan</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="connection-dialog" aria-labelledby="connection-dialog-title">
+      <form method="dialog">
+        <div class="dialog-heading"><div><p class="eyebrow">Permission preview</p><h2 id="connection-dialog-title">Connection request</h2></div><button class="icon-button" value="cancel" aria-label="Close">×</button></div>
+        <div id="connection-detail"></div>
+        <div class="permission-box"><strong>Nothing will be connected here.</strong><p>This isolated build has no verified connector path. The request is shown so you can inspect its intended scope; no data is accessed and no token is requested.</p></div>
+        <button class="primary wide" value="cancel">Keep disconnected</button>
+      </form>
+    </dialog>
+  </div>
+  <script src="ui.js"></script>
+</body>
+</html>
