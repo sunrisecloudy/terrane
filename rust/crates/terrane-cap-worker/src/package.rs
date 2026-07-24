@@ -11,7 +11,7 @@ use terrane_cap_protocol::{
 };
 use terrane_core::{default_registry, Registry};
 
-pub const DYNAMIC_CAPABILITY_COUNT: usize = 41;
+pub const DYNAMIC_CAPABILITY_COUNT: usize = 42;
 
 pub fn manifests(
     executable_sha256: &str,
