@@ -14,6 +14,10 @@ struct AppSidebarSection: Equatable {
   let createLabel: String?
 }
 
+private final class TopAlignedSidebarStackView: NSStackView {
+  override var isFlipped: Bool { true }
+}
+
 /// Native host-owned sidebar chrome. The split, resizing, collapse controls,
 /// selection presentation, and app-switch lifecycle live here; apps only
 /// publish an AppSidebarSection and respond to select/create callbacks.
@@ -33,7 +37,7 @@ final class AppSidebarView: NSVisualEffectView, NSSplitViewDelegate {
   private let appsHeader = NSButton()
   private let appsScroll = NSScrollView()
   private let premiumCaption = NSTextField(labelWithString: "Premium")
-  private let stack = NSStackView()
+  private let stack = TopAlignedSidebarStackView()
   private let detailPane = AppProvidedSidebarView()
   private let homeButton = AppSidebarButton(
     title: "Home",
