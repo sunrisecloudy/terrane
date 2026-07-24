@@ -1,0 +1,23 @@
+[package]
+name = "terrane-cap-control-room"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Read-only, redacted Terrane app and capability catalog."
+
+[dependencies]
+serde_json.workspace = true
+terrane-api.workspace = true
+terrane-cap-app.workspace = true
+terrane-cap-auth.workspace = true
+terrane-cap-automation.workspace = true
+terrane-cap-blob.workspace = true
+terrane-cap-builder.workspace = true
+terrane-cap-connection.workspace = true
+terrane-cap-document.workspace = true
+terrane-cap-interface.workspace = true
+terrane-cap-job-queue.workspace = true
+terrane-cap-kv.workspace = true
+terrane-cap-local-model.workspace = true
+terrane-cap-mcp-client.workspace = true
+terrane-cap-scheduler.workspace = true

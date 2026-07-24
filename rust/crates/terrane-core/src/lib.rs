@@ -514,6 +514,14 @@ impl CapBus for RegistryBus<'_> {
         capability.query(ctx, name, args)
     }
 
+    fn capability_docs(&self, include_internal: bool) -> Vec<CapabilityDoc> {
+        self.registry
+            .caps
+            .values()
+            .map(|capability| capability.doc(include_internal))
+            .collect()
+    }
+
     fn event_kind_matches(&self, pattern: &str) -> bool {
         self.registry.caps.values().any(|capability| {
             capability.manifest().events.iter().any(|event| {
@@ -558,6 +566,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_build::BuildCapability));
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));
     registry.register(Box::new(terrane_cap_common::CommonCapability));
+    registry.register(Box::new(terrane_cap_control_room::ControlRoomCapability));
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_history::HistoryCapability));
     registry.register(Box::new(terrane_cap_interop::InteropCapability));

@@ -3979,6 +3979,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "terrane-cap-control-room"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "terrane-api",
+ "terrane-cap-app",
+ "terrane-cap-auth",
+ "terrane-cap-automation",
+ "terrane-cap-blob",
+ "terrane-cap-builder",
+ "terrane-cap-connection",
+ "terrane-cap-document",
+ "terrane-cap-interface",
+ "terrane-cap-job-queue",
+ "terrane-cap-kv",
+ "terrane-cap-local-model",
+ "terrane-cap-mcp-client",
+ "terrane-cap-scheduler",
+]
+
+[[package]]
 name = "terrane-cap-crdt"
 version = "0.1.0"
 dependencies = [
@@ -4401,6 +4422,7 @@ dependencies = [
  "terrane-cap-builder",
  "terrane-cap-common",
  "terrane-cap-connection",
+ "terrane-cap-control-room",
  "terrane-cap-crdt",
  "terrane-cap-crypto",
  "terrane-cap-document",

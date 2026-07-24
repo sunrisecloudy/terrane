@@ -738,6 +738,19 @@ fn interop_reply_records(
 impl LiveHost for EdgeRunner {
     fn sample(&self, domain: &str, args: &[String]) -> Result<String> {
         match domain {
+            "control-room.apps" => control_room_apps_json(self.home()?),
+            "control-room.manifest" => {
+                let source = args.first().ok_or_else(|| {
+                    Error::InvalidInput("control-room.manifest missing app source".into())
+                })?;
+                control_room_manifest_json(std::path::Path::new(source))
+            }
+            "control-room.command-policy" => {
+                let command = args.first().ok_or_else(|| {
+                    Error::InvalidInput("control-room.command-policy missing command".into())
+                })?;
+                Ok(control_room_command_policy_json(command))
+            }
             "blob.get" => {
                 let hash = args
                     .get(2)
@@ -778,6 +791,97 @@ impl LiveHost for EdgeRunner {
             _ => crate::metrics::sample(domain, args),
         }
     }
+}
+
+fn control_room_apps_json(home: &std::path::Path) -> Result<String> {
+    let mut roots = Vec::new();
+    if let Some(repo) = std::env::var_os("TERRANE_REPO") {
+        roots.push(std::path::PathBuf::from(repo).join("apps"));
+    }
+    roots.push(home.join("apps"));
+
+    let mut apps = std::collections::BTreeMap::new();
+    for root in roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let source = entry.path();
+            if !source.is_dir() {
+                continue;
+            }
+            let Ok(raw) = control_room_manifest_json(&source) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                continue;
+            };
+            let Some(id) = value.get("id").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            apps.entry(id.to_string()).or_insert(value);
+        }
+    }
+    serde_json::to_string(&apps.into_values().collect::<Vec<_>>())
+        .map_err(|error| Error::Runtime(format!("control-room app catalog encode failed: {error}")))
+}
+
+/// Read only the public manifest fields Control Room is allowed to show. The
+/// recorded source path itself, backend source, and every bundle file remain
+/// private.
+fn control_room_manifest_json(source: &std::path::Path) -> Result<String> {
+    let manifest = crate::read_manifest(source)?;
+    let purpose = std::fs::read_to_string(source.join("manifest.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value
+                .get("description")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        });
+    Ok(serde_json::json!({
+        "status": "readable",
+        "id": manifest.id,
+        "name": manifest.name,
+        "purpose": purpose,
+        "version": manifest.version,
+        "runtime": manifest.runtime,
+        "hasBackend": !manifest.backend.trim().is_empty(),
+        "hasUi": !manifest.ui.trim().is_empty(),
+        "resources": manifest.resources,
+        "interfaces": manifest.interfaces,
+        "publicVerbs": manifest.public_verbs,
+        "browserPermissions": manifest.browser_permissions,
+        "dataVersion": crate::manifest_data_version(&manifest),
+        "factKind": "live-sanitized-manifest"
+    })
+    .to_string())
+}
+
+fn control_room_command_policy_json(command: &str) -> String {
+    use crate::public_authz::{classify_public_command, PublicCommandDisposition};
+    let value = match classify_public_command(command) {
+        PublicCommandDisposition::Allow => serde_json::json!({
+            "classification": "allowed-public-command",
+            "source": "live host public authorization policy"
+        }),
+        PublicCommandDisposition::Refuse { reason } => serde_json::json!({
+            "classification": "trusted-host-or-refused",
+            "reason": reason,
+            "source": "live host public authorization policy"
+        }),
+        PublicCommandDisposition::GrantGated { namespace, .. } => serde_json::json!({
+            "classification": "default-deny-grant-required",
+            "namespace": namespace,
+            "source": "live host public authorization policy"
+        }),
+        PublicCommandDisposition::Unclassified => serde_json::json!({
+            "classification": "unclassified-refused-by-default",
+            "source": "live host public authorization policy"
+        }),
+    };
+    value.to_string()
 }
 
 /// Mint a fresh replica PeerID from OS entropy. Masked to 53 bits and forced

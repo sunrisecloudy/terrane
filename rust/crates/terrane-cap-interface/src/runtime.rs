@@ -17,6 +17,14 @@ pub enum QueryValue {
 pub trait CapBus {
     fn query(&self, cap: &str, name: &str, args: &[String]) -> Result<QueryValue>;
 
+    /// Public, machine-readable documentation for every capability registered
+    /// on this bus. The default keeps lightweight test buses source-compatible;
+    /// the real core registry overrides it.
+    fn capability_docs(&self, include_internal: bool) -> Vec<crate::CapabilityDoc> {
+        let _ = include_internal;
+        Vec::new()
+    }
+
     fn event_kind_matches(&self, pattern: &str) -> bool {
         let _ = pattern;
         false

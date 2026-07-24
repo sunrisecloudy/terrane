@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Control Room</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f4f6fa;
+        --surface: rgba(255,255,255,.9);
+        --surface-strong: #fff;
+        --ink: #172033;
+        --muted: #687086;
+        --line: rgba(23,32,51,.12);
+        --accent: #4267e9;
+        --accent-soft: rgba(66,103,233,.11);
+        --ok: #16876d;
+        --warn: #aa6b13;
+        --danger: #b53f51;
+        --shadow: 0 12px 34px rgba(40,50,80,.08);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #11151d;
+          --surface: rgba(27,33,45,.9);
+          --surface-strong: #1d2330;
+          --ink: #edf1fa;
+          --muted: #a2aabd;
+          --line: rgba(237,241,250,.12);
+          --accent: #8ca2ff;
+          --accent-soft: rgba(140,162,255,.13);
+          --ok: #63d6b7;
+          --warn: #efbd70;
+          --danger: #ff96a7;
+          --shadow: 0 14px 36px rgba(0,0,0,.22);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at 85% -10%, rgba(66,103,233,.14), transparent 34rem),
+          var(--bg);
+        color: var(--ink);
+        font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      }
+      button, input, select { font: inherit; }
+      button { color: inherit; }
+      .shell { width: min(1320px, calc(100vw - 36px)); margin: 0 auto; padding: 28px 0 48px; }
+      .masthead { display: flex; justify-content: space-between; gap: 24px; align-items: end; }
+      .eyebrow { color: var(--accent); font-size: 11px; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+      h1 { margin: 5px 0 5px; font-size: clamp(28px, 4vw, 44px); letter-spacing: -.035em; line-height: 1; }
+      .lede { margin: 0; max-width: 760px; color: var(--muted); }
+      .read-only {
+        flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--line));
+        background: color-mix(in srgb, var(--ok) 9%, transparent); color: var(--ok);
+        border-radius: 999px; padding: 7px 11px; font-size: 12px; font-weight: 650;
+      }
+      .toolbar {
+        position: sticky; top: 0; z-index: 5; display: grid; grid-template-columns: minmax(220px, 1fr) auto auto;
+        gap: 10px; padding: 14px 0; margin-top: 22px;
+        background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(18px);
+      }
+      .search, select {
+        border: 1px solid var(--line); background: var(--surface-strong); color: var(--ink);
+        border-radius: 11px; padding: 10px 12px; outline: none;
+      }
+      .search:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+      .tabs { display: flex; gap: 5px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+      .tab { border: 0; background: transparent; border-radius: 8px; padding: 7px 10px; cursor: pointer; }
+      .tab[aria-selected="true"] { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+      .summary { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin: 8px 0 22px; }
+      .stat { border: 1px solid var(--line); border-radius: 15px; background: var(--surface); padding: 16px; box-shadow: var(--shadow); }
+      .stat strong { display: block; font-size: 25px; letter-spacing: -.025em; }
+      .stat span { color: var(--muted); font-size: 12px; }
+      .notice {
+        margin-bottom: 18px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px;
+        background: var(--surface); color: var(--muted); font-size: 12px;
+      }
+      .notice strong { color: var(--ink); }
+      .group { margin: 0 0 26px; }
+      .group-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+      .group-title h2 { margin: 0; font-size: 17px; letter-spacing: -.01em; }
+      .group-title span { color: var(--muted); font-size: 12px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
+      .card {
+        border: 1px solid var(--line); border-radius: 15px; background: var(--surface); padding: 16px;
+        box-shadow: var(--shadow); cursor: pointer; transition: transform .16s ease, border-color .16s ease;
+      }
+      .card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+      .card-top { display: flex; align-items: start; justify-content: space-between; gap: 8px; }
+      .card h3 { margin: 0; font-size: 15px; }
+      .id { margin-top: 2px; color: var(--muted); font: 11px ui-monospace, SFMono-Regular, monospace; }
+      .purpose { margin: 11px 0 14px; color: var(--muted); font-size: 12px; min-height: 34px; }
+      .pills { display: flex; flex-wrap: wrap; gap: 6px; }
+      .pill { border-radius: 999px; padding: 4px 7px; background: var(--accent-soft); color: var(--accent); font-size: 10px; font-weight: 650; }
+      .pill.live { background: color-mix(in srgb, var(--ok) 11%, transparent); color: var(--ok); }
+      .pill.warn { background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn); }
+      dialog {
+        width: min(850px, calc(100vw - 32px)); max-height: min(82vh, 880px); overflow: auto;
+        border: 1px solid var(--line); border-radius: 18px; background: var(--surface-strong); color: var(--ink);
+        box-shadow: 0 28px 90px rgba(0,0,0,.28); padding: 0;
+      }
+      dialog::backdrop { background: rgba(10,15,25,.42); backdrop-filter: blur(3px); }
+      .detail-head { position: sticky; top: 0; z-index: 2; display: flex; justify-content: space-between; gap: 14px; padding: 19px 20px; border-bottom: 1px solid var(--line); background: var(--surface-strong); }
+      .detail-head h2 { margin: 0; font-size: 20px; }
+      .close { border: 1px solid var(--line); border-radius: 9px; background: transparent; width: 32px; height: 32px; cursor: pointer; }
+      .detail-body { padding: 20px; }
+      .detail-section { padding: 15px 0; border-bottom: 1px solid var(--line); }
+      .detail-section:first-child { padding-top: 0; }
+      .detail-section:last-child { border: 0; }
+      .detail-section h3 { margin: 0 0 8px; font-size: 12px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+      .rows { display: grid; gap: 7px; }
+      .row { display: grid; grid-template-columns: 145px 1fr; gap: 12px; }
+      .row dt { color: var(--muted); }
+      .row dd { margin: 0; overflow-wrap: anywhere; }
+      pre { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 12px; border-radius: 10px; background: var(--bg); font: 11px/1.5 ui-monospace, SFMono-Regular, monospace; }
+      .empty { text-align: center; color: var(--muted); padding: 48px 20px; border: 1px dashed var(--line); border-radius: 15px; }
+      .error { color: var(--danger); }
+      @media (max-width: 820px) {
+        .masthead { align-items: start; flex-direction: column; }
+        .toolbar { grid-template-columns: 1fr; }
+        .tabs { overflow-x: auto; }
+        .summary { grid-template-columns: repeat(2,1fr); }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="masthead">
+        <div>
+          <div class="eyebrow">Terrane management</div>
+          <h1>Control Room</h1>
+          <p class="lede">Understand what Terrane can do, what is available now, what needs permission, and where its data lives—without exposing the data itself.</p>
+        </div>
+        <div class="read-only">Read-only · secrets redacted</div>
+      </header>
+
+      <section class="toolbar" aria-label="Catalog controls">
+        <input class="search" id="search" type="search" placeholder="Search apps, capabilities, actions, docs…" autocomplete="off">
+        <select id="group-filter" aria-label="Group filter"><option value="">All groups</option></select>
+        <div class="tabs" role="tablist">
+          <button class="tab" data-view="overview" aria-selected="true">Overview</button>
+          <button class="tab" data-view="apps" aria-selected="false">Apps</button>
+          <button class="tab" data-view="capabilities" aria-selected="false">Capabilities</button>
+          <button class="tab" data-view="mcp" aria-selected="false">MCP & ops</button>
+        </div>
+      </section>
+
+      <section class="summary" id="summary" aria-label="System overview"></section>
+      <section class="notice" id="notice">Loading the live catalog…</section>
+      <section id="content"></section>
+    </main>
+
+    <dialog id="detail">
+      <header class="detail-head"><div><h2 id="detail-title"></h2><div class="id" id="detail-id"></div></div><button class="close" id="close" aria-label="Close">×</button></header>
+      <div class="detail-body" id="detail-body"></div>
+    </dialog>
+
+    <script>
+      (function () {
+        "use strict";
+        var data = null;
+        var view = "overview";
+        var query = "";
+        var group = "";
+        var content = document.getElementById("content");
+        var notice = document.getElementById("notice");
+        var detail = document.getElementById("detail");
+
+        function el(tag, className, text) {
+          var node = document.createElement(tag);
+          if (className) node.className = className;
+          if (text != null) node.textContent = String(text);
+          return node;
+        }
+        function addRow(list, key, value) {
+          var row = el("div", "row");
+          row.appendChild(el("dt", "", key));
+          row.appendChild(el("dd", "", value == null || value === "" ? "—" : value));
+          list.appendChild(row);
+        }
+        function searchable(item) { return JSON.stringify(item).toLowerCase(); }
+        function matches(item) { return !query || searchable(item).indexOf(query) !== -1; }
+        function pill(text, kind) { return el("span", "pill " + (kind || ""), text); }
+        function card(item, type) {
+          var node = el("article", "card");
+          node.tabIndex = 0;
+          var top = el("div", "card-top");
+          var heading = el("div");
+          heading.appendChild(el("h3", "", item.name || item.title || item.namespace));
+          heading.appendChild(el("div", "id", item.id || item.namespace || item.name));
+          top.appendChild(heading);
+          top.appendChild(pill(type, type === "app" ? "live" : ""));
+          node.appendChild(top);
+          node.appendChild(el("p", "purpose", item.purpose || "Purpose not declared in the current contract."));
+          var pills = el("div", "pills");
+          if (type === "app") {
+            pills.appendChild(pill(item.runtime || "runtime unknown"));
+            var resources = item.manifest && item.manifest.resources || [];
+            pills.appendChild(pill(resources.length ? resources.length + " grants declared" : "no resources", resources.length ? "warn" : "live"));
+          } else {
+            pills.appendChild(pill(item.category || "Other"));
+            pills.appendChild(pill(item.permission && item.permission.appAccess === "default-deny-grant-required" ? "grant required" : "host/core", item.permission && item.permission.appAccess === "default-deny-grant-required" ? "warn" : ""));
+          }
+          node.appendChild(pills);
+          function open() { showDetail(item, type); }
+          node.addEventListener("click", open);
+          node.addEventListener("keydown", function (event) { if (event.key === "Enter" || event.key === " ") open(); });
+          return node;
+        }
+        function showDetail(item, type) {
+          document.getElementById("detail-title").textContent = item.name || item.title || item.namespace;
+          document.getElementById("detail-id").textContent = item.id || item.namespace || item.name;
+          var body = document.getElementById("detail-body");
+          body.textContent = "";
+          var about = el("section", "detail-section");
+          about.appendChild(el("h3", "", "What it is"));
+          var rows = el("dl", "rows");
+          addRow(rows, "Purpose", item.purpose);
+          addRow(rows, "Owner", item.owner || (item.manifest && item.manifest.runtime) || "app bundle");
+          addRow(rows, "Availability", type === "app" ? item.availability.runtimeHealth : item.availability.liveness);
+          addRow(rows, "Fact source", item.factKind);
+          about.appendChild(rows); body.appendChild(about);
+          var permissions = el("section", "detail-section");
+          permissions.appendChild(el("h3", "", "Permissions & safety"));
+          var perm = type === "app" ? {
+            declaredResources: item.manifest && item.manifest.resources || [],
+            browserPermissions: item.manifest && item.manifest.browserPermissions || [],
+            grants: data.grants.filter(function (grant) { return grant.app === item.id; }),
+            redaction: "Raw grant selectors, resource ids, secrets, and app records are omitted."
+          } : item.permission;
+          var pre = el("pre"); pre.textContent = JSON.stringify(perm, null, 2); permissions.appendChild(pre); body.appendChild(permissions);
+          var surfaces = el("section", "detail-section");
+          surfaces.appendChild(el("h3", "", type === "app" ? "Actions & data" : "Commands, resources & events"));
+          var surfaceData = type === "app" ? {actions:item.actions, data:item.data, interfaces:item.interfaces} : {commands:item.commands, queries:item.queries, resources:item.resources, events:item.events, safeDataSummary:item.safeDataSummary};
+          var pre2 = el("pre"); pre2.textContent = JSON.stringify(surfaceData, null, 2); surfaces.appendChild(pre2); body.appendChild(surfaces);
+          var docs = el("section", "detail-section");
+          docs.appendChild(el("h3", "", "Documentation"));
+          var pre3 = el("pre"); pre3.textContent = JSON.stringify(item.documentation, null, 2); docs.appendChild(pre3); body.appendChild(docs);
+          detail.showModal();
+        }
+        function stat(value, label) {
+          var node = el("div", "stat"); node.appendChild(el("strong", "", value)); node.appendChild(el("span", "", label)); return node;
+        }
+        function renderSummary() {
+          var target = document.getElementById("summary"); target.textContent = "";
+          target.appendChild(stat(data.system.availableAppCount, "Available apps"));
+          target.appendChild(stat(data.system.registeredCapabilityCount, "Registered capabilities"));
+          target.appendChild(stat(data.system.mcpToolCount, "MCP tools"));
+          target.appendChild(stat(data.system.grantCount, "Current grants"));
+        }
+        function renderGroup(title, items, type) {
+          if (!items.length) return null;
+          var section = el("section", "group");
+          var heading = el("div", "group-title"); heading.appendChild(el("h2", "", title)); heading.appendChild(el("span", "", items.length + " items")); section.appendChild(heading);
+          var grid = el("div", "grid"); items.forEach(function (item) { grid.appendChild(card(item, type)); }); section.appendChild(grid);
+          return section;
+        }
+        function renderMcp() {
+          var items = data.mcp.tools.filter(matches);
+          var section = el("section", "group");
+          var heading = el("div", "group-title"); heading.appendChild(el("h2", "", "MCP tools & operational surfaces")); heading.appendChild(el("span", "", items.length + " tools")); section.appendChild(heading);
+          var grid = el("div", "grid");
+          items.forEach(function (tool) {
+            var node = el("article", "card");
+            var top = el("div", "card-top"); var h = el("div"); h.appendChild(el("h3", "", tool.name)); h.appendChild(el("div", "id", tool.owner)); top.appendChild(h); top.appendChild(pill("MCP")); node.appendChild(top);
+            node.appendChild(el("p", "purpose", tool.purpose)); var pills = el("div", "pills"); pills.appendChild(pill(tool.availability, "live")); node.appendChild(pills);
+            grid.appendChild(node);
+          });
+          section.appendChild(grid);
+          var storage = el("section", "detail-section"); storage.appendChild(el("h3", "", "Safe storage aggregates")); var pre = el("pre"); pre.textContent = JSON.stringify(data.storage, null, 2); storage.appendChild(pre); section.appendChild(storage);
+          return section;
+        }
+        function render() {
+          if (!data) return;
+          content.textContent = "";
+          var apps = data.apps.filter(matches);
+          var caps = data.capabilities.filter(matches);
+          if (view === "apps") {
+            var appSection = renderGroup("Installed & built-in apps", apps, "app"); if (appSection) content.appendChild(appSection);
+          } else if (view === "capabilities") {
+            var categories = {};
+            caps.forEach(function (cap) { if (!group || cap.category === group) (categories[cap.category] || (categories[cap.category] = [])).push(cap); });
+            Object.keys(categories).sort().forEach(function (name) { content.appendChild(renderGroup(name, categories[name], "capability")); });
+          } else if (view === "mcp") {
+            content.appendChild(renderMcp());
+          } else {
+            var appTop = renderGroup("Apps", apps.slice(0, 6), "app"); if (appTop) content.appendChild(appTop);
+            var capTop = renderGroup("Capabilities", caps.slice(0, 12), "capability"); if (capTop) content.appendChild(capTop);
+          }
+          if (!content.children.length) content.appendChild(el("div", "empty", "No catalog entries match this filter."));
+        }
+        function setView(next) {
+          view = next;
+          document.querySelectorAll(".tab").forEach(function (tab) { tab.setAttribute("aria-selected", String(tab.dataset.view === view)); });
+          render();
+        }
+        document.getElementById("search").addEventListener("input", function (event) { query = event.target.value.trim().toLowerCase(); render(); });
+        document.getElementById("group-filter").addEventListener("change", function (event) { group = event.target.value; if (group) setView("capabilities"); else render(); });
+        document.querySelectorAll(".tab").forEach(function (tab) { tab.addEventListener("click", function () { setView(tab.dataset.view); }); });
+        document.getElementById("close").addEventListener("click", function () { detail.close(); });
+
+        function configureSidebar() {
+          if (!window.terrane || typeof window.terrane.setSidebarSection !== "function") return;
+          window.terrane.setSidebarSection({
+            title: "Browse",
+            items: [
+              {id:"overview", title:"Overview", subtitle:"System counts and privacy boundary", systemImage:"gauge"},
+              {id:"apps", title:"Apps", subtitle:"Installed and built-in apps", systemImage:"square.grid.2x2"},
+              {id:"capabilities", title:"Capabilities", subtitle:"Every registered Terrane capability", systemImage:"shippingbox"},
+              {id:"mcp", title:"MCP & operations", subtitle:"Tools, docs, and safe storage summaries", systemImage:"point.3.connected.trianglepath.dotted"}
+            ],
+            selectedItemId: view
+          });
+          if (typeof window.terrane.onSidebarItemSelect === "function") {
+            window.terrane.onSidebarItemSelect(function (id) { setView(id); configureSidebar(); });
+          }
+        }
+
+        window.terrane.invoke("catalog").then(function (raw) {
+          data = JSON.parse(raw);
+          if (data.error) throw new Error(data.error);
+          renderSummary();
+          notice.innerHTML = "";
+          notice.appendChild(el("strong", "", "Fact labels matter. "));
+          notice.appendChild(document.createTextNode("“Live” means current folded registry/state or a sanitized manifest read. Static contract docs are labelled separately. Runtime health is never inferred by executing another app."));
+          var groups = Array.from(new Set(data.capabilities.map(function (cap) { return cap.category; }))).sort();
+          var select = document.getElementById("group-filter");
+          groups.forEach(function (name) { var option = el("option", "", name); option.value = name; select.appendChild(option); });
+          render();
+          configureSidebar();
+        }).catch(function (error) {
+          notice.className = "notice error";
+          notice.textContent = "Control Room could not read its metadata catalog: " + error.message;
+          content.appendChild(el("div", "empty", "Approve the read-only Control Room grant, then reopen the app."));
+        });
+      }());
+    </script>
+  </body>
+</html>

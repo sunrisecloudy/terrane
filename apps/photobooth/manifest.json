@@ -1,6 +1,7 @@
 {
   "id": "photobooth",
   "name": "Photobooth",
+  "description": "Capture photos through the host-mediated camera permission and create local image artifacts.",
   "version": "0.1.0",
   "runtime": "js",
   "backend": "main.js",

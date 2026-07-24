@@ -353,6 +353,12 @@ macOS TCC/Accessibility prompts may still deny individual runs.
 | `ctx.resource.connection.list()` | read |
 | `ctx.resource.connection.stat(name)` | read |
 
+#### `ctx.resource.control-room`
+
+| Method | Kind |
+| --- | --- |
+| `ctx.resource.control-room.catalog()` | read |
+
 #### `ctx.resource.crdt`
 
 | Method | Kind |

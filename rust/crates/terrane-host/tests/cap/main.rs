@@ -17,6 +17,7 @@ mod browser;
 mod common;
 mod compaction;
 mod connection;
+mod control_room;
 mod deep_links;
 mod document;
 mod geo;
