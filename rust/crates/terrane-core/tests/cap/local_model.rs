@@ -429,12 +429,15 @@ function handle(input) {
     if (verb === "askJson") { return String(lm.askJson(input[1], input.slice(2).join(" "))); }
     if (verb === "chat") { return String(lm.chat(input.slice(1).join(" "))); }
     if (verb === "chatModel") { return String(lm.chatModel(input[1], input.slice(2).join(" "))); }
+    if (verb === "chatThread") { return String(lm.chatThread(input[1], input.slice(2).join(" "))); }
+    if (verb === "chatThreadModel") { return String(lm.chatThreadModel(input[1], input[2], input.slice(3).join(" "))); }
     if (verb === "embed") { return String(lm.embed(input.slice(1).join(" "))); }
     if (verb === "embedQuery") { return String(lm.embedQuery(input.slice(1).join(" "))); }
     if (verb === "embedModel") { return String(lm.embedModel(input[1], input.slice(2).join(" "))); }
     if (verb === "models") { return String(lm.models()); }
     if (verb === "pull") { return String(input.length > 2 ? lm.pullModel(input[1], input[2]) : lm.pullModel(input[1])); }
     if (verb === "reset") { return String(lm.resetChat()); }
+    if (verb === "resetThread") { return String(lm.resetChatThread(input[1])); }
     if (verb === "present") { return String(typeof lm); }
     return "?";
 }
@@ -641,6 +644,52 @@ fn js_backend_chat_surface_carries_context_pulls_and_resets() {
     assert_eq!(
         core.take_last_output().as_deref(),
         Some("stub response (history=0)")
+    );
+
+    // App-owned threads keep independent continuation histories and do not
+    // disturb the legacy app transcript.
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "chatThread", "alpha", "alpha one"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "chatThread", "beta", "beta one"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "chatThread", "alpha", "alpha two"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=1)")
+    );
+    core.dispatch(req("js-runtime.run", &["caller", "resetThread", "alpha"]))
+        .unwrap();
+    core.dispatch(req(
+        "js-runtime.run",
+        &["caller", "chatThread", "alpha", "alpha fresh"],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.take_last_output().as_deref(),
+        Some("stub response (history=0)")
+    );
+    assert_eq!(core.state().local_model.turns["caller"].len(), 1);
+    assert_eq!(
+        core.state().local_model.turns["caller::thread::beta"].len(),
+        1
     );
 
     // pullModel downloads (stubbed), registers under a derived id, and the

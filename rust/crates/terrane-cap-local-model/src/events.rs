@@ -328,9 +328,11 @@ pub(crate) fn fold(state: &mut dyn StateStore, record: &EventRecord) -> Result<(
             let e = decode_app_removed(record)?;
             // Transcripts are app-scoped and go with the app; specs are global
             // machine configuration and stay.
-            state_mut::<LocalModelState>(state, "local-model")?
+            let local = state_mut::<LocalModelState>(state, "local-model")?;
+            let thread_prefix = format!("{}::thread::", e.id);
+            local
                 .turns
-                .remove(&e.id);
+                .retain(|key, _| key != &e.id && !key.starts_with(&thread_prefix));
         }
         _ => {}
     }
