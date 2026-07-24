@@ -1421,6 +1421,10 @@ fn host_manifest_from_runtime(
                 script: step.script,
             })
             .collect(),
+        sidebar: crate::SidebarSpec {
+            mode: manifest.sidebar.mode,
+            reason: manifest.sidebar.reason,
+        },
     }
 }
 

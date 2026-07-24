@@ -1193,6 +1193,16 @@ pub struct BundleManifest {
     pub data_version: u64,
     #[nserde(default)]
     pub migrations: Vec<MigrationSpec>,
+    #[nserde(default)]
+    pub sidebar: SidebarSpec,
+}
+
+#[derive(Debug, Clone, Default, DeJson)]
+pub struct SidebarSpec {
+    #[nserde(default)]
+    pub mode: String,
+    #[nserde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, DeJson)]

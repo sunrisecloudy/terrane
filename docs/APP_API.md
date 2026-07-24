@@ -1089,6 +1089,7 @@ window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / 
 | `entry`     | string (optional) | WASM entry export; defaults to `"handle"`                            |
 | `ui`        | string (optional) | UI entry file, e.g. `"index.html"`; omit for CLI-only apps          |
 | `resources` | string[]          | the resource namespaces the backend **requests** — default-deny; each still needs an admin grant before `ctx.resource.<ns>` appears (see the [permission handshake](#default-deny-resources--the-permission-handshake)) |
+| `sidebar`   | object            | required own-sidebar decision for the selected app's lower host section: `{"mode":"section"}` or `{"mode":"none","reason":"..."}` |
 | `interfaces` | string[]        | common interfaces the app advertises; `inbox` is implied and `items` is required |
 | `fileTypes` | `{ext,mime}[]`    | optional file associations; installing the app records `app.link.registered {kind:"filetype", spec:"ext:mime"}` and `terrane open <file>` imports matching files through blob before calling `common.receive("blob", ref)` |
 
@@ -1101,10 +1102,19 @@ window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / 
   "backend": "main.js",
   "ui": "index.html",
   "resources": ["kv"],
+  "sidebar": { "mode": "section" },
   "interfaces": ["items"],
   "fileTypes": [{ "ext": "txt", "mime": "text/plain" }]
 }
 ```
+
+`sidebar` never describes the host's upper **Apps** list. A UI that chooses
+`"section"` publishes real app-owned items with
+`window.terrane.setSidebarSection({title,items,selectedItemId,createLabel?})`,
+handles `window.terrane.onSidebarItemSelect(callback)`, and may handle
+`window.terrane.onSidebarCreate(callback)` when creation makes sense. Apps with
+one indivisible surface choose `"none"` and include a human-readable reason.
+Do not add fake rows merely to satisfy the contract.
 
 ```json
 {
@@ -1114,7 +1124,11 @@ window.terrane.onMessages?.(localize); // re-localize when the bundle arrives / 
   "runtime": "wasm",
   "module": "main.wasm",
   "entry": "handle",
-  "resources": ["kv"]
+  "resources": ["kv"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "This backend-only app has no selected-app UI or lower sidebar content."
+  }
 }
 ```
 

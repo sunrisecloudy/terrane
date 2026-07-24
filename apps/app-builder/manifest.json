@@ -8,5 +8,9 @@
   "ui": "index.html",
   "icon": "icon.svg",
   "resources": [],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "App Builder has one transient generation form and does not persist drafts or switchable workspaces."
+  }
 }

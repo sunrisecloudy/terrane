@@ -1639,6 +1639,10 @@ pub(crate) fn manifest_from_files(
                 script: step.script,
             })
             .collect(),
+        sidebar: crate::SidebarSpec {
+            mode: manifest.sidebar.mode,
+            reason: manifest.sidebar.reason,
+        },
     };
     terrane_cap_app::validate_version(&manifest.version)?;
     crate::validate_manifest_migrations(&manifest, None)?;

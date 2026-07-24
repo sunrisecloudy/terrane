@@ -6,5 +6,9 @@
   "runtime": "js",
   "backend": "main.js",
   "resources": ["search", "local-model"],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "Search Notes is backend-only and has no selected-app UI or lower sidebar content."
+  }
 }

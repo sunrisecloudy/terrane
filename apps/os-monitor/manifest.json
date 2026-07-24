@@ -8,5 +8,9 @@
   "ui": "index.html",
   "icon": "icon.svg",
   "resources": ["sysinfo"],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "OS Monitor is one live machine dashboard; its metric panels are already visible together and are not durable workspaces."
+  }
 }

@@ -148,6 +148,7 @@
       var anchorSeq = null;   // first-clicked segment seq
       var fromSeq = null;
       var toSeq = null;
+      var selectedSessionId = "";
 
       var transcriptEl = document.getElementById("transcript");
       var statusEl = document.getElementById("status");
@@ -213,9 +214,11 @@
       }
 
       function render(state) {
+        selectedSessionId = state.sessionId || selectedSessionId;
         setStatus(state.session ? state.session.status : "idle", state.sessionId);
         transcriptEl.textContent = "";
         var segs = state.segments || [];
+        publishSessions(state.sessions || []);
         if (segs.length === 0) {
           var empty = document.createElement("div");
           empty.className = "empty";
@@ -236,6 +239,23 @@
           transcriptEl.appendChild(span);
         });
         if (fromSeq != null && toSeq != null) highlightRange(segs, fromSeq, toSeq);
+      }
+
+      function publishSessions(sessions) {
+        if (!window.terrane || typeof window.terrane.setSidebarSection !== "function") return;
+        window.terrane.setSidebarSection({
+          title: "Sessions",
+          items: sessions.map(function (session) {
+            var count = session.segments || 0;
+            return {
+              id: session.sessionId,
+              title: session.status === "open" ? "Live session" : "Session " + session.sessionId,
+              subtitle: count === 1 ? "1 segment" : count + " segments",
+              systemImage: session.status === "open" ? "waveform.circle.fill" : "waveform",
+            };
+          }),
+          selectedItemId: selectedSessionId || null,
+        }).catch(showError);
       }
 
       function onSegmentClick(seq, shift, segs) {
@@ -300,7 +320,7 @@
       }
 
       function refresh() {
-        return invoke("state")
+        return invoke("state", selectedSessionId)
           .then(function (json) {
             render(JSON.parse(json || "{}"));
           })
@@ -317,6 +337,14 @@
       });
 
       clearBtn.addEventListener("click", clearSelection);
+
+      if (window.terrane && typeof window.terrane.onSidebarItemSelect === "function") {
+        window.terrane.onSidebarItemSelect(function (id) {
+          selectedSessionId = id;
+          clearSelection();
+          refresh();
+        });
+      }
 
       Array.prototype.forEach.call(
         document.querySelectorAll("#selectBar button[data-sink]"),
