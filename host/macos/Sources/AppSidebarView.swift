@@ -666,7 +666,7 @@ final class AppSidebarButton: NSButton {
   var isSelected = false {
     didSet {
       needsDisplay = true
-      contentTintColor = isSelected ? .labelColor : .secondaryLabelColor
+      contentTintColor = isSelected ? Self.selectedForegroundColor : .secondaryLabelColor
     }
   }
 
@@ -727,16 +727,35 @@ final class AppSidebarButton: NSButton {
   override func draw(_ dirtyRect: NSRect) {
     if isSelected {
       let selectedRect = bounds.insetBy(dx: collapsed ? 3 : 0, dy: collapsed ? 3 : 1)
-      NSColor.labelColor.withAlphaComponent(0.1).setFill()
-      NSBezierPath(roundedRect: selectedRect, xRadius: 12, yRadius: 12).fill()
-
-      if !collapsed {
-        NSColor.systemGreen.withAlphaComponent(0.8).setFill()
-        let marker = NSRect(x: 5, y: selectedRect.midY - 9, width: 3, height: 18)
-        NSBezierPath(roundedRect: marker, xRadius: 1.5, yRadius: 1.5).fill()
-      }
+      let selectionPath = NSBezierPath(roundedRect: selectedRect, xRadius: 12, yRadius: 12)
+      Self.selectedBackgroundColor.setFill()
+      selectionPath.fill()
+      Self.selectedBorderColor.setStroke()
+      selectionPath.lineWidth = 1
+      selectionPath.stroke()
     }
     super.draw(dirtyRect)
+  }
+
+  private static let selectedBackgroundColor = NSColor(name: nil) { appearance in
+    if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+      return NSColor(srgbRed: 0.12, green: 0.16, blue: 0.23, alpha: 0.96)
+    }
+    return NSColor(srgbRed: 0.22, green: 0.30, blue: 0.43, alpha: 0.16)
+  }
+
+  private static let selectedBorderColor = NSColor(name: nil) { appearance in
+    if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+      return NSColor.white.withAlphaComponent(0.14)
+    }
+    return NSColor(srgbRed: 0.22, green: 0.30, blue: 0.43, alpha: 0.22)
+  }
+
+  private static let selectedForegroundColor = NSColor(name: nil) { appearance in
+    if appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua {
+      return NSColor.white.withAlphaComponent(0.94)
+    }
+    return .labelColor
   }
 
   private func configure() {
