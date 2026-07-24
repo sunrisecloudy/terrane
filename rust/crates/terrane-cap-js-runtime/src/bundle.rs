@@ -51,6 +51,20 @@ pub struct BundleManifest {
     /// Forward migration scripts, sorted by target version.
     #[nserde(default)]
     pub migrations: Vec<MigrationSpec>,
+    /// Explicit decision for the selected app's lower host sidebar section.
+    #[nserde(default)]
+    pub sidebar: SidebarSpec,
+}
+
+#[derive(Debug, Clone, Default, DeJson)]
+pub struct SidebarSpec {
+    /// `"section"` when the UI publishes app-native items, or `"none"` when it
+    /// deliberately has no useful multi-item/sidebar concept.
+    #[nserde(default)]
+    pub mode: String,
+    /// Human-readable justification. Required when mode is `"none"`.
+    #[nserde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, DeJson)]

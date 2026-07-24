@@ -43,6 +43,7 @@ mod query;
 mod scheduler;
 mod search;
 mod share;
+mod sidebar_apps;
 mod stream;
 mod sync;
 mod sysinfo;

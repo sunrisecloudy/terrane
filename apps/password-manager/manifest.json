@@ -7,5 +7,8 @@
   "ui": "index.html",
   "icon": "icon.svg",
   "resources": ["kv", "crypto", "net", "crdt"],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "section"
+  }
 }

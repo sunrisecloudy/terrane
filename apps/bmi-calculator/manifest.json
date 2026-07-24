@@ -12,5 +12,9 @@
     "styles": ["src/app.css"]
   },
   "resources": ["kv"],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "BMI Calculator intentionally maintains one current measurement set, not separate profiles or documents."
+  }
 }

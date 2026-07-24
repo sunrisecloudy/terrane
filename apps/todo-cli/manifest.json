@@ -6,5 +6,9 @@
   "backend": "main.js",
   "icon": "icon.svg",
   "resources": ["kv"],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "Todo CLI is backend-only and has no selected-app UI or lower sidebar content."
+  }
 }

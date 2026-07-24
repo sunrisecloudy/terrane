@@ -34,19 +34,25 @@ var actions = {
   state: {
     summary:
       "Full UI snapshot: live session, transcript, and recent selections.",
-    args: [],
-    returns: "a JSON object { session, segments, selections }",
-    run: function () {
+    args: [{ name: "sessionId", required: false, summary: "session to display" }],
+    returns: "a JSON object { session, sessionId, sessions, segments, selections }",
+    run: function (args) {
       var sessions = readJson(stt.sessions());
       var live = sessions.filter(function (s) {
         return s.status === "open";
       })[0];
-      var sessionId = live ? live.sessionId : sessions[0] ? sessions[0].sessionId : "";
+      var requested = args[0] || "";
+      var selected = sessions.filter(function (s) {
+        return s.sessionId === requested;
+      })[0];
+      selected = selected || live || sessions[0] || null;
+      var sessionId = selected ? selected.sessionId : "";
       var segments = sessionId ? readJson(stt.segments(sessionId)) : [];
       var selections = sessionId ? readJson(stt.selections(sessionId)) : [];
       return JSON.stringify({
-        session: live || null,
+        session: selected,
         sessionId: sessionId,
+        sessions: sessions,
         segments: segments,
         selections: selections,
       });

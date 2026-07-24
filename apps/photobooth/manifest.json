@@ -8,5 +8,9 @@
   "icon": "icon.svg",
   "resources": [],
   "interfaces": ["items"],
-  "browser_permissions": ["camera"]
+  "browser_permissions": ["camera"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "Photobooth intentionally holds only the current live camera and unsaved capture; downloaded photos are user-owned files, not app workspaces."
+  }
 }

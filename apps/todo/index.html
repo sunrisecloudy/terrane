@@ -91,6 +91,7 @@
       var emptyEl = document.getElementById("empty");
       var textEl = document.getElementById("text");
       var doneTitle = "done";
+      var currentView = "open";
 
       function invoke() {
         if (!window.terrane || typeof window.terrane.invoke !== "function") {
@@ -149,9 +150,12 @@
           var done = document.createElement("button");
           done.className = "done";
           done.title = doneTitle;
-          done.textContent = "✓";
+          done.textContent = currentView === "completed" ? "↩" : "✓";
           done.addEventListener("click", function () {
-            invoke("done", String(it.id)).then(refresh).catch(showError);
+            invoke(
+              currentView === "completed" ? "restore" : "done",
+              String(it.id)
+            ).then(refresh).catch(showError);
           });
           li.appendChild(id);
           li.appendChild(text);
@@ -161,8 +165,21 @@
       }
 
       function refresh() {
-        return invoke("items").then(function (json) {
+        return invoke("items", currentView).then(function (json) {
           render(JSON.parse(json || "[]"));
+          publishViews();
+        }).catch(showError);
+      }
+
+      function publishViews() {
+        if (!window.terrane || typeof window.terrane.setSidebarSection !== "function") return;
+        window.terrane.setSidebarSection({
+          title: tr("todo.views", "Views"),
+          items: [
+            { id: "open", title: tr("todo.open", "Open"), systemImage: "circle" },
+            { id: "completed", title: tr("todo.completed", "Completed"), systemImage: "checkmark.circle" }
+          ],
+          selectedItemId: currentView
         }).catch(showError);
       }
 
@@ -183,6 +200,13 @@
       textEl.addEventListener("keydown", function (e) {
         if (e.key === "Enter") add();
       });
+      if (window.terrane && typeof window.terrane.onSidebarItemSelect === "function") {
+        window.terrane.onSidebarItemSelect(function (id) {
+          if (id !== "open" && id !== "completed") return;
+          currentView = id;
+          refresh();
+        });
+      }
       localize();
       // The host pushes the locale bundle shortly after load; re-localize then,
       // and on any later language change, re-rendering the live list too.
