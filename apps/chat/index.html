@@ -66,10 +66,12 @@
       #pull-row input { min-width: 220px; }
       #log {
         flex: 1;
+        min-height: 0;
         overflow-y: auto;
         padding: 16px;
         display: flex;
         flex-direction: column;
+        justify-content: flex-start;
         gap: 10px;
       }
       .msg {
@@ -226,7 +228,7 @@
         modelEl.value = selected || "";
       }
 
-      function renderMessages(messages) {
+      function renderMessages(messages, scrollToEnd) {
         logEl.textContent = "";
         if (!messages.length) {
           logEl.appendChild(emptyEl);
@@ -245,14 +247,33 @@
           }
           logEl.appendChild(div);
         });
-        logEl.scrollTop = logEl.scrollHeight;
+        logEl.scrollTop = scrollToEnd ? logEl.scrollHeight : 0;
       }
 
-      function refresh() {
+      function publishConversationSection(state) {
+        if (!window.terrane || typeof window.terrane.setSidebarSection !== "function") return;
+        var items = (state.conversations || []).map(function (conversation) {
+          var count = conversation.messageCount || 0;
+          return {
+            id: conversation.id,
+            title: conversation.title,
+            subtitle: count === 1 ? "1 message" : count + " messages"
+          };
+        });
+        window.terrane.setSidebarSection({
+          title: tr("chat.conversations", "Conversations"),
+          items: items,
+          selectedItemId: state.selectedConversation,
+          createLabel: tr("chat.newChat", "New chat")
+        }).catch(showError);
+      }
+
+      function refresh(scrollToEnd) {
         return invoke("state").then(function (json) {
           var state = JSON.parse(json);
           renderModels(state.models || [], state.selected);
-          renderMessages(state.messages || []);
+          renderMessages(state.messages || [], scrollToEnd === true);
+          publishConversationSection(state);
         }).catch(showError);
       }
 
@@ -264,7 +285,9 @@
         invoke("send", text).then(function (json) {
           var out = JSON.parse(json);
           if (!out.ok) throw new Error(out.error || "send failed");
-        }).then(refresh).catch(showError).then(function () { busy(false); textEl.focus(); });
+        }).then(function () {
+          return refresh(true);
+        }).catch(showError).then(function () { busy(false); textEl.focus(); });
       }
 
       sendEl.addEventListener("click", send);
@@ -303,6 +326,28 @@
         busy(true, tr("chat.startingNew", "Starting a new conversation…"));
         invoke("new").then(refresh).catch(showError).then(function () { busy(false); });
       });
+
+      if (window.terrane && typeof window.terrane.onSidebarItemSelect === "function") {
+        window.terrane.onSidebarItemSelect(function (id) {
+          busy(true, tr("chat.switching", "Switching conversation…"));
+          invoke("select", id).then(function (json) {
+            var out = JSON.parse(json);
+            if (!out.ok) throw new Error(out.error || "conversation switch failed");
+          }).then(refresh).catch(showError).then(function () {
+            busy(false);
+            textEl.focus();
+          });
+        });
+      }
+      if (window.terrane && typeof window.terrane.onSidebarCreate === "function") {
+        window.terrane.onSidebarCreate(function () {
+          busy(true, tr("chat.startingNew", "Starting a new conversation…"));
+          invoke("new").then(refresh).catch(showError).then(function () {
+            busy(false);
+            textEl.focus();
+          });
+        });
+      }
 
       localize();
       // The host pushes the locale bundle shortly after load; re-localize then,

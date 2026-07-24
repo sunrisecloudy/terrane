@@ -82,6 +82,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     bridge.onDocumentSet = { [weak self] name in
       DispatchQueue.main.async { self?.applyDocumentFromApp(name) }
     }
+    bridge.onSidebarSectionSet = { [weak self] section in
+      DispatchQueue.main.async { self?.appSidebar?.setAppSection(section) }
+    }
     bridge.onPermissionRequired = { [weak self, weak bridge] prompt, completion in
       DispatchQueue.main.async {
         guard let self, let bridge else {
@@ -378,8 +381,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     appSidebar.onToggleCollapse = { [weak self] in
       self?.toggleSidebar()
     }
-    appSidebar.localModelPanel.configure(home: home)
-
+    appSidebar.onSectionItemSelect = { [weak self] id in
+      self?.pushSidebarAction(kind: "select", id: id)
+    }
+    appSidebar.onSectionCreate = { [weak self] in
+      self?.pushSidebarAction(kind: "create")
+    }
     let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false
 
@@ -560,6 +567,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     cameraFrameStreamer?.stop()
     cameraFrameStreamer = nil
     selectedApp = app
+    appSidebar.setAppSection(nil)
     bridge?.select(app: app)
     sttCapture = nil
     window.title = "\(app.name) - Terrane"
@@ -607,6 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       sttCapture?.stop(reason: "stopped")
     }
     selectedApp = nil
+    appSidebar.setAppSection(nil)
     bridge?.clearSelection()
     sttCapture = nil
     window.title = "\(app.name) - Terrane Premium"
@@ -659,6 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       return
     }
     selectedApp = nil
+    appSidebar.setAppSection(nil)
     bridge?.clearSelection()
     window.title = "Terrane"
     appSidebar.select(appId: nil)
@@ -856,6 +866,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       dir: TerraneBridge.dir(for: currentLocale)
     )
     webView.evaluateJavaScript(js)
+  }
+
+  private func pushSidebarAction(kind: String, id: String? = nil) {
+    var payload: [String: String] = ["kind": kind]
+    if let id { payload["id"] = id }
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    webView.evaluateJavaScript(
+      "window.__terrane_sidebar_action && window.__terrane_sidebar_action(\(json));")
   }
 
   /// A native-chrome string for `key` from the shell-chrome bundle, else the

@@ -105,6 +105,9 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// Called when a page renames its document via `terrane.setDocument(...)`.
   /// The host owns the top bar, so it updates the breadcrumb (and persists).
   var onDocumentSet: ((String) -> Void)?
+  /// Called when the selected app publishes or clears its host-owned secondary
+  /// sidebar section. Only the main frame may drive native chrome.
+  var onSidebarSectionSet: ((AppSidebarSection?) -> Void)?
   var onPermissionRequired: ((PermissionRequiredPrompt, @escaping (Bool) -> Void) -> Void)?
   /// Present the powerbox picker. The completion carries the chosen target app
   /// id, or `nil` if the user cancelled.
@@ -221,6 +224,24 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
       if message.frameInfo.isMainFrame {
         onDocumentSet?((body["name"] as? String) ?? "")
       }
+      replyHandler("ok", nil)
+    case "sidebar:set":
+      guard message.frameInfo.isMainFrame else {
+        replyHandler(nil, "terrane: sidebar sections are only available to the selected app frame")
+        return
+      }
+      if body["section"] is NSNull || body["section"] == nil {
+        onSidebarSectionSet?(nil)
+        replyHandler("ok", nil)
+        return
+      }
+      guard let raw = body["section"] as? [String: Any],
+        let section = Self.sidebarSection(from: raw)
+      else {
+        replyHandler(nil, "terrane: malformed sidebar section")
+        return
+      }
+      onSidebarSectionSet?(section)
       replyHandler("ok", nil)
     case "camera:capturePhoto":
       guard message.frameInfo.isMainFrame else {
@@ -804,6 +825,46 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     return []
   }
 
+  private static func sidebarSection(from raw: [String: Any]) -> AppSidebarSection? {
+    let title = ((raw["title"] as? String) ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !title.isEmpty, title.count <= 80,
+      let rawItems = raw["items"] as? [[String: Any]], rawItems.count <= 250
+    else {
+      return nil
+    }
+    var seen = Set<String>()
+    let items = rawItems.compactMap { item -> AppSidebarSectionItem? in
+      let id = ((item["id"] as? String) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let itemTitle = ((item["title"] as? String) ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !id.isEmpty, id.count <= 160, !itemTitle.isEmpty, itemTitle.count <= 160,
+        seen.insert(id).inserted
+      else {
+        return nil
+      }
+      return AppSidebarSectionItem(
+        id: id,
+        title: itemTitle,
+        subtitle: (item["subtitle"] as? String)?.prefix(240).description,
+        systemImage: (item["systemImage"] as? String)?.prefix(80).description
+      )
+    }
+    guard items.count == rawItems.count else { return nil }
+    let selected = raw["selectedItemId"] as? String
+    guard selected == nil || items.contains(where: { $0.id == selected }) else { return nil }
+    let createLabel = (raw["createLabel"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .prefix(80).description
+    return AppSidebarSection(
+      title: title,
+      items: items,
+      selectedItemId: selected,
+      createLabel: createLabel?.isEmpty == true ? nil : createLabel
+    )
+  }
+
   private static func jsonObject(from text: String) -> [String: Any]? {
     guard let data = text.data(using: .utf8),
       let parsed = try? JSONSerialization.jsonObject(with: data)
@@ -840,6 +901,8 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
       var themeSubs = [];
       var localeSubs = [];
       var messagesSubs = [];
+      var sidebarSelectSubs = [];
+      var sidebarCreateSubs = [];
       function notify(subs, value) {
         for (var i = 0; i < subs.length; i++) {
           try { subs[i](value); } catch (_) {}
@@ -896,6 +959,14 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
           dirState = state.dir === "rtl" ? "rtl" : "ltr";
         }
       };
+      window.__terrane_sidebar_action = function (action) {
+        if (!action || typeof action.kind !== "string") return;
+        if (action.kind === "select") {
+          notify(sidebarSelectSubs, String(action.id == null ? "" : action.id));
+        } else if (action.kind === "create") {
+          notify(sidebarCreateSubs, null);
+        }
+      };
 
       var api = Object.freeze({
         invoke: function (verb) {
@@ -947,6 +1018,21 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
           var clean = String(name == null ? "" : name);
           docState = clean;
           post({ kind: "document:set", name: clean });
+        },
+        // --- Optional app-provided section in the host-owned sidebar --------
+        setSidebarSection: function (section) {
+          if (section == null) return post({ kind: "sidebar:set", section: null });
+          return post({ kind: "sidebar:set", section: section });
+        },
+        onSidebarItemSelect: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          sidebarSelectSubs.push(cb);
+          return unsubscriber(sidebarSelectSubs, cb);
+        },
+        onSidebarCreate: function (cb) {
+          if (typeof cb !== "function") return function () {};
+          sidebarCreateSubs.push(cb);
+          return unsubscriber(sidebarCreateSubs, cb);
         },
         onDocument: function (cb) {
           if (typeof cb !== "function") return function () {};
