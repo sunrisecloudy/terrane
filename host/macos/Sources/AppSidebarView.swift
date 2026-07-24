@@ -529,7 +529,7 @@ final class AppProvidedSidebarView: NSView {
     addSubview(scrollView)
     headerConstraints = [
       headerButton.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-      headerButton.trailingAnchor.constraint(lessThanOrEqualTo: createButton.leadingAnchor, constant: -2),
+      headerButton.trailingAnchor.constraint(equalTo: createButton.leadingAnchor, constant: -2),
       headerButton.topAnchor.constraint(equalTo: topAnchor),
       headerButton.heightAnchor.constraint(equalToConstant: 32),
       createButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
