@@ -9,5 +9,8 @@
   "icon": "icon.svg",
   "resources": ["control-room"],
   "interfaces": ["items"],
-  "publicVerbs": ["overview", "catalog", "search"]
+  "publicVerbs": ["overview", "catalog", "search"],
+  "sidebar": {
+    "mode": "section"
+  }
 }
