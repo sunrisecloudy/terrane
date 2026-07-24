@@ -271,6 +271,76 @@ final class BmiCalculatorE2ETests: XCTestCase {
     }
   }
 
+  func testAppSidebarResetsAppsScrollOnlyWhenSelectionChanges() throws {
+    try runOnMainThread {
+      let base = URL(fileURLWithPath: "/tmp/terrane-sidebar-scroll-test")
+      let apps = (0..<16).map { index in
+        TerraneApp(
+          id: "app-\(index)",
+          name: "App \(index)",
+          directory: base.appendingPathComponent("app-\(index)"),
+          uiURL: base.appendingPathComponent("app-\(index)/index.html"),
+          iconPath: nil,
+          iconURL: nil,
+          browserPermissions: []
+        )
+      }
+      let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 232, height: 420))
+      sidebar.render(apps: apps, selectedAppId: "app-0")
+      sidebar.layoutSubtreeIfNeeded()
+
+      let appsScroll = try XCTUnwrap(
+        subviews(ofType: NSScrollView.self, in: sidebar).first { scrollView in
+          guard let documentView = scrollView.documentView else { return false }
+          return !subviews(ofType: AppSidebarButton.self, in: documentView).isEmpty
+        })
+      appsScroll.layoutSubtreeIfNeeded()
+      let documentView = try XCTUnwrap(appsScroll.documentView)
+      documentView.layoutSubtreeIfNeeded()
+      let topY =
+        documentView.isFlipped
+        ? CGFloat(0)
+        : max(0, documentView.bounds.height - appsScroll.contentView.bounds.height)
+      let awayFromTopY =
+        documentView.isFlipped
+        ? max(0, documentView.bounds.height - appsScroll.contentView.bounds.height)
+        : CGFloat(0)
+      appsScroll.contentView.scroll(to: NSPoint(x: 0, y: awayFromTopY))
+      appsScroll.reflectScrolledClipView(appsScroll.contentView)
+      let deliberateScrollY = appsScroll.contentView.bounds.origin.y
+      XCTAssertNotEqual(deliberateScrollY, topY)
+
+      sidebar.select(appId: "app-0")
+      XCTAssertEqual(appsScroll.contentView.bounds.origin.y, deliberateScrollY)
+
+      sidebar.select(appId: "app-1")
+      XCTAssertEqual(appsScroll.contentView.bounds.origin.y, topY)
+    }
+  }
+
+  func testChatEmptyStateStartsAtTopAndClearsStaleScroll() throws {
+    let html = try String(
+      contentsOf: repoRoot().appendingPathComponent("apps/chat/index.html"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(
+      html.contains(
+        """
+              #empty {
+                opacity: 0.55;
+                text-align: center;
+                align-self: stretch;
+                margin: 0;
+        """))
+    XCTAssertTrue(
+      html.contains(
+        """
+                  emptyEl.hidden = false;
+                  logEl.scrollTop = 0;
+                  return;
+        """))
+  }
+
   func testAppSidebarHostsGenericSelectableSection() throws {
     try runOnMainThread {
       let sidebar = AppSidebarView(frame: NSRect(x: 0, y: 0, width: 232, height: 680))
