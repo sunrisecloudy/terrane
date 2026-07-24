@@ -130,6 +130,7 @@ final class AppSidebarView: NSVisualEffectView, NSSplitViewDelegate {
         stack.addArrangedSubview(button)
       }
     }
+    resetAppsScrollToTop()
   }
 
   func setAppSection(_ section: AppSidebarSection?) {
@@ -166,10 +167,14 @@ final class AppSidebarView: NSVisualEffectView, NSSplitViewDelegate {
   }
 
   func select(appId: String?) {
+    let selectionChanged = selectedAppId != appId
     selectedAppId = appId
     homeButton.isSelected = appId == nil
     for (index, button) in buttons.enumerated() {
       button.isSelected = apps.indices.contains(index) && apps[index].id == appId
+    }
+    if selectionChanged {
+      resetAppsScrollToTop()
     }
   }
 
@@ -364,7 +369,10 @@ final class AppSidebarView: NSVisualEffectView, NSSplitViewDelegate {
   /// A resized/collapsed lower section must not preserve a stale bottom scroll
   /// offset in the now-taller Apps viewport.
   private func scrollAppsToTop() {
+    appsPane.layoutSubtreeIfNeeded()
     appsScroll.layoutSubtreeIfNeeded()
+    appsScroll.contentView.layoutSubtreeIfNeeded()
+    stack.layoutSubtreeIfNeeded()
     guard let documentView = appsScroll.documentView else { return }
     let topY =
       documentView.isFlipped
@@ -372,6 +380,16 @@ final class AppSidebarView: NSVisualEffectView, NSSplitViewDelegate {
       : max(0, documentView.bounds.height - appsScroll.contentView.bounds.height)
     appsScroll.contentView.scroll(to: NSPoint(x: 0, y: topY))
     appsScroll.reflectScrolledClipView(appsScroll.contentView)
+  }
+
+  /// Rendering and app selection can change the stack after its first layout
+  /// pass. Reset now and once on the next main-loop turn so initial/app-switch
+  /// navigation starts at Home without disturbing later deliberate scrolling.
+  private func resetAppsScrollToTop() {
+    scrollAppsToTop()
+    DispatchQueue.main.async { [weak self] in
+      self?.scrollAppsToTop()
+    }
   }
 
   @objc private func toggleAppsSection(_ sender: NSButton) {
