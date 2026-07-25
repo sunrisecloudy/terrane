@@ -89,9 +89,7 @@ fn read_segments(state: &dyn StateStore, app: &str, args: &[String]) -> Result<R
         .sessions
         .get(app)
         .and_then(|m| m.get(session_id))
-        .ok_or_else(|| {
-            Error::InvalidInput(format!("no stt session: {app}/{session_id}"))
-        })?;
+        .ok_or_else(|| Error::InvalidInput(format!("no stt session: {app}/{session_id}")))?;
     let encoded = serde_json::to_string(
         &session
             .segments
@@ -126,9 +124,7 @@ fn read_selections(state: &dyn StateStore, app: &str, args: &[String]) -> Result
         .sessions
         .get(app)
         .and_then(|m| m.get(session_id))
-        .ok_or_else(|| {
-            Error::InvalidInput(format!("no stt session: {app}/{session_id}"))
-        })?;
+        .ok_or_else(|| Error::InvalidInput(format!("no stt session: {app}/{session_id}")))?;
     let encoded = serde_json::to_string(
         &session
             .selections

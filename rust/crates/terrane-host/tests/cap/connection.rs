@@ -81,7 +81,10 @@ fn respond(mut stream: TcpStream, body: &[u8]) {
 #[test]
 fn connection_file_fallback_resolves_secret_for_net_without_log_leak() {
     let (base, server) = loopback_server(1, |request, stream| {
-        assert!(request.contains("authorization: Bearer raw-secret"), "{request}");
+        assert!(
+            request.contains("authorization: Bearer raw-secret"),
+            "{request}"
+        );
         respond(stream, b"ok");
     });
     let dir = tempdir().unwrap();
@@ -97,13 +100,18 @@ fn connection_file_fallback_resolves_secret_for_net_without_log_leak() {
     assert!(ok, "app add failed: {err}");
     let (ok, _out, err) = terrane_file_store(
         home,
-        &["auth", "grant", "user:local-owner", "web", "connection:github"],
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "web",
+            "connection:github",
+        ],
     );
     assert!(ok, "connection grant failed: {err}");
 
-    let request = format!(
-        r#"{{"url":"{base}/items","headers":{{"authorization":{{"$secret":"github"}}}}}}"#
-    );
+    let request =
+        format!(r#"{{"url":"{base}/items","headers":{{"authorization":{{"$secret":"github"}}}}}}"#);
     let (ok, out, err) = terrane_file_store(home, &["net", "request", "web", &request]);
     assert!(ok, "net request failed; stdout: {out}; stderr: {err}");
     server.join().unwrap();
@@ -134,5 +142,8 @@ fn missing_connection_grant_blocks_resolution() {
         r#"{"url":"http://127.0.0.1:9/items","headers":{"authorization":{"$secret":"github"}}}"#;
     let (ok, _out, err) = terrane_file_store(home, &["net", "request", "web", request]);
     assert!(!ok, "request should require connection grant");
-    assert!(err.contains("permission required: grant connection:github"), "{err}");
+    assert!(
+        err.contains("permission required: grant connection:github"),
+        "{err}"
+    );
 }

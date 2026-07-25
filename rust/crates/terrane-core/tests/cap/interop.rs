@@ -36,10 +36,7 @@ fn interop_rejects_cycles_and_depth_before_effect() {
     assert!(cycle.to_string().contains("InteropCycle"));
 
     let depth = core
-        .dispatch(req(
-            "interop.call",
-            &["a", "b", "common.list", "a>x>y>z>w"],
-        ))
+        .dispatch(req("interop.call", &["a", "b", "common.list", "a>x>y>z>w"]))
         .unwrap_err();
     assert!(matches!(depth, Error::InvalidInput(_)));
     assert!(depth.to_string().contains("InteropDepthExceeded"));
@@ -55,10 +52,7 @@ fn interop_send_without_default_target_raises_picker() {
     // No picked default target for the interface yet: send must raise the
     // powerbox picker signal rather than delivering.
     let err = core
-        .dispatch(req(
-            "interop.send",
-            &["caller", "inbox", "text", "hello"],
-        ))
+        .dispatch(req("interop.send", &["caller", "inbox", "text", "hello"]))
         .unwrap_err();
     assert!(
         err.to_string().contains("interop_pick_required:"),

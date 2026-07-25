@@ -12,8 +12,8 @@
 //! slice. The whole capability is a thin, validated forwarder to the edge.
 
 use terrane_cap_interface::{
-    CapManifest, Capability, CommandCtx, Decision, Error, EventRecord, GrantResourceSpec, ReadValue,
-    ResourceMethod, ResourceReadCtx, Result, StateStore,
+    CapManifest, Capability, CommandCtx, Decision, Error, EventRecord, GrantResourceSpec,
+    ReadValue, ResourceMethod, ResourceReadCtx, Result, StateStore,
 };
 
 mod doc;

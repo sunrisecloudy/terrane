@@ -37,6 +37,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use sha2::{Digest, Sha256};
+pub use terrane_cap_manager::{CapabilityManager, CapabilityStatusView};
+use terrane_cap_protocol::{
+    HostConnectorRequest, HostConnectorResponse, OwnedResourceMethod, WorkerRequest, WorkerResponse,
+};
 
 pub mod domain;
 pub mod filelock;
@@ -45,11 +50,11 @@ pub mod snapshot;
 pub use terrane_cap_interface::{
     arg, decode_event, encode_event, namespace_of, AppId, CapBus, Capability, CapabilityDoc,
     CapabilityManifestDoc, CommandAuthority, CommandCtx, Decision, Effect, Error, EventRecord,
-    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost, ParamDoc,
-    ModelImagePart, QueryCtx, QueryValue, ReadValue, RecordedCallCap, Request, ResourceDoc, ResourceMethod,
-    ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx, RuntimeHost, RuntimeHostHandle,
-    RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore, LOCAL_ORG, LOCAL_OWNER_SUBJECT,
-    LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
+    ExampleDoc, ExecutionPrincipal, GrantResourceSpec, InternalNote, LimitDoc, LiveHost,
+    ModelImagePart, ParamDoc, QueryCtx, QueryValue, ReadValue, RecordedCallCap, Request,
+    ResourceDoc, ResourceMethod, ResourceMethodDoc, ResourceReadCtx, Result, RuntimeCtx,
+    RuntimeHost, RuntimeHostHandle, RuntimeOutput, RuntimeRequest, SchemaDoc, StateStore,
+    LOCAL_ORG, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 
 const LOG_HEADER: &[u8] = b"TRNLOG\x01\n";
@@ -69,11 +74,9 @@ use terrane_cap_automation::AutomationState;
 use terrane_cap_blob::BlobState;
 use terrane_cap_browser::BrowserState;
 use terrane_cap_builder::BuilderState;
-use terrane_cap_webhook::WebhookState;
-use terrane_cap_web_publish::WebPublishState;
 use terrane_cap_common::CommonState;
-use terrane_cap_crdt::CrdtState;
 use terrane_cap_connection::ConnectionState;
+use terrane_cap_crdt::CrdtState;
 use terrane_cap_document::DocumentState;
 use terrane_cap_geo::GeoState;
 use terrane_cap_harness::HarnessState;
@@ -82,27 +85,29 @@ use terrane_cap_interop::InteropState;
 use terrane_cap_job_queue::JobState;
 use terrane_cap_kv::{KvState, KvStoragePlan};
 use terrane_cap_local_model::LocalModelState;
+use terrane_cap_mcp_client::McpClientState;
 use terrane_cap_media::MediaState;
 use terrane_cap_migration::MigrationState;
-use terrane_cap_mcp_client::McpClientState;
 use terrane_cap_model::ModelState;
 use terrane_cap_native::NativeState;
 use terrane_cap_net::NetState;
 use terrane_cap_org::OrgState;
 use terrane_cap_person::PersonState;
 use terrane_cap_presence::PresenceState;
-use terrane_cap_push::PushState;
 use terrane_cap_publish::PublishState;
+use terrane_cap_push::PushState;
 use terrane_cap_query::QueryState;
 use terrane_cap_replica::ReplicaState;
 use terrane_cap_scheduler::SchedulerState;
 use terrane_cap_share::ShareState;
+use terrane_cap_stream::StreamState;
 use terrane_cap_stt::SttState;
 use terrane_cap_sync::SyncState;
-use terrane_cap_stream::StreamState;
-use terrane_cap_time::TimeState;
 use terrane_cap_telemetry::TelemetryState;
+use terrane_cap_time::TimeState;
 use terrane_cap_tts::TtsState;
+use terrane_cap_web_publish::WebPublishState;
+use terrane_cap_webhook::WebhookState;
 
 /// The whole world the core holds: one slice per capability. Capabilities read
 /// across slices (e.g. `kv` checks `state.app`) but each only writes its own.
@@ -312,11 +317,15 @@ impl Registry {
         Ok(())
     }
 
-    pub(crate) fn get(&self, namespace: &str) -> Result<&dyn Capability> {
+    pub fn get(&self, namespace: &str) -> Result<&dyn Capability> {
         self.caps
             .get(namespace)
             .map(AsRef::as_ref)
             .ok_or_else(|| Error::InvalidInput(format!("unknown command namespace: {namespace}")))
+    }
+
+    pub fn namespaces(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.caps.keys().copied()
     }
 
     /// Validate the registry-wide declaration surface: command/query names and
@@ -514,6 +523,14 @@ impl CapBus for RegistryBus<'_> {
         capability.query(ctx, name, args)
     }
 
+    fn capability_docs(&self, include_internal: bool) -> Vec<CapabilityDoc> {
+        self.registry
+            .caps
+            .values()
+            .map(|capability| capability.doc(include_internal))
+            .collect()
+    }
+
     fn event_kind_matches(&self, pattern: &str) -> bool {
         self.registry.caps.values().any(|capability| {
             capability.manifest().events.iter().any(|event| {
@@ -558,6 +575,7 @@ pub fn default_registry() -> Registry {
     registry.register(Box::new(terrane_cap_build::BuildCapability));
     registry.register(Box::new(terrane_cap_builder::BuilderCapability));
     registry.register(Box::new(terrane_cap_common::CommonCapability));
+    registry.register(Box::new(terrane_cap_control_room::ControlRoomCapability));
     registry.register(Box::new(terrane_cap_harness::HarnessCapability));
     registry.register(Box::new(terrane_cap_history::HistoryCapability));
     registry.register(Box::new(terrane_cap_interop::InteropCapability));
@@ -779,7 +797,7 @@ pub fn capability_doc(namespace: &str, include_internal: bool) -> Result<Capabil
 }
 
 /// Offer one recorded event to every capability (broadcast fold).
-pub(crate) fn apply(registry: &Registry, state: &mut State, record: &EventRecord) -> Result<()> {
+pub fn apply(registry: &Registry, state: &mut State, record: &EventRecord) -> Result<()> {
     for capability in registry.caps.values() {
         capability.fold(state, record)?;
     }
@@ -834,6 +852,8 @@ pub struct RuntimeResourceHost {
     /// Runs `Decision::Effect` from `ResourceMethod::Call` invocations; calls
     /// are refused when the host was built without one.
     runner: Option<std::sync::Arc<dyn EffectRunner>>,
+    capability_manager: Option<Arc<CapabilityManager>>,
+    base_records: Vec<EventRecord>,
 }
 
 impl RuntimeResourceHost {
@@ -857,6 +877,8 @@ impl RuntimeResourceHost {
             recorded_call_counts: BTreeMap::new(),
             interop_chain: Vec::new(),
             runner: None,
+            capability_manager: None,
+            base_records: Vec::new(),
         }
     }
 
@@ -869,6 +891,16 @@ impl RuntimeResourceHost {
 
     pub fn with_interop_chain(mut self, chain: Vec<String>) -> Self {
         self.interop_chain = chain;
+        self
+    }
+
+    pub fn with_capability_manager(
+        mut self,
+        manager: Arc<CapabilityManager>,
+        base_records: Vec<EventRecord>,
+    ) -> Self {
+        self.capability_manager = Some(manager);
+        self.base_records = base_records;
         self
     }
 
@@ -892,9 +924,30 @@ struct RecordedWrite {
 
 impl RuntimeHost for RuntimeResourceHost {
     fn resource_methods(&self, namespace: &str) -> Result<Vec<ResourceMethod>> {
-        let capability = self.registry.get(namespace)?;
-        let manifest = capability.manifest();
-        if !manifest.resources.is_empty() && manifest.grant_resources.is_empty() {
+        let (resources, has_grant_resources) = if let Some(manager) = self
+            .capability_manager
+            .as_ref()
+            .filter(|manager| manager.contains(namespace))
+        {
+            let manifest = manager.manifest(namespace).ok_or_else(|| {
+                Error::Runtime(format!(
+                    "missing signed manifest for capability {namespace}"
+                ))
+            })?;
+            (
+                manifest
+                    .declaration
+                    .resources
+                    .iter()
+                    .map(owned_resource_method)
+                    .collect::<Result<Vec<_>>>()?,
+                !manifest.declaration.grant_resources.is_empty(),
+            )
+        } else {
+            let manifest = self.registry.get(namespace)?.manifest();
+            (manifest.resources, !manifest.grant_resources.is_empty())
+        };
+        if !resources.is_empty() && !has_grant_resources {
             return Err(Error::InvalidInput(format!(
                 "{namespace} exposes ctx.resource.{namespace} without grant resource specs"
             )));
@@ -914,7 +967,7 @@ impl RuntimeHost for RuntimeResourceHost {
                 namespace,
             )?
         {
-            return Ok(manifest.resources);
+            return Ok(resources);
         }
         Ok(Vec::new())
     }
@@ -925,6 +978,48 @@ impl RuntimeHost for RuntimeResourceHost {
         method: &str,
         args: &[String],
     ) -> Result<ReadValue> {
+        if let Some(manager) = self.dynamic_manager(namespace) {
+            let response = manager
+                .call_with_connector(
+                    namespace,
+                    &self.base_records,
+                    WorkerRequest::ReadResource {
+                        app: self.app.clone(),
+                        name: method.to_string(),
+                        args: args.to_vec(),
+                        overlay_records: self.pending_records(),
+                        dependencies: BTreeMap::new(),
+                    },
+                    |request| match request {
+                        HostConnectorRequest::LiveSample { domain, args } => self
+                            .runner
+                            .as_ref()
+                            .and_then(|runner| runner.live())
+                            .ok_or_else(|| {
+                                Error::Runtime(format!(
+                                    "{namespace}.{method} needs a live host sampler"
+                                ))
+                            })
+                            .and_then(|host| host.sample(&domain, &args))
+                            .map(|value| HostConnectorResponse::LiveSample { value })
+                            .unwrap_or_else(|error| HostConnectorResponse::Error {
+                                message: error.to_string(),
+                            }),
+                        request => HostConnectorResponse::Error {
+                            message: format!(
+                                "resource read connector received unsupported request {request:?}"
+                            ),
+                        },
+                    },
+                )
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            return match response {
+                WorkerResponse::ReadValue { value } => Ok(value),
+                response => Err(Error::Runtime(format!(
+                    "capability worker {namespace} returned {response:?} for resource read"
+                ))),
+            };
+        }
         let capability = self.registry.get(namespace)?;
         let bus = RegistryBus::new(&self.registry, &self.state);
         capability.read_resource(
@@ -951,15 +1046,7 @@ impl RuntimeHost for RuntimeResourceHost {
             .flatten();
         let is_set = namespace == "kv" && method == "set";
 
-        let bus = RegistryBus::new(&self.registry, &self.state);
-        let ctx = CommandCtx {
-            state: &self.state,
-            bus: &bus,
-        };
-        let decision = self
-            .registry
-            .get(namespace)?
-            .decide(ctx, &name, &scoped_args)?;
+        let decision = self.resource_decision(namespace, &name, &scoped_args)?;
         let records = match decision {
             Decision::Commit(records) => records,
             Decision::Effect(_) | Decision::TransientEffect(_) | Decision::Runtime(_) => {
@@ -968,6 +1055,7 @@ impl RuntimeHost for RuntimeResourceHost {
                 )));
             }
         };
+        self.validate_dynamic_records(namespace, &records)?;
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
@@ -995,14 +1083,9 @@ impl RuntimeHost for RuntimeResourceHost {
             scoped_args.insert(3, self.interop_chain.join(">"));
         }
 
-        let bus = RegistryBus::new(&self.registry, &self.state);
-        let ctx = CommandCtx {
-            state: &self.state,
-            bus: &bus,
-        };
         let capability = self.registry.get(namespace)?;
         let recorded_call_limit = capability.recorded_call_per_run_limit(method);
-        let decision = capability.decide(ctx, &name, &scoped_args)?;
+        let decision = self.resource_decision(namespace, &name, &scoped_args)?;
         let records = match decision {
             Decision::Commit(records) => records,
             // The one place effects are legal inside a runtime: run once now;
@@ -1032,12 +1115,7 @@ impl RuntimeHost for RuntimeResourceHost {
                     )));
                 };
                 let records = runner.run(&effect, &self.state)?;
-                return self.registry.get(namespace)?.resource_call_output(
-                    &self.state,
-                    &self.app,
-                    method,
-                    &records,
-                );
+                return self.dynamic_resource_call_output(namespace, method, &records);
             }
             Decision::Runtime(_) => {
                 return Err(Error::Runtime(format!(
@@ -1045,15 +1123,11 @@ impl RuntimeHost for RuntimeResourceHost {
                 )));
             }
         };
+        self.validate_dynamic_records(namespace, &records)?;
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
-        let output = self.registry.get(namespace)?.resource_call_output(
-            &self.state,
-            &self.app,
-            method,
-            &records,
-        )?;
+        let output = self.dynamic_resource_call_output(namespace, method, &records)?;
         for record in records {
             self.recorded.push(RecordedWrite {
                 record,
@@ -1092,13 +1166,7 @@ impl RuntimeHost for RuntimeResourceHost {
                     .get("telemetry")?
                     .recorded_call_per_run_limit("error"),
             )?;
-            let record = terrane_cap_telemetry::error_event(
-                &self.app,
-                source,
-                msg,
-                stack,
-                data,
-            )?;
+            let record = terrane_cap_telemetry::error_event(&self.app, source, msg, stack, data)?;
             apply(&self.registry, &mut self.state, &record)?;
             self.recorded.push(RecordedWrite {
                 record,
@@ -1114,11 +1182,102 @@ impl RuntimeHost for RuntimeResourceHost {
     }
 
     fn record_count(&self) -> usize {
-        coalesce_keys(&self.recorded).into_iter().filter(|keep| *keep).count()
+        coalesce_keys(&self.recorded)
+            .into_iter()
+            .filter(|keep| *keep)
+            .count()
     }
 }
 
 impl RuntimeResourceHost {
+    fn dynamic_manager(&self, namespace: &str) -> Option<Arc<CapabilityManager>> {
+        self.capability_manager
+            .as_ref()
+            .filter(|manager| manager.contains(namespace))
+            .cloned()
+    }
+
+    fn pending_records(&self) -> Vec<EventRecord> {
+        self.recorded
+            .iter()
+            .map(|write| write.record.clone())
+            .collect()
+    }
+
+    fn resource_decision(&self, namespace: &str, name: &str, args: &[String]) -> Result<Decision> {
+        if let Some(manager) = self.dynamic_manager(namespace) {
+            let response = manager
+                .call(
+                    namespace,
+                    &self.base_records,
+                    WorkerRequest::Decide {
+                        request: Request::new(name, args.to_vec())
+                            .with_principal(self.principal.clone()),
+                        overlay_records: self.pending_records(),
+                        dependencies: BTreeMap::new(),
+                    },
+                )
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            return match response {
+                WorkerResponse::Decision { decision } => Ok(decision),
+                response => Err(Error::Runtime(format!(
+                    "capability worker {namespace} returned {response:?} for resource decision"
+                ))),
+            };
+        }
+        let bus = RegistryBus::new(&self.registry, &self.state);
+        self.registry.get(namespace)?.decide(
+            CommandCtx {
+                state: &self.state,
+                bus: &bus,
+            },
+            name,
+            args,
+        )
+    }
+
+    fn dynamic_resource_call_output(
+        &self,
+        namespace: &str,
+        method: &str,
+        records: &[EventRecord],
+    ) -> Result<ReadValue> {
+        if let Some(manager) = self.dynamic_manager(namespace) {
+            let mut overlay_records = self.pending_records();
+            overlay_records.extend_from_slice(records);
+            let response = manager
+                .call(
+                    namespace,
+                    &self.base_records,
+                    WorkerRequest::ResourceCallOutput {
+                        app: self.app.clone(),
+                        method: method.to_string(),
+                        records: records.to_vec(),
+                        overlay_records,
+                    },
+                )
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            return match response {
+                WorkerResponse::ReadValue { value } => Ok(value),
+                response => Err(Error::Runtime(format!(
+                    "capability worker {namespace} returned {response:?} for resource call output"
+                ))),
+            };
+        }
+        self.registry
+            .get(namespace)?
+            .resource_call_output(&self.state, &self.app, method, records)
+    }
+
+    fn validate_dynamic_records(&self, namespace: &str, records: &[EventRecord]) -> Result<()> {
+        if let Some(manager) = self.dynamic_manager(namespace) {
+            manager
+                .validate_worker_records(namespace, records)
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+        }
+        Ok(())
+    }
+
     fn ensure_resource_write_allowed(&self, namespace: &str, method: &str) -> Result<()> {
         let Some(resource_id) = sensitive_native_resource_id(namespace, method) else {
             return Ok(());
@@ -1151,6 +1310,27 @@ impl RuntimeResourceHost {
     }
 }
 
+fn owned_resource_method(method: &OwnedResourceMethod) -> Result<ResourceMethod> {
+    let name: &'static str = Box::leak(method.name.clone().into_boxed_str());
+    let params: &'static [&'static str] = Box::leak(
+        method
+            .params
+            .iter()
+            .cloned()
+            .map(|param| Box::leak(param.into_boxed_str()) as &'static str)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    match method.kind.as_str() {
+        "read" => Ok(ResourceMethod::Read { name, params }),
+        "write" => Ok(ResourceMethod::Write { name, params }),
+        "call" => Ok(ResourceMethod::Call { name, params }),
+        kind => Err(Error::Runtime(format!(
+            "signed manifest declares unsupported resource method kind {kind}"
+        ))),
+    }
+}
+
 fn sensitive_native_resource_id(namespace: &str, method: &str) -> Option<&'static str> {
     if namespace != "native" {
         return None;
@@ -1162,6 +1342,70 @@ fn sensitive_native_resource_id(namespace: &str, method: &str) -> Option<&'stati
         "screenCapture" => Some("native:screen.capture"),
         _ => None,
     }
+}
+
+fn host_connector_response(
+    host: &RuntimeHostHandle,
+    request: HostConnectorRequest,
+) -> HostConnectorResponse {
+    let result = match request {
+        HostConnectorRequest::ResourceMethods { namespace } => host
+            .resource_methods(&namespace)
+            .map(|methods| HostConnectorResponse::ResourceMethods {
+                methods: methods
+                    .into_iter()
+                    .map(|method| OwnedResourceMethod {
+                        name: method.name().to_string(),
+                        kind: method.kind().to_string(),
+                        params: method
+                            .params()
+                            .iter()
+                            .map(|value| (*value).to_string())
+                            .collect(),
+                    })
+                    .collect(),
+            }),
+        HostConnectorRequest::ReadResource {
+            namespace,
+            method,
+            args,
+        } => host
+            .read_resource(&namespace, &method, &args)
+            .map(|value| HostConnectorResponse::ReadValue { value }),
+        HostConnectorRequest::WriteResource {
+            namespace,
+            method,
+            args,
+        } => host
+            .write_resource(&namespace, &method, &args)
+            .map(|()| HostConnectorResponse::Ack),
+        HostConnectorRequest::CallResource {
+            namespace,
+            method,
+            args,
+        } => host
+            .call_resource(&namespace, &method, &args)
+            .map(|value| HostConnectorResponse::ReadValue { value }),
+        HostConnectorRequest::AppLog {
+            level,
+            message,
+            data,
+            source,
+            stack,
+            record_error,
+        } => host
+            .app_log(&level, &message, &data, &source, &stack, record_error)
+            .map(|()| HostConnectorResponse::Ack),
+        HostConnectorRequest::ExecuteEffect { .. } => Err(Error::Runtime(
+            "effect execution is unavailable on the runtime resource connector".into(),
+        )),
+        HostConnectorRequest::LiveSample { .. } => Err(Error::Runtime(
+            "live sampling is unavailable on the runtime resource connector".into(),
+        )),
+    };
+    result.unwrap_or_else(|error| HostConnectorResponse::Error {
+        message: error.to_string(),
+    })
 }
 
 fn coalesce(writes: Vec<RecordedWrite>) -> Vec<EventRecord> {
@@ -1236,10 +1480,18 @@ pub fn read_log(log_path: &Path) -> Result<Vec<EventRecord>> {
     read_new_log(log_path)
 }
 
+const OLD_LOG_ERROR_MESSAGE: &str =
+    "old-format event log: run `terrane migrate-log` before opening this home";
+
 fn old_log_error() -> Error {
-    Error::Storage(
-        "old-format event log: run `terrane migrate-log` before opening this home".into(),
-    )
+    Error::Storage(OLD_LOG_ERROR_MESSAGE.into())
+}
+
+/// True when opening failed specifically because the log predates recorded
+/// actors. Hosts use this narrow signal to perform the lossless, locked
+/// one-time migration before retrying; other storage failures remain fatal.
+pub fn is_old_format_log_error(error: &Error) -> bool {
+    matches!(error, Error::Storage(message) if message == OLD_LOG_ERROR_MESSAGE)
 }
 
 fn read_new_log(log_path: &Path) -> Result<Vec<EventRecord>> {
@@ -1392,12 +1644,15 @@ fn restore_snapshot_sections(
     snapshot: &snapshot::SnapshotFile,
 ) -> Result<()> {
     for section in &snapshot.sections {
-        let capability = registry.caps.get(section.namespace.as_str()).ok_or_else(|| {
-            Error::Storage(format!(
-                "snapshot references unknown capability namespace: {}",
-                section.namespace
-            ))
-        })?;
+        let capability = registry
+            .caps
+            .get(section.namespace.as_str())
+            .ok_or_else(|| {
+                Error::Storage(format!(
+                    "snapshot references unknown capability namespace: {}",
+                    section.namespace
+                ))
+            })?;
         capability.restore(state, &section.payload)?;
     }
     Ok(())
@@ -1418,7 +1673,9 @@ fn snapshot_should_apply(log_path: &Path, snapshot: &snapshot::SnapshotFile) -> 
     let seq = usize::try_from(snapshot.header.seq)
         .map_err(|_| Error::Storage("snapshot seq too large".into()))?;
     if seq > archived_count {
-        return Err(Error::Storage("snapshot seq exceeds archived log length".into()));
+        return Err(Error::Storage(
+            "snapshot seq exceeds archived log length".into(),
+        ));
     }
     let live_count = read_log(log_path)?.len();
     Ok(live_count == archived_count.saturating_sub(seq))
@@ -1624,6 +1881,11 @@ pub fn compact_log(log_path: &Path, options: CompactionOptions) -> Result<Compac
 }
 
 pub fn migrate_log(log_path: &Path) -> Result<usize> {
+    // Migration rewrites the authoritative log and must obey the same
+    // single-writer rule as an open Core. Core::open releases its attempted
+    // lock before returning the legacy-format error, so an automatic host
+    // migration can safely acquire it here and hold it through both renames.
+    let _home_lock = filelock::acquire(log_path)?;
     let old_records = read_legacy_log(log_path)?;
     let registry = default_registry();
     let mut old_state = State::default();
@@ -1685,6 +1947,8 @@ pub struct Core<R: EffectRunner + 'static = NoEffects> {
     kv_storage_plan: KvStoragePlan,
     runner: std::sync::Arc<R>,
     registry: Registry,
+    capability_manager: Option<Arc<CapabilityManager>>,
+    log_sequence: u64,
     /// String printed by the most recent runtime backend, if any. Not part of
     /// State, never logged or replayed — purely a transport for the host to print.
     last_output: Option<String>,
@@ -1711,6 +1975,7 @@ impl<R: EffectRunner + 'static> Core<R> {
         let home_lock = filelock::acquire(&log_path)?;
         let registry = default_registry();
         let state = load_state_from_storage(&registry, &log_path)?;
+        let log_sequence = read_log(&log_path)?.len() as u64;
         let kv_storage_plan = terrane_cap_kv::storage_plan(&state)?;
         let storage_home = storage_home(&log_path);
         terrane_cap_kv::sync_full_storage(&storage_home, &state.kv)?;
@@ -1725,6 +1990,8 @@ impl<R: EffectRunner + 'static> Core<R> {
             kv_storage_plan,
             runner: Arc::new(runner),
             registry,
+            capability_manager: None,
+            log_sequence,
             last_output: None,
             _home_lock: home_lock,
         })
@@ -1733,6 +2000,108 @@ impl<R: EffectRunner + 'static> Core<R> {
     /// The current world. Reads go through here.
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    pub fn attach_capability_manager(&mut self, manager: Arc<CapabilityManager>) {
+        self.capability_manager = Some(manager);
+    }
+
+    pub fn detach_capability_manager(&mut self) {
+        self.capability_manager = None;
+    }
+
+    pub fn dynamic_capabilities_enabled(&self) -> bool {
+        self.capability_manager.is_some()
+    }
+
+    pub fn capability_status(&self) -> Vec<CapabilityStatusView> {
+        self.capability_manager
+            .as_ref()
+            .map(|manager| manager.status())
+            .unwrap_or_default()
+    }
+
+    pub fn prepare_capabilities(&self, namespaces: &[String]) -> Result<()> {
+        let Some(manager) = &self.capability_manager else {
+            return Ok(());
+        };
+        let dynamic: Vec<_> = namespaces
+            .iter()
+            .filter(|namespace| manager.contains(namespace))
+            .cloned()
+            .collect();
+        manager
+            .prepare(&dynamic, &read_log(&self.log_path)?)
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    pub fn evict_capability(&self, namespace: &str) -> Result<bool> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        manager
+            .evict(namespace)
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    pub fn evict_all_capabilities(&self) -> Result<()> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        manager
+            .evict_all()
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    pub fn repair_capability(&self, namespace: &str) -> Result<()> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        manager
+            .repair(namespace)
+            .map_err(|error| Error::Runtime(error.to_string()))
+    }
+
+    pub fn verify_dynamic_replay(&self) -> Result<Vec<String>> {
+        let manager = self
+            .capability_manager
+            .as_ref()
+            .ok_or_else(|| Error::Runtime("dynamic capabilities are not configured".into()))?;
+        let records = read_log(&self.log_path)?;
+        let actual = manager
+            .full_replay_hashes(&records)
+            .map_err(|error| Error::Runtime(error.to_string()))?;
+        let mut verified = Vec::new();
+        for (namespace, actual_hash) in actual {
+            let capability = self.registry.get(&namespace)?;
+            let manifest = capability.manifest();
+            let relevant = records
+                .iter()
+                .filter(|record| {
+                    manifest
+                        .events
+                        .iter()
+                        .any(|event| event.kind == record.kind)
+                        || manifest
+                            .subscriptions
+                            .iter()
+                            .any(|subscription| subscription.kind == record.kind)
+                })
+                .collect::<Vec<_>>();
+            let expected = serde_json::to_vec(&relevant)
+                .map_err(|error| Error::Storage(format!("encode replay hash: {error}")))?;
+            let expected_hash = format!("{:x}", Sha256::digest(expected));
+            if actual_hash != expected_hash {
+                return Err(Error::Storage(format!(
+                    "dynamic replay mismatch for {namespace}: expected {expected_hash}, got {actual_hash}"
+                )));
+            }
+            verified.push(namespace);
+        }
+        Ok(verified)
     }
 
     /// Core-facing storage projection plan owned by the `kv` capability.
@@ -1751,7 +2120,49 @@ impl<R: EffectRunner + 'static> Core<R> {
         match decision {
             Decision::Commit(records) => self.commit(records, &principal),
             Decision::Effect(effect) => {
-                let records = self.runner.run(&effect, &self.state)?;
+                let records = if let Some(manager) = self
+                    .capability_manager
+                    .as_ref()
+                    .filter(|manager| manager.contains(&namespace))
+                {
+                    let response = manager
+                        .call_with_connector(
+                            &namespace,
+                            &read_log(&self.log_path)?,
+                            WorkerRequest::ExecuteEffect {
+                                effect: effect.clone(),
+                            },
+                            |request| match request {
+                                HostConnectorRequest::ExecuteEffect { effect } => {
+                                    match self.runner.run(&effect, &self.state) {
+                                        Ok(records) => {
+                                            HostConnectorResponse::EffectRecords { records }
+                                        }
+                                        Err(error) => HostConnectorResponse::Error {
+                                            message: error.to_string(),
+                                        },
+                                    }
+                                }
+                                request => HostConnectorResponse::Error {
+                                    message: format!(
+                                        "effect connector received unsupported request {request:?}"
+                                    ),
+                                },
+                            },
+                        )
+                        .map_err(|error| Error::Runtime(error.to_string()))?;
+                    let WorkerResponse::EffectRecords { records } = response else {
+                        return Err(Error::Runtime(format!(
+                            "capability worker {namespace} returned {response:?} for effect"
+                        )));
+                    };
+                    manager
+                        .validate_worker_records(&namespace, &records)
+                        .map_err(|error| Error::Runtime(error.to_string()))?;
+                    records
+                } else {
+                    self.runner.run(&effect, &self.state)?
+                };
                 self.commit(records, &principal)
             }
             // Transient effects only make sense as a resource call (they return a
@@ -1775,14 +2186,42 @@ impl<R: EffectRunner + 'static> Core<R> {
     /// committing, running effects, or invoking runtimes.
     pub fn decide(&self, request: Request) -> Result<Decision> {
         admit_command(&request)?;
-        let namespace = namespace_of(&request.name)?;
+        let namespace = namespace_of(&request.name)?.to_string();
+        if let Some(manager) = self
+            .capability_manager
+            .as_ref()
+            .filter(|manager| manager.contains(&namespace))
+        {
+            let response = manager
+                .call(
+                    &namespace,
+                    &read_log(&self.log_path)?,
+                    WorkerRequest::Decide {
+                        request,
+                        overlay_records: Vec::new(),
+                        dependencies: BTreeMap::new(),
+                    },
+                )
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            let WorkerResponse::Decision { decision } = response else {
+                return Err(Error::Runtime(format!(
+                    "capability worker {namespace} returned {response:?} for decide"
+                )));
+            };
+            if let Decision::Commit(records) = &decision {
+                manager
+                    .validate_worker_records(&namespace, records)
+                    .map_err(|error| Error::Runtime(error.to_string()))?;
+            }
+            return Ok(decision);
+        }
         let bus = RegistryBus::new(&self.registry, &self.state);
         let ctx = CommandCtx {
             state: &self.state,
             bus: &bus,
         };
         self.registry
-            .get(namespace)?
+            .get(&namespace)?
             .decide(ctx, &request.name, &request.args)
     }
 
@@ -1797,6 +2236,30 @@ impl<R: EffectRunner + 'static> Core<R> {
             }
             None => query,
         };
+        if let Some(manager) = self
+            .capability_manager
+            .as_ref()
+            .filter(|manager| manager.contains(capability))
+        {
+            let response = manager
+                .call(
+                    capability,
+                    &read_log(&self.log_path)?,
+                    WorkerRequest::Query {
+                        name: name.to_string(),
+                        args: args.to_vec(),
+                        overlay_records: Vec::new(),
+                        dependencies: BTreeMap::new(),
+                    },
+                )
+                .map_err(|error| Error::Runtime(error.to_string()))?;
+            let WorkerResponse::QueryValue { value } = response else {
+                return Err(Error::Runtime(format!(
+                    "capability worker {capability} returned {response:?} for query"
+                )));
+            };
+            return Ok(value);
+        }
         let bus = RegistryBus::new(&self.registry, &self.state);
         bus.query(capability, name, args)
     }
@@ -1840,20 +2303,75 @@ impl<R: EffectRunner + 'static> Core<R> {
         if namespace == "js-runtime" {
             check_js_runtime_data_version(&self.state, &source, source_files.as_ref(), &app.id)?;
         }
-        let host = RuntimeHostHandle::new(Box::new(
-            RuntimeResourceHost::new_with_principal(
-                request.app.clone(),
-                self.state.clone(),
-                principal.clone(),
-            )
-            .with_runner(self.runner.clone()),
-        ));
+        let dynamic_manager = self.capability_manager.clone();
+        let base_records = if dynamic_manager.is_some() {
+            read_log(&self.log_path)?
+        } else {
+            Vec::new()
+        };
+        let mut resource_host = RuntimeResourceHost::new_with_principal(
+            request.app.clone(),
+            self.state.clone(),
+            principal.clone(),
+        )
+        .with_runner(self.runner.clone());
+        if let Some(manager) = dynamic_manager.clone() {
+            resource_host = resource_host.with_capability_manager(manager, base_records.clone());
+        }
+        let host = RuntimeHostHandle::new(Box::new(resource_host));
         let ctx = RuntimeCtx {
-            source,
-            source_files,
+            source: source.clone(),
+            source_files: source_files.clone(),
             app_name: app.name.clone(),
             host: host.clone(),
         };
+        if let Some(manager) = dynamic_manager
+            .as_ref()
+            .filter(|manager| manager.contains(namespace))
+        {
+            let response = manager.call_with_connector(
+                namespace,
+                &base_records,
+                WorkerRequest::RunRuntime {
+                    app: request.app.clone(),
+                    source,
+                    source_files,
+                    app_name: app.name.clone(),
+                    input: request.input.clone(),
+                    principal: principal.clone(),
+                },
+                |request| host_connector_response(&host, request),
+            );
+            return match response {
+                Ok(WorkerResponse::RuntimeOutput {
+                    output,
+                    records: worker_records,
+                }) => {
+                    manager
+                        .validate_worker_records(namespace, &worker_records)
+                        .map_err(|error| Error::Runtime(error.to_string()))?;
+                    let mut records = host.take_records();
+                    records.extend(worker_records);
+                    let records = self.commit(records, &principal)?;
+                    self.last_output = Some(output.output);
+                    Ok(records)
+                }
+                Ok(response) => Err(Error::Runtime(format!(
+                    "runtime worker {namespace} returned {response:?}"
+                ))),
+                Err(error) => {
+                    let error_facts = host
+                        .take_records()
+                        .into_iter()
+                        .filter(|record| record.kind == "telemetry.error")
+                        .collect::<Vec<_>>();
+                    if !error_facts.is_empty() {
+                        let _ = self.commit(error_facts, &principal)?;
+                    }
+                    Err(Error::Runtime(error.to_string()))
+                }
+            };
+        }
         match self.registry.get(namespace)?.run_runtime(ctx, request) {
             Ok(result) => {
                 let records = self.commit(host.take_records(), &principal)?;
@@ -1924,6 +2442,7 @@ impl<R: EffectRunner + 'static> Core<R> {
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
+        self.sync_loaded_workers(&records);
         self.kv_storage_plan = terrane_cap_kv::storage_plan(&self.state)?;
         let home = storage_home(&self.log_path);
         terrane_cap_kv::sync_storage_after_commit(&home, &before_kv, &self.state.kv)?;
@@ -1960,6 +2479,7 @@ impl<R: EffectRunner + 'static> Core<R> {
         for record in &records {
             apply(&self.registry, &mut self.state, record)?;
         }
+        self.sync_loaded_workers(&records);
         self.kv_storage_plan = terrane_cap_kv::storage_plan(&self.state)?;
         let home = storage_home(&self.log_path);
         terrane_cap_kv::sync_storage_after_commit(&home, &before_kv, &self.state.kv)?;
@@ -1974,6 +2494,17 @@ impl<R: EffectRunner + 'static> Core<R> {
             )?;
         }
         Ok(records)
+    }
+
+    fn sync_loaded_workers(&mut self, records: &[EventRecord]) {
+        if records.is_empty() {
+            return;
+        }
+        let first_seq = self.log_sequence + 1;
+        self.log_sequence += records.len() as u64;
+        if let Some(manager) = &self.capability_manager {
+            manager.fold_loaded(first_seq, records);
+        }
     }
 
     fn append(&self, records: &[EventRecord]) -> Result<()> {
@@ -2058,7 +2589,9 @@ fn admit_command(request: &Request) -> Result<()> {
     //   those are deliberately not gated here.
     // - the host-owned edge of `stream` (message ingest, reconnect markers,
     //   and host closes). Apps declare desired state with stream.open/close.
-    let trusted_only = request.name.starts_with("auth.")
+    let trusted_only = (request.name == "app.add"
+        && request.args.iter().any(|arg| arg == "--refresh-source"))
+        || request.name.starts_with("auth.")
         || request.name == "automation.fire"
         || request.name == "automation.suppress"
         || request.name.starts_with("kv.public.")

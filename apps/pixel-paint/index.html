@@ -194,6 +194,8 @@
       var colorValueEl = document.getElementById("color-value");
       var brushEl = document.getElementById("brush");
       var eraserEl = document.getElementById("eraser");
+      var currentCanvas = "default";
+      var canvasList = [];
 
       var palette = [
         "#111111",
@@ -280,6 +282,27 @@
         });
       }
 
+      function publishCanvasSection() {
+        if (!window.terrane || typeof window.terrane.setSidebarSection !== "function") return;
+        window.terrane.setSidebarSection({
+          title: tr("pixel-paint.canvases", "Canvases"),
+          items: canvasList.map(function (item) {
+            return {
+              id: item.id,
+              title: item.title,
+              subtitle: item.pixelCount === 1
+                ? "1 painted pixel"
+                : item.pixelCount + " painted pixels",
+              systemImage: "square.grid.3x3",
+            };
+          }),
+          selectedItemId: currentCanvas,
+          createLabel: tr("pixel-paint.newCanvas", "New canvas"),
+        }).catch(function (error) {
+          setStatus(error.message || String(error));
+        });
+      }
+
       function canvasCell(event) {
         var rect = canvas.getBoundingClientRect();
         var x = Math.floor(
@@ -343,7 +366,10 @@
         return invoke("state").then(function (json) {
           var state = JSON.parse(json || "{}");
           pixels = state.pixels || {};
+          currentCanvas = state.selectedCanvas || "default";
+          canvasList = state.canvases || [];
           render();
+          publishCanvasSection();
           setStatus(tr("pixel-paint.ready", "64 x 64 canvas ready"));
         }).catch(function (error) {
           setStatus(tr("pixel-paint.loadFailed", "Load failed: {error}", { error: error.message }));
@@ -414,6 +440,25 @@
         });
         document.getElementById("swatches").appendChild(button);
       });
+
+      if (window.terrane && typeof window.terrane.onSidebarItemSelect === "function") {
+        window.terrane.onSidebarItemSelect(function (id) {
+          flush().then(function () {
+            return invoke("select", id);
+          }).then(load).catch(function (error) {
+            setStatus(error.message || String(error));
+          });
+        });
+      }
+      if (window.terrane && typeof window.terrane.onSidebarCreate === "function") {
+        window.terrane.onSidebarCreate(function () {
+          flush().then(function () {
+            return invoke("new");
+          }).then(load).catch(function (error) {
+            setStatus(error.message || String(error));
+          });
+        });
+      }
 
       localize();
       // The host pushes the locale bundle shortly after load; re-localize then,

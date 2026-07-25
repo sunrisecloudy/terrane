@@ -12,6 +12,27 @@ host ▸ `terrane-core` engine crate ▸ resources), and
 [docs/APP_API.md](docs/APP_API.md) for the JavaScript API an app's backend and
 UI get (drift-guarded by a test).
 
+## Download for macOS
+
+Production releases are available from
+[GitHub Releases](https://github.com/sunrisecloudy/terrane/releases).
+The supported desktop build is for M-series Macs (`arm64`) running macOS 13 or
+newer. Intel Macs are not supported.
+
+Download the versioned `Terrane-*-macos-arm64.dmg` together with
+`SHA256SUMS`, verify the checksum, open the DMG, and drag Terrane to
+Applications. Production assets are Developer ID-signed, Apple-notarized, and
+verified with Gatekeeper before publication. Source archives generated
+automatically by GitHub are not application installers.
+
+Until a Developer ID-signed production build is available, GitHub may contain
+explicitly labeled unsigned pre-releases for early testing. These builds are
+not notarized or Gatekeeper-trusted. Follow the warning and verification
+instructions in that pre-release's notes; do not treat it as production.
+
+See [the macOS release runbook](docs/RELEASING_MACOS.md), [privacy
+disclosure](PRIVACY.md), and [changelog](CHANGELOG.md).
+
 ## The one rule
 
 Everything goes through a single front door and a single shape:
@@ -84,3 +105,14 @@ cache convention to agent-run shell commands.
 
 See [docs/CARGO_CACHE.md](docs/CARGO_CACHE.md) for the full setup and
 troubleshooting runbook.
+
+For a local unsigned packaging preflight on an M-series Mac:
+
+```sh
+export TERRANE_CAP_SIGNING_KEY_HEX=\
+000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+scripts/build-macos-release.sh --version 0.2.0 --unsigned
+```
+
+Unsigned preview artifacts may only be distributed as clearly labeled GitHub
+pre-releases with checksum, manifest, warning, and install instructions.

@@ -144,7 +144,11 @@ pub(crate) fn canonical_rule_json(
     let kind = validate_kind(ctx, kind)?;
     let source_app = match trigger.get("sourceApp").and_then(Value::as_str) {
         Some(source) if !source.trim().is_empty() => Some(source.trim().to_string()),
-        Some(_) => return Err(Error::InvalidInput("rule.trigger.sourceApp must not be empty".into())),
+        Some(_) => {
+            return Err(Error::InvalidInput(
+                "rule.trigger.sourceApp must not be empty".into(),
+            ))
+        }
         None => None,
     };
     let effective_source = source_app.as_deref().unwrap_or(owning_app);
@@ -183,7 +187,11 @@ pub(crate) fn canonical_rule_json(
             )?;
             Some(filter.trim().to_string())
         }
-        Some(_) => return Err(Error::InvalidInput("rule.trigger.filter must not be empty".into())),
+        Some(_) => {
+            return Err(Error::InvalidInput(
+                "rule.trigger.filter must not be empty".into(),
+            ))
+        }
         None => None,
     };
     let verb = validate_verb(

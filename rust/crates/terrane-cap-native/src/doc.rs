@@ -153,16 +153,31 @@ fn commands() -> Vec<CommandDoc> {
         request_command(EXTERNAL_OPEN_URL, "Request opening an external URL."),
         request_command(NOTIFICATION_SHOW, "Request a local notification."),
         request_command(DIALOG_OPEN_FILE, "Request a native open-file dialog."),
-        request_command(DIALOG_SAVE_FILE, "Request a user-mediated save-file dialog."),
-        request_command(CAMERA_CAPTURE_PHOTO, "Request a camera photo into the blob CAS."),
-        request_command(AUDIO_RECORD, "Request bounded microphone audio into the blob CAS."),
-        request_command(SCREEN_CAPTURE, "Request screen/window capture into the blob CAS."),
+        request_command(
+            DIALOG_SAVE_FILE,
+            "Request a user-mediated save-file dialog.",
+        ),
+        request_command(
+            CAMERA_CAPTURE_PHOTO,
+            "Request a camera photo into the blob CAS.",
+        ),
+        request_command(
+            AUDIO_RECORD,
+            "Request bounded microphone audio into the blob CAS.",
+        ),
+        request_command(
+            SCREEN_CAPTURE,
+            "Request screen/window capture into the blob CAS.",
+        ),
         request_command(TRAY_SET_MENU, "Request installation of an app tray menu."),
         request_command(
             SHORTCUT_REGISTER_GLOBAL,
             "Request registration of an app global shortcut.",
         ),
-        request_command(WINDOW_CONTROL, "Request control of the app's own shell window."),
+        request_command(
+            WINDOW_CONTROL,
+            "Request control of the app's own shell window.",
+        ),
         request_command(
             RESOURCE_CLIPBOARD_WRITE_TEXT,
             "Resource alias used by ctx.resource.native.clipboardWriteText.",

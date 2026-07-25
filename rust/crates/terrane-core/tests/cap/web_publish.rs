@@ -17,20 +17,21 @@ fn web_publish_enable_domain_status_and_replay_identity() {
         ))
         .unwrap();
     assert_eq!(records[0].kind, "web-publish.enabled");
-    core.dispatch(req(
-        "web-publish.domain.set",
-        &["demo", "demo.example.com"],
-    ))
-    .unwrap();
+    core.dispatch(req("web-publish.domain.set", &["demo", "demo.example.com"]))
+        .unwrap();
 
-    let QueryValue::Json(status) =
-        core.query("web-publish", "status", &["demo".to_string()]).unwrap()
+    let QueryValue::Json(status) = core
+        .query("web-publish", "status", &["demo".to_string()])
+        .unwrap()
     else {
         panic!("web-publish.status should return JSON");
     };
     assert!(status.contains(r#""enabled":true"#), "{status}");
     assert!(status.contains(r#""mode":"interactive""#), "{status}");
-    assert!(status.contains(r#""url":"https://demo.example.com""#), "{status}");
+    assert!(
+        status.contains(r#""url":"https://demo.example.com""#),
+        "{status}"
+    );
 
     assert!(core.replay_matches().unwrap());
     assert_eq!(
@@ -55,10 +56,7 @@ fn web_publish_validation_and_disable_are_replay_safe() {
         Err(Error::AppNotFound(_))
     ));
     assert!(matches!(
-        core.dispatch(req(
-            "web-publish.domain.set",
-            &["demo", "demo.example.com"]
-        )),
+        core.dispatch(req("web-publish.domain.set", &["demo", "demo.example.com"])),
         Err(Error::InvalidInput(_))
     ));
 
@@ -66,8 +64,9 @@ fn web_publish_validation_and_disable_are_replay_safe() {
         .unwrap();
     core.dispatch(req("web-publish.disable", &["demo"]))
         .unwrap();
-    let QueryValue::Json(status) =
-        core.query("web-publish", "status", &["demo".to_string()]).unwrap()
+    let QueryValue::Json(status) = core
+        .query("web-publish", "status", &["demo".to_string()])
+        .unwrap()
     else {
         panic!("web-publish.status should return JSON");
     };

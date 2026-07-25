@@ -91,10 +91,8 @@ impl Capability for SchedulerCapability {
                             "now_ms must be an unsigned integer".into(),
                         )
                     })?;
-                let state = terrane_cap_interface::state_ref::<SchedulerState>(
-                    ctx.state,
-                    "scheduler",
-                )?;
+                let state =
+                    terrane_cap_interface::state_ref::<SchedulerState>(ctx.state, "scheduler")?;
                 let due = resources::schedules_due_at(state, now_ms)?;
                 let json = serde_json::Value::Array(
                     due.into_iter()

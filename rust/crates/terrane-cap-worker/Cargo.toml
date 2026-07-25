@@ -1,0 +1,126 @@
+[package]
+name = "terrane-cap-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "terrane_cap_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "terrane-cap-worker"
+path = "src/main.rs"
+
+[[bin]]
+name = "terrane-cap-bundle"
+path = "src/bin/bundle.rs"
+required-features = ["packager"]
+
+[features]
+default = ["cap-time", "packager"]
+packager = ["dep:tar", "dep:terrane-core", "dep:zstd"]
+cap-agent = ["dep:terrane-cap-agent"]
+cap-applescript = ["dep:terrane-cap-applescript"]
+cap-automation = ["dep:terrane-cap-automation"]
+cap-browser = ["dep:terrane-cap-browser"]
+cap-build = ["dep:terrane-cap-build"]
+cap-builder = ["dep:terrane-cap-builder"]
+cap-common = ["dep:terrane-cap-common"]
+cap-control-room = ["dep:terrane-cap-control-room"]
+cap-crdt = ["dep:terrane-cap-crdt"]
+cap-crypto = ["dep:terrane-cap-crypto"]
+cap-document = ["dep:terrane-cap-document"]
+cap-geo = ["dep:terrane-cap-geo"]
+cap-harness = ["dep:terrane-cap-harness"]
+cap-history = ["dep:terrane-cap-history"]
+cap-interop = ["dep:terrane-cap-interop"]
+cap-job = ["dep:terrane-cap-job-queue"]
+cap-js-runtime = ["dep:terrane-cap-js-runtime"]
+cap-local-model = ["dep:terrane-cap-local-model"]
+cap-mcp = ["dep:terrane-cap-mcp-client"]
+cap-media = ["dep:terrane-cap-media"]
+cap-migration = ["dep:terrane-cap-migration"]
+cap-model = ["dep:terrane-cap-model"]
+cap-native = ["dep:terrane-cap-native"]
+cap-net = ["dep:terrane-cap-net"]
+cap-org = ["dep:terrane-cap-org"]
+cap-presence = ["dep:terrane-cap-presence"]
+cap-publish = ["dep:terrane-cap-publish"]
+cap-push = ["dep:terrane-cap-push"]
+cap-query = ["dep:terrane-cap-query"]
+cap-relational-db = ["dep:terrane-cap-relational-db"]
+cap-scheduler = ["dep:terrane-cap-scheduler"]
+cap-search = ["dep:terrane-cap-search"]
+cap-share = ["dep:terrane-cap-share"]
+cap-stream = ["dep:terrane-cap-stream"]
+cap-stt = ["dep:terrane-cap-stt"]
+cap-sync = ["dep:terrane-cap-sync"]
+cap-sysinfo = ["dep:terrane-cap-sysinfo"]
+cap-time = ["dep:terrane-cap-time"]
+cap-tts = ["dep:terrane-cap-tts"]
+cap-wasm-runtime = ["dep:terrane-cap-wasm-runtime"]
+cap-web-publish = ["dep:terrane-cap-web-publish"]
+cap-webhook = ["dep:terrane-cap-webhook"]
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["std"] }
+serde_json.workspace = true
+serde.workspace = true
+sha2.workspace = true
+getrandom = "0.4.3"
+terrane-cap-interface.workspace = true
+terrane-cap-protocol.workspace = true
+terrane-cap-app.workspace = true
+terrane-cap-blob.workspace = true
+terrane-cap-person.workspace = true
+terrane-cap-replica.workspace = true
+terrane-core = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+terrane-cap-agent = { workspace = true, optional = true }
+terrane-cap-applescript = { workspace = true, optional = true }
+terrane-cap-automation = { workspace = true, optional = true }
+terrane-cap-browser = { workspace = true, optional = true }
+terrane-cap-build = { workspace = true, optional = true }
+terrane-cap-builder = { workspace = true, optional = true }
+terrane-cap-common = { workspace = true, optional = true }
+terrane-cap-control-room = { workspace = true, optional = true }
+terrane-cap-crdt = { workspace = true, optional = true }
+terrane-cap-crypto = { workspace = true, optional = true }
+terrane-cap-document = { workspace = true, optional = true }
+terrane-cap-geo = { workspace = true, optional = true }
+terrane-cap-harness = { workspace = true, optional = true }
+terrane-cap-history = { workspace = true, optional = true }
+terrane-cap-interop = { workspace = true, optional = true }
+terrane-cap-job-queue = { workspace = true, optional = true }
+terrane-cap-js-runtime = { workspace = true, optional = true }
+terrane-cap-local-model = { workspace = true, optional = true }
+terrane-cap-mcp-client = { workspace = true, optional = true }
+terrane-cap-media = { workspace = true, optional = true }
+terrane-cap-migration = { workspace = true, optional = true }
+terrane-cap-model = { workspace = true, optional = true }
+terrane-cap-native = { workspace = true, optional = true }
+terrane-cap-net = { workspace = true, optional = true }
+terrane-cap-org = { workspace = true, optional = true }
+terrane-cap-presence = { workspace = true, optional = true }
+terrane-cap-publish = { workspace = true, optional = true }
+terrane-cap-push = { workspace = true, optional = true }
+terrane-cap-query = { workspace = true, optional = true }
+terrane-cap-relational-db = { workspace = true, optional = true }
+terrane-cap-scheduler = { workspace = true, optional = true }
+terrane-cap-search = { workspace = true, optional = true }
+terrane-cap-share = { workspace = true, optional = true }
+terrane-cap-stream = { workspace = true, optional = true }
+terrane-cap-stt = { workspace = true, optional = true }
+terrane-cap-sync = { workspace = true, optional = true }
+terrane-cap-sysinfo = { workspace = true, optional = true }
+terrane-cap-time = { workspace = true, optional = true }
+terrane-cap-tts = { workspace = true, optional = true }
+terrane-cap-wasm-runtime = { workspace = true, optional = true }
+terrane-cap-web-publish = { workspace = true, optional = true }
+terrane-cap-webhook = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+terrane-cap-manager.workspace = true

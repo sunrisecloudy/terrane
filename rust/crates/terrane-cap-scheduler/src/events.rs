@@ -3,7 +3,7 @@ use terrane_cap_interface::{
 };
 
 use crate::commands::parse_spec_json;
-use crate::types::{Cleared, Fired, ScheduleEntry, Set, SchedulerState};
+use crate::types::{Cleared, Fired, ScheduleEntry, SchedulerState, Set};
 
 pub fn set_event(app: &str, name: &str, spec_json: &str) -> Result<EventRecord> {
     encode_event(

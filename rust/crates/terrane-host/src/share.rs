@@ -9,7 +9,12 @@ pub struct InviteToken {
     pub token_hash: String,
 }
 
-pub fn invite(core: &mut HostCore, app: &str, rights: &str, note: &str) -> Result<InviteToken, String> {
+pub fn invite(
+    core: &mut HostCore,
+    app: &str,
+    rights: &str,
+    note: &str,
+) -> Result<InviteToken, String> {
     let token = crate::edge::mint_invite_token().map_err(|e| e.to_string())?;
     let token_hash = token_hash(&token);
     core.dispatch(Request::trusted_host(
@@ -85,7 +90,9 @@ pub fn invites(core: &HostCore, app: &str) -> Result<String, String> {
         .map_err(|e| e.to_string())?
     {
         QueryValue::Json(json) => Ok(json),
-        other => Err(format!("share.invites returned unexpected value: {other:?}")),
+        other => Err(format!(
+            "share.invites returned unexpected value: {other:?}"
+        )),
     }
 }
 

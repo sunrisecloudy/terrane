@@ -19,9 +19,9 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, restore_state, snapshot_state, state_mut, state_ref, CapManifest,
-    Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, QueryCtx,
-    QuerySpec, QueryValue, Result, StateStore,
+    arg, decode_event, encode_event, restore_state, snapshot_state, state_mut, state_ref,
+    CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord,
+    EventSpec, QueryCtx, QuerySpec, QueryValue, Result, StateStore,
 };
 use terrane_cap_person::{validate_person_id, PersonState};
 
@@ -119,18 +119,32 @@ impl Capability for OrgCapability {
                 CommandSpec { name: "org.invite" },
                 CommandSpec { name: "org.join" },
                 CommandSpec { name: "org.leave" },
-                CommandSpec { name: "org.role.set" },
+                CommandSpec {
+                    name: "org.role.set",
+                },
             ],
             events: vec![
-                EventSpec { kind: "org.created" },
-                EventSpec { kind: "org.invited" },
-                EventSpec { kind: "org.invite.redeemed" },
-                EventSpec { kind: "org.member.granted" },
-                EventSpec { kind: "org.member.left" },
+                EventSpec {
+                    kind: "org.created",
+                },
+                EventSpec {
+                    kind: "org.invited",
+                },
+                EventSpec {
+                    kind: "org.invite.redeemed",
+                },
+                EventSpec {
+                    kind: "org.member.granted",
+                },
+                EventSpec {
+                    kind: "org.member.left",
+                },
             ],
             queries: vec![
                 QuerySpec { name: "org.info" },
-                QuerySpec { name: "org.members" },
+                QuerySpec {
+                    name: "org.members",
+                },
             ],
             resources: Vec::new(),
             grant_resources: Vec::new(),
@@ -197,11 +211,11 @@ impl Capability for OrgCapability {
                 validate_role(&e.role)?;
                 validate_token_hash(&e.token_hash)?;
                 validate_note(&e.note)?;
-                if !state_ref::<OrgState>(state, "org")?.orgs.contains_key(&e.org_id) {
-                    return Err(Error::InvalidInput(format!(
-                        "unknown org: {}",
-                        e.org_id
-                    )));
+                if !state_ref::<OrgState>(state, "org")?
+                    .orgs
+                    .contains_key(&e.org_id)
+                {
+                    return Err(Error::InvalidInput(format!("unknown org: {}", e.org_id)));
                 }
                 let org = state_mut::<OrgState>(state, "org")?;
                 let open_count = org
@@ -209,7 +223,9 @@ impl Capability for OrgCapability {
                     .values()
                     .filter(|invite| invite.org_id == e.org_id && invite.open)
                     .count();
-                if !org.invites.contains_key(&(e.org_id.clone(), e.token_hash.clone()))
+                if !org
+                    .invites
+                    .contains_key(&(e.org_id.clone(), e.token_hash.clone()))
                     && open_count >= MAX_OPEN_INVITES_PER_ORG
                 {
                     return Err(Error::InvalidInput(format!(
@@ -255,10 +271,14 @@ impl Capability for OrgCapability {
                     .persons
                     .get(&signer)
                     .map(|person| person.pubkey.clone())
-                    .ok_or_else(|| Error::InvalidInput(format!("unknown signer person: {signer}")))?;
+                    .ok_or_else(|| {
+                        Error::InvalidInput(format!("unknown signer person: {signer}"))
+                    })?;
                 verify_role_sig(&signer_pubkey, &org_id, &member, &role, &sig)?;
                 let org_state = state_mut::<OrgState>(state, "org")?;
-                if !org_state.members.contains_key(&(org_id.clone(), member.clone()))
+                if !org_state
+                    .members
+                    .contains_key(&(org_id.clone(), member.clone()))
                     && org_state
                         .members
                         .values()
@@ -317,9 +337,12 @@ impl Capability for OrgCapability {
             "org.invite.redeemed" => decode_event::<InviteRedeemed>(record)
                 .ok()
                 .map(|e| format!("org.invite.redeemed {} member={}", e.org_id, e.member)),
-            "org.member.granted" => decode_event::<MemberGranted>(record)
-                .ok()
-                .map(|e| format!("org.member.granted {} member={} role={}", e.org_id, e.member, e.role)),
+            "org.member.granted" => decode_event::<MemberGranted>(record).ok().map(|e| {
+                format!(
+                    "org.member.granted {} member={} role={}",
+                    e.org_id, e.member, e.role
+                )
+            }),
             "org.member.left" => decode_event::<MemberLeft>(record)
                 .ok()
                 .map(|e| format!("org.member.left {} member={}", e.org_id, e.member)),
@@ -331,7 +354,11 @@ impl Capability for OrgCapability {
 fn decide_create(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let founder = validate_person_id(&arg(args, 0, "founder")?)?;
     let org_state = state_ref::<OrgState>(ctx.state, "org")?;
-    if org_state.orgs.iter().any(|(_, record)| record.founder == founder) {
+    if org_state
+        .orgs
+        .iter()
+        .any(|(_, record)| record.founder == founder)
+    {
         return Ok(Decision::Commit(Vec::new()));
     }
     if org_state.orgs.len() >= MAX_ORGS_PER_HOME {
@@ -348,11 +375,17 @@ fn decide_invite(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let token_hash = validate_token_hash(&arg(args, 2, "token_hash")?)?;
     let note = args.get(3).cloned().unwrap_or_default();
     validate_note(&note)?;
-    if !state_ref::<OrgState>(ctx.state, "org")?.orgs.contains_key(&org_id) {
+    if !state_ref::<OrgState>(ctx.state, "org")?
+        .orgs
+        .contains_key(&org_id)
+    {
         return Err(Error::InvalidInput(format!("unknown org: {org_id}")));
     }
     Ok(Decision::Commit(vec![invited_event(
-        &org_id, &role, &token_hash, &note,
+        &org_id,
+        &role,
+        &token_hash,
+        &note,
     )?]))
 }
 
@@ -360,7 +393,10 @@ fn decide_join(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let org_id = validate_org_id(&arg(args, 0, "org_id")?)?;
     let token_hash = validate_token_hash(&arg(args, 1, "token_hash")?)?;
     let member = validate_person_id(&arg(args, 2, "member")?)?;
-    if !state_ref::<OrgState>(ctx.state, "org")?.orgs.contains_key(&org_id) {
+    if !state_ref::<OrgState>(ctx.state, "org")?
+        .orgs
+        .contains_key(&org_id)
+    {
         return Err(Error::InvalidInput(format!("unknown org: {org_id}")));
     }
     let invite = state_ref::<OrgState>(ctx.state, "org")?
@@ -368,7 +404,9 @@ fn decide_join(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         .get(&(org_id.clone(), token_hash.clone()))
         .ok_or_else(|| Error::InvalidInput("org invite is not open".to_string()))?;
     if !invite.open {
-        return Err(Error::InvalidInput("org invite is already redeemed".to_string()));
+        return Err(Error::InvalidInput(
+            "org invite is already redeemed".to_string(),
+        ));
     }
     Ok(Decision::Effect(Effect::OrgRoleSign {
         org_id,
@@ -382,11 +420,17 @@ fn decide_join(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
 fn decide_leave(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let org_id = validate_org_id(&arg(args, 0, "org_id")?)?;
     let member = validate_person_id(&arg(args, 1, "member")?)?;
-    if !state_ref::<OrgState>(ctx.state, "org")?.orgs.contains_key(&org_id) {
+    if !state_ref::<OrgState>(ctx.state, "org")?
+        .orgs
+        .contains_key(&org_id)
+    {
         return Err(Error::InvalidInput(format!("unknown org: {org_id}")));
     }
     let org_state = state_ref::<OrgState>(ctx.state, "org")?;
-    if !org_state.members.contains_key(&(org_id.clone(), member.clone())) {
+    if !org_state
+        .members
+        .contains_key(&(org_id.clone(), member.clone()))
+    {
         return Ok(Decision::Commit(Vec::new()));
     }
     Ok(Decision::Commit(vec![member_left_event(&org_id, &member)?]))
@@ -397,7 +441,10 @@ fn decide_role_set(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let member = validate_person_id(&arg(args, 1, "member")?)?;
     let role = validate_role(&arg(args, 2, "role")?)?;
     let signer = validate_person_id(&arg(args, 3, "signer")?)?;
-    if !state_ref::<OrgState>(ctx.state, "org")?.orgs.contains_key(&org_id) {
+    if !state_ref::<OrgState>(ctx.state, "org")?
+        .orgs
+        .contains_key(&org_id)
+    {
         return Err(Error::InvalidInput(format!("unknown org: {org_id}")));
     }
     Ok(Decision::Effect(Effect::OrgRoleSign {
@@ -447,7 +494,12 @@ pub fn created_event(org_id: &str, pubkey: &str, founder: &str) -> Result<EventR
     )
 }
 
-pub fn invited_event(org_id: &str, role: &str, token_hash: &str, note: &str) -> Result<EventRecord> {
+pub fn invited_event(
+    org_id: &str,
+    role: &str,
+    token_hash: &str,
+    note: &str,
+) -> Result<EventRecord> {
     encode_event(
         "org.invited",
         &Invited {
@@ -459,11 +511,7 @@ pub fn invited_event(org_id: &str, role: &str, token_hash: &str, note: &str) -> 
     )
 }
 
-pub fn invite_redeemed_event(
-    org_id: &str,
-    token_hash: &str,
-    member: &str,
-) -> Result<EventRecord> {
+pub fn invite_redeemed_event(org_id: &str, token_hash: &str, member: &str) -> Result<EventRecord> {
     encode_event(
         "org.invite.redeemed",
         &InviteRedeemed {
@@ -519,7 +567,13 @@ pub fn role_grant_message(org_id: &str, member: &str, role: &str) -> Result<Vec<
     .into_bytes())
 }
 
-pub fn verify_role_sig(pubkey: &str, org_id: &str, member: &str, role: &str, sig: &str) -> Result<()> {
+pub fn verify_role_sig(
+    pubkey: &str,
+    org_id: &str,
+    member: &str,
+    role: &str,
+    sig: &str,
+) -> Result<()> {
     let pubkey_bytes = decode_hex_exact(pubkey, ORG_PUBKEY_BYTES, "pubkey")?;
     let sig_bytes = decode_hex_exact(sig, ORG_SIGNATURE_BYTES, "signature")?;
     let verifying = VerifyingKey::from_bytes(&array_32(&pubkey_bytes)?)
@@ -532,9 +586,7 @@ pub fn verify_role_sig(pubkey: &str, org_id: &str, member: &str, role: &str, sig
 }
 
 pub fn validate_org_id(org_id: &str) -> Result<String> {
-    if org_id.len() != ORG_ID_HEX_LEN
-        || !org_id.bytes().all(|b| b.is_ascii_hexdigit())
-    {
+    if org_id.len() != ORG_ID_HEX_LEN || !org_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::InvalidInput(format!(
             "org_id must be {ORG_ID_HEX_LEN} hex chars"
         )));
@@ -547,7 +599,11 @@ pub fn validate_pubkey(pubkey: &str) -> Result<String> {
 }
 
 pub fn validate_signature(sig: &str) -> Result<String> {
-    Ok(hex(&decode_hex_exact(sig, ORG_SIGNATURE_BYTES, "signature")?))
+    Ok(hex(&decode_hex_exact(
+        sig,
+        ORG_SIGNATURE_BYTES,
+        "signature",
+    )?))
 }
 
 pub fn validate_role(role: &str) -> Result<String> {

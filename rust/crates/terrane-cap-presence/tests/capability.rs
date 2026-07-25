@@ -30,9 +30,16 @@ impl StateStore for TestState {
 struct TestBus;
 
 impl CapBus for TestBus {
-    fn query(&self, cap: &str, name: &str, args: &[String]) -> terrane_cap_interface::Result<QueryValue> {
+    fn query(
+        &self,
+        cap: &str,
+        name: &str,
+        args: &[String],
+    ) -> terrane_cap_interface::Result<QueryValue> {
         if cap == "app" && name == "exists" {
-            return Ok(QueryValue::Bool(args.first().is_some_and(|app| app == "demo")));
+            return Ok(QueryValue::Bool(
+                args.first().is_some_and(|app| app == "demo"),
+            ));
         }
         Ok(QueryValue::Bool(false))
     }
@@ -189,12 +196,8 @@ fn app_removed_clears_channels() {
     let mut state = TestState::default();
     cap.fold(
         &mut state,
-        &terrane_cap_presence::channel_defined_event(
-            "demo",
-            "cursor",
-            ChannelLimits::default(),
-        )
-        .unwrap(),
+        &terrane_cap_presence::channel_defined_event("demo", "cursor", ChannelLimits::default())
+            .unwrap(),
     )
     .unwrap();
     let removed = encode_event("app.removed", &Removed { id: "demo".into() }).unwrap();
@@ -204,6 +207,9 @@ fn app_removed_clears_channels() {
 
 #[test]
 fn defaults_match_plan() {
-    assert_eq!(ChannelLimits::default().max_payload, DEFAULT_MAX_PAYLOAD_BYTES as u32);
+    assert_eq!(
+        ChannelLimits::default().max_payload,
+        DEFAULT_MAX_PAYLOAD_BYTES as u32
+    );
     assert_eq!(ChannelLimits::default().max_rate, DEFAULT_MAX_RATE_PER_SEC);
 }

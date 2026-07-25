@@ -225,7 +225,11 @@ pub fn sync_http_once(core: &mut HostCore, app: &str, base_url: &str) -> Result<
     http_post_empty(&format!("{base}/sync/{app}/delta"), our_delta)?;
 
     let cursor = match core
-        .query("sync", "cursor", &[vv_response.peer_hex.clone(), app.to_string()])
+        .query(
+            "sync",
+            "cursor",
+            &[vv_response.peer_hex.clone(), app.to_string()],
+        )
         .map_err(|e| e.to_string())?
     {
         terrane_core::QueryValue::U64(Some(value)) => value,
@@ -301,7 +305,12 @@ pub fn event_batch_since(
 ) -> Result<EventBatchResponse, String> {
     let peer_hex = local_peer_hex(core)?;
     let mut envelopes = Vec::new();
-    for (index, record) in core.log_records().map_err(|e| e.to_string())?.into_iter().enumerate() {
+    for (index, record) in core
+        .log_records()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .enumerate()
+    {
         let origin_seq = u64::try_from(index + 1).map_err(|_| "sync: log too long".to_string())?;
         if origin_seq <= cursor || !is_sync_event_for_app(&record, app)? {
             continue;
@@ -404,7 +413,11 @@ pub fn blob_refs(core: &HostCore, app: &str) -> Vec<BlobRef> {
         .unwrap_or_default()
 }
 
-pub fn blob_refs_for_grantee(core: &HostCore, app: &str, grantee: &str) -> Result<Vec<BlobRef>, String> {
+pub fn blob_refs_for_grantee(
+    core: &HostCore,
+    app: &str,
+    grantee: &str,
+) -> Result<Vec<BlobRef>, String> {
     crate::share::ensure_read(core, app, grantee)?;
     Ok(blob_refs(core, app))
 }
@@ -451,7 +464,11 @@ fn is_sync_event_for_app(record: &terrane_core::EventRecord, app: &str) -> Resul
         "kv.set" | "kv.deleted" => {
             let value = terrane_cap_kv::event_payload_json(record).map_err(|e| e.to_string())?;
             Ok(value
-                .and_then(|v| v.get("app").and_then(|app| app.as_str()).map(str::to_string))
+                .and_then(|v| {
+                    v.get("app")
+                        .and_then(|app| app.as_str())
+                        .map(str::to_string)
+                })
                 .as_deref()
                 == Some(app))
         }
@@ -486,10 +503,7 @@ fn http_post_borsh<T: BorshDeserialize>(url: &str, body: Vec<u8>) -> Result<T, S
         .send_bytes(&body)
         .map_err(|e| format!("sync http post {url}: {e}"))?;
     let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(io)?;
+    response.into_reader().read_to_end(&mut bytes).map_err(io)?;
     borsh::from_slice(&bytes).map_err(|e| format!("sync http decode {url}: {e}"))
 }
 
@@ -498,10 +512,7 @@ fn http_get_borsh<T: BorshDeserialize>(url: &str) -> Result<T, String> {
         .call()
         .map_err(|e| format!("sync http get {url}: {e}"))?;
     let mut bytes = Vec::new();
-    response
-        .into_reader()
-        .read_to_end(&mut bytes)
-        .map_err(io)?;
+    response.into_reader().read_to_end(&mut bytes).map_err(io)?;
     borsh::from_slice(&bytes).map_err(|e| format!("sync http decode {url}: {e}"))
 }
 
@@ -547,10 +558,7 @@ fn copy_missing_blobs_http(core: &mut HostCore, app: &str, base: &str) -> Result
             .call()
             .map_err(|e| format!("sync blob get {url}: {e}"))?;
         let mut bytes = Vec::new();
-        response
-            .into_reader()
-            .read_to_end(&mut bytes)
-            .map_err(io)?;
+        response.into_reader().read_to_end(&mut bytes).map_err(io)?;
         changed |= copy_missing_blob(core, &hash, &bytes)?;
     }
     Ok(changed)

@@ -6,10 +6,10 @@
 
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
-    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut,
-    CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern,
-    EventRecord, EventSpec, GrantResourceSpec, QueryCtx, QuerySpec, QueryValue, ReadValue,
-    ResourceMethod, ResourceReadCtx, Result, StateStore,
+    arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, CapManifest,
+    Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern, EventRecord,
+    EventSpec, GrantResourceSpec, QueryCtx, QuerySpec, QueryValue, ReadValue, ResourceMethod,
+    ResourceReadCtx, Result, StateStore,
 };
 
 mod doc;
@@ -125,10 +125,7 @@ impl Capability for GeoCapability {
                 validate_fix(e.lat_e7, e.lon_e7)?;
                 let geo = state_mut::<GeoState>(state, "geo")?;
                 enforce_rate_limit(geo, &e.app, e.observed_at)?;
-                let fixes = geo
-                    .fixes
-                    .entry(e.app)
-                    .or_default();
+                let fixes = geo.fixes.entry(e.app).or_default();
                 fixes.push_back(GeoFix {
                     lat_e7: e.lat_e7,
                     lon_e7: e.lon_e7,
@@ -235,11 +232,7 @@ fn precision_arg(args: &[String]) -> Result<GeoPrecision> {
 }
 
 fn enforce_rate_limit(state: &GeoState, app: &str, observed_at: u64) -> Result<()> {
-    let Some(last) = state
-        .fixes
-        .get(app)
-        .and_then(|fixes| fixes.back())
-    else {
+    let Some(last) = state.fixes.get(app).and_then(|fixes| fixes.back()) else {
         return Ok(());
     };
     if observed_at < last.observed_at.saturating_add(RATE_LIMIT_MS) {

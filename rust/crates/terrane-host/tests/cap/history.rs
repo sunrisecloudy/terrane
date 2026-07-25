@@ -37,7 +37,10 @@ fn history_cli_dry_run_and_apply_revert() {
     assert!(out.contains("kv.set"), "out: {out}");
     assert!(out.contains("history.reverted"), "out: {out}");
 
-    let (ok, out, err) = terrane(home, &["history", "notes", "--key", "title", "--at", &to_seq]);
+    let (ok, out, err) = terrane(
+        home,
+        &["history", "notes", "--key", "title", "--at", &to_seq],
+    );
     assert!(ok, "history at failed: {err}");
     let json: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(json["value"], "one");

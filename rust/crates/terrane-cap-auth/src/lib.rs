@@ -6,10 +6,10 @@ use std::path::Path;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, restore_state,
-    snapshot_state, state_mut, state_ref, CapBus, CapManifest, Capability, CommandCtx,
-    CommandSpec, Decision, Error, EventPattern, EventRecord, EventSpec, ExecutionPrincipal,
-    GrantResourceSpec, ReadValue, ResourceReadCtx, Result, StateStore, LOCAL_OWNER_SUBJECT,
-    LOCAL_SOURCE, NAMESPACE_SELECTOR_SCHEMA_ID,
+    snapshot_state, state_mut, state_ref, CapBus, CapManifest, Capability, CommandCtx, CommandSpec,
+    Decision, Error, EventPattern, EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec,
+    ReadValue, ResourceReadCtx, Result, StateStore, LOCAL_OWNER_SUBJECT, LOCAL_SOURCE,
+    NAMESPACE_SELECTOR_SCHEMA_ID,
 };
 use terrane_cap_kv::KvStorageBinding;
 
@@ -1018,12 +1018,15 @@ pub fn any_resource_granted_in_namespace(
         return Ok(false);
     }
     let subjects = grant_subjects_for_lookup(&principal.subject);
-    Ok(state_ref::<AuthState>(state, "auth")?.grants.values().any(|grant| {
-        grant.org == principal.org
-            && subjects.iter().any(|subject| subject == &grant.subject)
-            && grant.app == app
-            && grant.namespace == namespace
-    }))
+    Ok(state_ref::<AuthState>(state, "auth")?
+        .grants
+        .values()
+        .any(|grant| {
+            grant.org == principal.org
+                && subjects.iter().any(|subject| subject == &grant.subject)
+                && grant.app == app
+                && grant.namespace == namespace
+        }))
 }
 
 fn grant_subjects_for_lookup(subject: &str) -> Vec<String> {
@@ -1085,10 +1088,7 @@ pub fn local_owner_member_exists(state: &dyn StateStore) -> Result<bool> {
 pub fn member_exists(state: &dyn StateStore, subject: &str) -> Result<bool> {
     Ok(state_ref::<AuthState>(state, "auth")?
         .members
-        .contains_key(&member_key(
-            terrane_cap_interface::LOCAL_ORG,
-            subject,
-        )))
+        .contains_key(&member_key(terrane_cap_interface::LOCAL_ORG, subject)))
 }
 
 pub fn agent_subject(owner_user: &str, agent_id: &str) -> String {
@@ -1406,10 +1406,7 @@ fn parse_grant_target(raw: &str) -> Result<GrantTarget> {
             namespace: "mcp".to_string(),
             selector_schema_id: NAMESPACE_SELECTOR_SCHEMA_ID.to_string(),
             selector_id: name.clone(),
-            selector_json: format!(
-                r#"{{"namespace":"mcp","name":"{}"}}"#,
-                json_string(&name)
-            ),
+            selector_json: format!(r#"{{"namespace":"mcp","name":"{}"}}"#, json_string(&name)),
             resource_id: format!("mcp:{name}"),
         });
     }

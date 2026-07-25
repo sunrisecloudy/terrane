@@ -30,9 +30,17 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["compact", rest @ ..] => run_compact(rest),
         ["cap", "list", rest @ ..] => run_cap_list(rest),
         ["cap", "info", namespace, rest @ ..] => run_cap_info(namespace, rest),
+        ["cap", "status"] => run_cap_status(),
+        ["cap", "prewarm", namespaces @ ..] if !namespaces.is_empty() => {
+            run_cap_prewarm(namespaces)
+        }
+        ["cap", "evict", "--all"] => run_cap_evict_all(),
+        ["cap", "evict", namespace] => run_cap_evict(namespace),
+        ["cap", "repair", namespace] => run_cap_repair(namespace),
+        ["cap", "verify"] => run_cap_verify(),
         ["cap", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane cap (list | info <namespace>) [--format json|markdown|skill] [--include-internal]".into())
+            Err("usage: terrane cap (list | info <namespace> | status | prewarm <namespace>... | evict <namespace>|--all | repair <namespace> | verify)".into())
         }
         ["app", "export", app, rest @ ..] => run_app_export(app, rest),
         ["app", "install", path] => run_install(path),
@@ -84,7 +92,9 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["org", "members"] => run_org_members(None),
         ["org", "members", org_id] => run_org_members(Some(org_id)),
         ["org", "invite", org_id, role, rest @ ..] => run_org_invite(org_id, role, rest),
-        ["org", "join", org_id, token_or_hash, member] => run_org_join(org_id, token_or_hash, member),
+        ["org", "join", org_id, token_or_hash, member] => {
+            run_org_join(org_id, token_or_hash, member)
+        }
         ["org", "leave", org_id, member] => dispatch("org.leave", &[org_id, member]),
         ["org", "role", "set", org_id, member, role, signer] => {
             dispatch("org.role.set", &[org_id, member, role, signer])
@@ -242,7 +252,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["stream", "list", app] => run_stream_list(app),
         ["stream", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane stream (open <app> <name> <verb> <request-json> | close <app> <name> | ingest-text <app> <name> [--received-at ts] <text> | reopened <app> <name> <attempt> | list <app>)".into())
+            Err("usage: terrane stream (open <app> <name> <verb> <request-json> | close <app> <name> | ingest-text <app> <name> [--received-at ts] [--stdin | <text>] | reopened <app> <name> <attempt> | list <app>)".into())
         }
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
@@ -381,7 +391,9 @@ pub fn run_app_export(app: &str, rest: &[&str]) -> Result<(), String> {
 
 pub fn run_app_upgrade(app: &str, rest: &[&str]) -> Result<(), String> {
     if rest.is_empty() {
-        return Err("usage: terrane app upgrade <id> <bundle|--to-version v|--from-draft d>".into());
+        return Err(
+            "usage: terrane app upgrade <id> <bundle|--to-version v|--from-draft d>".into(),
+        );
     }
     let mut args = vec![app.to_string()];
     args.extend(rest.iter().map(|part| (*part).to_string()));
@@ -473,7 +485,11 @@ fn run_person_whoami() -> Result<(), String> {
     let core = crate::open()?;
     match crate::query_on_core(&core, "person", "whoami", &[])? {
         terrane_core::QueryValue::Json(json) => println!("{json}"),
-        other => return Err(format!("person.whoami returned unexpected value: {other:?}")),
+        other => {
+            return Err(format!(
+                "person.whoami returned unexpected value: {other:?}"
+            ))
+        }
     }
     Ok(())
 }
@@ -658,13 +674,8 @@ fn run_mcp_call(app: &str, connection: &str, tool: &str, args_json: &str) -> Res
 
 fn run_mcp_tools(app: &str, connection: &str) -> Result<(), String> {
     let core = crate::open()?;
-    let records = crate::mcp_client::list_tools(
-        &crate::home_dir(),
-        core.state(),
-        app,
-        connection,
-    )
-    .map_err(|e| e.to_string())?;
+    let records = crate::mcp_client::list_tools(&crate::home_dir(), core.state(), app, connection)
+        .map_err(|e| e.to_string())?;
     let record = records
         .iter()
         .find(|record| record.kind == "mcp.called")
@@ -830,7 +841,9 @@ pub fn run_backup_restore(path: &str, rest: &[&str]) -> Result<(), String> {
         if outcome.cloned { "clone" } else { "restore" }
     );
     if !outcome.cloned {
-        println!("warning: restored home keeps replica identity; use --clone for a second live copy");
+        println!(
+            "warning: restored home keeps replica identity; use --clone for a second live copy"
+        );
     }
     Ok(())
 }
@@ -896,6 +909,82 @@ pub fn run_cap_info(namespace: &str, rest: &[&str]) -> Result<(), String> {
             &options.format,
             options.include_internal
         )?
+    );
+    Ok(())
+}
+
+pub fn run_cap_status() -> Result<(), String> {
+    let core = crate::open()?;
+    if !core.dynamic_capabilities_enabled() {
+        println!("dynamic capability manager: disabled (static fallback)");
+        return Ok(());
+    }
+    for status in core.capability_status() {
+        let state = match status.status {
+            terrane_cap_manager::CapabilityStatus::Available => "available".to_string(),
+            terrane_cap_manager::CapabilityStatus::Loading => "loading".to_string(),
+            terrane_cap_manager::CapabilityStatus::Ready => "ready".to_string(),
+            terrane_cap_manager::CapabilityStatus::Failed(error) => format!("failed: {error}"),
+        };
+        let keep_alive = if status.keep_alive { " keep-alive" } else { "" };
+        println!(
+            "{} {} {}{}",
+            status.namespace, status.version, state, keep_alive
+        );
+    }
+    Ok(())
+}
+
+pub fn run_cap_prewarm(namespaces: &[&str]) -> Result<(), String> {
+    let core = crate::open()?;
+    let namespaces: Vec<_> = namespaces
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect();
+    core.prepare_capabilities(&namespaces)
+        .map_err(|error| error.to_string())?;
+    println!("prewarmed {}", namespaces.join(", "));
+    Ok(())
+}
+
+pub fn run_cap_evict(namespace: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    if core
+        .evict_capability(namespace)
+        .map_err(|error| error.to_string())?
+    {
+        println!("evicted {namespace}");
+    } else {
+        println!("{namespace} was not evicted (not loaded or kept alive)");
+    }
+    Ok(())
+}
+
+pub fn run_cap_evict_all() -> Result<(), String> {
+    let core = crate::open()?;
+    core.evict_all_capabilities()
+        .map_err(|error| error.to_string())?;
+    println!("evicted all dynamic capabilities");
+    Ok(())
+}
+
+pub fn run_cap_repair(namespace: &str) -> Result<(), String> {
+    let core = crate::open()?;
+    core.repair_capability(namespace)
+        .map_err(|error| error.to_string())?;
+    println!("repaired {namespace} to its exact pinned artifact");
+    Ok(())
+}
+
+pub fn run_cap_verify() -> Result<(), String> {
+    let core = crate::open()?;
+    let verified = core
+        .verify_dynamic_replay()
+        .map_err(|error| error.to_string())?;
+    println!(
+        "verified dynamic replay for {} capabilities: {}",
+        verified.len(),
+        verified.join(", ")
     );
     Ok(())
 }
@@ -993,11 +1082,7 @@ pub fn run_state() -> Result<(), String> {
         for (call_key, call) in calls {
             println!(
                 "  {app} {call_key} {}.{} {} ({} bytes) error={}",
-                call.connection,
-                call.tool,
-                call.result_kind,
-                call.result_size,
-                call.is_error
+                call.connection, call.tool, call.result_kind, call.result_size, call.is_error
             );
         }
     }
@@ -1191,7 +1276,8 @@ pub fn run_compact(args: &[&str]) -> Result<(), String> {
 
 pub fn run_migrate_status(app: &str) -> Result<(), String> {
     let core = crate::open()?;
-    let state_version = terrane_cap_migration::version(core.state(), app).map_err(|e| e.to_string())?;
+    let state_version =
+        terrane_cap_migration::version(core.state(), app).map_err(|e| e.to_string())?;
     let bundle = migration_bundle(core.state(), app)?;
     let manifest_version = crate::manifest_data_version(&bundle.manifest);
     let pending: Vec<u64> = bundle
@@ -1335,6 +1421,10 @@ fn host_manifest_from_runtime(
                 script: step.script,
             })
             .collect(),
+        sidebar: crate::SidebarSpec {
+            mode: manifest.sidebar.mode,
+            reason: manifest.sidebar.reason,
+        },
     }
 }
 
@@ -1358,7 +1448,12 @@ pub fn run_stt_dispatch(command: &str, rest: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn run_stream_open(app: &str, name: &str, verb: &str, request_json: &str) -> Result<(), String> {
+pub fn run_stream_open(
+    app: &str,
+    name: &str,
+    verb: &str,
+    request_json: &str,
+) -> Result<(), String> {
     let args = vec![
         app.to_string(),
         name.to_string(),
@@ -1377,7 +1472,10 @@ pub fn run_stream_close(app: &str, name: &str) -> Result<(), String> {
 }
 
 pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<(), String> {
+    use std::io::Read as _;
+
     let mut received_at = None;
+    let mut read_stdin = false;
     let mut text = Vec::new();
     let mut i = 0;
     while i < rest.len() {
@@ -1389,14 +1487,44 @@ pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<()
                 received_at = Some((*value).to_string());
                 i += 2;
             }
+            "--stdin" => {
+                if read_stdin {
+                    return Err("--stdin may only be specified once".into());
+                }
+                read_stdin = true;
+                i += 1;
+            }
             value => {
                 text.push(value);
                 i += 1;
             }
         }
     }
+    if read_stdin && !text.is_empty() {
+        return Err("--stdin cannot be combined with inline text".into());
+    }
+    let text = if read_stdin {
+        let limit = terrane_cap_stream::MAX_MESSAGE_SIZE + 1;
+        let mut input = String::new();
+        std::io::stdin()
+            .take(limit)
+            .read_to_string(&mut input)
+            .map_err(|error| format!("read stream text from stdin: {error}"))?;
+        if input.len() as u64 > terrane_cap_stream::MAX_MESSAGE_SIZE {
+            return Err(format!(
+                "stream text must be <= {} bytes",
+                terrane_cap_stream::MAX_MESSAGE_SIZE
+            ));
+        }
+        input
+    } else {
+        text.join(" ")
+    };
     if text.is_empty() {
-        return Err("usage: terrane stream ingest-text <app> <name> [--received-at ts] <text>".into());
+        return Err(
+            "usage: terrane stream ingest-text <app> <name> [--received-at ts] [--stdin | <text>]"
+                .into(),
+        );
     }
     let received_at = received_at.unwrap_or_else(now_unix_millis);
     let mut core = crate::open()?;
@@ -1405,7 +1533,7 @@ pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<()
         &mut core,
         app,
         name,
-        &text.join(" "),
+        &text,
         &received_at,
     )?;
     print_command_outcome(crate::CommandOutcome {
@@ -1440,7 +1568,10 @@ pub fn run_stream_list(app: &str) -> Result<(), String> {
             }));
         }
     }
-    println!("{}", serde_json::to_string(&rows).map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        serde_json::to_string(&rows).map_err(|e| e.to_string())?
+    );
     Ok(())
 }
 
@@ -1480,7 +1611,10 @@ pub fn run_tts_render(app: &str, rest: &[&str]) -> Result<(), String> {
 }
 
 pub fn run_tts_voices() -> Result<(), String> {
-    println!("{}", crate::tts_edge::voices_json().map_err(|e| e.to_string())?);
+    println!(
+        "{}",
+        crate::tts_edge::voices_json().map_err(|e| e.to_string())?
+    );
     Ok(())
 }
 
@@ -1615,11 +1749,10 @@ pub fn run_scheduler_tick(now_ms: Option<&str>) -> Result<(), String> {
     let mut core = crate::open()?;
     crate::ensure_identity(&mut core)?;
     let parsed_now = match now_ms {
-        Some(raw) => {
-            Some(raw
-                .parse::<u64>()
-                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?)
-        }
+        Some(raw) => Some(
+            raw.parse::<u64>()
+                .map_err(|_| format!("--now-ms must be an unsigned integer, got {raw:?}"))?,
+        ),
         None => None,
     };
     let outcomes = match parsed_now {
@@ -1691,11 +1824,10 @@ pub fn run_job_submit(app: &str, verb: &str, rest: &[&str]) -> Result<(), String
                 let Some(value) = rest.get(i + 1) else {
                     return Err("--now-ms requires a value".into());
                 };
-                now_ms = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| format!("--now-ms must be an unsigned integer, got {value:?}"))?,
-                );
+                now_ms =
+                    Some(value.parse::<u64>().map_err(|_| {
+                        format!("--now-ms must be an unsigned integer, got {value:?}")
+                    })?);
                 i += 2;
             }
             "--args-json" => {
@@ -1899,7 +2031,11 @@ pub fn run_history(app: &str, rest: &[&str]) -> Result<(), String> {
     let value = crate::query_on_core(&core, "history", query, &args.into_query_args())?;
     match value {
         terrane_core::QueryValue::Json(json) => println!("{json}"),
-        other => return Err(format!("history.{query} returned unexpected value: {other:?}")),
+        other => {
+            return Err(format!(
+                "history.{query} returned unexpected value: {other:?}"
+            ))
+        }
     }
     Ok(())
 }
@@ -1915,10 +2051,7 @@ pub fn run_revert(app: &str, rest: &[&str]) -> Result<(), String> {
         )?);
     } else {
         let dry = crate::dry_run_on_core(&core, "history.revert", &parsed.command_args)?;
-        println!(
-            "would append {} event(s); pass --yes to apply",
-            dry.records
-        );
+        println!("would append {} event(s); pass --yes to apply", dry.records);
     }
     Ok(())
 }
@@ -2068,9 +2201,7 @@ pub fn run_web_publish_enable(app: &str, rest: &[&str]) -> Result<(), String> {
 
 pub fn run_web_publish_status(app: Option<&str>) -> Result<(), String> {
     let core = crate::open()?;
-    let args = app
-        .map(|app| vec![app.to_string()])
-        .unwrap_or_default();
+    let args = app.map(|app| vec![app.to_string()]).unwrap_or_default();
     match crate::query_on_core(&core, "web-publish", "status", &args)? {
         terrane_core::QueryValue::Json(json) => {
             println!("{json}");
@@ -2082,7 +2213,11 @@ pub fn run_web_publish_status(app: Option<&str>) -> Result<(), String> {
     }
 }
 
-fn print_webhook_route(core: &terrane_core::Core<crate::EdgeRunner>, app: &str, name: &str) -> Result<(), String> {
+fn print_webhook_route(
+    core: &terrane_core::Core<crate::EdgeRunner>,
+    app: &str,
+    name: &str,
+) -> Result<(), String> {
     let meta = core
         .state()
         .webhook
@@ -2699,7 +2834,7 @@ pub fn print_help() {
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane net request <app> <request-json>          full HTTP request; record redacted request + response\n\
          \x20 terrane stream open <app> <name> <verb> <request-json>  record desired SSE/WebSocket state\n\
-         \x20 terrane stream ingest-text <app> <name> <text…>   record one observed stream message and invoke its verb\n\
+         \x20 terrane stream ingest-text <app> <name> [--stdin | <text…>]   record one observed stream message and invoke its verb\n\
          \x20 terrane stream close|list|reopened …              manage folded stream state from the host edge\n\
          \x20 terrane browser render <app> <request-json>       headless render; record redacted request + result\n\
          \x20 terrane applescript run|check <app> <script…>     macOS AppleScript edge effect; record result\n\
@@ -2731,6 +2866,11 @@ pub fn print_help() {
          \x20 terrane query jmespath <app> <sourceJson> <expression>  read folded state with JMESPath\n\
          \x20 terrane cap list               list capability docs\n\
          \x20 terrane cap info <namespace>   show capability docs\n\
+         \x20 terrane cap status             show dynamic worker status\n\
+         \x20 terrane cap prewarm <ns>...    load capabilities and dependencies\n\
+         \x20 terrane cap evict <ns>|--all   snapshot and stop warm workers\n\
+         \x20 terrane cap repair <namespace> restore the exact pinned artifact\n\
+         \x20 terrane cap verify             compare every worker replay hash\n\
          \x20 terrane contract export        print the public API contract (JSON)\n\
          \x20 terrane help                   this message\n\n\
          Catalog: $TERRANE_HOME/log.bin (binary event log; default ./.terrane/)"

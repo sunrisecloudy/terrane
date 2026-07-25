@@ -71,7 +71,11 @@ pub struct ImportOutcome {
     pub blobs: usize,
 }
 
-pub fn create_backup(home: &Path, archive_path: &Path, level: i32) -> Result<BackupCreateOutcome, String> {
+pub fn create_backup(
+    home: &Path,
+    archive_path: &Path,
+    level: i32,
+) -> Result<BackupCreateOutcome, String> {
     let log_path = log_path_for_home(home);
     let _lock = terrane_core::filelock::acquire(&log_path).map_err(|e| e.to_string())?;
     let temp = TempDir::new().map_err(io)?;
@@ -129,7 +133,12 @@ pub fn restore_backup(
     })
 }
 
-pub fn export_app(home: &Path, app: &str, archive_path: &Path, level: i32) -> Result<ExportOutcome, String> {
+pub fn export_app(
+    home: &Path,
+    app: &str,
+    archive_path: &Path,
+    level: i32,
+) -> Result<ExportOutcome, String> {
     let core = open_at_home(home)?;
     if !core.state().app.apps.contains_key(app) {
         return Err(format!("app not found: {app}"));
@@ -177,8 +186,8 @@ pub fn import_app(home: &Path, archive_path: &Path) -> Result<ImportOutcome, Str
     let temp_records = read_log(&temp.path().join(LOG)).map_err(|e| e.to_string())?;
     fold_records_in_memory(&mut state, &temp_records).map_err(|e| e.to_string())?;
     let hashes = state.blob.refs.keys().cloned().collect::<Vec<_>>();
-    let blobs = blob_store::copy_hashes_from_home(home, temp.path(), &hashes)
-        .map_err(|e| e.to_string())?;
+    let blobs =
+        blob_store::copy_hashes_from_home(home, temp.path(), &hashes).map_err(|e| e.to_string())?;
     Ok(ImportOutcome {
         app,
         records: records_len,
@@ -268,7 +277,10 @@ fn unpack_verified(archive_path: &Path, root: &Path) -> Result<BackupManifest, S
     let manifest = serde_json::from_str::<BackupManifest>(&manifest_json)
         .map_err(|e| format!("backup manifest json: {e}"))?;
     if manifest.format_version != FORMAT_VERSION {
-        return Err(format!("unsupported backup formatVersion {}", manifest.format_version));
+        return Err(format!(
+            "unsupported backup formatVersion {}",
+            manifest.format_version
+        ));
     }
     for file in &manifest.files {
         validate_relative(&file.path)?;
@@ -330,7 +342,11 @@ fn collect_files_inner(root: &Path, dir: &Path, out: &mut Vec<BackupFile>) -> Re
     Ok(())
 }
 
-fn append_bytes(builder: &mut Builder<zstd::stream::write::Encoder<'_, File>>, path: &str, bytes: &[u8]) -> Result<(), String> {
+fn append_bytes(
+    builder: &mut Builder<zstd::stream::write::Encoder<'_, File>>,
+    path: &str,
+    bytes: &[u8],
+) -> Result<(), String> {
     let mut header = Header::new_gnu();
     header.set_size(u64::try_from(bytes.len()).map_err(|_| "manifest too large".to_string())?);
     header.set_mode(0o644);
@@ -343,7 +359,10 @@ fn ensure_absent_or_empty(path: &Path) -> Result<(), String> {
         return Ok(());
     }
     if !path.is_dir() {
-        return Err(format!("restore target exists and is not a directory: {}", path.display()));
+        return Err(format!(
+            "restore target exists and is not a directory: {}",
+            path.display()
+        ));
     }
     if fs::read_dir(path).map_err(io)?.next().is_some() {
         return Err(format!("restore target is not empty: {}", path.display()));
@@ -382,7 +401,8 @@ fn copy_sqlite(from: &Path, to: &Path) -> Result<(), String> {
 fn validate_relative(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if p.is_absolute()
-        || p.components().any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+        || p.components()
+            .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
     {
         return Err(format!("unsafe backup path: {path}"));
     }

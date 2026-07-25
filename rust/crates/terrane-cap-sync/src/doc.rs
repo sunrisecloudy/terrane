@@ -130,7 +130,10 @@ fn queries() -> Vec<QueryDoc> {
             "u64",
             "Return the folded cursor for one origin peer and app, or 0 when absent.",
         )
-        .with_errors(&["missing peer or app argument", "unknown query capability or query name"]),
+        .with_errors(&[
+            "missing peer or app argument",
+            "unknown query capability or query name",
+        ]),
     ]
 }
 

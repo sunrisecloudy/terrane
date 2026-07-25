@@ -56,7 +56,13 @@ fn scheduler_tick_fires_due_one_shot_runs_backend_and_replays() {
     assert!(ok, "app add failed: {err}");
     let (ok, _, err) = terrane(
         home,
-        &["auth", "grant", "user:local-owner", "scheduler-app", "scheduler"],
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "scheduler-app",
+            "scheduler",
+        ],
     );
     assert!(ok, "scheduler grant failed: {err}");
     let (ok, _, err) = terrane(

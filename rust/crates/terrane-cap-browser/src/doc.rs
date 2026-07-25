@@ -102,7 +102,11 @@ fn browser_commands() -> Vec<CommandDoc> {
     vec![command_doc(
         "browser.render",
         &[
-            param("app", "Existing app id that owns the recorded render.", "app_id"),
+            param(
+                "app",
+                "Existing app id that owns the recorded render.",
+                "app_id",
+            ),
             param("request_json", "Render request JSON.", "json"),
         ],
         "effect",
@@ -125,11 +129,23 @@ fn browser_events() -> Vec<EventDoc> {
         "browser.rendered",
         &[
             param("app", "App id that requested the render.", "app_id"),
-            param("request_key", "SHA-256 of canonical request JSON.", "sha256"),
-            param("request_json_redacted", "Canonical request JSON with URL query redacted.", "json"),
+            param(
+                "request_key",
+                "SHA-256 of canonical request JSON.",
+                "sha256",
+            ),
+            param(
+                "request_json_redacted",
+                "Canonical request JSON with URL query redacted.",
+                "json",
+            ),
             param("url", "Rendered URL.", "url"),
             param("output", "text, html, screenshot, or pdf.", "string"),
-            param("status", "Observed render status code, or 0 when the engine did not expose one.", "u16"),
+            param(
+                "status",
+                "Observed render status code, or 0 when the engine did not expose one.",
+                "u16",
+            ),
             param("body_kind", "inline or blob.", "string"),
             param("body", "Inline text/html body or empty for blob.", "string"),
             param("body_hash", "SHA-256 of captured bytes.", "sha256"),

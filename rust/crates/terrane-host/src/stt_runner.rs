@@ -81,11 +81,7 @@ impl SttVad {
     }
 
     /// Build with explicit thresholds (mean-square energy units) and hangover.
-    pub fn with_thresholds(
-        speech_energy: u64,
-        silence_energy: u64,
-        hangover_frames: u32,
-    ) -> Self {
+    pub fn with_thresholds(speech_energy: u64, silence_energy: u64, hangover_frames: u32) -> Self {
         Self {
             speech_energy,
             silence_energy: silence_energy.min(speech_energy),
@@ -138,10 +134,7 @@ pub fn frame_energy(samples: &[i16]) -> u64 {
     if samples.is_empty() {
         return 0;
     }
-    let sum: u64 = samples
-        .iter()
-        .map(|s| (*s as i64 * *s as i64) as u64)
-        .sum();
+    let sum: u64 = samples.iter().map(|s| (*s as i64 * *s as i64) as u64).sum();
     sum / samples.len() as u64
 }
 
@@ -224,7 +217,10 @@ impl<E: AsrEngine, S: SegmentSink> SttRunner<E, S> {
     /// session by dispatching `stt.session.close-host reason="idle"` once this
     /// crosses its threshold).
     pub fn idle_ms(&self) -> u64 {
-        ms(self.samples_seen - self.last_speech_sample, self.cfg.sample_rate_hz)
+        ms(
+            self.samples_seen - self.last_speech_sample,
+            self.cfg.sample_rate_hz,
+        )
     }
 
     /// Push a chunk of mono PCM. Frames the audio, runs the VAD, and on each

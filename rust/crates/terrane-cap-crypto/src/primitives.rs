@@ -83,13 +83,8 @@ pub fn new_salt() -> Result<[u8; SALT_LEN], CryptoError> {
 
 /// Derive the 32-byte vault key from the master password and salt with Argon2id.
 pub fn derive_key(master: &str, salt: &[u8], params: KdfParams) -> Result<VaultKey, CryptoError> {
-    let argon_params = Params::new(
-        params.m_cost,
-        params.t_cost,
-        params.p_cost,
-        Some(KEY_LEN),
-    )
-    .map_err(|_| CryptoError::Kdf)?;
+    let argon_params = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(KEY_LEN))
+        .map_err(|_| CryptoError::Kdf)?;
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon_params);
     let mut key: VaultKey = Zeroizing::new([0u8; KEY_LEN]);
     argon
@@ -102,16 +97,14 @@ pub fn derive_key(master: &str, salt: &[u8], params: KdfParams) -> Result<VaultK
 /// master password without keeping the key or any plaintext around. HMAC keeps it
 /// non-invertible, so the stored tag reveals nothing about the key.
 pub fn verifier(key: &[u8; KEY_LEN]) -> [u8; 32] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
-        .expect("HMAC accepts any key length");
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(VERIFIER_DOMAIN);
     mac.finalize().into_bytes().into()
 }
 
 /// Constant-time check that `key` reproduces the stored verifier tag.
 pub fn verify_key(key: &[u8; KEY_LEN], expected: &[u8]) -> bool {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
-        .expect("HMAC accepts any key length");
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key).expect("HMAC accepts any key length");
     mac.update(VERIFIER_DOMAIN);
     mac.verify_slice(expected).is_ok()
 }
@@ -182,5 +175,6 @@ pub fn b64(bytes: &[u8]) -> String {
 
 /// Base64 (standard alphabet) decode.
 pub fn unb64(text: &str) -> Result<Vec<u8>, CryptoError> {
-    B64.decode(text.trim()).map_err(|_| CryptoError::BadInput("base64"))
+    B64.decode(text.trim())
+        .map_err(|_| CryptoError::BadInput("base64"))
 }

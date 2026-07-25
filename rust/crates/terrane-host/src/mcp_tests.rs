@@ -1,6 +1,6 @@
 use super::{
     handle_json_rpc, handle_json_rpc_with_source_and_admin_base, json_string_value,
-    top_level_fields,
+    top_level_fields, validate_sidebar_decision,
 };
 use std::ffi::OsString;
 use std::sync::{Mutex, OnceLock};
@@ -150,7 +150,9 @@ fn capability_command_and_query_tools_use_core_without_protocol_errors() {
     .unwrap();
     assert!(
         help.contains(r#""isError":false"#)
-            && help.contains(r#"\"argument_order\":[\"id\",\"name\",\"source\",\"runtime\"]"#)
+            && help.contains(
+                r#"\"argument_order\":[\"id\",\"name\",\"source\",\"runtime\",\"refreshSource\"]"#
+            )
             && help.contains("--source")
             && help.contains("help:true never dispatches"),
         "command help: {help}"
@@ -484,7 +486,7 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
     let app_dir = tempfile::tempdir().unwrap();
     std::fs::write(
         app_dir.path().join("manifest.json"),
-        r#"{"id":"weak-demo","name":"Weak Demo","runtime":"js","backend":"main.js","resources":["kv"]}"#,
+        r#"{"id":"weak-demo","name":"Weak Demo","runtime":"js","backend":"main.js","resources":["kv"],"sidebar":{"mode":"none","reason":"This backend-only test app has no selected-app UI."}}"#,
     )
     .unwrap();
     std::fs::write(
@@ -870,7 +872,7 @@ fn app_register_inline_dry_run_can_commit_by_draft_id() {
     let files = serde_json::json!([
         {
             "path": "manifest.json",
-            "content": "{\"id\":\"inline-draft\",\"name\":\"Inline Draft\",\"runtime\":\"js\",\"backend\":\"main.js\",\"resources\":[\"kv\"]}"
+            "content": "{\"id\":\"inline-draft\",\"name\":\"Inline Draft\",\"runtime\":\"js\",\"backend\":\"main.js\",\"resources\":[\"kv\"],\"sidebar\":{\"mode\":\"none\",\"reason\":\"This backend-only test app has no selected-app UI.\"}}"
         },
         {
             "path": "main.js",
@@ -1321,6 +1323,52 @@ fn ui_scaffold_shell_is_substantial() {
         main.contains("kvGetOrNull"),
         "main.js keeps defensive reads"
     );
+}
+
+#[test]
+fn sidebar_decision_requires_explicit_mode_and_real_section_callbacks() {
+    let mut errors = Vec::new();
+    validate_sidebar_decision("", "", "index.html", "", &mut errors);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("explicit lower-sidebar decision")),
+        "missing decision errors: {errors:?}"
+    );
+
+    errors.clear();
+    validate_sidebar_decision("none", "", "index.html", "", &mut errors);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("sidebar.reason is required")),
+        "missing opt-out reason errors: {errors:?}"
+    );
+
+    errors.clear();
+    validate_sidebar_decision(
+        "section",
+        "",
+        "index.html",
+        "window.terrane.setSidebarSection({title:'Docs',items:[]});",
+        &mut errors,
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("onSidebarItemSelect")),
+        "missing selection callback errors: {errors:?}"
+    );
+
+    errors.clear();
+    validate_sidebar_decision(
+        "section",
+        "",
+        "index.html",
+        "window.terrane.setSidebarSection({title:'Docs',items:[]}); window.terrane.onSidebarItemSelect(function(id){});",
+        &mut errors,
+    );
+    assert!(errors.is_empty(), "valid section errors: {errors:?}");
 }
 
 #[test]

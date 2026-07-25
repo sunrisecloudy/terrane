@@ -196,9 +196,8 @@ mod platform {
                     LocationResult::Failed(error) => Err(Error::Runtime(error)),
                 };
             }
-            NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(
-                RUN_LOOP_TICK,
-            ));
+            NSRunLoop::currentRunLoop()
+                .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(RUN_LOOP_TICK));
         }
 
         unsafe {

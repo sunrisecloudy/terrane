@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use nanoserde::DeJson;
 use terrane_cap_interface::{arg, Error, ReadValue, ResourceMethod, ResourceReadCtx, Result};
 
-use crate::generate::{password, passphrase, strength, PasswordOptions, PassphraseOptions};
+use crate::generate::{passphrase, password, strength, PassphraseOptions, PasswordOptions};
 use crate::keyring;
 use crate::primitives::{b64, open, random_id, seal, sha1_hex, unb64};
 use crate::totp::{totp, Algorithm};

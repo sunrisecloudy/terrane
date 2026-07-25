@@ -26,39 +26,39 @@ use terrane_core::{
 
 pub mod app_log;
 pub mod applescript;
-pub mod automation;
 pub mod asr;
+pub mod automation;
 pub mod backup;
 pub mod blob_store;
 pub mod cap_doc;
 pub mod cli;
+pub mod deep_links;
 pub mod edge;
 pub mod ffi;
 mod geo_edge;
 pub mod home;
 pub mod i18n;
-pub mod deep_links;
 pub mod job;
 mod local_llm;
 pub mod mcp;
-mod metrics;
-mod media_edge;
 pub mod mcp_client;
+mod media_edge;
+mod metrics;
 pub mod native;
 pub mod permission;
 pub mod presence;
 pub mod preview;
-pub mod publish;
 pub mod public_authz;
+pub mod publish;
 pub mod push_watch;
 pub mod scheduler;
 pub mod secret_store;
 pub mod share;
+pub mod stream_edge;
 mod stt_edge;
 pub mod stt_runner;
-pub mod stream_edge;
-mod tts_edge;
 pub mod sync;
+mod tts_edge;
 
 pub use edge::{generate_app_records, EdgeRunner, HarnessStaging};
 pub use home::{home_page, HomePageOptions};
@@ -212,9 +212,161 @@ fn open_at_log_path_with(
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut core = Core::open_with(log_path, runner.with_home(home)).map_err(|e| e.to_string())?;
+    let runner = runner.with_home(home.clone());
+    let mut core = match Core::open_with(log_path.clone(), runner.clone()) {
+        Ok(core) => core,
+        Err(error) if terrane_core::is_old_format_log_error(&error) => {
+            terrane_core::migrate_log(&log_path).map_err(|migration_error| {
+                format!("automatic legacy-log migration failed: {migration_error}")
+            })?;
+            Core::open_with(log_path, runner).map_err(|error| error.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    if let Some(manager) = configured_capability_manager(&home)? {
+        core.attach_capability_manager(manager.clone());
+        let records = core.log_records().map_err(|error| error.to_string())?;
+        let migration = if manager
+            .migration_complete()
+            .map_err(|error| error.to_string())?
+        {
+            Ok(())
+        } else if records.is_empty() {
+            manager
+                .mark_migration_complete(&records)
+                .map_err(|error| error.to_string())
+        } else {
+            core.verify_dynamic_replay()
+                .map(|_| ())
+                .and_then(|()| {
+                    manager
+                        .mark_migration_complete(&records)
+                        .map_err(|error| terrane_core::Error::Runtime(error.to_string()))
+                })
+                .map_err(|error| error.to_string())
+        };
+        if let Err(error) = migration {
+            core.detach_capability_manager();
+            if env::var("TERRANE_CAP_REQUIRE_DYNAMIC").ok().as_deref() == Some("1") {
+                return Err(format!("dynamic capability migration failed: {error}"));
+            }
+        } else {
+            // Background activation is best-effort: a broken optional worker
+            // must not prevent the fundamental control plane from opening.
+            let _ = manager.prepare_background(&records);
+        }
+    }
     ensure_identity(&mut core)?;
+    migrate_legacy_app_requirements(&mut core)?;
     Ok(core)
+}
+
+fn migrate_legacy_app_requirements(core: &mut HostCore) -> Result<(), String> {
+    let unresolved: Vec<_> = core
+        .state()
+        .app
+        .apps
+        .values()
+        .filter(|app| !app.requirements_resolved)
+        .map(|app| (app.id.clone(), app.source.is_some()))
+        .collect();
+    let mut records = Vec::new();
+    for (app, has_source) in unresolved {
+        let resources = if has_source {
+            match permission::app_requested_resources(core, &app) {
+                Ok(resources) => resources,
+                Err(_) => continue,
+            }
+        } else {
+            Vec::new()
+        };
+        let mut record = terrane_cap_app::requirements_resolved_event(app, resources)
+            .map_err(|error| error.to_string())?;
+        record.actor = terrane_cap_interface::LOCAL_OWNER_SUBJECT.to_string();
+        records.push(record);
+    }
+    if !records.is_empty() {
+        core.append_recorded(records)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn configured_capability_manager(
+    home: &Path,
+) -> Result<Option<std::sync::Arc<terrane_core::CapabilityManager>>, String> {
+    if env::var("TERRANE_CAP_STATIC_FALLBACK").ok().as_deref() == Some("1") {
+        return Ok(None);
+    }
+    let Some(root) = capability_bundle_root() else {
+        if env::var("TERRANE_CAP_REQUIRE_DYNAMIC").ok().as_deref() == Some("1") {
+            return Err(
+                "dynamic capabilities are required but no packaged bundle root exists".into(),
+            );
+        }
+        return Ok(None);
+    };
+    let verifying_key_hex = env::var("TERRANE_CAP_VERIFYING_KEY_HEX")
+        .ok()
+        .or_else(|| option_env!("TERRANE_CAP_VERIFYING_KEY_HEX").map(str::to_string))
+        .or_else(|| {
+            std::fs::read_to_string(root.join("verifying-key.hex"))
+                .ok()
+                .map(|value| value.trim().to_string())
+        });
+    let Some(verifying_key_hex) = verifying_key_hex else {
+        if env::var("TERRANE_CAP_REQUIRE_DYNAMIC").ok().as_deref() == Some("1") {
+            return Err(
+                "dynamic capabilities are required but no verifying key is configured".into(),
+            );
+        }
+        return Ok(None);
+    };
+    let verifying_key = terrane_cap_manager::verifying_key_from_hex(&verifying_key_hex)
+        .map_err(|error| error.to_string())?;
+    terrane_core::CapabilityManager::open(home, root, verifying_key)
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn capability_bundle_root() -> Option<PathBuf> {
+    if let Some(root) = env::var_os("TERRANE_CAP_BUNDLE_DIR").map(PathBuf::from) {
+        return root.is_dir().then_some(root);
+    }
+    let executable = env::current_exe().ok()?;
+    let executable_dir = executable.parent()?;
+    let candidates = [
+        executable_dir.join("capabilities"),
+        executable_dir.join("../Resources/capabilities"),
+    ];
+    candidates.into_iter().find(|candidate| candidate.is_dir())
+}
+
+pub fn prepare_app_capabilities(core: &HostCore, app: &str) -> Result<(), String> {
+    if !core.dynamic_capabilities_enabled() {
+        return Ok(());
+    }
+    let record = core
+        .state()
+        .app
+        .apps
+        .get(app)
+        .ok_or_else(|| format!("no such app: {app}"))?;
+    let runtime = match record.runtime.as_str() {
+        "js" => "js-runtime",
+        "wasm" => "wasm-runtime",
+        other => return Err(format!("unknown app runtime for {app}: {other}")),
+    };
+    let mut namespaces = if record.requirements_resolved {
+        record.required_capabilities.clone()
+    } else {
+        permission::app_requested_resources(core, app)?
+    };
+    namespaces.push(runtime.to_string());
+    namespaces.sort();
+    namespaces.dedup();
+    core.prepare_capabilities(&namespaces)
+        .map_err(|error| error.to_string())
 }
 
 /// The home directory: `$TERRANE_HOME` (default `./.terrane/`). Holds the event
@@ -333,7 +485,10 @@ pub fn ingest_webhook_on_core(
     envelope.insert("name".to_string(), serde_json::Value::String(name.clone()));
     envelope.insert("token".to_string(), serde_json::Value::String(token));
     envelope.insert("method".to_string(), serde_json::Value::String(method));
-    envelope.insert("headers".to_string(), serde_json::Value::Object(header_json));
+    envelope.insert(
+        "headers".to_string(),
+        serde_json::Value::Object(header_json),
+    );
     envelope.insert(
         "received_at".to_string(),
         serde_json::Value::Number(serde_json::Number::from(received_at)),
@@ -343,7 +498,10 @@ pub fn ingest_webhook_on_core(
     }
     match std::str::from_utf8(&body) {
         Ok(text) => {
-            envelope.insert("body".to_string(), serde_json::Value::String(text.to_string()));
+            envelope.insert(
+                "body".to_string(),
+                serde_json::Value::String(text.to_string()),
+            );
         }
         Err(_) => {
             use base64::Engine as _;
@@ -354,10 +512,8 @@ pub fn ingest_webhook_on_core(
         }
     }
     let raw = serde_json::Value::Object(envelope).to_string();
-    let outcome = dispatch_request_on_core(
-        core,
-        Request::trusted_host("webhook.ingest", vec![raw]),
-    )?;
+    let outcome =
+        dispatch_request_on_core(core, Request::trusted_host("webhook.ingest", vec![raw]))?;
     let received = outcome
         .records
         .iter()
@@ -578,6 +734,7 @@ pub fn invoke_app_input_checked_with_admin_base_and_source(
     if !core.state().app.apps.contains_key(app) {
         return Err(InvokeFailure::Other(format!("no such app: {app}")));
     }
+    prepare_app_capabilities(core, app).map_err(InvokeFailure::Other)?;
     let operation = input.first().map(String::as_str).unwrap_or("invoke");
     if let Some(required) = permission::request_permission_for_app_with_admin_base(
         core,
@@ -625,7 +782,11 @@ pub fn record_interop_pick(
     dispatch_on_core(
         core,
         "interop.pick",
-        &[caller.to_string(), interface.to_string(), target.to_string()],
+        &[
+            caller.to_string(),
+            interface.to_string(),
+            target.to_string(),
+        ],
     )
     .map(|_| ())
 }
@@ -1032,6 +1193,16 @@ pub struct BundleManifest {
     pub data_version: u64,
     #[nserde(default)]
     pub migrations: Vec<MigrationSpec>,
+    #[nserde(default)]
+    pub sidebar: SidebarSpec,
+}
+
+#[derive(Debug, Clone, Default, DeJson)]
+pub struct SidebarSpec {
+    #[nserde(default)]
+    pub mode: String,
+    #[nserde(default)]
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, DeJson)]
@@ -1136,8 +1307,8 @@ pub fn validate_common_api_bundle(path: &Path) -> Result<(), String> {
     )?;
     let tests_path = path.join("tests.json");
     if tests_path.exists() {
-        let tests = std::fs::read_to_string(&tests_path)
-            .map_err(|e| format!("read tests.json: {e}"))?;
+        let tests =
+            std::fs::read_to_string(&tests_path).map_err(|e| format!("read tests.json: {e}"))?;
         validate_bundle_smoke_tests_source(
             id,
             non_empty_or(manifest.name.clone(), id),
@@ -1163,17 +1334,19 @@ pub fn validate_common_api_bundle_source(
     let mut state = terrane_core::State::default();
     state.app.apps.insert(
         id.to_string(),
-            terrane_cap_app::AppRecord {
-                id: id.to_string(),
-                name,
-                source: None,
-                runtime: "js".to_string(),
-                version: terrane_cap_app::DEFAULT_VERSION.to_string(),
-                history: Vec::new(),
-                interfaces: terrane_cap_app::mandatory_interfaces(),
-                links: Vec::new(),
-            },
-        );
+        terrane_cap_app::AppRecord {
+            id: id.to_string(),
+            name,
+            source: None,
+            runtime: "js".to_string(),
+            version: terrane_cap_app::DEFAULT_VERSION.to_string(),
+            history: Vec::new(),
+            interfaces: terrane_cap_app::mandatory_interfaces(),
+            links: Vec::new(),
+            required_capabilities: resources.clone(),
+            requirements_resolved: true,
+        },
+    );
     let host = RuntimeHostHandle::new(Box::new(
         RuntimeResourceHost::new_with_temporary_resource_grants(
             id.to_string(),
@@ -1200,8 +1373,8 @@ pub fn validate_common_api_bundle_source(
         host.clone(),
     )
     .map_err(|e| format!("common.get bogus-id probe failed: {e}"))?;
-    let get_value: serde_json::Value =
-        serde_json::from_str(&get).map_err(|e| format!("common.get not-found must be JSON: {e}"))?;
+    let get_value: serde_json::Value = serde_json::from_str(&get)
+        .map_err(|e| format!("common.get not-found must be JSON: {e}"))?;
     let code = get_value
         .pointer("/error/code")
         .and_then(serde_json::Value::as_str)
@@ -1254,6 +1427,8 @@ pub fn validate_bundle_smoke_tests_source(
             history: Vec::new(),
             interfaces: terrane_cap_app::mandatory_interfaces(),
             links: Vec::new(),
+            required_capabilities: resources.clone(),
+            requirements_resolved: true,
         },
     );
     let host = RuntimeHostHandle::new(Box::new(

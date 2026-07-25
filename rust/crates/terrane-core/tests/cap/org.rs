@@ -57,7 +57,9 @@ impl EffectRunner for OrgEdge {
                     .keys
                     .borrow()
                     .get(person_id)
-                    .ok_or_else(|| terrane_core::Error::Runtime(format!("unknown person: {person_id}")))?
+                    .ok_or_else(|| {
+                        terrane_core::Error::Runtime(format!("unknown person: {person_id}"))
+                    })?
                     .clone();
                 let message = terrane_cap_person::attestation_message(person_id, kind, claim)?;
                 let sig = signing.sign(&message);
@@ -97,7 +99,9 @@ impl EffectRunner for OrgEdge {
                     .keys
                     .borrow()
                     .get(signer)
-                    .ok_or_else(|| terrane_core::Error::Runtime(format!("unknown signer person: {signer}")))?
+                    .ok_or_else(|| {
+                        terrane_core::Error::Runtime(format!("unknown signer person: {signer}"))
+                    })?
                     .clone();
                 let message = role_grant_message(org_id, member, role)?;
                 let sig = signing.sign(&message);
@@ -127,14 +131,7 @@ fn org_create_invite_join_role_set_leave_replays_from_public_events() {
 
     // Founding person.
     core.dispatch(req("person.create", &[])).unwrap();
-    let founder_id = core
-        .state()
-        .person
-        .persons
-        .keys()
-        .next()
-        .cloned()
-        .unwrap();
+    let founder_id = core.state().person.persons.keys().next().cloned().unwrap();
 
     // Org.create emits org.created + org.member.granted (owner).
     let records = core.dispatch(req("org.create", &[&founder_id])).unwrap();
@@ -219,26 +216,17 @@ fn org_member_granted_with_tampered_signature_is_rejected_by_fold() {
     let mut core = Core::open_with(dir.path().join("log.bin"), OrgEdge::new()).unwrap();
 
     core.dispatch(req("person.create", &[])).unwrap();
-    let founder_id = core
-        .state()
-        .person
-        .persons
-        .keys()
-        .next()
-        .cloned()
-        .unwrap();
+    let founder_id = core.state().person.persons.keys().next().cloned().unwrap();
     core.dispatch(req("org.create", &[&founder_id])).unwrap();
     let org_id = core.state().org.orgs.keys().next().cloned().unwrap();
 
     // A forged signature by a different key over the same message.
     let wrong = SigningKey::from_bytes(&[222; 32]);
-    let forged = hex(
-        &wrong
-            .sign(&role_grant_message(&org_id, &founder_id, "owner").unwrap())
-            .to_bytes(),
-    );
-    let forged_event = member_granted_event(&org_id, &founder_id, "owner", &forged, &founder_id)
-        .unwrap();
+    let forged = hex(&wrong
+        .sign(&role_grant_message(&org_id, &founder_id, "owner").unwrap())
+        .to_bytes());
+    let forged_event =
+        member_granted_event(&org_id, &founder_id, "owner", &forged, &founder_id).unwrap();
 
     // Simulate a host-applied forged record: dispatch returns the records, the
     // engine folds them; here we test the fold directly through a dispatch-less

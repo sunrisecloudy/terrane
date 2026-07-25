@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use terrane_cap_interface::{Error, Result};
 use terrane_cap_presence::{
-    ChannelLimits, PresenceState, DEFAULT_MAX_RATE_PER_SEC, DEFAULT_MAX_PAYLOAD_BYTES,
+    ChannelLimits, PresenceState, DEFAULT_MAX_PAYLOAD_BYTES, DEFAULT_MAX_RATE_PER_SEC,
 };
 use terrane_core::State;
 
@@ -130,13 +130,7 @@ pub fn reset_for_tests() -> Result<()> {
 }
 
 impl Hub {
-    fn check_rate(
-        &mut self,
-        app: &str,
-        channel: &str,
-        peer: &str,
-        max_rate: u32,
-    ) -> Result<()> {
+    fn check_rate(&mut self, app: &str, channel: &str, peer: &str, max_rate: u32) -> Result<()> {
         let now = Instant::now();
         let key = (app.to_string(), channel.to_string(), peer.to_string());
         let bucket = self.rate.entry(key).or_insert(RateBucket {

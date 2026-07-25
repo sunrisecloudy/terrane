@@ -161,7 +161,9 @@ impl Capability for AgentCapability {
                     id,
                     name: display,
                     personality: fields.personality.unwrap_or_default(),
-                    harness: fields.harness.unwrap_or_else(|| DEFAULT_HARNESS.to_string()),
+                    harness: fields
+                        .harness
+                        .unwrap_or_else(|| DEFAULT_HARNESS.to_string()),
                     model: fields.model.unwrap_or_else(|| DEFAULT_MODEL.to_string()),
                     color: fields.color.unwrap_or_else(default_color),
                     allowed_caps: fields.allowed_caps.unwrap_or_default(),
@@ -224,7 +226,9 @@ impl Capability for AgentCapability {
             }
             "agent.removed" => {
                 let e: Removed = decode_event(record)?;
-                state_mut::<AgentState>(state, "agent")?.agents.remove(&e.id);
+                state_mut::<AgentState>(state, "agent")?
+                    .agents
+                    .remove(&e.id);
             }
             _ => {}
         }

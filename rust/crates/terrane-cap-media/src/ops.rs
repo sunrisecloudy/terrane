@@ -12,12 +12,29 @@ pub enum MediaKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MediaOp {
-    Resize { max_width: u32, max_height: u32 },
-    Crop { x: u32, y: u32, width: u32, height: u32 },
-    Rotate { degrees: u16 },
-    Thumbnail { size: u32 },
-    Encode { format: String, quality: u8 },
-    TranscodeAudio { format: String },
+    Resize {
+        max_width: u32,
+        max_height: u32,
+    },
+    Crop {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
+    Rotate {
+        degrees: u16,
+    },
+    Thumbnail {
+        size: u32,
+    },
+    Encode {
+        format: String,
+        quality: u8,
+    },
+    TranscodeAudio {
+        format: String,
+    },
 }
 
 pub fn classify_mime(mime: &str) -> Result<MediaKind> {
@@ -56,7 +73,10 @@ pub fn validate_ops_for_mime(mime: &str, ops_json: &str) -> Result<Vec<MediaOp>>
     let ops = parse_ops(ops_json)?;
     match kind {
         MediaKind::Image => {
-            if ops.iter().any(|op| matches!(op, MediaOp::TranscodeAudio { .. })) {
+            if ops
+                .iter()
+                .any(|op| matches!(op, MediaOp::TranscodeAudio { .. }))
+            {
                 return Err(Error::InvalidInput(
                     "transcodeAudio is only valid for audio sources".into(),
                 ));
@@ -82,15 +102,17 @@ pub fn op_names(ops_json: &str) -> Vec<String> {
     parse_ops(ops_json)
         .map(|ops| {
             ops.into_iter()
-                .map(|op| match op {
-                    MediaOp::Resize { .. } => "resize",
-                    MediaOp::Crop { .. } => "crop",
-                    MediaOp::Rotate { .. } => "rotate",
-                    MediaOp::Thumbnail { .. } => "thumbnail",
-                    MediaOp::Encode { .. } => "encode",
-                    MediaOp::TranscodeAudio { .. } => "transcodeAudio",
-                }
-                .to_string())
+                .map(|op| {
+                    match op {
+                        MediaOp::Resize { .. } => "resize",
+                        MediaOp::Crop { .. } => "crop",
+                        MediaOp::Rotate { .. } => "rotate",
+                        MediaOp::Thumbnail { .. } => "thumbnail",
+                        MediaOp::Encode { .. } => "encode",
+                        MediaOp::TranscodeAudio { .. } => "transcodeAudio",
+                    }
+                    .to_string()
+                })
                 .collect()
         })
         .unwrap_or_else(|_| Vec::new())
@@ -157,10 +179,7 @@ fn parse_op(value: &Value) -> Result<MediaOp> {
     }
 }
 
-fn string_field<'a>(
-    obj: &'a serde_json::Map<String, Value>,
-    key: &str,
-) -> Result<&'a str> {
+fn string_field<'a>(obj: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str> {
     obj.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| Error::InvalidInput(format!("media op missing string field {key}")))
@@ -181,6 +200,5 @@ fn u32_field(obj: &serde_json::Map<String, Value>, key: &str) -> Result<u32> {
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| Error::InvalidInput(format!("media op missing integer field {key}")))?;
-    u32::try_from(raw)
-        .map_err(|_| Error::InvalidInput(format!("media op field {key} exceeds u32")))
+    u32::try_from(raw).map_err(|_| Error::InvalidInput(format!("media op field {key} exceeds u32")))
 }

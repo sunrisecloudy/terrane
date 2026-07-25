@@ -205,7 +205,10 @@ impl Capability for PresenceCapability {
             }
             "presence.channel.dropped" => {
                 let event: ChannelDropped = decode_event(record).ok()?;
-                Some(format!("presence.channel.dropped {}/{}", event.app, event.channel))
+                Some(format!(
+                    "presence.channel.dropped {}/{}",
+                    event.app, event.channel
+                ))
             }
             _ => None,
         }
@@ -213,8 +216,12 @@ impl Capability for PresenceCapability {
 
     fn app_of(&self, record: &EventRecord) -> Option<String> {
         match record.kind.as_str() {
-            "presence.channel.defined" => decode_event::<ChannelDefined>(record).ok().map(|e| e.app),
-            "presence.channel.dropped" => decode_event::<ChannelDropped>(record).ok().map(|e| e.app),
+            "presence.channel.defined" => {
+                decode_event::<ChannelDefined>(record).ok().map(|e| e.app)
+            }
+            "presence.channel.dropped" => {
+                decode_event::<ChannelDropped>(record).ok().map(|e| e.app)
+            }
             _ => None,
         }
     }
@@ -232,10 +239,7 @@ impl Capability for PresenceCapability {
                 let Some(host) = ctx.host else {
                     return Ok(ReadValue::StringList(Vec::new()));
                 };
-                let json = host.sample(
-                    "presence.peers",
-                    &[ctx.app.to_string(), channel],
-                )?;
+                let json = host.sample("presence.peers", &[ctx.app.to_string(), channel])?;
                 let peers: Vec<String> = serde_json::from_str(&json)
                     .map_err(|e| Error::Runtime(format!("presence peers decode failed: {e}")))?;
                 Ok(ReadValue::StringList(peers))
@@ -267,7 +271,13 @@ fn decide_define(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
     let channel = arg(args, 1, "channel")?;
     ensure_app_exists(ctx.bus, &app)?;
     validate_channel_name(&channel)?;
-    let max_payload = optional_limit(args, 2, DEFAULT_MAX_PAYLOAD_BYTES, MAX_PAYLOAD_BYTES, "max_payload")?;
+    let max_payload = optional_limit(
+        args,
+        2,
+        DEFAULT_MAX_PAYLOAD_BYTES,
+        MAX_PAYLOAD_BYTES,
+        "max_payload",
+    )?;
     let max_rate = optional_rate(args, 3)?;
     ensure_channel_capacity(ctx.state, &app, &channel)?;
     Ok(Decision::Commit(vec![channel_defined_event(
@@ -384,9 +394,9 @@ fn optional_rate(args: &[String], index: usize) -> Result<u32> {
     let Some(raw) = args.get(index) else {
         return Ok(DEFAULT_MAX_RATE_PER_SEC);
     };
-    let value = raw
-        .parse::<u32>()
-        .map_err(|_| Error::InvalidInput("max_rate must be an integer messages/sec limit".into()))?;
+    let value = raw.parse::<u32>().map_err(|_| {
+        Error::InvalidInput("max_rate must be an integer messages/sec limit".into())
+    })?;
     if value == 0 || value > DEFAULT_MAX_RATE_PER_SEC {
         return Err(Error::InvalidInput(format!(
             "max_rate must be between 1 and {DEFAULT_MAX_RATE_PER_SEC}"

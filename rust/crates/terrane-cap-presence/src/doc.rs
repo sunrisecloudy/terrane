@@ -1,12 +1,12 @@
 use terrane_cap_interface::{
-    command_doc, event_doc, limit, param, resource_method, CapabilityDoc, CapabilityManifestDoc,
-    Capability, CommandDoc, EventDoc, ExampleDoc, LimitDoc, ParamDoc, ResourceDoc,
+    command_doc, event_doc, limit, param, resource_method, Capability, CapabilityDoc,
+    CapabilityManifestDoc, CommandDoc, EventDoc, ExampleDoc, LimitDoc, ParamDoc, ResourceDoc,
     ResourceMethodDoc,
 };
 
 use crate::{
-    DEFAULT_MAX_PAYLOAD_BYTES, DEFAULT_MAX_RATE_PER_SEC, MAX_CHANNEL_NAME_CHARS,
-    MAX_CHANNELS_PER_APP, MAX_PAYLOAD_BYTES,
+    DEFAULT_MAX_PAYLOAD_BYTES, DEFAULT_MAX_RATE_PER_SEC, MAX_CHANNELS_PER_APP,
+    MAX_CHANNEL_NAME_CHARS, MAX_PAYLOAD_BYTES,
 };
 
 const STR: &str = "string";
@@ -139,11 +139,31 @@ fn events() -> Vec<EventDoc> {
 
 fn limits() -> Vec<LimitDoc> {
     vec![
-        limit("default-payload-bytes", &DEFAULT_MAX_PAYLOAD_BYTES.to_string(), "Keep realtime frames bounded."),
-        limit("max-payload-bytes", &MAX_PAYLOAD_BYTES.to_string(), "A channel may define lower limits but never higher."),
-        limit("default-rate", &format!("{DEFAULT_MAX_RATE_PER_SEC} msgs/sec"), "Drop newest frames rather than queueing."),
-        limit("channels-per-app", &MAX_CHANNELS_PER_APP.to_string(), "Bound folded channel metadata."),
-        limit("channel-name-chars", &MAX_CHANNEL_NAME_CHARS.to_string(), "Keep selectors promptable and transport-friendly."),
+        limit(
+            "default-payload-bytes",
+            &DEFAULT_MAX_PAYLOAD_BYTES.to_string(),
+            "Keep realtime frames bounded.",
+        ),
+        limit(
+            "max-payload-bytes",
+            &MAX_PAYLOAD_BYTES.to_string(),
+            "A channel may define lower limits but never higher.",
+        ),
+        limit(
+            "default-rate",
+            &format!("{DEFAULT_MAX_RATE_PER_SEC} msgs/sec"),
+            "Drop newest frames rather than queueing.",
+        ),
+        limit(
+            "channels-per-app",
+            &MAX_CHANNELS_PER_APP.to_string(),
+            "Bound folded channel metadata.",
+        ),
+        limit(
+            "channel-name-chars",
+            &MAX_CHANNEL_NAME_CHARS.to_string(),
+            "Keep selectors promptable and transport-friendly.",
+        ),
     ]
 }
 
@@ -155,12 +175,18 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
         .into_iter()
         .map(|method| {
             let mut doc = match method {
-                ResourceMethod::Call { name, params } => {
-                    resource_method(name, "call", &expand(params), "Publish one transient JSON message.")
-                }
-                ResourceMethod::Read { name, params } => {
-                    resource_method(name, "read", &expand(params), "Read connected peers seen on a channel.")
-                }
+                ResourceMethod::Call { name, params } => resource_method(
+                    name,
+                    "call",
+                    &expand(params),
+                    "Publish one transient JSON message.",
+                ),
+                ResourceMethod::Read { name, params } => resource_method(
+                    name,
+                    "read",
+                    &expand(params),
+                    "Read connected peers seen on a channel.",
+                ),
                 ResourceMethod::Write { name, params } => {
                     resource_method(name, "write", &expand(params), "Write method.")
                 }

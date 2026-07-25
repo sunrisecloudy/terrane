@@ -22,6 +22,25 @@ Use the `terrane-mcp` binary from `host/mcp`.
 The stdio host reads newline-delimited JSON-RPC from stdin and writes only
 protocol responses to stdout. Diagnostics go to stderr.
 
+`TERRANE_HOME` is optional. When omitted, the stdio host uses `~/.terrane`,
+matching the macOS app. Set it explicitly for an alternate or isolated home.
+
+### Connecting while the macOS app is running
+
+Use the same stdio configuration. The macOS app owns the live Core and publishes
+an authenticated loopback endpoint in `$TERRANE_HOME/mcp-gui.json` (mode 0600).
+If `terrane-mcp` finds a live GUI discovery record, it validates and
+health-checks the loopback endpoint before attempting to open the home, then
+proxies stdio MCP to the GUI instead of opening a second Core. The GUI stays open and responsive;
+MCP calls and app-frame calls are serialized against the same in-memory state.
+
+The discovery token is random for each GUI launch and is never printed. Stale,
+malformed, non-loopback, unauthenticated, or unreachable endpoints fail closed.
+When an MCP call needs a resource grant, the trusted GUI presents its normal
+permission sheet and retries the call after approval; MCP still has no grant
+tool. When the GUI is not running, `terrane-mcp` retains its existing behavior
+and owns the home directly.
+
 ## HTTP
 
 The web host exposes the same MCP implementation at `POST /mcp`.

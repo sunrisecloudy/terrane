@@ -54,7 +54,10 @@ fn push_limits_and_typed_errors_are_enforced() {
         .unwrap();
     }
     let too_many = core
-        .dispatch(req("push.subscribe", &["demo", "kv.set", "Title", "sub-extra"]))
+        .dispatch(req(
+            "push.subscribe",
+            &["demo", "kv.set", "Title", "sub-extra"],
+        ))
         .unwrap_err();
     assert!(too_many.to_string().contains("at most 32 subscriptions"));
 }
@@ -87,11 +90,8 @@ fn app_removal_drops_push_state() {
     let dir = tempdir().unwrap();
     let mut core = Core::open(dir.path().join("log.bin")).unwrap();
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
-    core.dispatch(req(
-        "push.subscribe",
-        &["demo", "kv.*", "Changed", "sub-1"],
-    ))
-    .unwrap();
+    core.dispatch(req("push.subscribe", &["demo", "kv.*", "Changed", "sub-1"]))
+        .unwrap();
     core.dispatch(req(
         "push.record-delivery",
         &["demo", "sub-1", "2", "failed", "native unavailable"],

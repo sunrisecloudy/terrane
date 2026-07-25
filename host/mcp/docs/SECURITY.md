@@ -19,6 +19,20 @@ This is why apps do not auto-receive resources: granting a namespace is a
 requesting app or an MCP client can self-serve. The local subject throughout is
 `user:local-owner`.
 
+## macOS GUI attachment
+
+The macOS GUI remains the only Core and log writer while it is running. It binds
+an ephemeral loopback-only MCP listener and publishes its endpoint plus a
+per-launch bearer token in `$TERRANE_HOME/mcp-gui.json` with mode 0600.
+`terrane-mcp` uses that record only after the home lock proves another process
+owns the home. It accepts only literal loopback HTTP endpoints, disables
+redirects, requires the bearer token, and fails closed on stale discovery.
+
+The token authenticates local transport; it does not change Terrane
+authorization. MCP calls retain the `mcp_gui` source, default-deny resources,
+and trusted-operator grant boundary. Permission requests are presented by the
+GUI and retried only after the user approves them there.
+
 Grants live in a strict grant table keyed by org / subject / app / resource; with
 no matching row the namespace stays denied. `auth.*` commands (grant, revoke,
 approve, agent register/clamp) are **trusted-host-only** — they are accepted only

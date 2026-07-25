@@ -73,7 +73,10 @@ fn migration_apply_refuses_public_gap_and_downgrade_paths() {
     grant_resource(&mut core, "todo", "kv");
 
     assert_eq!(
-        core.dispatch(public_req("migration.apply", &["todo", "2", "function migrate() {}"])),
+        core.dispatch(public_req(
+            "migration.apply",
+            &["todo", "2", "function migrate() {}"]
+        )),
         Err(Error::InvalidInput(
             "migration.apply requires trusted host authority".into()
         ))

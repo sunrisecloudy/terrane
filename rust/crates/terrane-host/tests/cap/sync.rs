@@ -2,8 +2,8 @@
 
 use tempfile::tempdir;
 use terrane_cap_blob::live_hashes_for_app;
-use terrane_host::{blob_store, open_at_home, sync};
 use terrane_core::Request;
+use terrane_host::{blob_store, open_at_home, sync};
 
 #[test]
 fn sync_v2_two_homes_converge_kv_crdt_and_blob_refs() {
@@ -64,7 +64,10 @@ fn sync_v2_two_homes_converge_kv_crdt_and_blob_refs() {
 
     assert_eq!(a.state().kv.data["notes"]["lang"], "en");
     assert_eq!(b.state().kv.data["notes"]["theme"], "dark");
-    assert_eq!(a.state().crdt.docs["notes"].get_deep_value(), b.state().crdt.docs["notes"].get_deep_value());
+    assert_eq!(
+        a.state().crdt.docs["notes"].get_deep_value(),
+        b.state().crdt.docs["notes"].get_deep_value()
+    );
     assert_eq!(b.state().blob.blobs["notes"]["hello.txt"].hash, hashes[0]);
     assert_eq!(copied, 1);
     assert!(a.replay_matches().unwrap());
@@ -72,8 +75,12 @@ fn sync_v2_two_homes_converge_kv_crdt_and_blob_refs() {
 }
 
 fn exchange_once(source: &mut terrane_host::HostCore, target: &mut terrane_host::HostCore) {
-    let vv = sync::vv_response(source, "notes", &terrane_cap_crdt::crdt_vv(target.state(), "notes"))
-        .unwrap();
+    let vv = sync::vv_response(
+        source,
+        "notes",
+        &terrane_cap_crdt::crdt_vv(target.state(), "notes"),
+    )
+    .unwrap();
     sync::ingest_crdt_delta(target, "notes", &vv.delta).unwrap();
     let back = terrane_cap_crdt::crdt_export_from_vv(target.state(), "notes", &vv.vv).unwrap();
     sync::ingest_crdt_delta(source, "notes", &back).unwrap();

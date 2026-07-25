@@ -97,7 +97,11 @@ fn migration_commands() -> Vec<CommandDoc> {
             "events",
             "Record the final version fact for a migration runtime batch.",
         )
-        .with_errors(&["trusted host required", "version mismatch", "bad script hash"])
+        .with_errors(&[
+            "trusted host required",
+            "version mismatch",
+            "bad script hash",
+        ])
         .with_emits(&["migration.applied"]),
     ]
 }

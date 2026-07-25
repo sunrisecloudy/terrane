@@ -19,10 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var docField: NSTextField!
   private var bridge: TerraneBridge?
   private var sttCapture: SttCapture?
+  private var cameraFrameStreamer: NativeCameraFrameStreamer?
   private var sttMicButton: NSButton!
   private var sttListeningLabel: NSTextField!
   private var appSchemeHandler: AppSchemeHandler?
   private var previewSchemeHandler: PreviewSchemeHandler?
+  private var loopbackHost: LoopbackAppHost?
+  private var mcpServer: McpLoopbackServer?
   private var home: URL!
   private var apps: [TerraneApp] = []
   private var premiumURL: URL?
@@ -34,14 +37,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     home = Self.resolveHome()
+    setenv("TERRANE_HOME", home.path, 1)
     premiumURL = Self.resolvePremiumURL()
     apps = AppCatalog.discover(home: home)
+    loopbackHost = Self.resolveRepoAppsDirectory()
+      .flatMap { LoopbackAppHost(home: home, appsDirectory: $0) }
 
     let config = WKWebViewConfiguration()
     guard let bridge = TerraneBridge(home: home) else {
-      fatalError("terrane-host: cannot open Terrane home at \(home.path)")
+      let alert = NSAlert()
+      alert.alertStyle = .critical
+      alert.messageText = "Terrane could not open this workspace"
+      alert.informativeText = TerraneBridge.lastOpenError
+        ?? "The workspace at \(home.path) could not be opened."
+      alert.addButton(withTitle: "Quit")
+      alert.runModal()
+      NSApp.terminate(nil)
+      return
     }
     self.bridge = bridge
+    for app in apps {
+      let result = bridge.catalog(appId: app.id, name: app.name, source: app.directory.path)
+      if !result.0 {
+        NSLog("terrane-host: cannot catalog \(app.id) for MCP: \(result.1)")
+      }
+    }
+    let mcpServer = McpLoopbackServer(home: home, bridge: bridge)
+    do {
+      try mcpServer.start()
+      self.mcpServer = mcpServer
+    } catch {
+      NSLog("terrane-host: MCP loopback unavailable: \(error)")
+    }
     // Seed the shared i18n catalog if a catalog dir is configured (parity with
     // the web host's startup seed); idempotent and best-effort. Any host or the
     // CLI seeding this home also suffices.
@@ -54,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     chromeMessages = bridge.i18nBundle(code: currentLocale, appId: "")
     bridge.onDocumentSet = { [weak self] name in
       DispatchQueue.main.async { self?.applyDocumentFromApp(name) }
+    }
+    bridge.onSidebarSectionSet = { [weak self] section in
+      DispatchQueue.main.async { self?.appSidebar?.setAppSection(section) }
     }
     bridge.onPermissionRequired = { [weak self, weak bridge] prompt, completion in
       DispatchQueue.main.async {
@@ -73,6 +103,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         self.presentInteropPicker(prompt, completion: completion)
       }
     }
+    bridge.onCameraCapturePhoto = { [weak self] completion in
+      DispatchQueue.main.async {
+        NativeCameraCaptureController.present(parent: self?.window) { result in
+          switch result {
+          case .success(let photo):
+            completion(
+              [
+                "dataUrl": photo.dataURL,
+                "mime": photo.mime,
+                "width": photo.width,
+                "height": photo.height,
+              ],
+              nil
+            )
+          case .failure(let error):
+            completion(nil, error.localizedDescription)
+          }
+        }
+      }
+    }
+    bridge.onCameraStreamStart = { [weak self] completion in
+      DispatchQueue.main.async {
+        guard let self else {
+          completion(nil, "terrane: host is unavailable")
+          return
+        }
+        let streamer = NativeCameraFrameStreamer()
+        streamer.onFrame = { [weak self] frame in
+          self?.pushCameraFrame(frame)
+        }
+        streamer.onError = { message in
+          completion(nil, message)
+        }
+        self.cameraFrameStreamer?.stop()
+        self.cameraFrameStreamer = streamer
+        streamer.start()
+        completion(["ok": true], nil)
+      }
+    }
+    bridge.onCameraStreamStop = { [weak self] completion in
+      DispatchQueue.main.async {
+        self?.cameraFrameStreamer?.stop()
+        self?.cameraFrameStreamer = nil
+        completion(["ok": true], nil)
+      }
+    }
+    // Mark our app-serving custom schemes as secure contexts. WebKit only
+    // exposes powerful web APIs (getUserMedia for camera/mic, etc.) on secure
+    // origins, and a bare WKURLSchemeHandler scheme is not trustworthy by
+    // default — so `getUserMedia` rejects with a NotAllowedError before the
+    // media-capture permission delegate is ever consulted. There is no public
+    // API for this; `_registerURLSchemeAsSecure:` on the process pool is the
+    // established workaround. It's App-Store-disallowed, but this is a local,
+    // ad-hoc-signed host, so it's acceptable here.
+    Self.registerSecureSchemes(
+      [AppSchemeHandler.scheme, PreviewSchemeHandler.scheme], on: config)
+
     bridge.install(into: config.userContentController)
     let appSchemeHandler = AppSchemeHandler(bridge: bridge) { [weak self] in self?.apps ?? [] }
     self.appSchemeHandler = appSchemeHandler
@@ -112,6 +199,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   func applicationWillTerminate(_ notification: Notification) {
     sttCapture?.stop(reason: "host-exit")
+    cameraFrameStreamer?.stop()
+    loopbackHost?.stop()
+    mcpServer?.stop()
     terrane_stt_shutdown()
     bridge?.close()
     // Cached local-model engines must be released before ggml's static
@@ -238,17 +328,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     type: WKMediaCaptureType,
     decisionHandler: @escaping (WKPermissionDecision) -> Void
   ) {
+    // The app must declare the capability in its manifest `browser_permissions`.
+    // When it does, we `.grant` at the WebKit layer: on macOS `.prompt` is
+    // unreliable and surfaces as a NotAllowedError, and macOS still presents its
+    // own TCC camera/microphone consent dialog on first AVCaptureDevice use, so
+    // the OS-level prompt is preserved either way.
     let permissions = Set(selectedApp?.browserPermissions ?? [])
     switch type {
     case .camera:
-      decisionHandler(permissions.contains("camera") ? .prompt : .deny)
+      decisionHandler(permissions.contains("camera") ? .grant : .deny)
     case .microphone:
-      decisionHandler(permissions.contains("microphone") ? .prompt : .deny)
+      decisionHandler(permissions.contains("microphone") ? .grant : .deny)
     case .cameraAndMicrophone:
       decisionHandler(
-        permissions.contains("camera") && permissions.contains("microphone") ? .prompt : .deny)
+        permissions.contains("camera") && permissions.contains("microphone") ? .grant : .deny)
     @unknown default:
       decisionHandler(.deny)
+    }
+  }
+
+  /// Register the given custom schemes as secure contexts on the configuration's
+  /// process pool, so WebKit exposes secure-only APIs (camera/microphone) to
+  /// pages served from them. Uses the private `_registerURLSchemeAsSecure:`
+  /// selector; guarded with `responds(to:)` so a WebKit change degrades to the
+  /// prior (insecure) behavior instead of crashing.
+  private static func registerSecureSchemes(_ schemes: [String], on config: WKWebViewConfiguration)
+  {
+    let pool = config.processPool
+    let selector = NSSelectorFromString("_registerURLSchemeAsSecure:")
+    guard pool.responds(to: selector) else {
+      NSLog("terrane: _registerURLSchemeAsSecure: unavailable; camera/mic APIs may be blocked")
+      return
+    }
+    for scheme in schemes {
+      pool.perform(selector, with: scheme as NSString)
     }
   }
 
@@ -268,8 +381,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     appSidebar.onToggleCollapse = { [weak self] in
       self?.toggleSidebar()
     }
-    appSidebar.localModelPanel.configure(home: home)
-
+    appSidebar.onSectionItemSelect = { [weak self] id in
+      self?.pushSidebarAction(kind: "select", id: id)
+    }
+    appSidebar.onSectionCreate = { [weak self] in
+      self?.pushSidebarAction(kind: "create")
+    }
     let bar = NSView()
     bar.translatesAutoresizingMaskIntoConstraints = false
 
@@ -447,7 +564,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     if sttCapture?.isListening == true {
       sttCapture?.stop(reason: "stopped")
     }
+    cameraFrameStreamer?.stop()
+    cameraFrameStreamer = nil
     selectedApp = app
+    appSidebar.setAppSection(nil)
     bridge?.select(app: app)
     sttCapture = nil
     window.title = "\(app.name) - Terrane"
@@ -456,11 +576,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     updateBreadcrumb(for: app)
 
     sourceEditor.setApp(app, preferredPath: preferredSourcePath)
-    webView.load(
-      URLRequest(
-        url: AppSchemeHandler.frameURL(for: app),
-        cachePolicy: .reloadIgnoringLocalAndRemoteCacheData
-      ))
+    let frameURL =
+      shouldUseLoopbackFrame(for: app)
+      ? loopbackHost?.frameURL(for: app) ?? AppSchemeHandler.frameURL(for: app)
+      : AppSchemeHandler.frameURL(for: app)
+    webView.load(URLRequest(url: frameURL, cachePolicy: .reloadIgnoringLocalAndRemoteCacheData))
+  }
+
+  private func shouldUseLoopbackFrame(for app: TerraneApp) -> Bool {
+    let permissions = Set(app.browserPermissions)
+    return permissions.contains("camera") || permissions.contains("microphone")
+  }
+
+  private func pushCameraFrame(_ frame: NativeCameraFrame) {
+    let payload: [String: Any] = [
+      "dataUrl": frame.dataURL,
+      "mime": frame.mime,
+      "width": frame.width,
+      "height": frame.height,
+    ]
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    webView.evaluateJavaScript(
+      "window.dispatchEvent(new CustomEvent('terrane:cameraFrame', { detail: \(json) }));")
   }
 
   private func openPremium(_ app: PremiumApp) {
@@ -473,6 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       sttCapture?.stop(reason: "stopped")
     }
     selectedApp = nil
+    appSidebar.setAppSection(nil)
     bridge?.clearSelection()
     sttCapture = nil
     window.title = "\(app.name) - Terrane Premium"
@@ -525,6 +668,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       return
     }
     selectedApp = nil
+    appSidebar.setAppSection(nil)
     bridge?.clearSelection()
     window.title = "Terrane"
     appSidebar.select(appId: nil)
@@ -724,6 +868,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     webView.evaluateJavaScript(js)
   }
 
+  private func pushSidebarAction(kind: String, id: String? = nil) {
+    var payload: [String: String] = ["kind": kind]
+    if let id { payload["id"] = id }
+    guard
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    webView.evaluateJavaScript(
+      "window.__terrane_sidebar_action && window.__terrane_sidebar_action(\(json));")
+  }
+
   /// A native-chrome string for `key` from the shell-chrome bundle, else the
   /// English `fallback`. Keys are the `system` domain, e.g. `system.doc.untitled`.
   private func nativeT(_ key: String, _ fallback: String) -> String {
@@ -763,6 +920,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       return URL(fileURLWithPath: home)
     }
     return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".terrane")
+  }
+
+  static func resolveRepoAppsDirectory() -> URL? {
+    if let repo = ProcessInfo.processInfo.environment["TERRANE_REPO"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines),
+      !repo.isEmpty
+    {
+      return URL(fileURLWithPath: repo).appendingPathComponent("apps")
+    }
+    let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+    let apps = cwd.appendingPathComponent("apps")
+    return FileManager.default.fileExists(atPath: apps.path) ? apps : nil
   }
 
   /// Optional initial app id from `open Terrane.app --args <id>` / argv[1].

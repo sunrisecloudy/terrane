@@ -76,7 +76,10 @@ fn job_lifecycle_requires_host_for_edge_facts_and_replays() {
     ))
     .unwrap();
     assert!(core.replay_matches().unwrap());
-    assert_eq!(core.state().job.jobs["ops"]["job-1"].status.as_str(), "done");
+    assert_eq!(
+        core.state().job.jobs["ops"]["job-1"].status.as_str(),
+        "done"
+    );
 }
 
 #[test]
@@ -109,11 +112,8 @@ fn app_remove_clears_job_state() {
         &["ops", "job-1", "work", r#"[]"#, "", "1000"],
     ))
     .unwrap();
-    core.dispatch(Request::trusted_host(
-        "app.remove",
-        vec!["ops".into()],
-    ))
-    .unwrap();
+    core.dispatch(Request::trusted_host("app.remove", vec!["ops".into()]))
+        .unwrap();
     assert!(!core.state().job.jobs.contains_key("ops"));
     assert!(core.replay_matches().unwrap());
 }

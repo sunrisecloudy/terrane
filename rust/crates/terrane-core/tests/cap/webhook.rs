@@ -42,21 +42,19 @@ fn webhook_register_rotate_ingest_redacts_and_replays() {
     core.dispatch(req("app.add", &["receiver", "Receiver"]))
         .unwrap();
 
-    core.dispatch(req(
-        "webhook.register",
-        &["receiver", "github", "receive"],
-    ))
-    .unwrap();
+    core.dispatch(req("webhook.register", &["receiver", "github", "receive"]))
+        .unwrap();
     assert_eq!(
         core.state().webhook.routes["receiver"]["github"].token,
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
-    assert_eq!(core.state().webhook.routes["receiver"]["github"].verb, "receive");
+    assert_eq!(
+        core.state().webhook.routes["receiver"]["github"].verb,
+        "receive"
+    );
 
     let delivery = r#"{"app":"receiver","name":"github","token":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","method":"POST","headers":{"Authorization":"Bearer secret","X-Hub-Signature-256":"sha256=abc","X-Api-Key":"plain-secret"},"body":"{\"ok\":true}","body_mime":"application/json","received_at":123}"#;
-    let records = core
-        .dispatch(req("webhook.ingest", &[delivery]))
-        .unwrap();
+    let records = core.dispatch(req("webhook.ingest", &[delivery])).unwrap();
     assert_eq!(records[0].kind, "webhook.received");
     let received = terrane_cap_webhook::decode_delivery(&records[0]).unwrap();
     assert_eq!(
@@ -87,7 +85,10 @@ fn webhook_register_rotate_ingest_redacts_and_replays() {
     ));
 
     assert!(core.replay_matches().unwrap());
-    assert_eq!(Core::open(&log).unwrap().state().webhook, core.state().webhook);
+    assert_eq!(
+        Core::open(&log).unwrap().state().webhook,
+        core.state().webhook
+    );
 }
 
 #[test]
@@ -107,11 +108,8 @@ fn webhook_validation_and_app_removed_are_replay_safe() {
         Err(Error::AppNotFound(_))
     ));
 
-    core.dispatch(req(
-        "webhook.register",
-        &["receiver", "github", "receive"],
-    ))
-    .unwrap();
+    core.dispatch(req("webhook.register", &["receiver", "github", "receive"]))
+        .unwrap();
     assert!(core.state().webhook.routes.contains_key("receiver"));
     core.dispatch(req("app.remove", &["receiver"])).unwrap();
     assert!(!core.state().webhook.routes.contains_key("receiver"));

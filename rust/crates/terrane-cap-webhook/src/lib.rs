@@ -367,7 +367,11 @@ fn decide_register(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
             "webhook hooks per app must be <= {MAX_HOOKS_PER_APP}"
         )));
     }
-    Ok(Decision::Effect(Effect::WebhookRegister { app, name, verb }))
+    Ok(Decision::Effect(Effect::WebhookRegister {
+        app,
+        name,
+        verb,
+    }))
 }
 
 fn decide_rotate(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
@@ -413,10 +417,13 @@ pub fn prepare_delivery(state: &dyn StateStore, raw: &str) -> Result<WebhookDeli
     let token = string_field(obj, "token")?;
     let method = string_field(obj, "method")?.to_ascii_uppercase();
     let received_at = u64_field(obj, "received_at")?;
-    let mime = optional_string_field(obj, "body_mime")?.unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime = optional_string_field(obj, "body_mime")?
+        .unwrap_or_else(|| "application/octet-stream".to_string());
     validate_name(&name)?;
     if method != "POST" {
-        return Err(Error::InvalidInput("webhook.ingest only accepts POST deliveries".into()));
+        return Err(Error::InvalidInput(
+            "webhook.ingest only accepts POST deliveries".into(),
+        ));
     }
 
     let state_ref = state_ref::<WebhookState>(state, "webhook")?;

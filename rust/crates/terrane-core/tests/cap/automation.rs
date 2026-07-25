@@ -132,9 +132,7 @@ fn automation_validation_rejects_unknown_event_bad_filter_and_cross_app_without_
         ))
         .unwrap_err();
     assert!(
-        cross
-            .to_string()
-            .contains("requires grant kv on mailbox"),
+        cross.to_string().contains("requires grant kv on mailbox"),
         "{cross}"
     );
 

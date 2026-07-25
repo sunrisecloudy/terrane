@@ -147,10 +147,13 @@ impl Capability for PersonCapability {
                 let kind = validate_attestation_kind(&arg(args, 1, "kind")?)?;
                 let claim = validate_claim(&arg(args, 2, "claim")?)?;
                 let state = state_ref::<PersonState>(ctx.state, "person")?;
-                let person = state.persons.get(&person_id).ok_or_else(|| {
-                    Error::InvalidInput(format!("unknown person: {person_id}"))
-                })?;
-                if !person.attestations.contains_key(&attestation_key(&kind, &claim))
+                let person = state
+                    .persons
+                    .get(&person_id)
+                    .ok_or_else(|| Error::InvalidInput(format!("unknown person: {person_id}")))?;
+                if !person
+                    .attestations
+                    .contains_key(&attestation_key(&kind, &claim))
                     && person.attestations.len() >= MAX_ATTESTATIONS_PER_PERSON
                 {
                     return Err(Error::InvalidInput(format!(
@@ -171,9 +174,7 @@ impl Capability for PersonCapability {
                     .persons
                     .contains_key(&person_id)
                 {
-                    return Err(Error::InvalidInput(format!(
-                        "unknown person: {person_id}"
-                    )));
+                    return Err(Error::InvalidInput(format!("unknown person: {person_id}")));
                 }
                 Ok(Decision::Commit(vec![attestation_revoked_event(
                     &person_id, &kind, &claim,
@@ -185,13 +186,9 @@ impl Capability for PersonCapability {
                     .persons
                     .contains_key(&person_id)
                 {
-                    return Err(Error::InvalidInput(format!(
-                        "unknown person: {person_id}"
-                    )));
+                    return Err(Error::InvalidInput(format!("unknown person: {person_id}")));
                 }
-                Ok(Decision::Effect(Effect::PersonRotate {
-                    person_id,
-                }))
+                Ok(Decision::Effect(Effect::PersonRotate { person_id }))
             }
             other => Err(Error::InvalidInput(format!("unknown command: {other}"))),
         }
@@ -249,7 +246,9 @@ impl Capability for PersonCapability {
                 let person = state_mut::<PersonState>(state, "person")?
                     .persons
                     .get_mut(&e.person_id)
-                    .ok_or_else(|| Error::InvalidInput(format!("unknown person: {}", e.person_id)))?;
+                    .ok_or_else(|| {
+                        Error::InvalidInput(format!("unknown person: {}", e.person_id))
+                    })?;
                 verify_attestation_sig(&person.pubkey, &e.person_id, &e.kind, &e.claim, &e.sig)?;
                 person.attestations.insert(
                     attestation_key(&e.kind, &e.claim),
@@ -266,8 +265,13 @@ impl Capability for PersonCapability {
                 let person = state_mut::<PersonState>(state, "person")?
                     .persons
                     .get_mut(&e.person_id)
-                    .ok_or_else(|| Error::InvalidInput(format!("unknown person: {}", e.person_id)))?;
-                if let Some(attestation) = person.attestations.get_mut(&attestation_key(&e.kind, &e.claim)) {
+                    .ok_or_else(|| {
+                        Error::InvalidInput(format!("unknown person: {}", e.person_id))
+                    })?;
+                if let Some(attestation) = person
+                    .attestations
+                    .get_mut(&attestation_key(&e.kind, &e.claim))
+                {
                     attestation.revoked = true;
                 }
             }
@@ -305,9 +309,12 @@ impl Capability for PersonCapability {
             "person.attested" => decode_event::<Attested>(record)
                 .ok()
                 .map(|e| format!("person.attested {} {}={}", e.person_id, e.kind, e.claim)),
-            "person.attestation-revoked" => decode_event::<Revoked>(record)
-                .ok()
-                .map(|e| format!("person.attestation-revoked {} {}={}", e.person_id, e.kind, e.claim)),
+            "person.attestation-revoked" => decode_event::<Revoked>(record).ok().map(|e| {
+                format!(
+                    "person.attestation-revoked {} {}={}",
+                    e.person_id, e.kind, e.claim
+                )
+            }),
             "person.rotated" => decode_event::<Rotated>(record)
                 .ok()
                 .map(|e| format!("person.rotated {}", e.old)),
@@ -411,9 +418,7 @@ pub fn verify_rotation_sig(person: &PersonRecord, new_pubkey: &str, sig: &str) -
 }
 
 pub fn validate_person_id(person_id: &str) -> Result<String> {
-    if person_id.len() != PERSON_ID_HEX_LEN
-        || !person_id.bytes().all(|b| b.is_ascii_hexdigit())
-    {
+    if person_id.len() != PERSON_ID_HEX_LEN || !person_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(Error::InvalidInput(format!(
             "person_id must be {PERSON_ID_HEX_LEN} hex chars"
         )));
@@ -441,7 +446,9 @@ pub fn validate_attestation_kind(kind: &str) -> Result<String> {
 pub fn validate_claim(claim: &str) -> Result<String> {
     let claim = claim.trim();
     if claim.is_empty() {
-        return Err(Error::InvalidInput("attestation claim must not be empty".into()));
+        return Err(Error::InvalidInput(
+            "attestation claim must not be empty".into(),
+        ));
     }
     if claim.len() > MAX_CLAIM_LEN {
         return Err(Error::InvalidInput(format!(

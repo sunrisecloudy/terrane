@@ -73,7 +73,9 @@ fn geo_current_records_rounded_observation_and_replays() {
     let mut core = Core::open_with(dir.path().join("log.bin"), GeoEdge).unwrap();
     add_geo_app(&mut core, dir.path(), "map", backend);
 
-    let records = core.dispatch(req("js-runtime.run", &["map", "go"])).unwrap();
+    let records = core
+        .dispatch(req("js-runtime.run", &["map", "go"]))
+        .unwrap();
 
     assert_eq!(
         records.iter().filter(|r| r.kind == "geo.observed").count(),
@@ -83,7 +85,10 @@ fn geo_current_records_rounded_observation_and_replays() {
     let output = core.take_last_output().unwrap();
     assert!(output.contains(r#""precision":"coarse""#), "out: {output}");
     assert!(output.contains(r#""accuracy_m":1000"#), "out: {output}");
-    assert_eq!(core.state().geo.fixes["map"].back().unwrap().lat_e7, 137_700_000);
+    assert_eq!(
+        core.state().geo.fixes["map"].back().unwrap().lat_e7,
+        137_700_000
+    );
     assert!(core.replay_matches().unwrap());
 }
 
@@ -98,10 +103,18 @@ fn geo_peek_returns_value_but_records_nothing() {
     let mut core = Core::open_with(dir.path().join("log.bin"), GeoEdge).unwrap();
     add_geo_app(&mut core, dir.path(), "peek", backend);
 
-    let records = core.dispatch(req("js-runtime.run", &["peek", "go"])).unwrap();
+    let records = core
+        .dispatch(req("js-runtime.run", &["peek", "go"]))
+        .unwrap();
 
-    assert!(core.take_last_output().unwrap().contains(r#""precision":"exact""#));
-    assert!(records.is_empty(), "geo.peek must record nothing: {records:?}");
+    assert!(core
+        .take_last_output()
+        .unwrap()
+        .contains(r#""precision":"exact""#));
+    assert!(
+        records.is_empty(),
+        "geo.peek must record nothing: {records:?}"
+    );
     assert!(core.state().geo.fixes.is_empty());
     assert!(core.replay_matches().unwrap());
 }
@@ -127,9 +140,7 @@ fn geo_fold_replay_identity_truncation_rate_limit_and_app_removed() {
     let mut state = State::default();
     let mut records = Vec::new();
     for i in 0..21 {
-        records.push(
-            observed_event("demo", i, i + 10, 5, "exact", i as u64 * 10_000).unwrap(),
-        );
+        records.push(observed_event("demo", i, i + 10, 5, "exact", i as u64 * 10_000).unwrap());
     }
     fold_records_in_memory(&mut state, &records).unwrap();
     assert_eq!(state.geo.fixes["demo"].len(), 20);

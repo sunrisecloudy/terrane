@@ -538,6 +538,25 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
              its own conversation context).",
         ), "string | null"),
         with_returns(resource_method(
+            "chatThread",
+            "call",
+            &[
+                param("thread", "The conversation thread identity.", "string"),
+                param("prompt", "The next user message.", "string"),
+            ],
+            "Like chat, but keeps conversation context isolated to the named thread.",
+        ), "string | null"),
+        with_returns(resource_method(
+            "chatThreadModel",
+            "call",
+            &[
+                param("thread", "The conversation thread identity.", "string"),
+                param("model", "A registered local model id.", "model_id"),
+                param("prompt", "The next user message.", "string"),
+            ],
+            "Like chatThread, but uses an explicitly named registered model.",
+        ), "string | null"),
+        with_returns(resource_method(
             "embed",
             "call",
             &[param("text", "Document-side text to encode.", "string")],
@@ -584,6 +603,16 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
             &[],
             "Start a fresh conversation: clears this app's recorded transcript so the \
              next chat call has no prior context.",
+        ), "\"ok\""),
+        with_returns(resource_method(
+            "resetChatThread",
+            "call",
+            &[param(
+                "thread",
+                "The conversation thread identity to clear.",
+                "string",
+            )],
+            "Clear the recorded transcript for one named conversation thread.",
         ), "\"ok\""),
         with_returns(resource_method(
             "models",

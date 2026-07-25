@@ -25,7 +25,8 @@ fn wav_fixture() -> Option<PathBuf> {
             return Some(PathBuf::from(path));
         }
     }
-    let default = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-16k-mono.wav");
+    let default =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-16k-mono.wav");
     if default.is_file() {
         return Some(default);
     }

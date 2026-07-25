@@ -56,7 +56,10 @@ fn commit(
     name: &str,
     args: &[&str],
 ) -> Vec<EventRecord> {
-    let args = args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>();
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
     let records = match cap
         .decide(
             CommandCtx {
@@ -104,10 +107,7 @@ fn set_fire_and_replay_rebuild_identical_state() {
         "automation.fire",
         &["mailbox", "summarize", &hash, "event-1", "2000"],
     ));
-    assert_eq!(
-        state.automation.rules["mailbox"]["summarize"].fire_count,
-        1
-    );
+    assert_eq!(state.automation.rules["mailbox"]["summarize"].fire_count, 1);
 
     let mut replayed = TestState::default();
     for record in &log {
@@ -160,9 +160,7 @@ fn matcher_filters_kv_payloads() {
         .is_empty());
     let hit = terrane_cap_kv::set_event("mailbox", "inbox/1", "new").unwrap();
     assert_eq!(
-        matching_rules(&state.automation, &hit, 2000)
-            .unwrap()
-            .len(),
+        matching_rules(&state.automation, &hit, 2000).unwrap().len(),
         1
     );
 }

@@ -36,12 +36,25 @@ fn presence_publish_records_nothing_and_replays() {
     );
     let (ok, out, err) = terrane(
         home,
-        &["app", "add", "presence-app", "Presence", "--source", &source],
+        &[
+            "app",
+            "add",
+            "presence-app",
+            "Presence",
+            "--source",
+            &source,
+        ],
     );
     assert!(ok, "app add failed: {out} {err}");
     let (ok, out, err) = terrane(
         home,
-        &["auth", "grant", "user:local-owner", "presence-app", "presence"],
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "presence-app",
+            "presence",
+        ],
     );
     assert!(ok, "auth grant failed: {out} {err}");
 
@@ -53,7 +66,10 @@ fn presence_publish_records_nothing_and_replays() {
     assert!(ok, "log failed: {err}");
     assert!(!log.contains("PresencePublish"), "log leaked effect: {log}");
     assert!(!log.contains(r#""x":1"#), "log leaked payload: {log}");
-    assert!(!log.contains("presence.publish"), "log recorded publish: {log}");
+    assert!(
+        !log.contains("presence.publish"),
+        "log recorded publish: {log}"
+    );
 
     let (ok, out, err) = terrane(home, &["run", "presence-app", "peers"]);
     assert!(ok, "peers failed: {out} {err}");
@@ -82,12 +98,25 @@ fn presence_publish_rate_limit_surfaces_error_without_queueing() {
     );
     let (ok, out, err) = terrane(
         home,
-        &["app", "add", "presence-burst", "Presence", "--source", &source],
+        &[
+            "app",
+            "add",
+            "presence-burst",
+            "Presence",
+            "--source",
+            &source,
+        ],
     );
     assert!(ok, "app add failed: {out} {err}");
     terrane(
         home,
-        &["auth", "grant", "user:local-owner", "presence-burst", "presence"],
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "presence-burst",
+            "presence",
+        ],
     );
 
     let (ok, out, err) = terrane(home, &["run", "presence-burst", "burst"]);

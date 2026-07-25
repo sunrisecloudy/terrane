@@ -94,7 +94,10 @@ fn import_is_idempotent_and_deterministic() {
     let outcome_b = import_i18n_dir(&mut core_b, root.path()).unwrap();
 
     assert_eq!(outcome_a, outcome_b);
-    assert_eq!(core_a.state().kv.data[PUBLIC_BUCKET_APP_ID], core_b.state().kv.data[PUBLIC_BUCKET_APP_ID]);
+    assert_eq!(
+        core_a.state().kv.data[PUBLIC_BUCKET_APP_ID],
+        core_b.state().kv.data[PUBLIC_BUCKET_APP_ID]
+    );
 
     // Re-importing the same root into the same core keeps state identical.
     let before = core_a.state().kv.data[PUBLIC_BUCKET_APP_ID].clone();
@@ -107,22 +110,26 @@ fn import_keys_are_sorted_within_the_committed_event_batch() {
     let home = tempdir().unwrap();
     let root = tempdir().unwrap();
     // Deliberately unsorted keys across files; the merged payload must be sorted.
-    write_catalog(&root.path().join("i18n/system/en.json"), &[("zebra", "z"), ("alpha", "a")]);
-    write_catalog(&root.path().join("apps/beta/i18n/en.json"), &[("mango", "m")]);
+    write_catalog(
+        &root.path().join("i18n/system/en.json"),
+        &[("zebra", "z"), ("alpha", "a")],
+    );
+    write_catalog(
+        &root.path().join("apps/beta/i18n/en.json"),
+        &[("mango", "m")],
+    );
 
     let mut core = open_at_home(home.path()).unwrap();
     import_i18n_dir(&mut core, root.path()).unwrap();
 
     // BTreeMap-backed state iterates sorted; verify the keys come out ordered.
-    let keys: Vec<&String> = core
-        .state()
-        .kv
-        .data[PUBLIC_BUCKET_APP_ID]
-        .keys()
-        .collect();
+    let keys: Vec<&String> = core.state().kv.data[PUBLIC_BUCKET_APP_ID].keys().collect();
     let mut sorted = keys.clone();
     sorted.sort();
-    assert_eq!(keys, sorted, "public bucket keys must be stored in sorted order");
+    assert_eq!(
+        keys, sorted,
+        "public bucket keys must be stored in sorted order"
+    );
 }
 
 #[test]
@@ -152,11 +159,7 @@ fn import_rejects_non_string_values() {
     let root = tempdir().unwrap();
     fs::create_dir_all(root.path().join("i18n/system")).unwrap();
     // A number value is not a flat string map.
-    fs::write(
-        root.path().join("i18n/system/en.json"),
-        r#"{"count":1}"#,
-    )
-    .unwrap();
+    fs::write(root.path().join("i18n/system/en.json"), r#"{"count":1}"#).unwrap();
 
     let mut core = open_at_home(home.path()).unwrap();
     let err = import_i18n_dir(&mut core, root.path()).unwrap_err();
@@ -184,7 +187,10 @@ fn import_canonicalizes_language_code_casing() {
     let home = tempdir().unwrap();
     let root = tempdir().unwrap();
     // Lowercase filename; the public key must use the canonical spelling.
-    write_catalog(&root.path().join("i18n/system/zh-hans.json"), &[("hi", "你好")]);
+    write_catalog(
+        &root.path().join("i18n/system/zh-hans.json"),
+        &[("hi", "你好")],
+    );
 
     let mut core = open_at_home(home.path()).unwrap();
     import_i18n_dir(&mut core, root.path()).unwrap();
@@ -200,8 +206,8 @@ fn import_canonicalizes_language_code_casing() {
 
 #[test]
 fn imported_strings_readable_through_public_resource_read() {
-    use terrane_core::{ExecutionPrincipal, ReadValue, RuntimeHost};
     use terrane_core::RuntimeResourceHost;
+    use terrane_core::{ExecutionPrincipal, ReadValue, RuntimeHost};
 
     let home = tempdir().unwrap();
     let root = tempdir().unwrap();
@@ -345,8 +351,7 @@ fn ffi_i18n_import_seeds_public_bucket_via_handle() {
     let path_c = CString::new(root.path().to_str().unwrap()).unwrap();
     let mut out = ptr::null_mut();
     let mut err = ptr::null_mut();
-    let code =
-        unsafe { ffi::terrane_i18n_import(handle, path_c.as_ptr(), &mut out, &mut err) };
+    let code = unsafe { ffi::terrane_i18n_import(handle, path_c.as_ptr(), &mut out, &mut err) };
     assert_eq!(code, ffi::TERRANE_OK, "stderr: {}", unsafe {
         take_string(err)
     });
@@ -371,8 +376,7 @@ fn ffi_i18n_import_seeds_public_bucket_via_handle() {
 fn repo_seed_catalogs_import_cleanly() {
     // Imports the real checked-in catalogs under the repo root, proving the
     // seed pipeline is valid and guarding them against drift.
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../");
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../");
     let root = root.canonicalize().expect("repo root exists");
 
     let home = tempdir().unwrap();

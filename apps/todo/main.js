@@ -6,6 +6,7 @@
 //
 //   seq        -> highest id ever allocated, as a decimal string
 //   item:<id>  -> the todo text for that id
+//   done:<id>  -> completed todo text (new; existing live todos are unchanged)
 //
 // The app is a `description` + an `actions` table; the runtime synthesizes
 // `handle`, the `__actions__` self-description, usage, and unknown-verb help. The
@@ -16,6 +17,7 @@ var kv = ctx.resource.kv;
 
 var SEQ_KEY = "seq";
 var ITEM_PREFIX = "item:";
+var DONE_PREFIX = "done:";
 
 // Read the id counter (0 if unset). Stored as a string; parse defensively.
 function readSeq() {
@@ -41,6 +43,19 @@ function readItems() {
   items.sort(function (a, b) {
     return a.id - b.id;
   });
+  return items;
+}
+
+function readDoneItems() {
+  var all = kv.all();
+  var items = [];
+  for (var key in all) {
+    if (!Object.prototype.hasOwnProperty.call(all, key)) continue;
+    if (key.indexOf(DONE_PREFIX) !== 0) continue;
+    var id = parseInt(key.slice(DONE_PREFIX.length), 10);
+    if (!isNaN(id)) items.push({ id: id, text: all[key] });
+  }
+  items.sort(function (a, b) { return a.id - b.id; });
   return items;
 }
 
@@ -79,7 +94,7 @@ var actions = {
   },
 
   done: {
-    summary: "Remove a todo by its id.",
+    summary: "Complete a todo by its id.",
     args: [{ name: "id", required: true, summary: "the #id shown by `list`" }],
     returns: 'a confirmation line, e.g. "done #1"',
     run: function (args, usage) {
@@ -87,6 +102,7 @@ var actions = {
       if (isNaN(id)) return usage();
       var key = ITEM_PREFIX + id;
       if (kv.get(key) == null) return "no todo #" + id;
+      kv.set(DONE_PREFIX + id, kv.get(key));
       kv.rm(key);
       return "done #" + id;
     },
@@ -94,10 +110,26 @@ var actions = {
 
   items: {
     summary: "The live todos as a JSON array (for the UI).",
-    args: [],
+    args: [{ name: "view", required: false, summary: "open or completed" }],
     returns: 'a JSON array, e.g. [{"id":1,"text":"buy milk"}]',
-    run: function () {
-      return JSON.stringify(readItems());
+    run: function (args) {
+      return JSON.stringify(args[0] === "completed" ? readDoneItems() : readItems());
+    },
+  },
+
+  restore: {
+    summary: "Restore a completed todo to the open list.",
+    args: [{ name: "id", required: true }],
+    returns: "a confirmation line.",
+    run: function (args, usage) {
+      var id = parseInt(args[0], 10);
+      if (isNaN(id)) return usage();
+      var key = DONE_PREFIX + id;
+      var text = kv.get(key);
+      if (text == null) return "no completed todo #" + id;
+      kv.set(ITEM_PREFIX + id, text);
+      kv.rm(key);
+      return "restored #" + id;
     },
   },
 

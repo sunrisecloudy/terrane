@@ -191,7 +191,9 @@ impl Capability for BrowserCapability {
                 let record = records
                     .iter()
                     .find(|record| record.kind == "browser.rendered")
-                    .ok_or_else(|| Error::Runtime(format!("browser.{method} produced no render")))?;
+                    .ok_or_else(|| {
+                        Error::Runtime(format!("browser.{method} produced no render"))
+                    })?;
                 let (_, request_key, render) = decode_recorded_render(record)?;
                 if render.body_kind == "inline" {
                     return Ok(ReadValue::OptString(Some(render.body)));

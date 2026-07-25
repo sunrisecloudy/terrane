@@ -7,8 +7,8 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, restore_state,
     snapshot_state, state_mut, state_ref, CapManifest, Capability, CommandCtx, CommandSpec,
-    Decision, Effect, Error, EventPattern, EventRecord, EventSpec, QueryCtx, QuerySpec,
-    QueryValue, Result, StateStore,
+    Decision, Effect, Error, EventPattern, EventRecord, EventSpec, QueryCtx, QuerySpec, QueryValue,
+    Result, StateStore,
 };
 
 mod doc;
@@ -70,7 +70,9 @@ impl Capability for ShareCapability {
     fn manifest(&self) -> CapManifest {
         CapManifest {
             commands: vec![
-                CommandSpec { name: "share.invite" },
+                CommandSpec {
+                    name: "share.invite",
+                },
                 CommandSpec {
                     name: "share.redeem",
                 },
@@ -247,7 +249,11 @@ fn decide_invite(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {
         )?]));
     }
 
-    Ok(Decision::Effect(Effect::NewInviteToken { app, rights, note }))
+    Ok(Decision::Effect(Effect::NewInviteToken {
+        app,
+        rights,
+        note,
+    }))
 }
 
 fn decide_redeem(ctx: CommandCtx<'_>, args: &[String]) -> Result<Decision> {

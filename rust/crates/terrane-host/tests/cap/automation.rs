@@ -61,7 +61,13 @@ fn automation_tick_fires_matching_kv_event_runs_backend_and_replays() {
     for namespace in ["automation", "kv"] {
         let (ok, _, err) = terrane(
             home,
-            &["auth", "grant", "user:local-owner", "automation-app", namespace],
+            &[
+                "auth",
+                "grant",
+                "user:local-owner",
+                "automation-app",
+                namespace,
+            ],
         );
         assert!(ok, "{namespace} grant failed: {err}");
     }
@@ -173,7 +179,10 @@ fn automation_tick_records_suppression_when_fire_budget_is_exhausted() {
 
     let (ok, out, err) = terrane(home, &["automation", "tick", "--now-ms", "2000"]);
     assert!(ok, "automation tick failed: {err}");
-    assert!(out.contains("suppressed 1 automation fire(s)"), "out: {out}");
+    assert!(
+        out.contains("suppressed 1 automation fire(s)"),
+        "out: {out}"
+    );
 
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");

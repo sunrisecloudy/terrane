@@ -1,0 +1,9 @@
+{
+  "id": "tomorrow",
+  "name": "Tomorrow",
+  "runtime": "js",
+  "backend": "main.js",
+  "ui": "index.html",
+  "icon": "icon.svg",
+  "resources": ["kv"]
+}

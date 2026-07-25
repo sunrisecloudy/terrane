@@ -7,9 +7,9 @@ use serde_json::{Map, Value};
 use sha2::{Digest as _, Sha256};
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
-    AppId, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error,
-    EventPattern, EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, ReadValue,
-    RecordedCallCap, ResourceMethod, Result, StateStore, LOCAL_OWNER_SUBJECT,
+    AppId, CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern,
+    EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, ReadValue, RecordedCallCap,
+    ResourceMethod, Result, StateStore, LOCAL_OWNER_SUBJECT,
 };
 
 mod doc;
@@ -240,7 +240,9 @@ impl Capability for McpClientCapability {
     fn manifest(&self) -> CapManifest {
         CapManifest {
             commands: vec![
-                CommandSpec { name: "mcp.connect" },
+                CommandSpec {
+                    name: "mcp.connect",
+                },
                 CommandSpec {
                     name: "mcp.disconnect",
                 },
@@ -295,7 +297,9 @@ impl Capability for McpClientCapability {
                         "mcp connection limit exceeded: max {MAX_CONNECTIONS}"
                     )));
                 }
-                Ok(Decision::Commit(vec![connected_event(&conn_name, &transport)?]))
+                Ok(Decision::Commit(vec![connected_event(
+                    &conn_name, &transport,
+                )?]))
             }
             "mcp.disconnect" => {
                 let conn_name = validate_name(&arg(args, 0, "name")?)?;
@@ -406,7 +410,9 @@ impl Capability for McpClientCapability {
                 let record = records
                     .iter()
                     .find(|record| record.kind == "mcp.called")
-                    .ok_or_else(|| Error::Runtime("mcp.tools produced no transient result".into()))?;
+                    .ok_or_else(|| {
+                        Error::Runtime("mcp.tools produced no transient result".into())
+                    })?;
                 let e: Called = decode_event(record)?;
                 Ok(ReadValue::OptString(Some(e.result)))
             }
@@ -471,7 +477,9 @@ fn validate_stdio(value: &Value) -> Result<()> {
             .ok_or_else(|| Error::InvalidInput("stdio env must be an object".into()))?;
         for (name, value) in env {
             if name.trim().is_empty() {
-                return Err(Error::InvalidInput("stdio env names must not be empty".into()));
+                return Err(Error::InvalidInput(
+                    "stdio env names must not be empty".into(),
+                ));
             }
             validate_string_or_secret(value, "stdio env value")?;
         }
@@ -495,7 +503,9 @@ fn validate_http(value: &Value) -> Result<()> {
             .ok_or_else(|| Error::InvalidInput("http headers must be an object".into()))?;
         for (name, value) in headers {
             if name.trim().is_empty() {
-                return Err(Error::InvalidInput("http header names must not be empty".into()));
+                return Err(Error::InvalidInput(
+                    "http header names must not be empty".into(),
+                ));
             }
             validate_string_or_secret(value, "http header value")?;
         }

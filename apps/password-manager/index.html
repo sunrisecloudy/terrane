@@ -121,6 +121,7 @@
 
     <script>
       var SESSION = null; // in-memory only; never persisted. Cleared on lock/reload.
+      var selectedFolder = "";
       var el = function (id) { return document.getElementById(id); };
       var modalRoot = el("modal-root");
 
@@ -230,6 +231,7 @@
         el("lock").classList.add("hidden");
         el("vault").classList.remove("hidden");
         el("topbar").classList.remove("hidden");
+        refreshVaultSidebar();
         loadItems("");
       }
 
@@ -240,6 +242,10 @@
         el("topbar").classList.add("hidden");
         el("lock").classList.remove("hidden");
         el("items").textContent = "";
+        selectedFolder = "";
+        if (window.terrane && typeof window.terrane.setSidebarSection === "function") {
+          window.terrane.setSidebarSection(null).catch(function () {});
+        }
         boot();
       }
 
@@ -247,9 +253,36 @@
       function loadItems(query) {
         var call = query
           ? inv("search", SESSION, query)
-          : inv("list", SESSION);
+          : selectedFolder
+            ? inv("list", SESSION, selectedFolder)
+            : inv("list", SESSION);
         call.then(function (res) {
           renderItems(res.items || []);
+        }).catch(handleAuthErr);
+      }
+
+      function refreshVaultSidebar() {
+        if (!SESSION || !window.terrane || typeof window.terrane.setSidebarSection !== "function") {
+          return;
+        }
+        inv("folder-list", SESSION).then(function (res) {
+          var items = [{
+            id: "all",
+            title: "All items",
+            systemImage: "key",
+          }].concat((res.folders || []).map(function (folder) {
+            return {
+              id: "folder:" + folder.id,
+              title: folder.name || "Untitled folder",
+              systemImage: "folder",
+            };
+          }));
+          return window.terrane.setSidebarSection({
+            title: "Vault",
+            items: items,
+            selectedItemId: selectedFolder ? "folder:" + selectedFolder : "all",
+            createLabel: "New folder",
+          });
         }).catch(handleAuthErr);
       }
 
@@ -586,6 +619,26 @@
         clearTimeout(el("search")._t);
         el("search")._t = setTimeout(function () { loadItems(el("search").value.trim()); }, 200);
       });
+
+      if (window.terrane && typeof window.terrane.onSidebarItemSelect === "function") {
+        window.terrane.onSidebarItemSelect(function (id) {
+          if (!SESSION) return;
+          selectedFolder = id.indexOf("folder:") === 0 ? id.slice(7) : "";
+          el("search").value = "";
+          refreshVaultSidebar();
+          loadItems("");
+        });
+      }
+      if (window.terrane && typeof window.terrane.onSidebarCreate === "function") {
+        window.terrane.onSidebarCreate(function () {
+          if (!SESSION) return;
+          var name = window.prompt("Folder name");
+          if (!name || !name.trim()) return;
+          inv("folder-add", SESSION, name.trim()).then(function () {
+            refreshVaultSidebar();
+          }).catch(handleAuthErr);
+        });
+      }
 
       boot();
     </script>

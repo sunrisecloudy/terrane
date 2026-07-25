@@ -172,6 +172,7 @@ fn default_registry_exposes_registered_grant_resource_namespaces() {
             "build",
             "common",
             "connection",
+            "control-room",
             "crdt",
             "crypto",
             "document",
@@ -291,6 +292,8 @@ fn registry_bus_exposes_app_exists_and_replica_peer_queries() {
             history: Vec::new(),
             interfaces: terrane_cap_app::mandatory_interfaces(),
             links: Vec::new(),
+            required_capabilities: Vec::new(),
+            requirements_resolved: true,
         },
     );
 

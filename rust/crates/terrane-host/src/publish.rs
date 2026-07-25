@@ -62,7 +62,8 @@ pub fn export_app_archive(
     let manifest = crate::edge::manifest_from_files(&files)?;
     let version = manifest.version.clone();
     let bundle_hash = crate::edge::bundle_hash(&files)?;
-    let (pubkey, signature) = sign_archive_metadata(&home, core.state(), app, &version, &bundle_hash)?;
+    let (pubkey, signature) =
+        sign_archive_metadata(&home, core.state(), app, &version, &bundle_hash)?;
     let publisher_label = publisher_label(core.state());
     let replica_peer = core
         .state()
@@ -83,7 +84,10 @@ pub fn export_app_archive(
     let path = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from(format!("{app}-{version}.terrane")));
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
         fs::create_dir_all(parent).map_err(|e| {
             Error::Storage(format!("create export directory {}: {e}", parent.display()))
         })?;
@@ -119,7 +123,11 @@ pub fn install_signed_bundle(
     }
 
     let mut records = Vec::new();
-    if !state.publish.trusted.contains_key(&verified.publisher_pubkey) {
+    if !state
+        .publish
+        .trusted
+        .contains_key(&verified.publisher_pubkey)
+    {
         records.push(terrane_cap_publish::trusted_event(
             verified.publisher_pubkey.clone(),
             verified.publisher_label.clone(),
@@ -160,12 +168,10 @@ fn sign_archive_metadata(
     version: &str,
     bundle_hash: &str,
 ) -> Result<(String, String)> {
-    let person_id = state
-        .person
-        .persons
-        .keys()
-        .next()
-        .ok_or_else(|| Error::Runtime("publish export requires a local person identity".into()))?;
+    let person_id =
+        state.person.persons.keys().next().ok_or_else(|| {
+            Error::Runtime("publish export requires a local person identity".into())
+        })?;
     let signing = crate::edge::load_person_key(home, person_id)?;
     let signature = signing.sign(&signing_message(bundle_hash, app, version));
     Ok((
@@ -204,7 +210,9 @@ fn verify_archive(bytes: &[u8]) -> Result<VerifiedArchive> {
     let replica_peer = publisher
         .get("replicaPeer")
         .and_then(Value::as_str)
-        .ok_or_else(|| Error::InvalidInput("publish.json publisher.replicaPeer is required".into()))?;
+        .ok_or_else(|| {
+            Error::InvalidInput("publish.json publisher.replicaPeer is required".into())
+        })?;
     let signature = json_str(&meta, "signature")?.to_string();
 
     terrane_cap_publish::validate_pubkey(&publisher_pubkey)?;
@@ -233,7 +241,11 @@ fn verify_archive(bytes: &[u8]) -> Result<VerifiedArchive> {
             "publish bundleHash mismatch: expected {bundle_hash}, got {actual_hash}"
         )));
     }
-    verify_signature(&publisher_pubkey, &signature, &signing_message(&bundle_hash, &app, &version))?;
+    verify_signature(
+        &publisher_pubkey,
+        &signature,
+        &signing_message(&bundle_hash, &app, &version),
+    )?;
     Ok(VerifiedArchive {
         files,
         app,
@@ -261,7 +273,9 @@ fn encode_publish_archive(files: &BTreeMap<String, String>, publish_json: &str) 
 
 fn decode_publish_archive(bytes: &[u8]) -> Result<BTreeMap<String, String>> {
     if !bytes.starts_with(ARCHIVE_HEADER) {
-        return Err(Error::InvalidInput("publish archive header mismatch".into()));
+        return Err(Error::InvalidInput(
+            "publish archive header mismatch".into(),
+        ));
     }
     crate::edge::decode_bundle_archive(&bytes[ARCHIVE_HEADER.len()..])
 }
@@ -356,8 +370,7 @@ fn json_u32(value: &Value, key: &str) -> Result<u32> {
         .get(key)
         .and_then(Value::as_u64)
         .ok_or_else(|| Error::InvalidInput(format!("publish.json {key} must be an integer")))?;
-    u32::try_from(raw)
-        .map_err(|_| Error::InvalidInput(format!("publish.json {key} is too large")))
+    u32::try_from(raw).map_err(|_| Error::InvalidInput(format!("publish.json {key} is too large")))
 }
 
 fn publisher_label(state: &State) -> String {

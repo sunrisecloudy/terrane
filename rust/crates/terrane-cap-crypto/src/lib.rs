@@ -23,7 +23,7 @@ mod resources;
 mod totp;
 mod vault;
 
-pub use generate::{password, passphrase, strength, PassphraseOptions, PasswordOptions};
+pub use generate::{passphrase, password, strength, PassphraseOptions, PasswordOptions};
 pub use primitives::{
     b64, derive_key, new_salt, open, random_id, seal, sha1_hex, unb64, verifier, verify_key,
     CryptoError, KdfParams, VaultKey, BLOB_VERSION, KEY_LEN, SALT_LEN, XNONCE_LEN,
@@ -32,8 +32,8 @@ pub use totp::{base32_decode, hotp, totp, Algorithm, TotpCode};
 pub use vault::{new_vault, unlock, VaultMeta};
 
 use terrane_cap_interface::{
-    CapManifest, Capability, CommandCtx, Decision, Error, EventRecord, GrantResourceSpec, ReadValue,
-    ResourceReadCtx, Result, StateStore,
+    CapManifest, Capability, CommandCtx, Decision, Error, EventRecord, GrantResourceSpec,
+    ReadValue, ResourceReadCtx, Result, StateStore,
 };
 
 /// The vault-crypto capability. Stateless struct: its only "state" is the

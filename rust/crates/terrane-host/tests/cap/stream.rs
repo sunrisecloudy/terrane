@@ -5,7 +5,7 @@ use std::path::Path;
 
 use tempfile::tempdir;
 
-use crate::helpers::terrane;
+use crate::helpers::{terrane, terrane_stdin};
 
 fn write_bundle(dir: &Path) -> String {
     let bundle = dir.join("streamer");
@@ -44,12 +44,24 @@ fn stream_cli_opens_ingests_delivers_reopens_closes_and_replays() {
         &["app", "add", "streamer", "Streamer", "--source", &source],
     );
     assert!(ok, "app add failed: {out} {err}");
-    terrane(home, &["auth", "grant", "user:local-owner", "streamer", "kv"]);
-    terrane(home, &["auth", "grant", "user:local-owner", "streamer", "stream"]);
-    terrane(home, &["auth", "grant", "user:local-owner", "streamer", "blob"]);
+    terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "streamer", "kv"],
+    );
+    terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "streamer", "stream"],
+    );
+    terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "streamer", "blob"],
+    );
 
     let request = r#"{"kind":"sse","url":"http://127.0.0.1/feed?token=secret","headers":{"Authorization":"Bearer raw"}}"#;
-    let (ok, out, err) = terrane(home, &["stream", "open", "streamer", "ticks", "onMessage", request]);
+    let (ok, out, err) = terrane(
+        home,
+        &["stream", "open", "streamer", "ticks", "onMessage", request],
+    );
     assert!(ok, "open failed: {out} {err}");
     assert!(out.contains("stream.opened"), "out: {out}");
 
@@ -104,14 +116,26 @@ fn stream_large_ingest_offloads_to_blob_metadata() {
         home,
         &["app", "add", "streamer", "Streamer", "--source", &source],
     );
-    terrane(home, &["auth", "grant", "user:local-owner", "streamer", "kv"]);
-    terrane(home, &["auth", "grant", "user:local-owner", "streamer", "stream"]);
-    terrane(home, &["auth", "grant", "user:local-owner", "streamer", "blob"]);
+    terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "streamer", "kv"],
+    );
+    terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "streamer", "stream"],
+    );
+    terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "streamer", "blob"],
+    );
     let request = r#"{"kind":"sse","url":"http://127.0.0.1/feed"}"#;
-    terrane(home, &["stream", "open", "streamer", "ticks", "onMessage", request]);
+    terrane(
+        home,
+        &["stream", "open", "streamer", "ticks", "onMessage", request],
+    );
 
     let large = "x".repeat(terrane_cap_stream::INLINE_TEXT_LIMIT + 1);
-    let (ok, out, err) = terrane(
+    let (ok, out, err) = terrane_stdin(
         home,
         &[
             "stream",
@@ -120,18 +144,25 @@ fn stream_large_ingest_offloads_to_blob_metadata() {
             "ticks",
             "--received-at",
             "1000",
-            &large,
+            "--stdin",
         ],
+        &large,
     );
     assert!(ok, "large ingest failed: {out} {err}");
     assert!(out.contains("__stream__/streamer/ticks/1"), "out: {out}");
 
     let (ok, blobs, err) = terrane(home, &["blob", "ls", "streamer", "__stream__/"]);
     assert!(ok, "blob ls failed: {blobs} {err}");
-    assert!(blobs.contains("__stream__/streamer/ticks/1"), "blobs: {blobs}");
+    assert!(
+        blobs.contains("__stream__/streamer/ticks/1"),
+        "blobs: {blobs}"
+    );
 
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
-    assert!(log.contains("stream.message streamer/ticks #1 blob"), "log: {log}");
+    assert!(
+        log.contains("stream.message streamer/ticks #1 blob"),
+        "log: {log}"
+    );
     assert!(!log.contains(&large), "log should not inline large data");
 }

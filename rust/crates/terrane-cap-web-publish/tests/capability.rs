@@ -14,15 +14,22 @@ fn web_publish_records_enable_disable_and_domain_facts() {
     let mut state = Store::default();
     let enabled = enabled_event("demo", PublishMode::Interactive, "demo-public").unwrap();
     cap.fold(&mut state, &enabled).unwrap();
-    cap.fold(&mut state, &domain_set_event("demo", "demo.example.com").unwrap())
-        .unwrap();
+    cap.fold(
+        &mut state,
+        &domain_set_event("demo", "demo.example.com").unwrap(),
+    )
+    .unwrap();
 
     let status = status_json(&state, &["demo".to_string()]).unwrap();
     assert!(status.contains(r#""enabled":true"#), "{status}");
     assert!(status.contains(r#""mode":"interactive""#), "{status}");
-    assert!(status.contains(r#""domain":"demo.example.com""#), "{status}");
+    assert!(
+        status.contains(r#""domain":"demo.example.com""#),
+        "{status}"
+    );
 
-    cap.fold(&mut state, &disabled_event("demo").unwrap()).unwrap();
+    cap.fold(&mut state, &disabled_event("demo").unwrap())
+        .unwrap();
     let status = status_json(&state, &["demo".to_string()]).unwrap();
     assert!(status.contains(r#""enabled":false"#), "{status}");
 }
@@ -115,10 +122,14 @@ fn web_publish_replay_identity_and_app_removal_hold() {
 
 #[test]
 fn public_verbs_limit_and_safety_are_enforced() {
-    let verbs = (0..16).map(|i| format!("public.verb{i}")).collect::<Vec<_>>();
+    let verbs = (0..16)
+        .map(|i| format!("public.verb{i}"))
+        .collect::<Vec<_>>();
     validate_public_verbs(&verbs).unwrap();
 
-    let too_many = (0..17).map(|i| format!("public.verb{i}")).collect::<Vec<_>>();
+    let too_many = (0..17)
+        .map(|i| format!("public.verb{i}"))
+        .collect::<Vec<_>>();
     assert!(validate_public_verbs(&too_many)
         .unwrap_err()
         .to_string()

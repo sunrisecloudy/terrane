@@ -49,10 +49,7 @@ impl CapBus for AppBus {
 }
 
 fn ctx<'a>(store: &'a Store, bus: &'a AppBus) -> CommandCtx<'a> {
-    CommandCtx {
-        state: store,
-        bus,
-    }
+    CommandCtx { state: store, bus }
 }
 
 #[test]

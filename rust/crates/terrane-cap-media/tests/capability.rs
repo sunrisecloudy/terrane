@@ -51,14 +51,19 @@ fn ctx<'a>(store: &'a Store, bus: &'a AppBus) -> CommandCtx<'a> {
 #[test]
 fn transform_decides_media_effect_from_blob_metadata() {
     let mut store = Store::default();
-    store.blob.blobs.entry("gallery".into()).or_default().insert(
-        "photo.png".into(),
-        BlobMeta {
-            hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
-            size: 128,
-            mime: "image/png".into(),
-        },
-    );
+    store
+        .blob
+        .blobs
+        .entry("gallery".into())
+        .or_default()
+        .insert(
+            "photo.png".into(),
+            BlobMeta {
+                hash: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),
+                size: 128,
+                mime: "image/png".into(),
+            },
+        );
     let ops = r#"[{"op":"thumbnail","size":64}]"#.to_string();
     let decision = MediaCapability
         .decide(

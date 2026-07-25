@@ -174,6 +174,9 @@ fn method_doc(
         params: params.to_vec(),
         returns: returns.to_string(),
         summary: summary.to_string(),
-        errors: vec!["invalid input".to_string(), "missing connection grant".to_string()],
+        errors: vec![
+            "invalid input".to_string(),
+            "missing connection grant".to_string(),
+        ],
     }
 }

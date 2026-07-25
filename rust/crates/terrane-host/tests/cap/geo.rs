@@ -44,7 +44,10 @@ fn geo_cli_reports_unsupported_and_records_no_observation() {
         ],
     );
     assert!(ok, "app add failed: {err}");
-    let (ok, _, err) = terrane(home, &["auth", "grant", "user:local-owner", "geo-app", "geo"]);
+    let (ok, _, err) = terrane(
+        home,
+        &["auth", "grant", "user:local-owner", "geo-app", "geo"],
+    );
     assert!(ok, "auth grant failed: {err}");
 
     let (ok, out, err) = terrane(home, &["geo", "locate", "geo-app", "coarse"]);
@@ -95,5 +98,8 @@ fn geo_macos_corelocation_records_observation() {
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
     assert!(log.contains("geo.observed geo-app"), "log: {log}");
-    assert!(!log.contains("lat_e7"), "geo describe must redact coordinates: {log}");
+    assert!(
+        !log.contains("lat_e7"),
+        "geo describe must redact coordinates: {log}"
+    );
 }

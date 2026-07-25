@@ -113,8 +113,16 @@ fn geo_commands() -> Vec<CommandDoc> {
     vec![command_doc(
         "geo.locate",
         &[
-            param("app", "Existing app id that owns the recorded observation.", "app_id"),
-            param("precision", "Granted precision tier: exact or coarse.", "string"),
+            param(
+                "app",
+                "Existing app id that owns the recorded observation.",
+                "app_id",
+            ),
+            param(
+                "precision",
+                "Granted precision tier: exact or coarse.",
+                "string",
+            ),
         ],
         "effect",
         "Validate one app-scoped location observation and return the edge effect.",
@@ -142,8 +150,16 @@ fn geo_events() -> Vec<EventDoc> {
             param("lat_e7", "Observed latitude in integer e7 degrees.", "i64"),
             param("lon_e7", "Observed longitude in integer e7 degrees.", "i64"),
             param("accuracy_m", "Accuracy radius in meters.", "u32"),
-            param("precision", "Precision tier applied before recording.", "string"),
-            param("observed_at", "Edge wall-clock milliseconds at observation time.", "u64"),
+            param(
+                "precision",
+                "Precision tier applied before recording.",
+                "string",
+            ),
+            param(
+                "observed_at",
+                "Edge wall-clock milliseconds at observation time.",
+                "u64",
+            ),
         ],
         "Records one observed location fix for replay.",
     )

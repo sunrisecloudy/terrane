@@ -1,6 +1,8 @@
 use std::any::Any;
 
-use terrane_cap_connection::{all_statuses, split_secret_ref, ConnectionCapability, ConnectionState};
+use terrane_cap_connection::{
+    all_statuses, split_secret_ref, ConnectionCapability, ConnectionState,
+};
 use terrane_cap_interface::{
     CapBus, Capability, CommandCtx, Decision, Error, QueryValue, StateStore,
 };
@@ -67,7 +69,11 @@ fn define_authorize_refresh_remove_replays_metadata_only() {
                 bus: &bus,
             },
             "connection.mark_authorized",
-            &["github".into(), "repo,user".into(), "2030-01-01T00:00:00Z".into()],
+            &[
+                "github".into(),
+                "repo,user".into(),
+                "2030-01-01T00:00:00Z".into(),
+            ],
         )
         .unwrap()
     else {
@@ -83,7 +89,11 @@ fn define_authorize_refresh_remove_replays_metadata_only() {
                 bus: &bus,
             },
             "connection.mark_authorized",
-            &["github".into(), "ignored".into(), "2030-01-02T00:00:00Z".into()],
+            &[
+                "github".into(),
+                "ignored".into(),
+                "2030-01-02T00:00:00Z".into(),
+            ],
         )
         .unwrap()
     else {
@@ -97,7 +107,10 @@ fn define_authorize_refresh_remove_replays_metadata_only() {
     assert_eq!(statuses[0].name, "github");
     assert_eq!(statuses[0].kind, "apiKey");
     assert!(statuses[0].authorized);
-    assert_eq!(statuses[0].scopes, vec!["repo".to_string(), "user".to_string()]);
+    assert_eq!(
+        statuses[0].scopes,
+        vec!["repo".to_string(), "user".to_string()]
+    );
     assert_eq!(
         statuses[0].expires_at.as_deref(),
         Some("2030-01-02T00:00:00Z")
@@ -149,7 +162,11 @@ fn validates_names_public_config_and_secret_refs() {
                 bus: &bus,
             },
             "connection.define",
-            &["github".into(), "apiKey".into(), r#"{"key":"secret"}"#.into()],
+            &[
+                "github".into(),
+                "apiKey".into(),
+                r#"{"key":"secret"}"#.into()
+            ],
         )
         .unwrap_err()
         .to_string()

@@ -59,8 +59,14 @@ fn migration_e2e_resumes_after_mid_sequence_failure() {
         &bundle,
         3,
         &[
-            ("migrations/002.js", "function migrate(ctx) { ctx.resource.kv.set('v2', 'done'); }"),
-            ("migrations/003.js", "function migrate(ctx) { throw new Error('stop at v3'); }"),
+            (
+                "migrations/002.js",
+                "function migrate(ctx) { ctx.resource.kv.set('v2', 'done'); }",
+            ),
+            (
+                "migrations/003.js",
+                "function migrate(ctx) { throw new Error('stop at v3'); }",
+            ),
         ],
         backend_v3(),
     );
@@ -96,12 +102,7 @@ fn migration_e2e_resumes_after_mid_sequence_failure() {
     assert_eq!(out.trim(), "v2=done;v3=done");
 }
 
-fn write_bundle(
-    bundle: &Path,
-    version: u64,
-    migrations: &[(&str, &str)],
-    backend: &str,
-) {
+fn write_bundle(bundle: &Path, version: u64, migrations: &[(&str, &str)], backend: &str) {
     std::fs::create_dir_all(bundle.join("migrations")).unwrap();
     let migration_json = migrations
         .iter()

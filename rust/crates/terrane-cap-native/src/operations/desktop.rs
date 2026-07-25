@@ -22,7 +22,8 @@ pub const CATALOG: &[OperationCatalogEntry] = &[
         safety: "sensitive",
         policy: "refuse-until-selector",
         result_size: RESULT_SIZE_BLOB_REF,
-        summary: "Capture screen/window pixels into the blob CAS and complete with a blob reference.",
+        summary:
+            "Capture screen/window pixels into the blob CAS and complete with a blob reference.",
     },
     OperationCatalogEntry {
         id: OP_SHORTCUT_REGISTER_GLOBAL,

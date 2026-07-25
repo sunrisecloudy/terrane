@@ -8,7 +8,8 @@ use terrane_cap_publish::{
 };
 
 const PUBKEY: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=";
-const SIG: &str = "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA==";
+const SIG: &str =
+    "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA==";
 const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 #[test]
@@ -58,17 +59,31 @@ fn publish_events_fold_trust_provenance_and_removal() {
     )
     .unwrap();
 
-    let publish = state.get("publish").unwrap().downcast_ref::<PublishState>().unwrap();
+    let publish = state
+        .get("publish")
+        .unwrap()
+        .downcast_ref::<PublishState>()
+        .unwrap();
     assert_eq!(publish.identity.as_deref(), Some(PUBKEY));
-    assert_eq!(publish.trusted.get(PUBKEY).map(String::as_str), Some("veha"));
+    assert_eq!(
+        publish.trusted.get(PUBKEY).map(String::as_str),
+        Some("veha")
+    );
     assert_eq!(publish.provenance["demo"].version, "1.2.3");
 
-    let removed = terrane_cap_interface::encode_event("app.removed", &Removed {
-        id: "demo".to_string(),
-    })
+    let removed = terrane_cap_interface::encode_event(
+        "app.removed",
+        &Removed {
+            id: "demo".to_string(),
+        },
+    )
     .unwrap();
     cap.fold(&mut state, &removed).unwrap();
-    let publish = state.get("publish").unwrap().downcast_ref::<PublishState>().unwrap();
+    let publish = state
+        .get("publish")
+        .unwrap()
+        .downcast_ref::<PublishState>()
+        .unwrap();
     assert!(!publish.provenance.contains_key("demo"));
     assert!(publish.trusted.contains_key(PUBKEY));
 }

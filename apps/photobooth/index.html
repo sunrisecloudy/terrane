@@ -281,6 +281,8 @@
       var stream = null;
       var startAttempt = 0;
       var photoBlobUrl = null;
+      var nativeStreamActive = false;
+      var lastNativeFrame = null;
       var video = document.getElementById("video");
       var canvas = document.getElementById("canvas");
       var photo = document.getElementById("photo");
@@ -293,6 +295,32 @@
       var cameraState = document.getElementById("camera-state");
       var photoState = document.getElementById("photo-state");
       var sizeState = document.getElementById("size-state");
+
+      function hasNativeCapture() {
+        return !!(
+          window.terrane &&
+          typeof window.terrane.capturePhoto === "function"
+        );
+      }
+
+      function hasNativeStream() {
+        return !!(
+          window.terrane &&
+          typeof window.terrane.startCameraStream === "function" &&
+          typeof window.terrane.stopCameraStream === "function"
+        );
+      }
+
+      window.addEventListener("terrane:cameraFrame", function (event) {
+        if (!nativeStreamActive || !event.detail || !event.detail.dataUrl) return;
+        lastNativeFrame = event.detail;
+        photo.src = event.detail.dataUrl;
+        photo.style.display = "block";
+        video.style.display = "none";
+        empty.style.display = "none";
+        setCameraReady(true);
+        setStatus(tr("photobooth.cameraReady", "Camera ready"));
+      });
 
       // Translate via the host bundle when present, else fall back to English.
       // The ~15-line localize() block below is the pattern every app copies.
@@ -407,6 +435,7 @@
       }
 
       function stopStream() {
+        stopNativeStream();
         if (stream) {
           stream.getTracks().forEach(function (track) {
             track.stop();
@@ -420,7 +449,55 @@
         setCameraReady(false);
       }
 
+      function startNativeStream() {
+        if (!hasNativeStream()) return false;
+        if (stream) {
+          stream.getTracks().forEach(function (track) {
+            track.stop();
+          });
+        }
+        stream = null;
+        clearPhoto();
+        showPreview();
+        nativeStreamActive = true;
+        lastNativeFrame = null;
+        captureButton.disabled = true;
+        startButton.disabled = true;
+        setStatus(tr("photobooth.openingCamera", "Opening camera..."));
+        window.terrane.startCameraStream().catch(function (error) {
+          nativeStreamActive = false;
+          setCameraReady(false);
+          showPreview();
+          setStatus(error && error.message ? error.message : String(error));
+        }).finally(function () {
+          startButton.disabled = false;
+        });
+        return true;
+      }
+
+      function stopNativeStream() {
+        if (!nativeStreamActive) return;
+        nativeStreamActive = false;
+        lastNativeFrame = null;
+        if (hasNativeStream()) {
+          window.terrane.stopCameraStream().catch(function () {});
+        }
+      }
+
       function startCamera() {
+        if (hasNativeStream()) {
+          startAttempt++;
+          startNativeStream();
+          return;
+        }
+        if (hasNativeCapture() && !navigator.mediaDevices) {
+          stopStream();
+          clearPhoto();
+          showPreview();
+          setCameraReady(true);
+          setStatus(tr("photobooth.cameraReady", "Camera ready"));
+          return;
+        }
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           setStatus(tr("photobooth.cameraUnavailable", "Camera API unavailable in this host"));
           return;
@@ -444,6 +521,7 @@
           var timeoutId = setTimeout(function () {
             if (attempt !== startAttempt || stream) return;
             startAttempt++;
+            if (startNativeStream()) return;
             setCameraReady(false);
             showPreview();
             setStatus(tr("photobooth.cameraTimeout", "Camera request timed out. Try Start again."));
@@ -479,6 +557,7 @@
           }).catch(function (error) {
             clearTimeout(timeoutId);
             if (attempt !== startAttempt) return;
+            if (startNativeStream()) return;
             setCameraReady(false);
             showPreview();
             setStatus(error && error.message ? error.message : String(error));
@@ -487,6 +566,30 @@
       }
 
       function capturePhoto() {
+        if (nativeStreamActive && lastNativeFrame) {
+          setPhoto(lastNativeFrame.dataUrl, lastNativeFrame.width || 0, lastNativeFrame.height || 0);
+          stopNativeStream();
+          setStatus(tr("photobooth.photoCaptured", "Photo captured"));
+          return;
+        }
+        if (hasNativeCapture() && !stream) {
+          captureButton.disabled = true;
+          startButton.disabled = true;
+          setStatus(tr("photobooth.openingCamera", "Opening camera..."));
+          window.terrane.capturePhoto().then(function (result) {
+            if (!result || !result.dataUrl) {
+              throw new Error("Native camera returned no photo");
+            }
+            setPhoto(result.dataUrl, result.width || 0, result.height || 0);
+            setStatus(tr("photobooth.photoCaptured", "Photo captured"));
+          }).catch(function (error) {
+            setStatus(error && error.message ? error.message : String(error));
+          }).finally(function () {
+            setCameraReady(true);
+            startButton.disabled = false;
+          });
+          return;
+        }
         if (!stream || !video.videoWidth || !video.videoHeight) return;
         var width = video.videoWidth;
         var height = video.videoHeight;

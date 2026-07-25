@@ -15,8 +15,13 @@ fn share_cli_invite_redeem_revoke_mirrors_auth_and_replays() {
     .unwrap();
 
     let invite = share::invite(&mut core, "notes", "write", "hello").unwrap();
-    assert_eq!(invite.token.len(), terrane_cap_share::INVITE_TOKEN_BYTES * 2);
-    assert!(!share::invites(&core, "notes").unwrap().contains(&invite.token));
+    assert_eq!(
+        invite.token.len(),
+        terrane_cap_share::INVITE_TOKEN_BYTES * 2
+    );
+    assert!(!share::invites(&core, "notes")
+        .unwrap()
+        .contains(&invite.token));
 
     share::redeem(&mut core, "notes", &invite.token, "replica:abc").unwrap();
     assert!(share::list(&core, "notes").unwrap().contains("replica:abc"));
@@ -71,9 +76,11 @@ fn sync_share_rights_are_read_pull_only_and_write_bidirectional() {
     ))
     .unwrap();
 
-    assert!(sync::event_batch_since_for_grantee(&a, "notes", &b_grantee, 0)
-        .unwrap_err()
-        .contains("missing read"));
+    assert!(
+        sync::event_batch_since_for_grantee(&a, "notes", &b_grantee, 0)
+            .unwrap_err()
+            .contains("missing read")
+    );
 
     let read_invite = share::invite(&mut a, "notes", "read", "").unwrap();
     share::redeem(&mut a, "notes", &read_invite.token, &b_grantee).unwrap();
@@ -82,9 +89,11 @@ fn sync_share_rights_are_read_pull_only_and_write_bidirectional() {
     assert_eq!(b.state().kv.data["notes"]["theme"], "dark");
 
     let b_batch = sync::event_batch_since(&b, "notes", 0).unwrap();
-    assert!(sync::apply_event_batch_for_grantee(&mut a, "notes", &b_grantee, &b_batch)
-        .unwrap_err()
-        .contains("missing write"));
+    assert!(
+        sync::apply_event_batch_for_grantee(&mut a, "notes", &b_grantee, &b_batch)
+            .unwrap_err()
+            .contains("missing write")
+    );
 
     share::revoke(&mut a, "notes", &b_grantee).unwrap();
     let write_invite = share::invite(&mut a, "notes", "write", "").unwrap();
@@ -93,7 +102,9 @@ fn sync_share_rights_are_read_pull_only_and_write_bidirectional() {
     assert_eq!(a.state().kv.data["notes"]["lang"], "en");
 
     share::revoke(&mut a, "notes", &b_grantee).unwrap();
-    assert!(sync::event_batch_since_for_grantee(&a, "notes", &b_grantee, 0)
-        .unwrap_err()
-        .contains("missing read"));
+    assert!(
+        sync::event_batch_since_for_grantee(&a, "notes", &b_grantee, 0)
+            .unwrap_err()
+            .contains("missing read")
+    );
 }

@@ -146,6 +146,8 @@ impl PreviewStore {
                 history: Vec::new(),
                 interfaces: terrane_cap_app::normalize_interfaces(manifest.interfaces.clone()),
                 links: Vec::new(),
+                required_capabilities: manifest.resources.clone(),
+                requirements_resolved: true,
             },
         );
         let bundle = JsRuntimeBundle {
@@ -482,7 +484,11 @@ fn preview_resource_view(
 }
 
 fn preview_request_id(preview: &Preview, resources: &[String]) -> String {
-    crate::permission::permission_request_id(&preview.id, &preview_owner_subject(preview), resources)
+    crate::permission::permission_request_id(
+        &preview.id,
+        &preview_owner_subject(preview),
+        resources,
+    )
 }
 
 fn preview_owner_subject(preview: &Preview) -> String {

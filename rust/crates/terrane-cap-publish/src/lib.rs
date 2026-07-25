@@ -88,7 +88,9 @@ impl Capability for PublishCapability {
             queries: Vec::new(),
             resources: Vec::new(),
             grant_resources: Vec::new(),
-            subscriptions: vec![EventPattern { kind: "app.removed" }],
+            subscriptions: vec![EventPattern {
+                kind: "app.removed",
+            }],
         }
     }
 
@@ -171,17 +173,15 @@ impl Capability for PublishCapability {
             "publish.trusted" => decode_event::<Trusted>(record)
                 .ok()
                 .map(|e| format!("publish.trusted {} \"{}\"", short_key(&e.pubkey), e.label)),
-            "publish.installed" => decode_event::<Installed>(record)
-                .ok()
-                .map(|e| {
-                    format!(
-                        "publish.installed {} {} by {} ({})",
-                        e.app,
-                        e.version,
-                        e.publisher_label,
-                        short_key(&e.publisher_pubkey)
-                    )
-                }),
+            "publish.installed" => decode_event::<Installed>(record).ok().map(|e| {
+                format!(
+                    "publish.installed {} {} by {} ({})",
+                    e.app,
+                    e.version,
+                    e.publisher_label,
+                    short_key(&e.publisher_pubkey)
+                )
+            }),
             _ => None,
         }
     }
@@ -234,7 +234,9 @@ pub fn identity_created_event(
 
 pub fn validate_archive_source(source: &str) -> Result<()> {
     if source.trim().is_empty() {
-        return Err(Error::InvalidInput("publish archive path must not be empty".into()));
+        return Err(Error::InvalidInput(
+            "publish archive path must not be empty".into(),
+        ));
     }
     Ok(())
 }
@@ -296,7 +298,9 @@ fn validate_b64_len(value: &str, len: usize, label: &str) -> Result<()> {
     {
         return Ok(());
     }
-    Err(Error::InvalidInput(format!("{label} must be base64 length {len}")))
+    Err(Error::InvalidInput(format!(
+        "{label} must be base64 length {len}"
+    )))
 }
 
 fn validate_replica_peer(value: &str) -> Result<()> {

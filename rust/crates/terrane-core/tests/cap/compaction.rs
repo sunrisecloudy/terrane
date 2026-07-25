@@ -35,8 +35,11 @@ fn compaction_reopens_to_same_state_and_retains_tail_identity() {
     let mut core = Core::open_with(&log, BlobRunner).unwrap();
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
     core.dispatch(req("kv.set", &["demo", "a", "one"])).unwrap();
-    core.dispatch(req("blob.put", &["demo", "asset.txt", "text/plain", "aGVsbG8="]))
-        .unwrap();
+    core.dispatch(req(
+        "blob.put",
+        &["demo", "asset.txt", "text/plain", "aGVsbG8="],
+    ))
+    .unwrap();
     core.dispatch(req("kv.set", &["demo", "b", "two"])).unwrap();
     let before = core.state().clone();
     let original = core.log_records().unwrap();
@@ -55,7 +58,10 @@ fn compaction_reopens_to_same_state_and_retains_tail_identity() {
     assert_eq!(report.retained_records, 1);
     assert!(dir.path().join("snapshot.bin").exists());
     assert!(dir.path().join("log.bin.archive").exists());
-    assert_eq!(terrane_core::read_log(&log).unwrap(), original[original.len() - 1..]);
+    assert_eq!(
+        terrane_core::read_log(&log).unwrap(),
+        original[original.len() - 1..]
+    );
     let reopened = Core::open_with(&log, BlobRunner).unwrap();
     assert_eq!(reopened.state(), &before);
     assert!(reopened.replay_matches().unwrap());

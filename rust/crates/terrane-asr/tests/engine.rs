@@ -34,7 +34,9 @@ fn wav_fixture() -> Option<PathBuf> {
     if default.is_file() {
         return Some(default);
     }
-    eprintln!("skipping: set TERRANE_STT_WAV or add terrane-host/tests/fixtures/hello-16k-mono.wav");
+    eprintln!(
+        "skipping: set TERRANE_STT_WAV or add terrane-host/tests/fixtures/hello-16k-mono.wav"
+    );
     None
 }
 
@@ -63,7 +65,10 @@ fn missing_model_file_fails_fast_with_a_typed_error() {
         Ok(_) => panic!("loading a missing file should fail"),
     };
     assert!(matches!(err, AsrError::Load(_)));
-    assert!(err.to_string().contains("/nonexistent/whisper.bin"), "{err}");
+    assert!(
+        err.to_string().contains("/nonexistent/whisper.bin"),
+        "{err}"
+    );
 }
 
 #[cfg(feature = "whisper")]

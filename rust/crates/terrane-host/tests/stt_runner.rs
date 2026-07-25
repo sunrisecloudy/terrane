@@ -7,11 +7,11 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use terrane_core::{Error, Result};
 use terrane_host::stt_runner::{
     frame_energy, frame_samples, AsrEngine, AsrOutput, PcmRing, SegmentSink, SessionConfig,
     SttRunner, SttVad, VadEdge,
 };
-use terrane_core::{Error, Result};
 
 /// A deterministic engine: returns a fixed transcript tagged with the utterance
 /// length so sequencing is observable. This is a test fixture for the runner's
@@ -153,8 +153,14 @@ fn frame_samples_matches_rate_and_duration() {
 fn runner_dispatches_one_segment_per_closed_utterance_with_monotonic_seq() {
     let sink = RecordingSink::default();
     let runner_sink = sink.clone();
-    let mut runner =
-        SttRunner::new(config(), FixedEngine { text: "utt", fail: false }, runner_sink);
+    let mut runner = SttRunner::new(
+        config(),
+        FixedEngine {
+            text: "utt",
+            fail: false,
+        },
+        runner_sink,
+    );
 
     // Push a loud burst (speech) then silence long enough to close it.
     runner.push_pcm(&speech_burst(6)).unwrap();
@@ -204,7 +210,14 @@ fn runner_skips_empty_recognitions_without_consuming_a_seq() {
 #[test]
 fn runner_propagates_engine_errors() {
     let sink = RecordingSink::default();
-    let mut runner = SttRunner::new(config(), FixedEngine { text: "x", fail: true }, sink.clone());
+    let mut runner = SttRunner::new(
+        config(),
+        FixedEngine {
+            text: "x",
+            fail: true,
+        },
+        sink.clone(),
+    );
 
     runner.push_pcm(&speech_burst(6)).unwrap();
     // Closing the utterance runs the failing engine → error propagates.
@@ -218,7 +231,14 @@ fn runner_propagates_engine_errors() {
 #[test]
 fn idle_ms_grows_only_after_an_utterance_closes() {
     let sink = RecordingSink::default();
-    let mut runner = SttRunner::new(config(), FixedEngine { text: "u", fail: false }, sink);
+    let mut runner = SttRunner::new(
+        config(),
+        FixedEngine {
+            text: "u",
+            fail: false,
+        },
+        sink,
+    );
 
     // Speak, then close the utterance with silence. While in speech, every frame
     // refreshes the speech clock, so idle stays ~0.
@@ -227,7 +247,9 @@ fn idle_ms_grows_only_after_an_utterance_closes() {
     let idle_after_close = runner.idle_ms();
 
     // Further silence (after close) is no longer refreshed → idle climbs.
-    runner.push_pcm(&tone(frame_samples(16_000, 30) * 5, 0)).unwrap();
+    runner
+        .push_pcm(&tone(frame_samples(16_000, 30) * 5, 0))
+        .unwrap();
     assert!(runner.idle_ms() > idle_after_close);
     assert!(runner.idle_ms() > 0);
 }
@@ -238,9 +260,15 @@ fn runner_drops_oldest_when_a_single_push_exceeds_the_ring_cap() {
     let sink = RecordingSink::default();
     // Cap smaller than one utterance: the runner keeps only the most recent
     // window, so the push must not panic and must respect the cap.
-    let mut runner =
-        SttRunner::new(config(), FixedEngine { text: "u", fail: false }, sink.clone())
-            .with_ring_cap(frame * 8);
+    let mut runner = SttRunner::new(
+        config(),
+        FixedEngine {
+            text: "u",
+            fail: false,
+        },
+        sink.clone(),
+    )
+    .with_ring_cap(frame * 8);
 
     // One push with speech followed by silence, exceeding the cap.
     let mut chunk = tone(frame * 6, 8000);
@@ -267,7 +295,14 @@ fn pcm_ring_is_drop_oldest_and_bounded() {
 fn runner_handles_partial_frames_across_pushes() {
     let frame = frame_samples(16_000, 30);
     let sink = RecordingSink::default();
-    let mut runner = SttRunner::new(config(), FixedEngine { text: "u", fail: false }, sink.clone());
+    let mut runner = SttRunner::new(
+        config(),
+        FixedEngine {
+            text: "u",
+            fail: false,
+        },
+        sink.clone(),
+    );
 
     // Push the same speech+silence split across many single-sample calls —
     // framing must reassemble frames and still close the utterance exactly once.

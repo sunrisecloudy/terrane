@@ -19,15 +19,7 @@ pub fn deliver_text(
     text: &str,
     received_at: &str,
 ) -> Result<DeliveredStreamMessage, String> {
-    deliver_bytes(
-        home,
-        core,
-        app,
-        name,
-        text.as_bytes(),
-        false,
-        received_at,
-    )
+    deliver_bytes(home, core, app, name, text.as_bytes(), false, received_at)
 }
 
 pub fn deliver_bytes(

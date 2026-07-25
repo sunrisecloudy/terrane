@@ -6,9 +6,9 @@ use terrane_cap_interface::{
 };
 
 use crate::events::{
-    retention_trimmed_event, segment_appended_event, selection_made_event,
-    session_closed_event, session_opened_event, session_purged_event, SegmentAppendedRecord,
-    SelectionMadeRecord, SessionOpenedRecord,
+    retention_trimmed_event, segment_appended_event, selection_made_event, session_closed_event,
+    session_opened_event, session_purged_event, SegmentAppendedRecord, SelectionMadeRecord,
+    SessionOpenedRecord,
 };
 use crate::types::{SttState, CLOSE_REASONS};
 
@@ -137,7 +137,9 @@ pub(crate) fn decide_session_close_host(ctx: CommandCtx<'_>, args: &[String]) ->
     let reason = validate_reason(arg(args, 2, "reason")?)?;
     ensure_session_exists(ctx, &app, &session_id)?;
     Ok(Decision::Commit(vec![session_closed_event(
-        &app, &session_id, &reason,
+        &app,
+        &session_id,
+        &reason,
     )?]))
 }
 
@@ -161,7 +163,10 @@ pub(crate) fn decide_session_purge(ctx: CommandCtx<'_>, args: &[String]) -> Resu
     let app = arg(args, 0, "app")?;
     let session_id = valid_token(arg(args, 1, "session_id")?, "session id")?;
     ensure_session_closed(ctx, &app, &session_id)?;
-    Ok(Decision::Commit(vec![session_purged_event(&app, &session_id)?]))
+    Ok(Decision::Commit(vec![session_purged_event(
+        &app,
+        &session_id,
+    )?]))
 }
 
 /// `stt.retention.trim <app> <session_id> <dropped_before_seq>` — trusted-host
@@ -319,14 +324,16 @@ fn positive_u32(raw: String) -> Result<u32> {
             "sample_rate_hz must be positive, got {raw:?}"
         )));
     }
-    u32::try_from(parsed).map_err(|_| {
-        Error::InvalidInput(format!("sample_rate_hz out of range, got {raw:?}"))
-    })
+    u32::try_from(parsed)
+        .map_err(|_| Error::InvalidInput(format!("sample_rate_hz out of range, got {raw:?}")))
 }
 
 fn parse_u64(raw: &str, label: &str) -> Result<u64> {
-    raw.parse::<u64>()
-        .map_err(|_| Error::InvalidInput(format!("{label} must be a non-negative integer, got {raw:?}")))
+    raw.parse::<u64>().map_err(|_| {
+        Error::InvalidInput(format!(
+            "{label} must be a non-negative integer, got {raw:?}"
+        ))
+    })
 }
 
 fn validate_reason(raw: String) -> Result<String> {

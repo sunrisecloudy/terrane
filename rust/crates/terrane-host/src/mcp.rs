@@ -16,11 +16,9 @@ use terrane_api::{
     TOOL_APP_BUILD_GET, TOOL_APP_BUILD_LIST, TOOL_APP_BUILD_PUT_FILE, TOOL_APP_BUILD_START,
     TOOL_APP_BUILD_VALIDATE, TOOL_APP_BUNDLE_VALIDATE, TOOL_APP_INSTALL, TOOL_APP_LOGS,
     TOOL_APP_RECIPE, TOOL_APP_REGISTER, TOOL_APP_REGISTER_INLINE, TOOL_APP_SCAFFOLD,
-    TOOL_APP_UPGRADE,
-    TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO, TOOL_CAPABILITY_QUERY,
-    TOOL_INVOKE, TOOL_LIST_APPS,
-    TOOL_PERMISSION_CANCEL, TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST,
-    TOOL_WORKFLOW_INFO,
+    TOOL_APP_UPGRADE, TOOL_CAPABILITIES_LIST, TOOL_CAPABILITY_COMMAND, TOOL_CAPABILITY_INFO,
+    TOOL_CAPABILITY_QUERY, TOOL_INVOKE, TOOL_LIST_APPS, TOOL_PERMISSION_CANCEL,
+    TOOL_PERMISSION_CHECK, TOOL_PERMISSION_REQUESTS, TOOL_WORKFLOWS_LIST, TOOL_WORKFLOW_INFO,
 };
 use terrane_core::QueryValue;
 
@@ -433,9 +431,10 @@ Use MCP tools only:
 1. Call `app_recipe` with {{"kind":"js_kv_app"}}.
 2. Call `app_build_start` with {{"id":{app_id_json},"name":{app_name_json},"withUi":true}}.
 3. Use `app_build_put_file` for any changed files, one file at a time.
-4. Call `app_build_validate`, then `app_build_commit` with the returned `draftId` and `validationToken`; do not resend file contents.
-5. Call `list_apps`, then `app_actions` for {app_id_json}.
-6. Invoke `write` with {text_json}, invoke `read`, invoke `clear`, then invoke `read` again.
+4. Make an explicit selected-app lower-sidebar decision in manifest.sidebar: implement a meaningful generic section, or declare mode "none" with a human-readable reason. This is distinct from the host Apps list; do not invent fake items.
+5. Call `app_build_validate`, then `app_build_commit` with the returned `draftId` and `validationToken`; do not resend file contents.
+6. Call `list_apps`, then `app_actions` for {app_id_json}.
+7. Invoke `write` with {text_json}, invoke `read`, invoke `clear`, then invoke `read` again.
 
 Compatibility route: `app_scaffold` plus `app_register_inline` dry-run is still valid, but the dry-run returns `draftId`/`validationToken`; finish with `app_build_commit` instead of resending the same complete files array.
 
@@ -1587,6 +1586,7 @@ fn workflows_list_json() -> String {
             "If a provider stalls with zero new output after workflow_info, capability_info, app_recipe, or app_scaffold, resume from the last structured result and make the nextToolCall/nextAfterScaffold call immediately.",
             "If permission_required appears, do not call capability_command auth.* or grant commands. Follow nextModelAction, poll permission_check, and retry the original call after trusted approval.",
             "For UI apps, window.terrane.invoke takes positional string args: invoke(\"verb\", \"arg1\", \"arg2\"), not invoke(\"verb\", [\"arg1\", \"arg2\"]).",
+            "Every new app must explicitly declare manifest.sidebar. Use mode section only for meaningful app-owned lower-sidebar items and implement setSidebarSection/onSidebarItemSelect; otherwise use mode none with a specific human-readable reason. This is not the host Apps list.",
             "For optional KV indexes such as event_ids, use a kvGetOrNull helper and default missing keys to [] before JSON.parse.",
             "When the user asked for an interactive page, verify the page itself when possible; backend invoke success alone does not prove the UI works.",
             "Prefer app_register for app bundle registration; it validates the bundle and still dispatches app.add through core.",
@@ -1923,7 +1923,11 @@ fn app_scaffold_json(
             "runtime": "js",
             "backend": "main.js",
             "ui": "index.html",
-            "resources": ["kv"]
+            "resources": ["kv"],
+            "sidebar": {
+                "mode": "none",
+                "reason": "This starter edits one current note and has no separate workspaces or items for a lower sidebar."
+            }
         })
     } else {
         json!({
@@ -1931,7 +1935,11 @@ fn app_scaffold_json(
             "name": name,
             "runtime": "js",
             "backend": "main.js",
-            "resources": ["kv"]
+            "resources": ["kv"],
+            "sidebar": {
+                "mode": "none",
+                "reason": "This backend-only app has no selected-app UI or lower sidebar content."
+            }
         })
     };
     let main_js = format!(
@@ -2088,7 +2096,11 @@ fn app_multicap_scaffold_json(
             "runtime": "js",
             "backend": "main.js",
             "ui": "index.html",
-            "resources": ["kv", "crdt", "relational_db"]
+            "resources": ["kv", "crdt", "relational_db"],
+            "sidebar": {
+                "mode": "none",
+                "reason": "This audit scaffold has one fixed project view and no switchable workspaces."
+            }
         })
     } else {
         json!({
@@ -2096,7 +2108,11 @@ fn app_multicap_scaffold_json(
             "name": name,
             "runtime": "js",
             "backend": "main.js",
-            "resources": ["kv", "crdt", "relational_db"]
+            "resources": ["kv", "crdt", "relational_db"],
+            "sidebar": {
+                "mode": "none",
+                "reason": "This backend-only audit app has no selected-app UI or lower sidebar content."
+            }
         })
     };
     let main_js = r#"function projectSpec() {
@@ -2352,8 +2368,95 @@ struct BundleInfo {
     backend: String,
     ui: String,
     resources: Vec<String>,
+    sidebar_mode: String,
+    sidebar_reason: String,
     errors: Vec<String>,
     warnings: Vec<String>,
+}
+
+fn validate_sidebar_decision(
+    mode: &str,
+    reason: &str,
+    ui: &str,
+    ui_source: &str,
+    errors: &mut Vec<String>,
+) {
+    match mode.trim() {
+        "none" => {
+            if reason.trim().is_empty() {
+                errors.push(
+                    "manifest.sidebar.reason is required when sidebar.mode is \"none\"; explain why this app has no meaningful lower sidebar content"
+                        .to_string(),
+                );
+            }
+        }
+        "section" => {
+            if ui.trim().is_empty() {
+                errors.push(
+                    "manifest.sidebar.mode \"section\" requires manifest.ui; backend-only apps must explicitly use mode \"none\" with a reason"
+                        .to_string(),
+                );
+            }
+            if !ui_source.contains("setSidebarSection") {
+                errors.push(
+                    "manifest.sidebar.mode is \"section\", but the UI never calls window.terrane.setSidebarSection(...)"
+                        .to_string(),
+                );
+            }
+            if !ui_source.contains("onSidebarItemSelect") {
+                errors.push(
+                    "manifest.sidebar.mode is \"section\", but the UI never handles window.terrane.onSidebarItemSelect(...); app-owned sidebar items must be switchable"
+                        .to_string(),
+                );
+            }
+        }
+        "" => errors.push(
+            "manifest.sidebar must make an explicit lower-sidebar decision: use {\"mode\":\"section\"} for meaningful app-owned items, or {\"mode\":\"none\",\"reason\":\"...\"} when the app has no useful sidebar content"
+                .to_string(),
+        ),
+        other => errors.push(format!(
+            "manifest.sidebar.mode {other:?} is unsupported; use \"section\" or \"none\""
+        )),
+    }
+}
+
+fn collect_bundle_ui_source(bundle: &std::path::Path) -> String {
+    fn visit(path: &std::path::Path, out: &mut String, remaining: &mut usize, depth: usize) {
+        if depth > 16 || *remaining == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                visit(&path, out, remaining, depth + 1);
+            } else if matches!(
+                path.extension().and_then(|value| value.to_str()),
+                Some("html" | "js" | "tsx" | "ts")
+            ) {
+                let Ok(metadata) = entry.metadata() else {
+                    continue;
+                };
+                if !file_type.is_file() || metadata.len() > *remaining as u64 {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    *remaining -= content.len();
+                    out.push_str(&content);
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    let mut source = String::new();
+    let mut remaining = MAX_DRAFT_TOTAL_BYTES;
+    visit(bundle, &mut source, &mut remaining, 0);
+    source
 }
 
 fn inspect_app_bundle(path: &str) -> Result<BundleInfo, String> {
@@ -2397,6 +2500,13 @@ fn inspect_app_bundle(path: &str) -> Result<BundleInfo, String> {
             "manifest.resources is empty; add resources such as \"kv\" when needed".to_string(),
         );
     }
+    validate_sidebar_decision(
+        &manifest.sidebar.mode,
+        &manifest.sidebar.reason,
+        &ui,
+        &collect_bundle_ui_source(bundle),
+        &mut errors,
+    );
     if errors.is_empty() {
         if let Err(e) = crate::validate_common_api_bundle(bundle) {
             errors.push(e);
@@ -2410,6 +2520,8 @@ fn inspect_app_bundle(path: &str) -> Result<BundleInfo, String> {
         backend,
         ui,
         resources: manifest.resources,
+        sidebar_mode: manifest.sidebar.mode,
+        sidebar_reason: manifest.sidebar.reason,
         errors,
         warnings,
     })
@@ -2569,12 +2681,12 @@ fn app_build_start_json(
         .unwrap_or("js_kv_notes");
     let draft_id = create_build_draft(kind, &files)?;
     let manifest_example = if with_ui {
-        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": ["kv"], "interfaces": ["items"]})
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "ui": "index.html", "resources": ["kv"], "interfaces": ["items"], "sidebar": {"mode": "none", "reason": "Explain why this app has no useful lower-sidebar content, or change mode to section and implement the generic sidebar callbacks."}})
     } else {
-        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "resources": ["kv"], "interfaces": ["items"]})
+        json!({"id": info.id, "name": info.name, "runtime": "js", "backend": "main.js", "resources": ["kv"], "interfaces": ["items"], "sidebar": {"mode": "none", "reason": "This backend-only app has no selected-app UI or lower sidebar content."}})
     };
     let backend_contract = "main.js is ONE plain script: no top-level import/export, no require, no modules, no Deno/Node APIs. Define one global function handle(input); input is an array of strings where input[0] is the verb and input.slice(1) are the args; return a string (JSON.stringify for structured data). Storage is ctx.resource.kv; wrap kv.get in try/catch because missing keys throw.";
-    let manifest_rules = "manifest.ui is a string file path, never an object; scripts and styles are referenced from index.html, not listed in the manifest.";
+    let manifest_rules = "manifest.ui is a string file path, never an object; scripts and styles are referenced from index.html, not listed in the manifest. manifest.sidebar is required and refers only to the selected app's lower host sidebar, never the host Apps list. Choose mode \"section\" and implement setSidebarSection plus onSidebarItemSelect (and onSidebarCreate when useful), or choose mode \"none\" with an app-specific human-readable reason. Do not invent fake sidebar items.";
     let ui_contract = "Browser code calls window.terrane.invoke(\"verb\", \"arg1\", \"arg2\") with positional string args and awaits the backend's string reply. Do not pass an args array or an object.";
     let contract = if with_ui {
         json!({
@@ -3218,6 +3330,26 @@ fn inspect_inline_bundle(
             "manifest.resources is empty; add resources such as \"kv\" when needed".to_string(),
         );
     }
+    let ui_source = files
+        .iter()
+        .filter(|file| {
+            matches!(
+                std::path::Path::new(&file.path)
+                    .extension()
+                    .and_then(|value| value.to_str()),
+                Some("html" | "js" | "tsx" | "ts")
+            )
+        })
+        .map(|file| file.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    validate_sidebar_decision(
+        &manifest.sidebar.mode,
+        &manifest.sidebar.reason,
+        &ui,
+        &ui_source,
+        &mut errors,
+    );
     if !manifest.id.trim().is_empty() && manifest.id.trim() != id {
         warnings.push(format!(
             "manifest.id {:?} differs from registered id {:?}",
@@ -3253,6 +3385,8 @@ fn inspect_inline_bundle(
         backend,
         ui,
         resources: manifest.resources,
+        sidebar_mode: manifest.sidebar.mode,
+        sidebar_reason: manifest.sidebar.reason,
         errors,
         warnings,
     })
@@ -3394,7 +3528,7 @@ fn check_ui_element_ids(
     }
 }
 
-const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"],"interfaces":["items"]}"#;
+const MANIFEST_EXAMPLE: &str = r#"{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"],"interfaces":["items"],"sidebar":{"mode":"none","reason":"This app has one workspace and no useful sidebar items."}}"#;
 
 /// A weak-model-friendly `BundleInfo` for a manifest.json that failed strict
 /// parsing: name the offending field types and show the exact accepted shape,
@@ -3430,6 +3564,17 @@ fn manifest_shape_info(raw: &str, parse_err: &str) -> BundleInfo {
                     "manifest.resources must be an array of strings such as [\"kv\"]".to_string(),
                 ),
             }
+            match map.get("sidebar") {
+                Some(Value::Object(_)) => {}
+                None => errors.push(
+                    "manifest.sidebar is required and must explicitly choose mode \"section\" or \"none\""
+                        .to_string(),
+                ),
+                Some(_) => errors.push(
+                    "manifest.sidebar must be an object such as {\"mode\":\"none\",\"reason\":\"This app has one workspace.\"}"
+                        .to_string(),
+                ),
+            }
             if errors.is_empty() {
                 errors.push(format!(
                     "manifest.json does not match the accepted manifest shape: {parse_err}"
@@ -3459,6 +3604,8 @@ fn manifest_shape_info(raw: &str, parse_err: &str) -> BundleInfo {
         backend: String::new(),
         ui: String::new(),
         resources: Vec::new(),
+        sidebar_mode: String::new(),
+        sidebar_reason: String::new(),
         errors,
         warnings: Vec::new(),
     }
@@ -3852,7 +3999,11 @@ fn bundle_app_value(info: &BundleInfo) -> Value {
         "runtime": info.runtime,
         "backend": info.backend,
         "ui": info.ui,
-        "resources": info.resources
+        "resources": info.resources,
+        "sidebar": {
+            "mode": info.sidebar_mode,
+            "reason": info.sidebar_reason
+        }
     })
 }
 
@@ -3902,7 +4053,11 @@ fn bundle_info_json(path: &str, info: &BundleInfo) -> Value {
             "runtime": info.runtime,
             "backend": info.backend,
             "ui": info.ui,
-            "resources": info.resources
+            "resources": info.resources,
+            "sidebar": {
+                "mode": info.sidebar_mode,
+                "reason": info.sidebar_reason
+            }
         },
         "errors": info.errors,
         "warnings": info.warnings,

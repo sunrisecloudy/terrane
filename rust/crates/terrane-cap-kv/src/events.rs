@@ -1,8 +1,8 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use serde_json::Value;
 use terrane_cap_interface::{
-    decode_app_removed, decode_event, encode_event, state_mut, truncate, Error, EventRecord, Result,
-    StateStore,
+    decode_app_removed, decode_event, encode_event, state_mut, truncate, Error, EventRecord,
+    Result, StateStore,
 };
 
 use crate::{KvState, KvStorageBackend, KvStorageBinding, LOG_VALUE_PREVIEW_CHARS};

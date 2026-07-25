@@ -2,8 +2,8 @@
 //! Logic detail (replay, cascade, validation) is covered by
 //! `rust/crates/terrane-core/tests/cap/app.rs`.
 
-use tempfile::tempdir;
 use std::path::Path;
+use tempfile::tempdir;
 
 use crate::helpers::terrane;
 
@@ -56,10 +56,22 @@ fn app_upgrade_e2e_replaces_bundle_runs_migration_and_archives_versions() {
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed: {err}");
     assert!(log.contains("migration.applied demo 1 -> 2"), "log: {log}");
-    assert!(log.contains("app.upgraded demo 1.0.0 -> 1.1.0"), "log: {log}");
-    assert!(log.contains("blob.stored demo/__app__/demo/1.0.0"), "log: {log}");
-    assert!(log.contains("blob.stored demo/__app__/demo/1.1.0"), "log: {log}");
-    assert!(log.contains("kv.deleted demo/__terrane/app-bundle/legacy.txt"), "log: {log}");
+    assert!(
+        log.contains("app.upgraded demo 1.0.0 -> 1.1.0"),
+        "log: {log}"
+    );
+    assert!(
+        log.contains("blob.stored demo/__app__/demo/1.0.0"),
+        "log: {log}"
+    );
+    assert!(
+        log.contains("blob.stored demo/__app__/demo/1.1.0"),
+        "log: {log}"
+    );
+    assert!(
+        log.contains("kv.deleted demo/__terrane/app-bundle/legacy.txt"),
+        "log: {log}"
+    );
 
     let (ok, out, err) = terrane(home, &["run", "demo", "get"]);
     assert!(ok, "v2 run failed: {err}");
@@ -116,7 +128,10 @@ fn app_install_rejects_failing_bundle_smoke_test() {
     let (ok, out, err) = terrane(home, &["app", "install", path(&bundle)]);
 
     assert!(!ok, "install should reject failing tests.json: {out}");
-    assert!(err.contains("tests.json case 1 (echo) failed expectation"), "err: {err}");
+    assert!(
+        err.contains("tests.json case 1 (echo) failed expectation"),
+        "err: {err}"
+    );
     assert!(err.contains("goodbye"), "err: {err}");
 }
 

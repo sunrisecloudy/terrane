@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use borsh::{BorshDeserialize, BorshSerialize};
 use terrane_cap_interface::Capability;
 use terrane_cap_interface::{
-    arg, decode_event, encode_event, restore_state, snapshot_state, state_mut, state_ref, AppId,
-    CapManifest, CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec,
-    QueryCtx, QuerySpec, QueryValue, Result, StateStore,
+    arg, decode_event, encode_event, snapshot_state, state_mut, state_ref, AppId, CapManifest,
+    CommandCtx, CommandSpec, Decision, Effect, Error, EventRecord, EventSpec, QueryCtx, QuerySpec,
+    QueryValue, Result, StateStore,
 };
 use terrane_cap_kv::RESERVED_PREFIX;
 
@@ -27,6 +27,8 @@ pub struct AppRecord {
     pub history: Vec<VersionEntry>,
     pub interfaces: Vec<String>,
     pub links: Vec<LinkRegistration>,
+    pub required_capabilities: Vec<String>,
+    pub requirements_resolved: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -49,10 +51,28 @@ pub struct AppState {
     pub links: BTreeMap<AppId, Vec<LinkRegistration>>,
 }
 
-type ParsedAdd = (String, String, Option<String>, String, Vec<String>, Vec<LinkRegistration>);
+type ParsedAdd = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Vec<String>,
+    Vec<LinkRegistration>,
+    bool,
+);
 
 #[derive(BorshSerialize, BorshDeserialize)]
 struct Added {
+    id: String,
+    name: String,
+    source: Option<String>,
+    runtime: String,
+    interfaces: Vec<String>,
+    required_capabilities: Option<Vec<String>>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct AddedV2 {
     id: String,
     name: String,
     source: Option<String>,
@@ -66,6 +86,36 @@ struct AddedV1 {
     name: String,
     source: Option<String>,
     runtime: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct RequirementsResolved {
+    app: String,
+    required_capabilities: Vec<String>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct SourceUpdated {
+    id: String,
+    source: String,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct LegacyAppRecord {
+    id: AppId,
+    name: String,
+    source: Option<String>,
+    runtime: String,
+    version: String,
+    history: Vec<VersionEntry>,
+    interfaces: Vec<String>,
+    links: Vec<LinkRegistration>,
+}
+
+#[derive(BorshSerialize, BorshDeserialize)]
+struct LegacyAppState {
+    apps: BTreeMap<AppId, LegacyAppRecord>,
+    links: BTreeMap<AppId, Vec<LinkRegistration>>,
 }
 
 #[derive(BorshSerialize, BorshDeserialize)]
@@ -117,6 +167,12 @@ impl Capability for AppCapability {
                     kind: "app.link.registered",
                 },
                 EventSpec {
+                    kind: "app.requirements.resolved",
+                },
+                EventSpec {
+                    kind: "app.source.updated",
+                },
+                EventSpec {
                     kind: "app.removed",
                 },
             ],
@@ -142,7 +198,8 @@ impl Capability for AppCapability {
                 }))
             }
             "app.add" => {
-                let (id, app_name, source, runtime, interfaces, links) = parse_add(args)?;
+                let (id, app_name, source, runtime, interfaces, links, refresh_source) =
+                    parse_add(args)?;
                 if id.trim().is_empty() {
                     return Err(Error::InvalidInput("app id must not be empty".into()));
                 }
@@ -153,11 +210,30 @@ impl Capability for AppCapability {
                 if runtime.trim().is_empty() {
                     return Err(Error::InvalidInput("app runtime must not be empty".into()));
                 }
-                if state_ref::<AppState>(ctx.state, "app")?
-                    .apps
-                    .contains_key(&id)
-                {
-                    return Err(Error::AppExists(id));
+                if refresh_source && source.is_none() {
+                    return Err(Error::InvalidInput(
+                        "`--refresh-source` requires `--source`".into(),
+                    ));
+                }
+                if let Some(existing) = state_ref::<AppState>(ctx.state, "app")?.apps.get(&id) {
+                    if !refresh_source {
+                        return Err(Error::AppExists(id));
+                    }
+                    let source = source.ok_or_else(|| {
+                        Error::InvalidInput("`--refresh-source` requires `--source`".into())
+                    })?;
+                    if source.trim().is_empty() {
+                        return Err(Error::InvalidInput(
+                            "refreshed app source must not be empty".into(),
+                        ));
+                    }
+                    if existing.source.as_deref() == Some(source.as_str()) {
+                        return Ok(Decision::Commit(Vec::new()));
+                    }
+                    return Ok(Decision::Commit(vec![encode_event(
+                        "app.source.updated",
+                        &SourceUpdated { id, source },
+                    )?]));
                 }
                 let mut events = vec![encode_event(
                     "app.added",
@@ -167,12 +243,10 @@ impl Capability for AppCapability {
                         source,
                         runtime,
                         interfaces,
+                        required_capabilities: None,
                     },
                 )?];
-                for link in default_scheme_links(&id)
-                    .into_iter()
-                    .chain(links)
-                {
+                for link in default_scheme_links(&id).into_iter().chain(links) {
                     validate_link_registration(&link.kind, &link.spec)?;
                     events.push(link_registered_event(&id, &link.kind, &link.spec)?);
                 }
@@ -261,6 +335,10 @@ impl Capability for AppCapability {
                         history: Vec::new(),
                         interfaces: normalize_interfaces(e.interfaces),
                         links: Vec::new(),
+                        required_capabilities: normalize_capabilities(
+                            e.required_capabilities.clone().unwrap_or_default(),
+                        ),
+                        requirements_resolved: e.required_capabilities.is_some(),
                     },
                 );
             }
@@ -299,6 +377,23 @@ impl Capability for AppCapability {
                     }
                 }
             }
+            "app.requirements.resolved" => {
+                let e: RequirementsResolved = decode_event(record)?;
+                let app = state_mut::<AppState>(state, "app")?
+                    .apps
+                    .get_mut(&e.app)
+                    .ok_or_else(|| Error::AppNotFound(e.app.clone()))?;
+                app.required_capabilities = normalize_capabilities(e.required_capabilities);
+                app.requirements_resolved = true;
+            }
+            "app.source.updated" => {
+                let e: SourceUpdated = decode_event(record)?;
+                let app = state_mut::<AppState>(state, "app")?
+                    .apps
+                    .get_mut(&e.id)
+                    .ok_or_else(|| Error::AppNotFound(e.id.clone()))?;
+                app.source = Some(e.source);
+            }
             "app.removed" => {
                 let e: Removed = decode_event(record)?;
                 let state = state_mut::<AppState>(state, "app")?;
@@ -315,7 +410,38 @@ impl Capability for AppCapability {
     }
 
     fn restore(&self, state: &mut dyn StateStore, payload: &[u8]) -> Result<()> {
-        restore_state::<AppState>(state, self.namespace(), payload)
+        if let Ok(restored) = borsh::from_slice::<AppState>(payload) {
+            *state_mut::<AppState>(state, self.namespace())? = restored;
+            return Ok(());
+        }
+        let legacy = borsh::from_slice::<LegacyAppState>(payload)
+            .map_err(|error| Error::Storage(format!("restore app snapshot: {error}")))?;
+        let apps = legacy
+            .apps
+            .into_iter()
+            .map(|(id, app)| {
+                (
+                    id,
+                    AppRecord {
+                        id: app.id,
+                        name: app.name,
+                        source: app.source,
+                        runtime: app.runtime,
+                        version: app.version,
+                        history: app.history,
+                        interfaces: app.interfaces,
+                        links: app.links,
+                        required_capabilities: Vec::new(),
+                        requirements_resolved: false,
+                    },
+                )
+            })
+            .collect();
+        *state_mut::<AppState>(state, self.namespace())? = AppState {
+            apps,
+            links: legacy.links,
+        };
+        Ok(())
     }
 
     fn describe(&self, record: &EventRecord) -> Option<String> {
@@ -339,7 +465,22 @@ impl Capability for AppCapability {
             }
             "app.link.registered" => {
                 let e: LinkRegistered = decode_event(record).ok()?;
-                Some(format!("app.link.registered {} {} {}", e.app, e.kind, e.spec))
+                Some(format!(
+                    "app.link.registered {} {} {}",
+                    e.app, e.kind, e.spec
+                ))
+            }
+            "app.requirements.resolved" => {
+                let e: RequirementsResolved = decode_event(record).ok()?;
+                Some(format!(
+                    "app.requirements.resolved {} [{}]",
+                    e.app,
+                    e.required_capabilities.join(",")
+                ))
+            }
+            "app.source.updated" => {
+                let e: SourceUpdated = decode_event(record).ok()?;
+                Some(format!("app.source.updated {} [{}]", e.id, e.source))
             }
             "app.removed" => {
                 let e: Removed = decode_event(record).ok()?;
@@ -354,6 +495,10 @@ impl Capability for AppCapability {
             "app.added" => decode_added(record).ok().map(|e| e.id),
             "app.upgraded" => decode_event::<Upgraded>(record).ok().map(|e| e.id),
             "app.link.registered" => decode_event::<LinkRegistered>(record).ok().map(|e| e.app),
+            "app.requirements.resolved" => decode_event::<RequirementsResolved>(record)
+                .ok()
+                .map(|e| e.app),
+            "app.source.updated" => decode_event::<SourceUpdated>(record).ok().map(|e| e.id),
             "app.removed" => decode_event::<Removed>(record).ok().map(|e| e.id),
             _ => None,
         }
@@ -403,6 +548,17 @@ pub fn added_event_with_interfaces(
     runtime: impl Into<String>,
     interfaces: Vec<String>,
 ) -> Result<EventRecord> {
+    added_event_with_requirements(id, name, source, runtime, interfaces, None)
+}
+
+pub fn added_event_with_requirements(
+    id: impl Into<String>,
+    name: impl Into<String>,
+    source: Option<String>,
+    runtime: impl Into<String>,
+    interfaces: Vec<String>,
+    required_capabilities: Option<Vec<String>>,
+) -> Result<EventRecord> {
     encode_event(
         "app.added",
         &Added {
@@ -411,6 +567,20 @@ pub fn added_event_with_interfaces(
             source,
             runtime: runtime.into(),
             interfaces,
+            required_capabilities: required_capabilities.map(normalize_capabilities),
+        },
+    )
+}
+
+pub fn requirements_resolved_event(
+    app: impl Into<String>,
+    required_capabilities: Vec<String>,
+) -> Result<EventRecord> {
+    encode_event(
+        "app.requirements.resolved",
+        &RequirementsResolved {
+            app: app.into(),
+            required_capabilities: normalize_capabilities(required_capabilities),
         },
     )
 }
@@ -435,6 +605,7 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
     let mut runtime = "js".to_string();
     let mut interfaces = Vec::new();
     let mut links = Vec::new();
+    let mut refresh_source = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -453,9 +624,9 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
                 i += 2;
             }
             "--interfaces" => {
-                let value = args
-                    .get(i + 1)
-                    .ok_or_else(|| Error::InvalidInput("`--interfaces` needs a comma-separated list".into()))?;
+                let value = args.get(i + 1).ok_or_else(|| {
+                    Error::InvalidInput("`--interfaces` needs a comma-separated list".into())
+                })?;
                 interfaces = value
                     .split(',')
                     .map(str::trim)
@@ -465,10 +636,14 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
                 i += 2;
             }
             "--file-types" => {
-                let value = args
-                    .get(i + 1)
-                    .ok_or_else(|| Error::InvalidInput("`--file-types` needs ext:mime entries".into()))?;
-                for spec in value.split(',').map(str::trim).filter(|spec| !spec.is_empty()) {
+                let value = args.get(i + 1).ok_or_else(|| {
+                    Error::InvalidInput("`--file-types` needs ext:mime entries".into())
+                })?;
+                for spec in value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|spec| !spec.is_empty())
+                {
                     links.push(LinkRegistration {
                         kind: "filetype".to_string(),
                         spec: spec.to_string(),
@@ -489,6 +664,10 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
                 });
                 i += 3;
             }
+            "--refresh-source" => {
+                refresh_source = true;
+                i += 1;
+            }
             word => {
                 name_parts.push(word);
                 i += 1;
@@ -507,6 +686,7 @@ fn parse_add(args: &[String]) -> Result<ParsedAdd> {
         runtime,
         normalize_interfaces(interfaces),
         links,
+        refresh_source,
     ))
 }
 
@@ -514,6 +694,16 @@ fn decode_added(record: &EventRecord) -> Result<Added> {
     match decode_event::<Added>(record) {
         Ok(event) => Ok(event),
         Err(_) => {
+            if let Ok(old) = decode_event::<AddedV2>(record) {
+                return Ok(Added {
+                    id: old.id,
+                    name: old.name,
+                    source: old.source,
+                    runtime: old.runtime,
+                    interfaces: old.interfaces,
+                    required_capabilities: None,
+                });
+            }
             let old: AddedV1 = decode_event(record)?;
             Ok(Added {
                 id: old.id,
@@ -521,9 +711,17 @@ fn decode_added(record: &EventRecord) -> Result<Added> {
                 source: old.source,
                 runtime: old.runtime,
                 interfaces: mandatory_interfaces(),
+                required_capabilities: None,
             })
         }
     }
+}
+
+pub fn normalize_capabilities(mut capabilities: Vec<String>) -> Vec<String> {
+    capabilities.retain(|capability| !capability.trim().is_empty());
+    capabilities.sort();
+    capabilities.dedup();
+    capabilities
 }
 
 pub fn normalize_interfaces(mut interfaces: Vec<String>) -> Vec<String> {

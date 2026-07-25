@@ -38,10 +38,7 @@ function handle(input) {
     .unwrap();
 
     let source = bundle.to_str().unwrap();
-    let (ok, _, err) = terrane(
-        home,
-        &["app", "add", "notes", "Notes", "--source", source],
-    );
+    let (ok, _, err) = terrane(home, &["app", "add", "notes", "Notes", "--source", source]);
     assert!(ok, "app add failed: {err}");
     let (ok, _, err) = terrane(
         home,

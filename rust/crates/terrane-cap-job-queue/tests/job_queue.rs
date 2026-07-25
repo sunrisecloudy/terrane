@@ -49,7 +49,10 @@ fn commit(
     name: &str,
     args: &[&str],
 ) -> Vec<EventRecord> {
-    let args = args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>();
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
     let records = match cap
         .decide(
             CommandCtx {
@@ -188,7 +191,13 @@ fn failed_attempt_requeues_when_retry_due_and_stall_counts_toward_attempts() {
         &["ops", "job-1", "2", "1200", "1300"],
     );
     assert_eq!(jobs_due_at(&state.job, 1301)[0].action, DueAction::Reap);
-    commit(&cap, &mut state, &bus, "job.reap", &["ops", "job-1", "1301"]);
+    commit(
+        &cap,
+        &mut state,
+        &bus,
+        "job.reap",
+        &["ops", "job-1", "1301"],
+    );
     assert_eq!(state.job.jobs["ops"]["job-1"].status, JobStatus::Failed);
     assert_eq!(
         state.job.jobs["ops"]["job-1"].last_error.as_deref(),
@@ -209,7 +218,13 @@ fn cancellation_wins_over_late_terminal_events() {
         "job.start",
         &["ops", "job-1", "1", "1000", "2000"],
     );
-    commit(&cap, &mut state, &bus, "job.cancel", &["ops", "job-1", "1500"]);
+    commit(
+        &cap,
+        &mut state,
+        &bus,
+        "job.cancel",
+        &["ops", "job-1", "1500"],
+    );
     commit(
         &cap,
         &mut state,

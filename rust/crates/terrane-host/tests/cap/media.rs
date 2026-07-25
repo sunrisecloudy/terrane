@@ -125,7 +125,11 @@ fn png_with_dimensions(width: u32, height: u32) -> Vec<u8> {
     ihdr.extend_from_slice(&height.to_be_bytes());
     ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
     push_chunk(&mut out, b"IHDR", &ihdr);
-    push_chunk(&mut out, b"IDAT", &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01]);
+    push_chunk(
+        &mut out,
+        b"IDAT",
+        &[0x78, 0x9c, 0x03, 0x00, 0x00, 0x00, 0x00, 0x01],
+    );
     push_chunk(&mut out, b"IEND", &[]);
     out
 }

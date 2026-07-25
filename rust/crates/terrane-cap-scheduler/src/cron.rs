@@ -35,7 +35,11 @@ pub(crate) fn latest_at_or_before(expr: &str, now_epoch_ms: u64) -> Result<Optio
     find_matching_minute(&spec, start, false).map(Some)
 }
 
-pub(crate) fn missed_since(expr: &str, last_scheduled_for: u64, now_epoch_ms: u64) -> Result<Vec<u64>> {
+pub(crate) fn missed_since(
+    expr: &str,
+    last_scheduled_for: u64,
+    now_epoch_ms: u64,
+) -> Result<Vec<u64>> {
     let mut out = Vec::new();
     let mut cursor = last_scheduled_for;
     loop {
@@ -127,7 +131,10 @@ fn parse_field(field: &str, min: u8, max: u8, label: &str) -> Result<Field> {
 
 fn add_part(present: &mut [bool], part: &str, min: u8, max: u8, label: &str) -> Result<()> {
     let (base, step) = match part.split_once('/') {
-        Some((base, step)) => (base, Some(parse_number(step, 1, max, &format!("{label} step"))?)),
+        Some((base, step)) => (
+            base,
+            Some(parse_number(step, 1, max, &format!("{label} step"))?),
+        ),
         None => (part, None),
     };
     let (start, end) = if base == "*" {

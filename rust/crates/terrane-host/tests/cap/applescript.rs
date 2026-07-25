@@ -10,12 +10,12 @@ fn applescript_rejects_unknown_app_and_empty_script() {
     let home = dir.path();
     terrane(home, &["app", "add", "demo", "Demo"]);
 
-    let (ok, _, err) = terrane(
-        home,
-        &["applescript", "run", "ghost", "return 1"],
-    );
+    let (ok, _, err) = terrane(home, &["applescript", "run", "ghost", "return 1"]);
     assert!(!ok, "expected missing app rejection");
-    assert!(err.contains("ghost") || err.contains("not found"), "err: {err}");
+    assert!(
+        err.contains("ghost") || err.contains("not found"),
+        "err: {err}"
+    );
 
     let (ok, _, err) = terrane(home, &["applescript", "run", "demo", "   "]);
     assert!(!ok, "expected empty script rejection");
@@ -29,10 +29,7 @@ fn applescript_run_e2e_real() {
     let home = dir.path();
     terrane(home, &["app", "add", "calc", "Calc"]);
 
-    let (ok, out, err) = terrane(
-        home,
-        &["applescript", "run", "calc", "return 2 + 2"],
-    );
+    let (ok, out, err) = terrane(home, &["applescript", "run", "calc", "return 2 + 2"]);
     assert!(ok, "run failed: {err}");
     assert!(out.contains("applescript.ran"), "out: {out}");
 

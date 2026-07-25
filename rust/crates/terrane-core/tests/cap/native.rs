@@ -175,10 +175,7 @@ fn native_v2_validates_inputs_and_blob_ref_results() {
     .unwrap();
 
     let bad_target = core
-        .dispatch(req(
-            "native.screen.capture",
-            &["demo", "cap-1", "desktop"],
-        ))
+        .dispatch(req("native.screen.capture", &["demo", "cap-1", "desktop"]))
         .unwrap_err();
     assert!(bad_target
         .to_string()
@@ -361,7 +358,13 @@ fn native_v2_folds_tray_shortcut_registrations_and_replays() {
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
     core.dispatch(req(
         "native.platform.observe",
-        &["local", "macos", "test-1", "tray.setMenu", "shortcut.registerGlobal"],
+        &[
+            "local",
+            "macos",
+            "test-1",
+            "tray.setMenu",
+            "shortcut.registerGlobal",
+        ],
     ))
     .unwrap();
 
@@ -438,7 +441,11 @@ fn native_sensitive_resource_methods_require_operation_selector_grants() {
 
     let mut host = RuntimeResourceHost::new("demo", core.state().clone());
     let denied = host
-        .write_resource("native", "screenCapture", &["cap-1".into(), "screen".into()])
+        .write_resource(
+            "native",
+            "screenCapture",
+            &["cap-1".into(), "screen".into()],
+        )
         .unwrap_err();
     assert!(denied
         .to_string()
@@ -457,7 +464,11 @@ fn native_sensitive_resource_methods_require_operation_selector_grants() {
 
     core.dispatch(req(
         "auth.grant",
-        &[terrane_core::LOCAL_OWNER_SUBJECT, "demo", "native:screen.capture"],
+        &[
+            terrane_core::LOCAL_OWNER_SUBJECT,
+            "demo",
+            "native:screen.capture",
+        ],
     ))
     .unwrap();
     core.dispatch(req(
@@ -470,8 +481,12 @@ fn native_sensitive_resource_methods_require_operation_selector_grants() {
     ))
     .unwrap();
     let mut host = RuntimeResourceHost::new("demo", core.state().clone());
-    host.write_resource("native", "screenCapture", &["cap-1".into(), "screen".into()])
-        .unwrap();
+    host.write_resource(
+        "native",
+        "screenCapture",
+        &["cap-1".into(), "screen".into()],
+    )
+    .unwrap();
     host.write_resource(
         "native",
         "cameraCapturePhoto",

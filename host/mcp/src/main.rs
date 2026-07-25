@@ -8,11 +8,11 @@
 //!
 //! ## Architecture
 //!
-//! One thread owns the (`!Send`) `Core` and runs the event loop. Two front-ends
-//! feed it over one channel: a reader thread forwarding stdin lines (the model),
-//! and a loopback admin listener forwarding approve/deny requests (a human). The
-//! single owner keeps the `Core` the sole in-process writer; the exclusive home
-//! lock keeps *other* processes out.
+//! When no GUI owns the home, one thread owns the (`!Send`) `Core` and runs the
+//! event loop. When the macOS GUI already owns it, this process reads the
+//! authenticated per-home discovery file and proxies stdio messages to the
+//! GUI's loopback MCP endpoint. Either way, one live `Core` remains the sole
+//! writer; the home lock is never bypassed.
 //!
 //! ## In-session approval
 //!
@@ -27,9 +27,11 @@
 //! The untrusted model never gains a grant tool; approval is always a human act.
 
 mod admin;
+mod gui_proxy;
 
 use std::io::{self, BufRead, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::Duration;
@@ -63,16 +65,87 @@ struct AdminResponse {
 }
 
 fn main() {
-    let mut core = match terrane_host::open() {
-        Ok(core) => core,
-        Err(e) => {
-            eprintln!("terrane-mcp: {e}");
+    let home = mcp_home_dir();
+
+    // The GUI may already own the home, and opening a Core can perform legacy
+    // format detection before it reports contention. Prefer an authenticated
+    // live GUI endpoint whenever its discovery record is present so this
+    // process never inspects or migrates a GUI-owned log.
+    if gui_proxy::discovery_path(&home).is_file() {
+        match gui_proxy::GuiProxy::connect(&home) {
+            Ok(proxy) => return run_gui_proxy(proxy, &home),
+            Err(error) => {
+                eprintln!("terrane-mcp: GUI discovery is present but not ready: {error}")
+            }
+        }
+    }
+
+    match terrane_host::open_at_home(&home) {
+        Ok(core) => run_local(core, &home),
+        Err(open_error) if open_error.contains("another terrane process holds") => {
+            match gui_proxy::GuiProxy::connect(&home) {
+                Ok(proxy) => run_gui_proxy(proxy, &home),
+                Err(attach_error) => {
+                    eprintln!("terrane-mcp: {open_error}");
+                    eprintln!("terrane-mcp: GUI attachment failed: {attach_error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Err(open_error) => {
+            eprintln!("terrane-mcp: {open_error}");
             std::process::exit(1);
         }
-    };
+    }
+}
+
+fn mcp_home_dir() -> PathBuf {
+    std::env::var_os("TERRANE_HOME")
+        .filter(|home| !home.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".terrane")))
+        .unwrap_or_else(|| PathBuf::from(".terrane"))
+}
+
+fn run_gui_proxy(proxy: gui_proxy::GuiProxy, home: &Path) {
+    eprintln!(
+        "terrane-mcp: attached to Terrane GUI (home {})",
+        terrane_host::log_path_for_home(home).display()
+    );
+    let stdin = io::stdin();
+    let mut reader = stdin.lock();
+    let mut stdout = io::stdout();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                let raw = line.trim();
+                if raw.is_empty() {
+                    continue;
+                }
+                match proxy.forward(raw) {
+                    Ok(Some(response)) => write_line(&mut stdout, &response),
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("terrane-mcp: {error}");
+                        break;
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("terrane-mcp: read error: {error}");
+                break;
+            }
+        }
+    }
+}
+
+fn run_local(mut core: HostCore, home: &Path) {
     eprintln!(
         "terrane-mcp: ready (home {})",
-        terrane_host::log_path().display()
+        terrane_host::log_path_for_home(home).display()
     );
 
     let (tx, rx) = mpsc::channel::<Incoming>();

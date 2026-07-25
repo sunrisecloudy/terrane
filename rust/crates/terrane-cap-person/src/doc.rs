@@ -104,20 +104,31 @@ fn person_commands() -> Vec<CommandDoc> {
             "effect",
             "Mint the local ed25519 keypair once and record the public identity.",
         )
-        .with_errors(&["unexpected arguments", "edge key generation or secret-store failure"])
+        .with_errors(&[
+            "unexpected arguments",
+            "edge key generation or secret-store failure",
+        ])
         .with_effects(&["PersonKeygen"])
         .with_emits(&["person.created"]),
         command_doc(
             "person.attest",
             &[
                 param("person_id", "Existing person id.", "person_id"),
-                param("kind", "replica, premium-account, email, or device-key.", "string"),
+                param(
+                    "kind",
+                    "replica, premium-account, email, or device-key.",
+                    "string",
+                ),
                 param("claim", "Claim value attached to the person.", "string"),
             ],
             "effect",
             "Sign one attestation with the person key at the edge.",
         )
-        .with_errors(&["unknown person", "invalid attestation kind", "claim too large"])
+        .with_errors(&[
+            "unknown person",
+            "invalid attestation kind",
+            "claim too large",
+        ])
         .with_effects(&["PersonSign"])
         .with_emits(&["person.attested"]),
         command_doc(
@@ -130,7 +141,11 @@ fn person_commands() -> Vec<CommandDoc> {
             "commit",
             "Mark a folded attestation revoked.",
         )
-        .with_errors(&["unknown person", "invalid attestation kind", "claim too large"])
+        .with_errors(&[
+            "unknown person",
+            "invalid attestation kind",
+            "claim too large",
+        ])
         .with_emits(&["person.attestation-revoked"]),
         command_doc(
             "person.rotate",
@@ -138,7 +153,10 @@ fn person_commands() -> Vec<CommandDoc> {
             "effect",
             "Mint a replacement key and record it signed by the old key.",
         )
-        .with_errors(&["unknown person", "edge key generation or secret-store failure"])
+        .with_errors(&[
+            "unknown person",
+            "edge key generation or secret-store failure",
+        ])
         .with_effects(&["PersonRotate"])
         .with_emits(&["person.rotated"]),
     ]
@@ -159,7 +177,10 @@ fn person_queries() -> Vec<QueryDoc> {
             "json|null",
             "Return one folded person by id.",
         )
-        .with_errors(&["invalid person_id", "invalid folded person JSON serialization"]),
+        .with_errors(&[
+            "invalid person_id",
+            "invalid folded person JSON serialization",
+        ]),
     ]
 }
 
@@ -197,9 +218,17 @@ fn person_events() -> Vec<EventDoc> {
         event_doc(
             "person.rotated",
             &[
-                param("old", "Stable person id whose key is rotating.", "person_id"),
+                param(
+                    "old",
+                    "Stable person id whose key is rotating.",
+                    "person_id",
+                ),
                 param("new_pubkey", "Replacement ed25519 public key.", "hex"),
-                param("sig", "Signature by current key or active device-key.", "hex"),
+                param(
+                    "sig",
+                    "Signature by current key or active device-key.",
+                    "hex",
+                ),
             ],
             "Moves signing to a replacement public key while preserving the person id.",
         ),

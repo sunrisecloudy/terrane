@@ -51,7 +51,10 @@ fn terrane_open_send_url_delivers_link_via_common_receive() {
     let url = format!("terrane://send/receiver?kind=link&payload={payload}");
     let (ok, out, err) = terrane(home, &["open", &url]);
     assert!(ok, "open send failed: {out} {err}");
-    assert!(out.contains("delivered link payload to receiver"), "out: {out}");
+    assert!(
+        out.contains("delivered link payload to receiver"),
+        "out: {out}"
+    );
 
     let (ok, out, err) = terrane(home, &["state"]);
     assert!(ok, "state failed: {err}");
@@ -104,7 +107,10 @@ fn terrane_open_registered_file_imports_blob_and_delivers_reference() {
 
     let (ok, out, err) = terrane(home, &["open", file.to_str().unwrap()]);
     assert!(ok, "open file failed: {out} {err}");
-    assert!(out.contains("imported file note.txt to receiver"), "out: {out}");
+    assert!(
+        out.contains("imported file note.txt to receiver"),
+        "out: {out}"
+    );
 
     let (ok, out, err) = terrane(home, &["state"]);
     assert!(ok, "state failed: {err}");

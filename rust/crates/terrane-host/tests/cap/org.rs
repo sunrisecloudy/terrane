@@ -4,8 +4,8 @@
 
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
-use terrane_host::{open_at_home, dispatch_on_core};
 use terrane_cap_interface::QueryValue;
+use terrane_host::{dispatch_on_core, open_at_home};
 
 /// Build `Vec<String>` from `&[&str]` to satisfy `dispatch_on_core`/`query`
 /// argument signatures without `&[x.clone()]` slice patterns.
@@ -36,7 +36,8 @@ fn org_create_invite_join_role_set_leave_replays_through_real_edge() {
     };
     assert!(!founder_id.is_empty());
 
-    let create_records = dispatch_on_core(&mut core, "org.create", &s(&[founder_id.as_str()])).unwrap();
+    let create_records =
+        dispatch_on_core(&mut core, "org.create", &s(&[founder_id.as_str()])).unwrap();
     assert_eq!(create_records.records.len(), 2);
     assert_eq!(create_records.records[0].kind, "org.created");
     assert_eq!(create_records.records[1].kind, "org.member.granted");
@@ -96,7 +97,12 @@ fn org_create_invite_join_role_set_leave_replays_through_real_edge() {
     dispatch_on_core(
         &mut core,
         "org.role.set",
-        &s(&[org_id.as_str(), founder_id.as_str(), "owner", founder_id.as_str()]),
+        &s(&[
+            org_id.as_str(),
+            founder_id.as_str(),
+            "owner",
+            founder_id.as_str(),
+        ]),
     )
     .unwrap();
     assert_eq!(
@@ -105,7 +111,12 @@ fn org_create_invite_join_role_set_leave_replays_through_real_edge() {
     );
 
     // Leave marks the membership inactive.
-    dispatch_on_core(&mut core, "org.leave", &s(&[org_id.as_str(), founder_id.as_str()])).unwrap();
+    dispatch_on_core(
+        &mut core,
+        "org.leave",
+        &s(&[org_id.as_str(), founder_id.as_str()]),
+    )
+    .unwrap();
     let last_active = core
         .state()
         .org
@@ -137,7 +148,13 @@ fn org_create_is_idempotent_when_called_twice_for_the_same_founder() {
     let second = dispatch_on_core(&mut core, "org.create", &s(&[founder_id.as_str()])).unwrap();
     // The cap declaration treats "founder already owns an org" as a no-op
     // (empty commit), so no new events are recorded on the second call.
-    assert!(first.records.iter().any(|record| record.kind == "org.created"));
-    assert!(second.records.iter().all(|record| record.kind != "org.created"));
+    assert!(first
+        .records
+        .iter()
+        .any(|record| record.kind == "org.created"));
+    assert!(second
+        .records
+        .iter()
+        .all(|record| record.kind != "org.created"));
     assert_eq!(core.state().org.orgs.len(), count_before);
 }

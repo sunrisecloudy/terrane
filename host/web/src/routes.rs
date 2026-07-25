@@ -147,9 +147,7 @@ pub fn route(
         (Method::Post, ["sync", app, "vv"]) => sync_vv(core, app, request),
         (Method::Post, ["sync", app, "delta"]) => sync_delta(core, app, request),
         (Method::Post, ["sync", app, "events"]) => sync_events(core, app, request),
-        (Method::Post, ["sync", app, "apply-events"]) => {
-            sync_apply_events(core, app, request)
-        }
+        (Method::Post, ["sync", app, "apply-events"]) => sync_apply_events(core, app, request),
         (Method::Get, ["sync", app, "cursor", peer]) => sync_cursor(core, app, peer),
         (Method::Get, ["sync", app, "blobs"]) => sync_blobs(core, app),
         (Method::Get, ["sync", app, "blob", hash]) => sync_blob(core, app, hash),
@@ -1073,11 +1071,7 @@ fn invoke(
     }
 }
 
-fn presence_publish(
-    core: &mut terrane_host::HostCore,
-    id: &str,
-    request: &mut Request,
-) -> Resp {
+fn presence_publish(core: &mut terrane_host::HostCore, id: &str, request: &mut Request) -> Resp {
     let mut body = String::new();
     if request.as_reader().read_to_string(&mut body).is_err() {
         return json_error(400, "cannot read request body");
@@ -1096,7 +1090,9 @@ fn presence_publish(
         Err(e) => return json_error(500, &e.to_string()),
     }
     match terrane_host::presence::publish(core.state(), id, &parsed.channel, &parsed.payload) {
-        Ok(_) => json_ok(&InvokeResponse { output: "ok".into() }),
+        Ok(_) => json_ok(&InvokeResponse {
+            output: "ok".into(),
+        }),
         Err(e) => json_error(400, &e.to_string()),
     }
 }
@@ -1147,6 +1143,11 @@ fn serve_ui(
     rel: &str,
     live_reload: bool,
 ) -> Resp {
+    if core.state().app.apps.contains_key(id) {
+        if let Err(error) = terrane_host::prepare_app_capabilities(core, id) {
+            return json_error(503, &format!("capability preparation failed: {error}"));
+        }
+    }
     let Some(source) = app_source(core, dev_apps, id) else {
         return json_error(404, &format!("no such app (or no bundle): {id}"));
     };

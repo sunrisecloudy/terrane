@@ -95,15 +95,27 @@ fn publish_events() -> Vec<EventDoc> {
         event_doc(
             "publish.identity-created",
             &[
-                param("pubkey", "Publisher ed25519 verifying key as base64.", "base64"),
-                param("replica_peer", "Home replica peer bound to the publisher key for display.", "string"),
+                param(
+                    "pubkey",
+                    "Publisher ed25519 verifying key as base64.",
+                    "base64",
+                ),
+                param(
+                    "replica_peer",
+                    "Home replica peer bound to the publisher key for display.",
+                    "string",
+                ),
             ],
             "Records this home's public publisher identity.",
         ),
         event_doc(
             "publish.trusted",
             &[
-                param("pubkey", "Trusted publisher ed25519 verifying key as base64.", "base64"),
+                param(
+                    "pubkey",
+                    "Trusted publisher ed25519 verifying key as base64.",
+                    "base64",
+                ),
                 param("label", "Human label from publish.json.", "string"),
             ],
             "Records trust-on-first-use for one publisher key.",
@@ -113,8 +125,16 @@ fn publish_events() -> Vec<EventDoc> {
             &[
                 param("app", "Installed app id.", "string"),
                 param("version", "Installed app version.", "semver"),
-                param("bundle_hash", "Canonical hash covering sorted bundle paths and file contents.", "sha256"),
-                param("publisher_pubkey", "Publisher ed25519 verifying key as base64.", "base64"),
+                param(
+                    "bundle_hash",
+                    "Canonical hash covering sorted bundle paths and file contents.",
+                    "sha256",
+                ),
+                param(
+                    "publisher_pubkey",
+                    "Publisher ed25519 verifying key as base64.",
+                    "base64",
+                ),
                 param("publisher_label", "Human publisher label.", "string"),
             ],
             "Records signed install provenance for one app version.",

@@ -59,12 +59,7 @@ fn broker_reports_missing_grant_then_none_after_grant() {
 
     // After granting kv: nothing is required.
     let owner_subject = terrane_core::local_owner_subject(core.state());
-    dispatch_on_core(
-        &mut core,
-        "auth.grant",
-        &s(&[&owner_subject, "demo", "kv"]),
-    )
-    .unwrap();
+    dispatch_on_core(&mut core, "auth.grant", &s(&[&owner_subject, "demo", "kv"])).unwrap();
     assert!(
         permission_required_for_app(&core, "demo")
             .unwrap()

@@ -2,6 +2,9 @@
 resolver = "2"
 members = [
   "rust/crates/terrane-cap-interface",
+  "rust/crates/terrane-cap-manager",
+  "rust/crates/terrane-cap-protocol",
+  "rust/crates/terrane-cap-worker",
   "rust/crates/terrane-cap-agent",
   "rust/crates/terrane-cap-app",
   "rust/crates/terrane-cap-auth",
@@ -14,6 +17,7 @@ members = [
   "rust/crates/terrane-cap-webhook",
   "rust/crates/terrane-cap-web-publish",
   "rust/crates/terrane-cap-common",
+  "rust/crates/terrane-cap-control-room",
   "rust/crates/terrane-cap-crdt",
   "rust/crates/terrane-cap-crypto",
   "rust/crates/terrane-cap-connection",
@@ -64,13 +68,16 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
 terrane-core = { path = "rust/crates/terrane-core" }
 terrane-cap-interface = { path = "rust/crates/terrane-cap-interface" }
+terrane-cap-manager = { path = "rust/crates/terrane-cap-manager" }
+terrane-cap-protocol = { path = "rust/crates/terrane-cap-protocol" }
+terrane-cap-worker = { path = "rust/crates/terrane-cap-worker" }
 terrane-cap-agent = { path = "rust/crates/terrane-cap-agent" }
 terrane-cap-app = { path = "rust/crates/terrane-cap-app" }
 terrane-cap-auth = { path = "rust/crates/terrane-cap-auth" }
@@ -83,6 +90,7 @@ terrane-cap-blob = { path = "rust/crates/terrane-cap-blob" }
 terrane-cap-webhook = { path = "rust/crates/terrane-cap-webhook" }
 terrane-cap-web-publish = { path = "rust/crates/terrane-cap-web-publish" }
 terrane-cap-common = { path = "rust/crates/terrane-cap-common" }
+terrane-cap-control-room = { path = "rust/crates/terrane-cap-control-room" }
 terrane-cap-crdt = { path = "rust/crates/terrane-cap-crdt" }
 terrane-cap-crypto = { path = "rust/crates/terrane-cap-crypto" }
 terrane-cap-connection = { path = "rust/crates/terrane-cap-connection" }

@@ -3,9 +3,7 @@
 
 use tempfile::tempdir;
 use terrane_cap_mcp_client::{called_event, CalledEvent, REDACTED};
-use terrane_core::{
-    Core, Effect, EffectRunner, Error, EventRecord, State, LOCAL_OWNER_SUBJECT,
-};
+use terrane_core::{Core, Effect, EffectRunner, Error, EventRecord, State, LOCAL_OWNER_SUBJECT};
 
 use crate::helpers::req;
 
@@ -57,8 +55,11 @@ fn mcp_call_records_redacted_result_and_replays() {
         ],
     ))
     .unwrap();
-    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "work", "mcp:linear"]))
-        .unwrap();
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "work", "mcp:linear"],
+    ))
+    .unwrap();
 
     let records = core
         .dispatch(req(
@@ -115,8 +116,11 @@ fn mcp_disconnect_and_app_removed_clean_folded_state() {
         &["linear", r#"{"http":{"url":"http://127.0.0.1/mcp"}}"#],
     ))
     .unwrap();
-    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "work", "mcp:linear"]))
-        .unwrap();
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "work", "mcp:linear"],
+    ))
+    .unwrap();
     core.dispatch(req("mcp.call", &["work", "linear", "echo", "{}"]))
         .unwrap();
     assert!(core.state().mcp.connections.contains_key("linear"));

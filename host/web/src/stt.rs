@@ -14,16 +14,14 @@ use std::thread;
 use std::time::Duration;
 
 use nanoserde::{DeJson, SerJson};
-use terrane_host::stt_runner::{
-    AsrEngine, AsrOutput, SegmentSink, SessionConfig, SttRunner,
-};
 use terrane_core::Result as TerraneResult;
+use terrane_host::stt_runner::{AsrEngine, AsrOutput, SegmentSink, SessionConfig, SttRunner};
 use tiny_http::Response;
 use tungstenite::handshake::server::{Request, Response as WsResponse};
 use tungstenite::{accept_hdr, Message};
 
 use crate::http::{
-    admin_authorized, header, json_error, json_ok, ADMIN_HEADER, ADMIN_HEADER_VALUE, Resp,
+    admin_authorized, header, json_error, json_ok, Resp, ADMIN_HEADER, ADMIN_HEADER_VALUE,
 };
 
 const WORKLET_JS: &str = include_str!("js/stt_capture_worklet.js");
@@ -243,9 +241,8 @@ impl SttSessions {
             model.to_string(),
             sample_rate_hz.to_string(),
         ];
-        terrane_host::dispatch_on_core(core, "stt.session.open", &args).map_err(|e| {
-            format!("stt.session.open dispatch failed: {e}")
-        })?;
+        terrane_host::dispatch_on_core(core, "stt.session.open", &args)
+            .map_err(|e| format!("stt.session.open dispatch failed: {e}"))?;
 
         let cfg = SessionConfig {
             app: app.to_string(),
@@ -281,11 +278,7 @@ impl SttSessions {
             return Err("app and sessionId are required".into());
         }
         let reason = nonempty_or(body.reason.trim(), "stopped");
-        let args = vec![
-            app.to_string(),
-            session_id.to_string(),
-            reason.to_string(),
-        ];
+        let args = vec![app.to_string(), session_id.to_string(), reason.to_string()];
         terrane_host::dispatch_on_core(core, "stt.session.close-host", &args)?;
         self.runners
             .lock()
@@ -320,7 +313,10 @@ pub fn config_response() -> Resp {
     })
 }
 
-pub fn admin_open_route(core: &mut terrane_host::HostCore, request: &mut tiny_http::Request) -> Resp {
+pub fn admin_open_route(
+    core: &mut terrane_host::HostCore,
+    request: &mut tiny_http::Request,
+) -> Resp {
     if !admin_authorized(request) {
         return json_error(403, "admin header required");
     }
@@ -349,7 +345,10 @@ pub fn admin_segment_route(
     }
 }
 
-pub fn admin_close_route(core: &mut terrane_host::HostCore, request: &mut tiny_http::Request) -> Resp {
+pub fn admin_close_route(
+    core: &mut terrane_host::HostCore,
+    request: &mut tiny_http::Request,
+) -> Resp {
     if !admin_authorized(request) {
         return json_error(403, "admin header required");
     }
@@ -374,7 +373,12 @@ fn segment_args(body: &SttSegmentBody) -> Vec<String> {
         args.push("--confidence".into());
         args.push(confidence.to_string());
     }
-    if let Some(lang) = body.lang.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+    if let Some(lang) = body
+        .lang
+        .as_ref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
         args.push("--lang".into());
         args.push(lang.to_string());
     }
@@ -390,10 +394,7 @@ fn parse_body<T: DeJson>(request: &mut tiny_http::Request) -> Result<T, Resp> {
     T::deserialize_json(&body).map_err(|e| json_error(400, &format!("bad stt body: {e}")))
 }
 
-fn idle_watchdog_loop(
-    runners: Arc<Mutex<HashMap<String, SessionRunner>>>,
-    http_base: String,
-) {
+fn idle_watchdog_loop(runners: Arc<Mutex<HashMap<String, SessionRunner>>>, http_base: String) {
     let idle_ms = idle_threshold_ms();
     loop {
         thread::sleep(Duration::from_secs(IDLE_POLL_SECS));
@@ -401,10 +402,7 @@ fn idle_watchdog_loop(
         if let Ok(guard) = runners.lock() {
             for (session_id, runner) in guard.iter() {
                 if runner.idle_ms() >= idle_ms {
-                    closes.push((
-                        runner.app_id().to_string(),
-                        session_id.clone(),
-                    ));
+                    closes.push((runner.app_id().to_string(), session_id.clone()));
                 }
             }
         }
@@ -558,10 +556,9 @@ fn percent_decode(value: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 out.push(byte as char);
                 i += 3;
                 continue;
@@ -578,8 +575,7 @@ fn ws_bind_listener(http_addr: &str) -> Result<TcpListener, String> {
     let addr: SocketAddr = format!("{host}:0")
         .parse()
         .map_err(|e| format!("invalid stt websocket bind addr: {e}"))?;
-    TcpListener::bind(addr)
-        .map_err(|e| format!("stt pcm websocket bind failed on {addr}: {e}"))
+    TcpListener::bind(addr).map_err(|e| format!("stt pcm websocket bind failed on {addr}: {e}"))
 }
 
 fn ws_public_url(http_addr: &str, ws_addr: &SocketAddr) -> String {
@@ -596,5 +592,9 @@ fn split_host_port(addr: &str) -> (&str, &str) {
 }
 
 fn nonempty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
-    if value.is_empty() { fallback } else { value }
+    if value.is_empty() {
+        fallback
+    } else {
+        value
+    }
 }

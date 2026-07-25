@@ -337,7 +337,9 @@ fn parse_unicode_escape(bytes: &[u8], i: &mut usize) -> Result<char> {
         let scalar = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
         char::from_u32(scalar).ok_or_else(|| Error::InvalidInput("invalid Unicode scalar".into()))
     } else if (0xDC00..=0xDFFF).contains(&code) {
-        Err(Error::InvalidInput("unexpected low UTF-16 surrogate".into()))
+        Err(Error::InvalidInput(
+            "unexpected low UTF-16 surrogate".into(),
+        ))
     } else {
         char::from_u32(code).ok_or_else(|| Error::InvalidInput("invalid Unicode scalar".into()))
     }

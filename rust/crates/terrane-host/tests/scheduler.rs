@@ -64,7 +64,9 @@ fn scheduler_due_loop_invokes_backend_after_recording_fire() {
     assert_eq!(outcomes[0].error, None, "{outcomes:?}");
     assert_eq!(
         outcomes[0].output.as_deref(),
-        Some(r#"{"ok":true,"name":"quickjs-ops-heartbeat","scheduledFor":"60000","arg":"premium-ops-proof"}"#)
+        Some(
+            r#"{"ok":true,"name":"quickjs-ops-heartbeat","scheduledFor":"60000","arg":"premium-ops-proof"}"#
+        )
     );
 
     assert!(!core.state().scheduler.schedules["ops"].contains_key("quickjs-ops-heartbeat"));
@@ -117,7 +119,11 @@ fn scheduler_due_loop_keeps_fire_fact_when_backend_fails() {
     let outcomes = terrane_host::scheduler::run_due_at(&mut core, 60_000).unwrap();
     assert_eq!(outcomes.len(), 1);
     assert!(
-        outcomes[0].error.as_deref().unwrap_or_default().contains("boom"),
+        outcomes[0]
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("boom"),
         "{outcomes:?}"
     );
     assert!(!core.state().scheduler.schedules["ops"].contains_key("quickjs-ops-heartbeat"));

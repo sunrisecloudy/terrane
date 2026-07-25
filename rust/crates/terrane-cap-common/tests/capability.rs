@@ -1,7 +1,7 @@
 use std::any::Any;
 
 use terrane_cap_common::{common_doc, prepare_send, CommonState};
-use terrane_cap_interface::{StateStore, Error};
+use terrane_cap_interface::{Error, StateStore};
 
 #[derive(Default)]
 struct Store {

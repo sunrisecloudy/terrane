@@ -1,8 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::operations::{
-    operation_catalog, NATIVE_OPERATION_SELECTOR_SCHEMA_ID, OP_EXTERNAL_OPEN_URL,
-    OP_SCREEN_CAPTURE,
+    operation_catalog, NATIVE_OPERATION_SELECTOR_SCHEMA_ID, OP_EXTERNAL_OPEN_URL, OP_SCREEN_CAPTURE,
 };
 use crate::{NativeCapability, NativeRequestStatus};
 use terrane_cap_interface::Capability;

@@ -74,7 +74,16 @@ fn respond(mut stream: TcpStream, body: &str) {
 fn connect_and_grant(home: &Path, name: &str, transport: &str) {
     let (ok, out, err) = terrane(home, &["mcp", "connect", name, transport]);
     assert!(ok, "mcp connect failed; stdout: {out}; stderr: {err}");
-    let (ok, out, err) = terrane(home, &["auth", "grant", "user:local-owner", "work", &format!("mcp:{name}")]);
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "auth",
+            "grant",
+            "user:local-owner",
+            "work",
+            &format!("mcp:{name}"),
+        ],
+    );
     assert!(ok, "auth grant failed; stdout: {out}; stderr: {err}");
 }
 
@@ -91,7 +100,10 @@ fn mcp_http_call_records_result_and_replays() {
     let transport = format!(r#"{{"http":{{"url":"{base}"}}}}"#);
     connect_and_grant(home, "echo", &transport);
 
-    let (ok, out, err) = terrane(home, &["mcp", "call", "work", "echo", "echo", r#"{"text":"hello"}"#]);
+    let (ok, out, err) = terrane(
+        home,
+        &["mcp", "call", "work", "echo", "echo", r#"{"text":"hello"}"#],
+    );
     assert!(ok, "mcp call failed; stdout: {out}; stderr: {err}");
     assert!(out.contains("mcp.called"), "out: {out}");
     server.join().unwrap();

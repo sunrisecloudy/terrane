@@ -93,7 +93,8 @@ fn secrets_seal_to_ciphertext_and_never_enter_the_log() {
     );
 
     // The stored item is a base64 ciphertext blob, not the plaintext.
-    core.dispatch(req("js-runtime.run", &["vault", "stored"])).unwrap();
+    core.dispatch(req("js-runtime.run", &["vault", "stored"]))
+        .unwrap();
     let stored = core.take_last_output().unwrap_or_default();
     assert!(!stored.contains(SECRET), "stored value leaked plaintext");
     assert!(!stored.is_empty());
@@ -125,7 +126,10 @@ fn unlock_gate_opens_only_with_the_right_master_password() {
     core.dispatch(req("js-runtime.run", &["vault", "read", MASTER]))
         .unwrap();
     let opened = core.take_last_output().unwrap_or_default();
-    assert!(opened.contains(SECRET), "correct master should reveal the secret");
+    assert!(
+        opened.contains(SECRET),
+        "correct master should reveal the secret"
+    );
     assert!(opened.contains("github"));
 
     // Wrong password is refused without revealing anything.

@@ -29,6 +29,10 @@ typedef struct TerraneHandle TerraneHandle;
  * the default. Returns a handle, or NULL on failure. */
 TerraneHandle *terrane_open(const char *home);
 
+/* Open a workspace while preserving a diagnostic message on failure. The
+ * caller owns *out_error and frees it with terrane_string_free. */
+TerraneHandle *terrane_open_with_error(const char *home, char **out_error);
+
 /* Run an app backend using its manifest runtime. On success writes the
  * backend's output string to *out_output and returns TERRANE_OK; on failure
  * writes a message to *out_error and returns non-zero. */
@@ -39,6 +43,13 @@ int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,
  * (one per line) to *out_output; on failure writes *out_error. */
 int terrane_dispatch(TerraneHandle *h, const char *name, size_t argc,
                      const char *const *argv, char **out_output, char **out_error);
+
+/* Handle one MCP JSON-RPC message against this native host's live Core.
+ * Notifications return an empty output string; requests return JSON. This lets
+ * MCP clients attach to the GUI owner instead of opening a second home writer. */
+int terrane_mcp_handle_json_rpc(TerraneHandle *h, const char *raw,
+                                const char *admin_base_url,
+                                char **out_output, char **out_error);
 
 /* Route a Terrane URL or file path through the deep-link host edge. On success
  * writes a short human summary. */

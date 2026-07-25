@@ -126,9 +126,12 @@ impl Capability for ConnectionCapability {
             "connection.define" => {
                 let conn_name = validate_name(&arg(args, 0, "name")?)?;
                 let kind = validate_kind(&arg(args, 1, "kind")?)?;
-                let config_public_json = validate_public_config(&kind, &arg(args, 2, "config_public_json")?)?;
+                let config_public_json =
+                    validate_public_config(&kind, &arg(args, 2, "config_public_json")?)?;
                 let state = state_ref::<ConnectionState>(ctx.state, "connection")?;
-                if !state.connections.contains_key(&conn_name) && state.connections.len() >= MAX_CONNECTIONS {
+                if !state.connections.contains_key(&conn_name)
+                    && state.connections.len() >= MAX_CONNECTIONS
+                {
                     return Err(Error::InvalidInput(format!(
                         "connection limit exceeded: max {MAX_CONNECTIONS}"
                     )));
@@ -247,7 +250,9 @@ impl Capability for ConnectionCapability {
         match name {
             "list" => {
                 let mut map = BTreeMap::new();
-                for (name, meta) in &state_ref::<ConnectionState>(ctx.state, "connection")?.connections {
+                for (name, meta) in
+                    &state_ref::<ConnectionState>(ctx.state, "connection")?.connections
+                {
                     map.insert(name.clone(), status_json(name, meta));
                 }
                 Ok(ReadValue::StringMap(map))
@@ -311,7 +316,9 @@ pub fn removed_event(name: &str) -> Result<EventRecord> {
 pub fn validate_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() {
-        return Err(Error::InvalidInput("connection name must not be empty".into()));
+        return Err(Error::InvalidInput(
+            "connection name must not be empty".into(),
+        ));
     }
     if name.len() > MAX_NAME_LEN {
         return Err(Error::InvalidInput(format!(
@@ -332,7 +339,9 @@ pub fn validate_name(name: &str) -> Result<String> {
 pub fn validate_field(field: &str) -> Result<String> {
     let field = field.trim();
     if field.is_empty() {
-        return Err(Error::InvalidInput("connection field must not be empty".into()));
+        return Err(Error::InvalidInput(
+            "connection field must not be empty".into(),
+        ));
     }
     if !field
         .bytes()
@@ -409,7 +418,13 @@ fn validate_public_config(kind: &str, raw: &str) -> Result<String> {
     let obj = value
         .as_object()
         .ok_or_else(|| Error::InvalidInput("config_public_json must be a JSON object".into()))?;
-    for forbidden in ["key", "password", "client_secret", "access_token", "refresh_token"] {
+    for forbidden in [
+        "key",
+        "password",
+        "client_secret",
+        "access_token",
+        "refresh_token",
+    ] {
         if obj.contains_key(forbidden) {
             return Err(Error::InvalidInput(format!(
                 "config_public_json must not contain secret field {forbidden}"
@@ -453,7 +468,9 @@ fn parse_scopes(raw: &str) -> Result<Vec<String>> {
     scopes.dedup();
     for scope in &scopes {
         if scope.contains('%') {
-            return Err(Error::InvalidInput("scope must not contain percent escapes".into()));
+            return Err(Error::InvalidInput(
+                "scope must not contain percent escapes".into(),
+            ));
         }
     }
     Ok(scopes)

@@ -91,12 +91,17 @@ fn browser_render_sees_js_inserted_text_that_net_fetch_misses() {
     assert!(ok, "net fetch failed; stdout: {out}; stderr: {err}");
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed; stderr: {err}");
-    assert!(!log.contains("JS inserted text"), "net.fetch should not execute JS: {log}");
+    assert!(
+        !log.contains("JS inserted text"),
+        "net.fetch should not execute JS: {log}"
+    );
 
     let request = format!(r#"{{"url":"{base}","output":"text","waitMs":100}}"#);
     let (ok, out, err) = terrane(home, &["browser", "render", "web", &request]);
     if !ok && err.contains("browser render failed with status signal") {
-        eprintln!("skipping browser render e2e: system browser aborts in this headless test environment");
+        eprintln!(
+            "skipping browser render e2e: system browser aborts in this headless test environment"
+        );
         return;
     }
     assert!(ok, "browser render failed; stdout: {out}; stderr: {err}");
@@ -109,7 +114,10 @@ fn browser_render_sees_js_inserted_text_that_net_fetch_misses() {
     let (ok, log, err) = terrane(home, &["log"]);
     assert!(ok, "log failed; stderr: {err}");
     assert!(log.contains("browser.rendered web text 127.0.0.1:"));
-    assert!(!log.contains("?token="), "log should not expose URL query: {log}");
+    assert!(
+        !log.contains("?token="),
+        "log should not expose URL query: {log}"
+    );
     let (ok, out, err) = terrane(home, &["replay"]);
     assert!(ok, "replay failed; stdout: {out}; stderr: {err}");
 }
@@ -174,7 +182,10 @@ fn browser_screenshot_offloads_to_blob() {
     let request = format!(r#"{{"url":"{base}","output":"screenshot","waitMs":100}}"#);
 
     let (ok, out, err) = terrane(home, &["browser", "render", "web", &request]);
-    assert!(ok, "browser screenshot failed; stdout: {out}; stderr: {err}");
+    assert!(
+        ok,
+        "browser screenshot failed; stdout: {out}; stderr: {err}"
+    );
     assert!(out.contains("blob.stored"), "out: {out}");
     assert!(out.contains("browser.rendered"), "out: {out}");
     server.join().unwrap();

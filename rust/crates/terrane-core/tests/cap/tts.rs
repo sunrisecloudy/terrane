@@ -75,16 +75,17 @@ fn decide_shapes_are_transient_for_speak_and_recorded_for_render() {
     let mut core = Core::open_with(dir.path().join("log.bin"), TtsRunner).unwrap();
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
 
-    let speak = core
-        .decide(req("tts.speak", &["demo", "hello"]))
-        .unwrap();
+    let speak = core.decide(req("tts.speak", &["demo", "hello"])).unwrap();
     assert!(matches!(
         speak,
         terrane_core::Decision::TransientEffect(Effect::TtsSpeak { .. })
     ));
 
     let render = core
-        .decide(req("tts.render", &["demo", "--voice", "Alex", "--rate", "1250", "hello"]))
+        .decide(req(
+            "tts.render",
+            &["demo", "--voice", "Alex", "--rate", "1250", "hello"],
+        ))
         .unwrap();
     assert!(matches!(
         render,
@@ -100,7 +101,10 @@ fn render_records_blob_and_tts_metadata_and_replays() {
     core.dispatch(req("app.add", &["demo", "Demo"])).unwrap();
 
     let records = core
-        .dispatch(req("tts.render", &["demo", "--voice", "Alex", "hello world"]))
+        .dispatch(req(
+            "tts.render",
+            &["demo", "--voice", "Alex", "hello world"],
+        ))
         .unwrap();
     assert_eq!(records.len(), 2);
     assert_eq!(records[0].kind, "blob.stored");
@@ -131,8 +135,13 @@ fn speak_resource_returns_ok_and_records_nothing() {
         .unwrap();
     grant_resource(&mut core, "speaker", "tts");
 
-    let records = core.dispatch(req("js-runtime.run", &["speaker", "go"])).unwrap();
-    assert!(records.is_empty(), "tts.speak must record nothing: {records:?}");
+    let records = core
+        .dispatch(req("js-runtime.run", &["speaker", "go"]))
+        .unwrap();
+    assert!(
+        records.is_empty(),
+        "tts.speak must record nothing: {records:?}"
+    );
     assert_eq!(core.take_last_output().as_deref(), Some("ok"));
     assert!(core.state().tts.renders.is_empty());
     assert!(core.replay_matches().unwrap());
@@ -152,8 +161,13 @@ fn render_resource_returns_json_and_records_artifact() {
         .unwrap();
     grant_resource(&mut core, "reader", "tts");
 
-    let records = core.dispatch(req("js-runtime.run", &["reader", "go"])).unwrap();
-    assert_eq!(records.iter().filter(|r| r.kind == "tts.rendered").count(), 1);
+    let records = core
+        .dispatch(req("js-runtime.run", &["reader", "go"]))
+        .unwrap();
+    assert_eq!(
+        records.iter().filter(|r| r.kind == "tts.rendered").count(),
+        1
+    );
     let output = core.take_last_output().unwrap();
     assert!(output.contains("\"blobHash\""), "output: {output}");
     assert!(output.contains("\"rateMilli\":1500"), "output: {output}");
@@ -175,7 +189,10 @@ fn validation_errors_are_typed() {
         Err(Error::InvalidInput(_))
     ));
     assert!(matches!(
-        core.dispatch(req("tts.render", &["demo", "--voice", "bad voice", "hello"])),
+        core.dispatch(req(
+            "tts.render",
+            &["demo", "--voice", "bad voice", "hello"]
+        )),
         Err(Error::InvalidInput(_))
     ));
     let too_long = "x".repeat(terrane_cap_tts::MAX_TEXT_BYTES + 1);

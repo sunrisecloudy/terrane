@@ -111,10 +111,7 @@ fn macos_preferred_list_fr_then_en() {
 
 #[test]
 fn macos_preferred_list_traditional_then_simplified() {
-    assert_eq!(
-        from_preferred_list(&["zh-Hant-TW", "zh-Hans"]),
-        "zh-Hans"
-    );
+    assert_eq!(from_preferred_list(&["zh-Hant-TW", "zh-Hans"]), "zh-Hans");
 }
 
 #[test]

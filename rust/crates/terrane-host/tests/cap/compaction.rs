@@ -15,7 +15,10 @@ fn compact_cli_snapshots_tail_and_home_remains_usable() {
     assert!(stdout.contains("compacted"));
     assert!(home.join("snapshot.bin").exists());
     assert!(home.join("log.bin.archive").exists());
-    assert_eq!(terrane_core::read_log(&home.join("log.bin")).unwrap().len(), 1);
+    assert_eq!(
+        terrane_core::read_log(&home.join("log.bin")).unwrap().len(),
+        1
+    );
 
     let (ok, stdout, stderr) = terrane(home, &["replay"]);
     assert!(ok, "stdout={stdout}\nstderr={stderr}");

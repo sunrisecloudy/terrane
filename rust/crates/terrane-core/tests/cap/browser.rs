@@ -68,15 +68,23 @@ fn browser_render_resource_records_and_replays_identically() {
     let mut core = Core::open_with(dir.path().join("log.bin"), CannedBrowser).unwrap();
     core.dispatch(req("app.add", &["renderer", "Renderer", "--source", &src]))
         .unwrap();
-    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "renderer", "browser"]))
-        .unwrap();
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "renderer", "browser"],
+    ))
+    .unwrap();
 
     let records = core
-        .dispatch(req("js-runtime.run", &["renderer", "render", "https://example.test/app"]))
+        .dispatch(req(
+            "js-runtime.run",
+            &["renderer", "render", "https://example.test/app"],
+        ))
         .unwrap();
 
     assert_eq!(core.take_last_output().as_deref(), Some("Rendered by JS"));
-    assert!(records.iter().any(|record| record.kind == "browser.rendered"));
+    assert!(records
+        .iter()
+        .any(|record| record.kind == "browser.rendered"));
     assert_eq!(core.state().browser.renders["renderer"].len(), 1);
     assert!(core.replay_matches().unwrap());
 
@@ -102,15 +110,24 @@ fn browser_peek_resource_returns_body_but_records_nothing() {
     let mut core = Core::open_with(dir.path().join("log.bin"), CannedBrowser).unwrap();
     core.dispatch(req("app.add", &["peeker", "Peeker", "--source", &src]))
         .unwrap();
-    core.dispatch(req("auth.grant", &[LOCAL_OWNER_SUBJECT, "peeker", "browser"]))
-        .unwrap();
+    core.dispatch(req(
+        "auth.grant",
+        &[LOCAL_OWNER_SUBJECT, "peeker", "browser"],
+    ))
+    .unwrap();
 
     let records = core
-        .dispatch(req("js-runtime.run", &["peeker", "peek", "https://example.test/app"]))
+        .dispatch(req(
+            "js-runtime.run",
+            &["peeker", "peek", "https://example.test/app"],
+        ))
         .unwrap();
 
     assert_eq!(core.take_last_output().as_deref(), Some("Rendered by JS"));
-    assert!(records.is_empty(), "browser.peek must record nothing: {records:?}");
+    assert!(
+        records.is_empty(),
+        "browser.peek must record nothing: {records:?}"
+    );
     assert!(core.state().browser.renders.is_empty());
     assert!(core.replay_matches().unwrap());
 }

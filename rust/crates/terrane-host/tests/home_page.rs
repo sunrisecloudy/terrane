@@ -125,20 +125,27 @@ fn locale_and_messages_localize_the_page_and_set_direction() {
     });
     assert!(html.contains(r#"lang="ar""#), "html lang missing: {html}");
     assert!(html.contains(r#"dir="rtl""#), "html dir missing: {html}");
-    assert!(html.contains(r#""dir":"rtl""#), "config dir missing: {html}");
+    assert!(
+        html.contains(r#""dir":"rtl""#),
+        "config dir missing: {html}"
+    );
     assert!(html.contains("التطبيقات"), "bundle not injected: {html}");
 }
 
 #[test]
 fn default_options_render_english_ltr() {
     let html = home_page(&HomePageOptions::default());
-    assert!(html.contains(r#"lang="en""#), "default lang missing: {html}");
+    assert!(
+        html.contains(r#"lang="en""#),
+        "default lang missing: {html}"
+    );
     assert!(html.contains(r#"dir="ltr""#), "default dir missing: {html}");
 }
 
 #[test]
 fn config_escapes_script_closers_in_user_controlled_names() {
-    let catalog = r#"{"apps":[{"id":"x","name":"</script><script>alert(1)</script>","has_ui":true}]}"#;
+    let catalog =
+        r#"{"apps":[{"id":"x","name":"</script><script>alert(1)</script>","has_ui":true}]}"#;
     let html = home_page(&HomePageOptions {
         app_href_template: "terrane-app://{id}/frame/",
         catalog_json: Some(catalog),

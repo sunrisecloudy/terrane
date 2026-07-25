@@ -7,7 +7,11 @@ fn net_resource_methods() -> Vec<ResourceMethodDoc> {
     let mut get = resource_method(
         "get",
         "call",
-        &[param("url", "Absolute URL to fetch with a live HTTP GET.", "url")],
+        &[param(
+            "url",
+            "Absolute URL to fetch with a live HTTP GET.",
+            "url",
+        )],
         "Live HTTP GET for a transient query; returns the response body and records nothing.",
     );
     get.returns = "the response body as a string".to_string();
@@ -21,7 +25,8 @@ fn net_resource_methods() -> Vec<ResourceMethodDoc> {
         )],
         "Live full HTTP request for a transient query; returns inline response bodies and records nothing.",
     );
-    call.returns = "the inline response body as a string; blob responses require the blob resource".to_string();
+    call.returns = "the inline response body as a string; blob responses require the blob resource"
+        .to_string();
     vec![get, call]
 }
 

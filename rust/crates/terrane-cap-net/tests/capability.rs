@@ -167,7 +167,9 @@ fn net_request_reserves_secret_tokens_without_resolving_them() {
     let prepared = prepare_request(raw).unwrap();
 
     assert!(prepared.has_unresolved_secret);
-    assert!(prepared.canonical_json.contains("\"$secret\":\"api-token\""));
+    assert!(prepared
+        .canonical_json
+        .contains("\"$secret\":\"api-token\""));
     assert!(prepared.canonical_json.contains("\"$secret\":\"payload\""));
     assert!(prepared.redacted_json.contains("\"$secret\":\"api-token\""));
     assert!(prepared.redacted_json.contains("\"$secret\":\"payload\""));

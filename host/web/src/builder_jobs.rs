@@ -99,7 +99,9 @@ impl BuilderJobs {
         }
         match terrane_host::builder_draft_json(core, draft_id) {
             Some(json) => JobPoll::Done(json),
-            None => JobPoll::Failed(format!("builder draft missing after generation: {draft_id}")),
+            None => JobPoll::Failed(format!(
+                "builder draft missing after generation: {draft_id}"
+            )),
         }
     }
 }

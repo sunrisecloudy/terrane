@@ -30,7 +30,10 @@ fn person_first_run_creates_replica_attested_identity_and_replays() {
     assert!(ok, "person whoami failed: {err}");
     assert!(whoami.contains("\"person_id\""), "whoami: {whoami}");
     assert!(whoami.contains("\"kind\":\"replica\""), "whoami: {whoami}");
-    assert!(!whoami.contains("ed25519"), "whoami leaked secret slot: {whoami}");
+    assert!(
+        !whoami.contains("ed25519"),
+        "whoami leaked secret slot: {whoami}"
+    );
     let whoami_json: serde_json::Value = serde_json::from_str(&whoami).unwrap();
     let person_id = whoami_json
         .get("person_id")
@@ -38,7 +41,8 @@ fn person_first_run_creates_replica_attested_identity_and_replays() {
         .unwrap();
     let owner_subject = format!("user:{person_id}");
 
-    let (ok, _out, err) = terrane_file_secret_store(home, &["app", "add", "after-person", "After Person"]);
+    let (ok, _out, err) =
+        terrane_file_secret_store(home, &["app", "add", "after-person", "After Person"]);
     assert!(ok, "app add failed: {err}");
 
     let (ok, log, err) = terrane_file_secret_store(home, &["log"]);
@@ -49,7 +53,10 @@ fn person_first_run_creates_replica_attested_identity_and_replays() {
         log.contains(&format!("{owner_subject} app.added after-person")),
         "log: {log}"
     );
-    assert!(!log.contains("secrets.key"), "log leaked secret filename: {log}");
+    assert!(
+        !log.contains("secrets.key"),
+        "log leaked secret filename: {log}"
+    );
 
     let (ok, out, err) = terrane_file_secret_store(home, &["replay"]);
     assert!(ok, "replay failed: {err}");

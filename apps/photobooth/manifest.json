@@ -1,6 +1,7 @@
 {
   "id": "photobooth",
   "name": "Photobooth",
+  "description": "Capture photos through the host-mediated camera permission and create local image artifacts.",
   "version": "0.1.0",
   "runtime": "js",
   "backend": "main.js",
@@ -8,5 +9,9 @@
   "icon": "icon.svg",
   "resources": [],
   "interfaces": ["items"],
-  "browser_permissions": ["camera"]
+  "browser_permissions": ["camera"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "Photobooth intentionally holds only the current live camera and unsaved capture; downloaded photos are user-owned files, not app workspaces."
+  }
 }

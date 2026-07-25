@@ -78,7 +78,11 @@ fn time_now_resource_records_each_observation_and_replays() {
             return a + ";" + b;
         }
     "#;
-    let mut core = Core::open_with(dir.path().join("log.bin"), ClockedObserve::new(1_700_000_000_000)).unwrap();
+    let mut core = Core::open_with(
+        dir.path().join("log.bin"),
+        ClockedObserve::new(1_700_000_000_000),
+    )
+    .unwrap();
     add_time_app(&mut core, dir.path(), "watch", backend);
 
     let records = core
@@ -86,7 +90,10 @@ fn time_now_resource_records_each_observation_and_replays() {
         .unwrap();
 
     // Two distinct recorded observations committed by the run.
-    let observed: Vec<&EventRecord> = records.iter().filter(|r| r.kind == "time.observed").collect();
+    let observed: Vec<&EventRecord> = records
+        .iter()
+        .filter(|r| r.kind == "time.observed")
+        .collect();
     assert_eq!(observed.len(), 2, "records: {records:?}");
     assert!(core.take_last_output().unwrap().contains("1700000000000"));
     // The last folded value is the second observation.
@@ -102,19 +109,25 @@ fn time_live_resource_returns_value_but_records_nothing() {
             return ctx.resource.time.live();
         }
     "#;
-    let mut core = Core::open_with(dir.path().join("log.bin"), ClockedObserve::new(1_700_000_000_000)).unwrap();
+    let mut core = Core::open_with(
+        dir.path().join("log.bin"),
+        ClockedObserve::new(1_700_000_000_000),
+    )
+    .unwrap();
     add_time_app(&mut core, dir.path(), "live", backend);
 
-    let records = core.dispatch(req("js-runtime.run", &["live", "go"])).unwrap();
+    let records = core
+        .dispatch(req("js-runtime.run", &["live", "go"]))
+        .unwrap();
 
     // The live value reaches the backend…
-    assert!(core
-        .take_last_output()
-        .unwrap()
-        .starts_with("170000000000"));
+    assert!(core.take_last_output().unwrap().starts_with("170000000000"));
     // …but the transient read records NOTHING: no event committed, no time.observed
     // folded into state.
-    assert!(records.is_empty(), "time.live must record nothing, got: {records:?}");
+    assert!(
+        records.is_empty(),
+        "time.live must record nothing, got: {records:?}"
+    );
     assert!(
         core.state().time.last.is_empty(),
         "time.live must not fold into state"
@@ -140,7 +153,9 @@ fn time_now_per_run_cap_allows_32_then_a_fresh_run_allows_32_again() {
     add_time_app(&mut core, dir.path(), "cap32", backend);
 
     // First run: exactly 32 recorded observations; run succeeds.
-    let r1 = core.dispatch(req("js-runtime.run", &["cap32", "go"])).unwrap();
+    let r1 = core
+        .dispatch(req("js-runtime.run", &["cap32", "go"]))
+        .unwrap();
     assert_eq!(
         r1.iter().filter(|r| r.kind == "time.observed").count(),
         32,
@@ -149,7 +164,9 @@ fn time_now_per_run_cap_allows_32_then_a_fresh_run_allows_32_again() {
 
     // Second run: the per-run counter is fresh, so another 32 succeed — proving
     // the cap resets between runs (not a cumulative budget over the log).
-    let r2 = core.dispatch(req("js-runtime.run", &["cap32", "go"])).unwrap();
+    let r2 = core
+        .dispatch(req("js-runtime.run", &["cap32", "go"]))
+        .unwrap();
     assert_eq!(
         r2.iter().filter(|r| r.kind == "time.observed").count(),
         32,

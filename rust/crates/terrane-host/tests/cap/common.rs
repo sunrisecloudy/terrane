@@ -177,7 +177,10 @@ fn common_send_email_uses_connection_and_blob_attachment_without_secret_log_leak
     );
     let captured = server.join().unwrap();
     assert!(captured.contains("Subject: Weekly"), "{captured}");
-    assert!(captured.contains("Content-Disposition: attachment"), "{captured}");
+    assert!(
+        captured.contains("Content-Disposition: attachment"),
+        "{captured}"
+    );
 
     assert!(log_after_send.contains("common.sent mailbot email"));
     assert!(

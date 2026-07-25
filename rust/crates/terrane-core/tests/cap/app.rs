@@ -1,8 +1,8 @@
 //! Engine tests for the `app` capability (and core dispatch/routing).
 
 use tempfile::tempdir;
-use terrane_core::{Core, Effect, EffectRunner, EventRecord, Result};
 use terrane_core::Error;
+use terrane_core::{Core, Effect, EffectRunner, EventRecord, Result};
 
 use crate::helpers::req;
 
@@ -83,8 +83,7 @@ fn upgrade_effect_batch_replays_identically() {
         terrane_cap_kv::delete_event("notes", "__terrane/app-bundle/old.js").unwrap(),
     ];
     let mut core = Core::open_with(&log, UpgradeBatch { records: batch }).unwrap();
-    core.dispatch(req("app.add", &["notes", "Notes"]))
-        .unwrap();
+    core.dispatch(req("app.add", &["notes", "Notes"])).unwrap();
     core.dispatch(req("app.upgrade", &["notes", "/tmp/notes-v2"]))
         .unwrap();
 
@@ -187,6 +186,45 @@ fn public_link_delivery_requires_trusted_host_authority() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("trusted host authority"), "{err}");
+}
+
+#[test]
+fn public_source_refresh_requires_trusted_host_authority() {
+    let dir = tempdir().unwrap();
+    let mut core = Core::open(dir.path().join("log.bin")).unwrap();
+    core.dispatch(req("app.add", &["demo", "Demo", "--source", "apps/demo"]))
+        .unwrap();
+
+    let err = core
+        .dispatch(terrane_core::Request::new(
+            "app.add",
+            vec![
+                "demo".into(),
+                "Demo".into(),
+                "--source".into(),
+                "/Applications/Terrane.app/Contents/Resources/apps/demo".into(),
+                "--refresh-source".into(),
+            ],
+        ))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("trusted host authority"), "{err}");
+
+    core.dispatch(req(
+        "app.add",
+        &[
+            "demo",
+            "Demo",
+            "--source",
+            "/Applications/Terrane.app/Contents/Resources/apps/demo",
+            "--refresh-source",
+        ],
+    ))
+    .unwrap();
+    assert_eq!(
+        core.state().app.apps["demo"].source.as_deref(),
+        Some("/Applications/Terrane.app/Contents/Resources/apps/demo")
+    );
 }
 
 #[test]

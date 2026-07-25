@@ -1,8 +1,6 @@
 use std::any::Any;
 
-use terrane_cap_document::{
-    Document, DocumentCapability, DocumentState, MAX_DOCUMENTS_PER_APP,
-};
+use terrane_cap_document::{Document, DocumentCapability, DocumentState, MAX_DOCUMENTS_PER_APP};
 use terrane_cap_interface::{
     CapBus, Capability, CommandCtx, Decision, Error, QueryValue, ReadValue, ResourceReadCtx,
     StateStore,
@@ -77,9 +75,8 @@ fn document_capability_decides_folds_and_reads_public_surface() {
         app: "notes",
         host: None,
     };
-    let ReadValue::OptString(Some(json)) = cap
-        .read_resource(ctx, "get", &["daily".into()])
-        .unwrap()
+    let ReadValue::OptString(Some(json)) =
+        cap.read_resource(ctx, "get", &["daily".into()]).unwrap()
     else {
         panic!("document.get should return JSON");
     };

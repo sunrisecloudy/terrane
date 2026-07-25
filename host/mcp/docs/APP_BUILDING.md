@@ -89,12 +89,19 @@ exactly; `app_build_validate` enforces the first two and returns fix-it errors.
 **Manifest contract.** `manifest.json` is exactly this shape:
 
 ```json
-{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"]}
+{"id":"my-app","name":"My App","runtime":"js","backend":"main.js","ui":"index.html","resources":["kv"],"sidebar":{"mode":"none","reason":"This app has one workspace and no useful sidebar items."}}
 ```
 
 `ui` is a **string file path** — omit it for backend-only apps, and never use
 an object such as `{"index": "...", "scripts": [...]}`. Scripts and styles are
 referenced from `index.html`, not listed in the manifest.
+
+`sidebar` is required for every newly validated app. It concerns the selected
+app's lower host sidebar section, not the host-owned Apps list. Use
+`{"mode":"section"}` only when the UI publishes meaningful items with
+`setSidebarSection` and handles `onSidebarItemSelect` (plus `onSidebarCreate`
+when appropriate). Otherwise use `{"mode":"none","reason":"..."}` with an
+app-specific explanation. Never invent placeholder sidebar items.
 
 **UI contract.** Browser code calls
 `window.terrane.invoke("verb", "arg1", "arg2")` with positional string args and

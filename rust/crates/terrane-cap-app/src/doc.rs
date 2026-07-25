@@ -29,6 +29,7 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
                 "app.added".to_string(),
                 "app.upgraded".to_string(),
                 "app.link.registered".to_string(),
+                "app.source.updated".to_string(),
                 "app.removed".to_string(),
             ],
             subscriptions: Vec::new(),
@@ -62,6 +63,8 @@ pub fn app_doc(include_internal: bool) -> CapabilityDoc {
         constraints: vec![
             "app.add validates id, name, and runtime before recording app.added.".to_string(),
             "app.add records built-in terrane:// scheme routes and validated manifest filetype specs as app.link.registered facts."
+                .to_string(),
+            "Trusted native hosts may pass --refresh-source with --source to relocate an existing catalog entry without replacing its state or version history."
                 .to_string(),
             "App ids under __terrane/ are reserved for platform-owned logical stores."
                 .to_string(),
@@ -119,12 +122,17 @@ fn app_commands() -> Vec<CommandDoc> {
                     "Optional runtime name; defaults to js.",
                     "string",
                 ),
+                optional_param(
+                    "refreshSource",
+                    "Host-only flag that updates the source of an existing app id.",
+                    "bool",
+                ),
             ],
             "commit",
             "Record a saved app catalog entry.",
         )
         .with_errors(&["empty id", "empty name", "empty runtime", "duplicate app"])
-        .with_emits(&["app.added"])
+        .with_emits(&["app.added", "app.source.updated"])
         .with_examples(&[ExampleDoc {
             title: "Register through MCP".to_string(),
             summary: "Use the same ordered argv vector with dryRun first, then without dryRun to commit."
@@ -271,9 +279,17 @@ fn app_events() -> Vec<EventDoc> {
             "app.upgraded",
             &[
                 param("id", "App id whose bundle changed.", "app_id"),
-                param("from_version", "Previously folded manifest.version.", "semver"),
+                param(
+                    "from_version",
+                    "Previously folded manifest.version.",
+                    "semver",
+                ),
                 param("to_version", "Incoming manifest.version.", "semver"),
-                param("bundle_hash", "Stable SHA-256 hash of the canonical bundle archive.", "sha256"),
+                param(
+                    "bundle_hash",
+                    "Stable SHA-256 hash of the canonical bundle archive.",
+                    "sha256",
+                ),
             ],
             "Records an atomic app bundle upgrade after any migration events in the same batch.",
         )
@@ -282,10 +298,23 @@ fn app_events() -> Vec<EventDoc> {
             "appends folded version metadata, capped at 100 entries",
         ]),
         event_doc(
+            "app.source.updated",
+            &[
+                param("id", "Existing app id.", "app_id"),
+                param("source", "Resolved app bundle directory.", "path"),
+            ],
+            "Relocates an existing catalog entry without replacing its app state or version history.",
+        )
+        .with_effects(&["updates only AppRecord.source"]),
+        event_doc(
             "app.link.registered",
             &[
                 param("app", "App id owning the route or file type.", "app_id"),
-                param("kind", "Registration kind: scheme-route or filetype.", "string"),
+                param(
+                    "kind",
+                    "Registration kind: scheme-route or filetype.",
+                    "string",
+                ),
                 param("spec", "Route pattern or ext:mime filetype spec.", "string"),
             ],
             "Records a deterministic host-edge entry point advertised by the app catalog.",

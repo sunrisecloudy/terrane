@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use tempfile::tempdir;
-use terrane_core::{Core, Effect, EffectRunner, Error, EventRecord, State};
 use terrane_core::Request;
+use terrane_core::{Core, Effect, EffectRunner, Error, EventRecord, State};
 
 fn app_source_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -482,9 +482,9 @@ fn creates_serves_and_invokes_ephemeral_preview_without_catalog_entry() {
     // Preview frames are sandboxed (opaque origin) like app frames, so ES
     // module assets need CORS headers to load at all.
     assert!(
-        headers
-            .lines()
-            .any(|l| l.to_ascii_lowercase().starts_with("access-control-allow-origin:")),
+        headers.lines().any(|l| l
+            .to_ascii_lowercase()
+            .starts_with("access-control-allow-origin:")),
         "preview asset missing CORS header for the sandboxed frame: {headers}"
     );
 
@@ -548,7 +548,10 @@ fn webhook_loopback_post_records_event_and_invokes_backend() {
         Some(r#"{"verb":"read","args":[]}"#),
     );
     assert_eq!(status, 200, "read invoke body: {body}");
-    assert!(body.contains(r#"\"authorization\":\"«redacted»"#), "body: {body}");
+    assert!(
+        body.contains(r#"\"authorization\":\"«redacted»"#),
+        "body: {body}"
+    );
     assert!(
         body.contains(r#"\"x-hub-signature-256\":\"sha256=abc\""#),
         "body: {body}"
@@ -589,7 +592,10 @@ fn agents_seed_list_create_and_update() {
     let (status, body) = http(&addr, "GET", "/__terrane/agents", None);
     assert_eq!(status, 200, "list agents: {body}");
     assert!(body.contains("\"sara\""), "seeded sara missing: {body}");
-    assert!(body.contains("\"max\"") && body.contains("\"iris\""), "roster: {body}");
+    assert!(
+        body.contains("\"max\"") && body.contains("\"iris\""),
+        "roster: {body}"
+    );
     assert!(
         body.contains("opencode-go/kimi-k2.7-code"),
         "default model missing: {body}"
@@ -618,7 +624,10 @@ fn agents_seed_list_create_and_update() {
         Some(r#"{"model":"opencode/big-pickle"}"#),
     );
     assert_eq!(status, 200, "update agent: {body}");
-    assert!(body.contains("opencode/big-pickle"), "updated model missing: {body}");
+    assert!(
+        body.contains("opencode/big-pickle"),
+        "updated model missing: {body}"
+    );
     assert!(body.contains("\"Nova\""), "update dropped the name: {body}");
 
     // Polling an unknown assist job is a clean 404, not a hang.
@@ -881,13 +890,7 @@ fn builder_generate_runs_in_background_and_status_reports_the_draft() {
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    let (mut child, addr) = spawn_web_full(
-        &home,
-        "127.0.0.1:0",
-        None,
-        &[],
-        &[("PATH", path_env)],
-    );
+    let (mut child, addr) = spawn_web_full(&home, "127.0.0.1:0", None, &[], &[("PATH", path_env)]);
 
     // Start returns immediately with a running job, not the draft.
     let (status, body) = http(
@@ -1043,7 +1046,10 @@ fn dev_apps_dir_scans_serves_and_lazily_catalogs() {
     );
     let (status, body) = http(&addr, "GET", "/apps/devdemo/__terrane/live-version", None);
     assert_eq!(status, 200, "dev live-version: {body}");
-    assert!(body.contains("\"version\""), "dev live-version body: {body}");
+    assert!(
+        body.contains("\"version\""),
+        "dev live-version body: {body}"
+    );
 
     // First invoke lazily catalogs the dev app, then runs its backend.
     let (status, body) = http(
@@ -1205,9 +1211,9 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
     // mode. Without this header the module is blocked and the app renders a
     // blank stage even though every asset serves 200.
     assert!(
-        headers
-            .lines()
-            .any(|l| l.to_ascii_lowercase().starts_with("access-control-allow-origin:")),
+        headers.lines().any(|l| l
+            .to_ascii_lowercase()
+            .starts_with("access-control-allow-origin:")),
         "bmi module missing CORS header for the sandboxed frame: {headers}"
     );
     assert!(
@@ -1263,8 +1269,14 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
         Some(r#"{"verb":"state","args":[]}"#),
     );
     assert_eq!(status, 200, "bmi state invoke: {body}");
-    assert!(body.contains(r#"\"height\":170"#), "bmi default height: {body}");
-    assert!(body.contains(r#"\"weight\":65"#), "bmi default weight: {body}");
+    assert!(
+        body.contains(r#"\"height\":170"#),
+        "bmi default height: {body}"
+    );
+    assert!(
+        body.contains(r#"\"weight\":65"#),
+        "bmi default weight: {body}"
+    );
 
     let (status, body) = http(
         &addr,
@@ -1273,7 +1285,10 @@ fn serves_bmi_calculator_shell_frame_assets_and_backend() {
         Some(r#"{"verb":"set_height","args":["178"]}"#),
     );
     assert_eq!(status, 200, "bmi set height invoke: {body}");
-    assert!(body.contains(r#"\"height\":178"#), "bmi saved height: {body}");
+    assert!(
+        body.contains(r#"\"height\":178"#),
+        "bmi saved height: {body}"
+    );
     assert!(body.contains(r#"\"weight\":65"#), "bmi kept weight: {body}");
     assert!(
         body.contains(r#"\"category\":\"Healthy\""#),
@@ -1381,7 +1396,9 @@ fn serves_os_monitor_shell_frame_and_snapshot_invoke() {
     );
     assert_eq!(status, 200, "os-monitor invoke: {body}");
     assert!(
-        body.contains(r#""output":"#) && body.contains(r#"\"cpu\""#) && body.contains(r#"\"memory\""#),
+        body.contains(r#""output":"#)
+            && body.contains(r#"\"cpu\""#)
+            && body.contains(r#"\"memory\""#),
         "snapshot invoke body: {body}"
     );
 
@@ -2491,12 +2508,7 @@ fn admin_stt_routes_record_finalized_segments() {
     let (mut child, addr) = spawn_web(home);
 
     let open_body = r#"{"app":"scribe","sessionId":"s-web-1"}"#;
-    let (status, body) = http(
-        &addr,
-        "POST",
-        "/__terrane/admin/stt/open",
-        Some(open_body),
-    );
+    let (status, body) = http(&addr, "POST", "/__terrane/admin/stt/open", Some(open_body));
     assert_eq!(status, 200, "open: {body}");
     assert!(body.contains("wsUrl"), "open must return wsUrl: {body}");
 
@@ -2515,7 +2527,10 @@ fn admin_stt_routes_record_finalized_segments() {
         "/__terrane/admin/stt/segment",
         Some(seg_body),
     );
-    assert_eq!(status, 403, "segment without admin must be forbidden: {body}");
+    assert_eq!(
+        status, 403,
+        "segment without admin must be forbidden: {body}"
+    );
 
     let invoke = r#"{"verb":"segments","args":["s-web-1"]}"#;
     let (status, body) = http(&addr, "POST", "/apps/scribe/invoke", Some(invoke));
@@ -2576,7 +2591,9 @@ fn apps_catalog_grants_cors_to_loopback_origins_only() {
     );
     assert_eq!(status, 200);
     assert!(
-        !headers.to_ascii_lowercase().contains("access-control-allow-origin"),
+        !headers
+            .to_ascii_lowercase()
+            .contains("access-control-allow-origin"),
         "foreign origins must get no CORS grant: {headers}"
     );
 

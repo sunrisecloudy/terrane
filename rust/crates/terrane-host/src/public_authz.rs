@@ -392,7 +392,10 @@ pub fn authorize_public_command(
     }
 }
 
-fn authorize_public_mcp_call(core: &HostCore, args: &[String]) -> Result<PublicCommandAuthz, String> {
+fn authorize_public_mcp_call(
+    core: &HostCore,
+    args: &[String],
+) -> Result<PublicCommandAuthz, String> {
     let app = match args.first().map(String::as_str) {
         Some(app) if !app.trim().is_empty() => app,
         _ => {
@@ -410,11 +413,13 @@ fn authorize_public_mcp_call(core: &HostCore, args: &[String]) -> Result<PublicC
         Some(connection) if !connection.trim().is_empty() => connection,
         _ => {
             return Ok(PublicCommandAuthz::Refuse {
-                reason: "mcp.call requires connection at args[1] for public grant check".to_string(),
+                reason: "mcp.call requires connection at args[1] for public grant check"
+                    .to_string(),
             })
         }
     };
-    let resource_id = terrane_cap_mcp_client::mcp_resource_id(connection).map_err(|e| e.to_string())?;
+    let resource_id =
+        terrane_cap_mcp_client::mcp_resource_id(connection).map_err(|e| e.to_string())?;
     let principal = local_owner_principal(core.state());
     if terrane_cap_auth::resource_granted(core.state(), &principal, app, &resource_id)
         .map_err(|e| e.to_string())?
@@ -431,9 +436,7 @@ fn authorize_public_mcp_call(core: &HostCore, args: &[String]) -> Result<PublicC
 pub fn classify_public_query_name(name: &str) -> PublicQueryDisposition {
     match name {
         "app.exists" | "geo.supports" | "interop.apps" | "native.supports" | "replica.peer"
-        | "tts.supports" => {
-            PublicQueryDisposition::Allow
-        }
+        | "tts.supports" => PublicQueryDisposition::Allow,
         _ => PublicQueryDisposition::Unclassified,
     }
 }

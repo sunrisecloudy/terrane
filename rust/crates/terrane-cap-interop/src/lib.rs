@@ -9,8 +9,8 @@ use terrane_cap_auth::namespace_granted;
 use terrane_cap_interface::{
     arg, decode_app_removed, decode_event, encode_event, ensure_app_exists, state_mut, state_ref,
     CapManifest, Capability, CommandCtx, CommandSpec, Decision, Effect, Error, EventPattern,
-    EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, QueryCtx, QuerySpec,
-    QueryValue, ReadValue, RecordedCallCap, ResourceMethod, Result, StateStore,
+    EventRecord, EventSpec, ExecutionPrincipal, GrantResourceSpec, QueryCtx, QuerySpec, QueryValue,
+    ReadValue, RecordedCallCap, ResourceMethod, Result, StateStore,
 };
 
 mod doc;
@@ -167,7 +167,9 @@ impl Capability for InteropCapability {
                 let json = apps_for_interface(ctx.state, &interface, PICKER_LIMIT)?;
                 Ok(QueryValue::Json(json))
             }
-            other => Err(Error::InvalidInput(format!("unknown query: interop.{other}"))),
+            other => Err(Error::InvalidInput(format!(
+                "unknown query: interop.{other}"
+            ))),
         }
     }
 
