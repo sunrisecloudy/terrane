@@ -15,7 +15,7 @@ TERRANE_CAP_SIGNING_KEY_HEX=<64-hex-characters> \
   scripts/package-native-capabilities.sh target/native-capabilities
 ```
 
-The output contains 41 independently linked, signed `<namespace>-<version>.tcap`
+The output contains 42 independently linked, signed `<namespace>-<version>.tcap`
 archives, a signed `index.json`, and `verifying-key.hex`. Each archive contains
 only that namespace's native worker executable and manifest. Release tooling
 copies the package directory to

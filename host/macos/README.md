@@ -67,7 +67,7 @@ stages llama's non-TLS HTTP helper archive. The target force-loads the Rust
 archive by explicit path, so the finished app has neither a repository dylib
 dependency nor a Homebrew OpenSSL dependency.
 When `TERRANE_CAP_BUNDLE_DIR` points to a verified release bundle directory, a
-post-build phase embeds its index, verifying key, and 41 signed native workers
+post-build phase embeds its index, verifying key, and 42 signed native workers
 under `TerraneHost.app/Contents/Resources/capabilities`. Alternatively,
 `TERRANE_CAP_SIGNING_KEY_HEX` packages the workers from source. Development
 builds without either setting retain the one-release static fallback. Every
@@ -82,6 +82,20 @@ xcodebuild -project Terrane.xcodeproj -scheme TerraneHost -configuration Debug \
   -derivedDataPath ./.derived CONFIGURATION_BUILD_DIR="$PWD/build/Debug" \
   CODE_SIGNING_ALLOWED=NO build
 ```
+
+The generated project targets Apple silicon only, enables hardened runtime,
+and compiles the Terrane application icon. End-user builds are produced by
+`scripts/build-macos-release.sh`, not by copying a development build:
+
+```sh
+TERRANE_CAP_SIGNING_KEY_HEX=<production-seed> \
+MACOS_SIGNING_IDENTITY="Developer ID Application: Example (TEAMID)" \
+APPLE_NOTARY_KEYCHAIN_PROFILE=terrane-notary \
+scripts/build-macos-release.sh --version 0.2.0 --notarize
+```
+
+See [`docs/RELEASING_MACOS.md`](../../docs/RELEASING_MACOS.md) for certificate,
+GitHub environment, verification, and publication requirements.
 
 ## Run
 

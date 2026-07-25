@@ -179,6 +179,10 @@ selected!(
     terrane_cap_common::CommonState
 );
 selected!(
+    "cap-control-room",
+    terrane_cap_control_room::ControlRoomCapability
+);
+selected!(
     "cap-crdt",
     terrane_cap_crdt::CrdtCapability,
     "crdt",
@@ -382,6 +386,7 @@ pub fn build() -> SelectedCapability {
     feature = "cap-build",
     feature = "cap-builder",
     feature = "cap-common",
+    feature = "cap-control-room",
     feature = "cap-crdt",
     feature = "cap-crypto",
     feature = "cap-document",
