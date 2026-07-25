@@ -252,7 +252,7 @@ pub fn run(argv: &[&str]) -> Result<(), String> {
         ["stream", "list", app] => run_stream_list(app),
         ["stream", rest @ ..] => {
             let _ = rest;
-            Err("usage: terrane stream (open <app> <name> <verb> <request-json> | close <app> <name> | ingest-text <app> <name> [--received-at ts] <text> | reopened <app> <name> <attempt> | list <app>)".into())
+            Err("usage: terrane stream (open <app> <name> <verb> <request-json> | close <app> <name> | ingest-text <app> <name> [--received-at ts] [--stdin | <text>] | reopened <app> <name> <attempt> | list <app>)".into())
         }
         ["serve"] => crate::sync::run_serve(crate::DEFAULT_SERVE_ADDR),
         ["serve", "--addr", addr] => crate::sync::run_serve(addr),
@@ -1472,7 +1472,10 @@ pub fn run_stream_close(app: &str, name: &str) -> Result<(), String> {
 }
 
 pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<(), String> {
+    use std::io::Read as _;
+
     let mut received_at = None;
+    let mut read_stdin = false;
     let mut text = Vec::new();
     let mut i = 0;
     while i < rest.len() {
@@ -1484,15 +1487,43 @@ pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<()
                 received_at = Some((*value).to_string());
                 i += 2;
             }
+            "--stdin" => {
+                if read_stdin {
+                    return Err("--stdin may only be specified once".into());
+                }
+                read_stdin = true;
+                i += 1;
+            }
             value => {
                 text.push(value);
                 i += 1;
             }
         }
     }
+    if read_stdin && !text.is_empty() {
+        return Err("--stdin cannot be combined with inline text".into());
+    }
+    let text = if read_stdin {
+        let limit = terrane_cap_stream::MAX_MESSAGE_SIZE + 1;
+        let mut input = String::new();
+        std::io::stdin()
+            .take(limit)
+            .read_to_string(&mut input)
+            .map_err(|error| format!("read stream text from stdin: {error}"))?;
+        if input.len() as u64 > terrane_cap_stream::MAX_MESSAGE_SIZE {
+            return Err(format!(
+                "stream text must be <= {} bytes",
+                terrane_cap_stream::MAX_MESSAGE_SIZE
+            ));
+        }
+        input
+    } else {
+        text.join(" ")
+    };
     if text.is_empty() {
         return Err(
-            "usage: terrane stream ingest-text <app> <name> [--received-at ts] <text>".into(),
+            "usage: terrane stream ingest-text <app> <name> [--received-at ts] [--stdin | <text>]"
+                .into(),
         );
     }
     let received_at = received_at.unwrap_or_else(now_unix_millis);
@@ -1502,7 +1533,7 @@ pub fn run_stream_ingest_text(app: &str, name: &str, rest: &[&str]) -> Result<()
         &mut core,
         app,
         name,
-        &text.join(" "),
+        &text,
         &received_at,
     )?;
     print_command_outcome(crate::CommandOutcome {
@@ -2803,7 +2834,7 @@ pub fn print_help() {
          \x20 terrane net fetch <app> <url>                    GET a url; record it\n\
          \x20 terrane net request <app> <request-json>          full HTTP request; record redacted request + response\n\
          \x20 terrane stream open <app> <name> <verb> <request-json>  record desired SSE/WebSocket state\n\
-         \x20 terrane stream ingest-text <app> <name> <text…>   record one observed stream message and invoke its verb\n\
+         \x20 terrane stream ingest-text <app> <name> [--stdin | <text…>]   record one observed stream message and invoke its verb\n\
          \x20 terrane stream close|list|reopened …              manage folded stream state from the host edge\n\
          \x20 terrane browser render <app> <request-json>       headless render; record redacted request + result\n\
          \x20 terrane applescript run|check <app> <script…>     macOS AppleScript edge effect; record result\n\

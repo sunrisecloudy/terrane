@@ -5,7 +5,7 @@ use std::path::Path;
 
 use tempfile::tempdir;
 
-use crate::helpers::terrane;
+use crate::helpers::{terrane, terrane_stdin};
 
 fn write_bundle(dir: &Path) -> String {
     let bundle = dir.join("streamer");
@@ -135,7 +135,7 @@ fn stream_large_ingest_offloads_to_blob_metadata() {
     );
 
     let large = "x".repeat(terrane_cap_stream::INLINE_TEXT_LIMIT + 1);
-    let (ok, out, err) = terrane(
+    let (ok, out, err) = terrane_stdin(
         home,
         &[
             "stream",
@@ -144,8 +144,9 @@ fn stream_large_ingest_offloads_to_blob_metadata() {
             "ticks",
             "--received-at",
             "1000",
-            &large,
+            "--stdin",
         ],
+        &large,
     );
     assert!(ok, "large ingest failed: {out} {err}");
     assert!(out.contains("__stream__/streamer/ticks/1"), "out: {out}");
