@@ -81,6 +81,8 @@ NOTES="$ROOT/docs/releases/$TAG.md"
 DMG="$OUTPUT/Terrane-${VERSION}-macos-arm64.dmg"
 CHECKSUMS="$OUTPUT/SHA256SUMS"
 MANIFEST="$OUTPUT/release-manifest.json"
+CAPABILITY_BASE_URL="https://github.com/sunrisecloudy/terrane/releases/download/$TAG"
+MAX_DMG_BYTES=41943040
 
 cd "$ROOT"
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -143,13 +145,20 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 TERRANE_CAP_SIGNING_KEY_HEX="$PREVIEW_CAP_SIGNING_KEY_HEX" \
+TERRANE_CAP_INDEX_BASE_URL="$CAPABILITY_BASE_URL" \
   scripts/build-macos-release.sh \
     --version "$VERSION" \
     --build-number "$BUILD_NUMBER" \
     --output "$OUTPUT" \
-    --unsigned
+    --unsigned \
+    --external-capabilities \
+    --max-dmg-bytes "$MAX_DMG_BYTES"
 
-scripts/verify-macos-release.sh --unsigned "$DMG" "$VERSION"
+scripts/verify-macos-release.sh \
+  --unsigned \
+  --external-capabilities "$OUTPUT" \
+  "$DMG" \
+  "$VERSION"
 (
   cd "$OUTPUT"
   shasum -a 256 -c "$(basename "$CHECKSUMS")"
@@ -168,8 +177,17 @@ jq -e \
     .minimumSystemVersion == "13.0" and
     .builtInAppBundleCount == 14 and
     .capabilityBundleCount == 42 and
+    .embeddedCapabilityBundleCount == 0 and
+    .capabilityDelivery == "on-demand" and
     .capabilityVerifyingKey == $preview_key
   ' "$MANIFEST" >/dev/null
+
+CAPABILITY_ASSETS=("$OUTPUT"/*.tcap)
+if [[ "${#CAPABILITY_ASSETS[@]}" -ne 42 ]]; then
+  printf 'expected 42 external capability assets, found %s\n' \
+    "${#CAPABILITY_ASSETS[@]}" >&2
+  exit 1
+fi
 
 remote_tag_commit="$(
   git ls-remote --tags origin "refs/tags/$TAG^{}" |
@@ -190,19 +208,22 @@ gh release create "$TAG" \
   --notes-file "$NOTES" \
   "$DMG" \
   "$CHECKSUMS" \
-  "$MANIFEST"
+  "$MANIFEST" \
+  "${CAPABILITY_ASSETS[@]}"
 
 gh release download "$TAG" \
   --dir "$DOWNLOAD" \
   --pattern "Terrane-${VERSION}-macos-arm64.dmg" \
   --pattern "SHA256SUMS" \
-  --pattern "release-manifest.json"
+  --pattern "release-manifest.json" \
+  --pattern "*.tcap"
 (
   cd "$DOWNLOAD"
   shasum -a 256 -c SHA256SUMS
 )
 scripts/verify-macos-release.sh \
   --unsigned \
+  --external-capabilities "$DOWNLOAD" \
   "$DOWNLOAD/Terrane-${VERSION}-macos-arm64.dmg" \
   "$VERSION"
 cmp "$MANIFEST" "$DOWNLOAD/release-manifest.json"

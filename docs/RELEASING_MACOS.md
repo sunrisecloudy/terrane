@@ -33,11 +33,14 @@ unnotarized, blocked by Gatekeeper by default, and not production-grade.
 The preview publisher runs the same local Rust and Xcode tests, package-content
 checks, checksum validation, GitHub upload, and post-download verification.
 It uses a documented non-secret capability-index key and does not attempt
-Apple code signing or notarization.
+Apple code signing or notarization. The DMG contains the signed capability
+index but not the 42 worker archives. Those archives are uploaded beside the
+DMG and verified before and after publication; the app fetches exact pinned
+archives on demand. A 40 MiB DMG budget is enforced.
 
 ```sh
-git tag -a v0.2.0-preview.1 -m "Terrane v0.2.0 Preview 1"
-scripts/publish-macos-preview.sh --version 0.2.0 --preview 1
+git tag -a v0.2.0-preview.2 -m "Terrane v0.2.0 Preview 2"
+scripts/publish-macos-preview.sh --version 0.2.0 --preview 2
 ```
 
 ## Release Mac configuration
