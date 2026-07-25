@@ -14,3 +14,5 @@ All notable end-user changes to Terrane are documented here.
   checksums, release manifests, and verified GitHub upload.
 - Added a production application icon, privacy disclosure, installation guide,
   release runbook, and release notes.
+- Added an explicitly unsigned GitHub preview path for testing before
+  Developer ID distribution credentials are available.

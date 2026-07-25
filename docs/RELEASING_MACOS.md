@@ -23,6 +23,23 @@ Every published DMG must pass all of these gates:
 
 An unsigned local build is never an end-user release.
 
+## Unsigned previews
+
+When Developer ID credentials are unavailable, Terrane may publish a
+GitHub **pre-release** using `scripts/publish-macos-preview.sh`. Its tag must
+use `vX.Y.Z-preview.N`, and its notes must state that it is unsigned,
+unnotarized, blocked by Gatekeeper by default, and not production-grade.
+
+The preview publisher runs the same local Rust and Xcode tests, package-content
+checks, checksum validation, GitHub upload, and post-download verification.
+It uses a documented non-secret capability-index key and does not attempt
+Apple code signing or notarization.
+
+```sh
+git tag -a v0.2.0-preview.1 -m "Terrane v0.2.0 Preview 1"
+scripts/publish-macos-preview.sh --version 0.2.0 --preview 1
+```
+
 ## Release Mac configuration
 
 The release Mac must have Xcode, Rust, XcodeGen, GitHub CLI, and `jq`. Sign in

@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+UNSIGNED=0
+if [[ "${1:-}" == "--unsigned" ]]; then
+  UNSIGNED=1
+  shift
+fi
+
 DMG="${1:-}"
 EXPECTED_VERSION="${2:-}"
 if [[ -z "$DMG" || ! -f "$DMG" ]]; then
-  printf 'usage: scripts/verify-macos-release.sh <Terrane.dmg> [expected-version]\n' >&2
+  printf 'usage: scripts/verify-macos-release.sh [--unsigned] <Terrane.dmg> [expected-version]\n' >&2
   exit 2
 fi
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -12,9 +18,11 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-codesign --verify --strict --verbose=4 "$DMG"
-xcrun stapler validate "$DMG"
-spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+if [[ "$UNSIGNED" -eq 0 ]]; then
+  codesign --verify --strict --verbose=4 "$DMG"
+  xcrun stapler validate "$DMG"
+  spctl --assess --type open --context context:primary-signature --verbose=4 "$DMG"
+fi
 
 MOUNT="$(mktemp -d "${TMPDIR:-/tmp}/terrane-release-mount.XXXXXX")"
 EXTRACTED="$(mktemp -d "${TMPDIR:-/tmp}/terrane-release-workers.XXXXXX")"
@@ -28,29 +36,35 @@ cleanup() {
 trap cleanup EXIT
 
 attach_output="$(hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$DMG")"
-DEVICE="$(printf '%s\n' "$attach_output" | awk '/Apple_APFS|Apple_HFS/ {print $1; exit}')"
+DEVICE="$(printf '%s\n' "$attach_output" | awk '/^\/dev\// {print $1; exit}')"
+if [[ -z "$DEVICE" ]]; then
+  printf 'could not identify the attached DMG device\n' >&2
+  exit 1
+fi
 APP="$MOUNT/Terrane.app"
 if [[ ! -d "$APP" ]]; then
   printf 'DMG does not contain Terrane.app\n' >&2
   exit 1
 fi
 
-codesign --verify --deep --strict --verbose=4 "$APP"
-xcrun stapler validate "$APP"
-spctl --assess --type execute --verbose=4 "$APP"
+if [[ "$UNSIGNED" -eq 0 ]]; then
+  codesign --verify --deep --strict --verbose=4 "$APP"
+  xcrun stapler validate "$APP"
+  spctl --assess --type execute --verbose=4 "$APP"
 
-signature="$(codesign -dvv "$APP" 2>&1)"
-if ! grep -q 'Authority=Developer ID Application:' <<<"$signature"; then
-  printf 'Terrane.app is not signed with Developer ID Application\n' >&2
-  exit 1
-fi
-if grep -q 'TeamIdentifier=not set' <<<"$signature"; then
-  printf 'Terrane.app does not have an Apple Developer Team ID\n' >&2
-  exit 1
-fi
-if ! grep -q 'flags=.*runtime' <<<"$signature"; then
-  printf 'Terrane.app does not have hardened runtime enabled\n' >&2
-  exit 1
+  signature="$(codesign -dvv "$APP" 2>&1)"
+  if ! grep -q 'Authority=Developer ID Application:' <<<"$signature"; then
+    printf 'Terrane.app is not signed with Developer ID Application\n' >&2
+    exit 1
+  fi
+  if grep -q 'TeamIdentifier=not set' <<<"$signature"; then
+    printf 'Terrane.app does not have an Apple Developer Team ID\n' >&2
+    exit 1
+  fi
+  if ! grep -q 'flags=.*runtime' <<<"$signature"; then
+    printf 'Terrane.app does not have hardened runtime enabled\n' >&2
+    exit 1
+  fi
 fi
 
 EXECUTABLE="$APP/Contents/MacOS/Terrane"
@@ -94,7 +108,9 @@ for archive in "$CAPABILITIES"/*.tcap; do
     printf 'capability archive has no worker executable: %s\n' "$archive" >&2
     exit 1
   fi
-  codesign --verify --strict --verbose=2 "$worker"
+  if [[ "$UNSIGNED" -eq 0 ]]; then
+    codesign --verify --strict --verbose=2 "$worker"
+  fi
   if [[ "$(lipo -archs "$worker")" != "arm64" ]]; then
     printf 'capability worker is not arm64-only: %s\n' "$worker" >&2
     exit 1
@@ -106,4 +122,8 @@ if [[ ! -f "$APP/Contents/Resources/Assets.car" ]]; then
   exit 1
 fi
 
-printf 'verified production Terrane release: %s\n' "$DMG"
+if [[ "$UNSIGNED" -eq 1 ]]; then
+  printf 'verified unsigned Terrane preview contents: %s\n' "$DMG"
+else
+  printf 'verified production Terrane release: %s\n' "$DMG"
+fi

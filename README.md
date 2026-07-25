@@ -25,6 +25,11 @@ Applications. Production assets are Developer ID-signed, Apple-notarized, and
 verified with Gatekeeper before publication. Source archives generated
 automatically by GitHub are not application installers.
 
+Until a Developer ID-signed production build is available, GitHub may contain
+explicitly labeled unsigned pre-releases for early testing. These builds are
+not notarized or Gatekeeper-trusted. Follow the warning and verification
+instructions in that pre-release's notes; do not treat it as production.
+
 See [the macOS release runbook](docs/RELEASING_MACOS.md), [privacy
 disclosure](PRIVACY.md), and [changelog](CHANGELOG.md).
 
@@ -109,5 +114,5 @@ export TERRANE_CAP_SIGNING_KEY_HEX=\
 scripts/build-macos-release.sh --version 0.2.0 --unsigned
 ```
 
-Unsigned preflight artifacts are for validation only and must not be
-distributed to end users.
+Unsigned preview artifacts may only be distributed as clearly labeled GitHub
+pre-releases with checksum, manifest, warning, and install instructions.
