@@ -10,41 +10,40 @@ this release track.
 Every published DMG must pass all of these gates:
 
 - built from a clean annotated `vX.Y.Z` tag;
-- Rust formatting, workspace tests, and strict clippy;
-- macOS Xcode tests on an Apple-silicon GitHub runner;
+- Rust formatting, workspace tests, and strict clippy on the release Mac;
+- macOS Xcode tests on the release Mac;
 - exactly 42 Ed25519-signed native capability archives;
 - Developer ID signatures on every capability worker, the app, and the DMG;
 - hardened runtime on the app and workers;
 - Apple notarization and stapled tickets on both the app and DMG;
 - strict `codesign`, Gatekeeper `spctl`, architecture, version, icon, and
   package-content verification;
-- SHA-256 checksums, a machine-readable release manifest, and GitHub build
-  provenance attestation.
+- SHA-256 checksums and a machine-readable release manifest containing the
+  exact source commit.
 
-An unsigned preflight artifact created by CI is never an end-user release.
+An unsigned local build is never an end-user release.
 
-## Required GitHub configuration
+## Release Mac configuration
 
-Create a protected GitHub environment named `production-release`. Require a
-reviewer before secrets are exposed, and limit deployment tags to `v*`. The
-workflow independently refuses any tag whose commit is not contained in
-`origin/main`.
+The release Mac must have Xcode, Rust, XcodeGen, GitHub CLI, and `jq`. Sign in
+to GitHub CLI with permission to push tags and create releases:
 
-Configure these repository or environment secrets:
+```sh
+gh auth login
+gh auth status
+```
 
-| Secret | Contents |
+Configure these local credentials:
+
+| Credential | Contents |
 | --- | --- |
-| `MACOS_CERTIFICATE_P12_BASE64` | Base64 of a Developer ID Application certificate and private key exported as PKCS#12 |
-| `MACOS_CERTIFICATE_PASSWORD` | Password used when exporting that PKCS#12 |
-| `APPLE_NOTARY_KEY_P8_BASE64` | Base64 of an App Store Connect API private key |
-| `APPLE_NOTARY_KEY_ID` | App Store Connect API key ID |
-| `APPLE_NOTARY_ISSUER_ID` | App Store Connect issuer ID |
+| Keychain signing identity | Developer ID Application certificate and private key |
+| `terrane-notary` keychain profile | App Store Connect API key stored by `notarytool` |
 | `TERRANE_CAP_SIGNING_KEY_HEX` | 64 lowercase hex characters for the production Ed25519 capability-signing seed |
 
-Do not reuse the CI-only capability key from `.github/workflows/ci.yml`.
 Do not commit certificates, private keys, API keys, or signing seeds.
 
-## Local production build
+## Publishing from this Mac
 
 The Mac must contain the matching Developer ID Application identity and a
 notarytool profile:
@@ -56,40 +55,33 @@ export MACOS_SIGNING_IDENTITY="Developer ID Application: Example (TEAMID)"
 export TERRANE_CAP_SIGNING_KEY_HEX="<64-hex-production-seed>"
 export APPLE_NOTARY_KEYCHAIN_PROFILE="terrane-notary"
 
-scripts/build-macos-release.sh \
+scripts/publish-macos-release.sh \
   --version 0.2.0 \
   --build-number 1 \
-  --output artifacts/macos \
-  --notarize
-
-scripts/verify-macos-release.sh \
-  artifacts/macos/Terrane-0.2.0-macos-arm64.dmg \
-  0.2.0
+  --output artifacts/macos
 ```
 
-The local build is for diagnosis and final rehearsal. GitHub Actions is the
-authoritative release builder.
+The publisher runs every source and native test locally, builds and notarizes
+the arm64-only DMG, verifies it, pushes the annotated tag if needed, creates
+the GitHub release, downloads the published assets, checks the checksum, and
+verifies the downloaded DMG again.
 
-## Publishing
+## Release sequence
 
-1. Confirm `main` is clean, pushed, and green in CI.
+1. Confirm `main` is clean and pushed.
 2. Update `CHANGELOG.md`, the matching `docs/releases/vX.Y.Z.md`, application
    version, and any user-facing compatibility notes.
-3. Create and push an annotated tag:
+3. Create an annotated tag locally:
 
    ```sh
    git tag -a v0.2.0 -m "Terrane v0.2.0"
-   git push origin v0.2.0
    ```
 
-4. Approve the protected `production-release` environment.
-5. Wait for `Release macOS` to complete.
-6. Download the GitHub asset on a separate M-series Mac, compare
-   `SHA256SUMS`, drag Terrane to Applications, launch it, create an app, quit,
-   relaunch, and confirm its data persists.
-
-The workflow creates the GitHub release only after signing, notarization, and
-final artifact verification succeed.
+4. Run `scripts/publish-macos-release.sh` as shown above. The script pushes
+   the tag only after all local gates pass.
+5. Download the public asset in a clean user account, compare `SHA256SUMS`,
+   drag Terrane to Applications, launch it, create an app, quit, relaunch, and
+   confirm its data persists.
 
 ## Failure and rollback
 
@@ -100,5 +92,5 @@ final artifact verification succeed.
   remove its assets, publish an incident note, and release a higher patch
   version. Revoke the notarization ticket or Developer ID certificate through
   Apple when compromise is suspected.
-- Retain the release manifest, checksum, workflow URL, tag commit, and Apple
-  notarization submission IDs for the release record.
+- Retain the release manifest, checksum, tag commit, and Apple notarization
+  submission IDs for the release record.

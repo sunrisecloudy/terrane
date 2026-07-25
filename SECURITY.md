@@ -3,7 +3,8 @@
 ## Supported releases
 
 Only the latest production GitHub release receives security fixes. Preview,
-unsigned, locally built, and older release artifacts are unsupported.
+unsigned validation builds, unverified local artifacts, and older releases are
+unsupported.
 
 ## Reporting a vulnerability
 
@@ -24,8 +25,8 @@ Official macOS releases are:
 - Apple-silicon-only;
 - signed with Apple Developer ID and hardened runtime;
 - notarized by Apple;
-- accompanied by SHA-256 checksums, a release manifest, and GitHub build
-  provenance.
+- accompanied by SHA-256 checksums and a release manifest identifying the
+  exact source commit.
 
 If Gatekeeper rejects an official release or its checksum differs, do not run
 it and report the discrepancy privately.

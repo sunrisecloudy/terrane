@@ -9,8 +9,8 @@ All notable end-user changes to Terrane are documented here.
 - Added fourteen built-in local-first apps and the native App Builder flow.
 - Added 42 independently packaged and signed native capability workers.
 - Added GUI-owned authenticated MCP attachment and native permission handling.
-- Added a production Apple-silicon release pipeline with Developer ID signing,
-  hardened runtime, Apple notarization, Gatekeeper verification, checksums,
-  release manifests, and build provenance.
+- Added a production Apple-silicon local release pipeline with Developer ID
+  signing, hardened runtime, Apple notarization, Gatekeeper verification,
+  checksums, release manifests, and verified GitHub upload.
 - Added a production application icon, privacy disclosure, installation guide,
   release runbook, and release notes.
