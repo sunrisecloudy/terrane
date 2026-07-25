@@ -118,13 +118,18 @@ scripts/with-cargo-cache.sh cargo fmt --all --check
 scripts/with-cargo-cache.sh cargo test --workspace --locked
 scripts/with-cargo-cache.sh cargo clippy --workspace --all-targets --locked -- -D warnings
 
+NATIVE_TEST_SOURCE="$(
+  mktemp -d "${HOME}/Library/Caches/terrane-release-source.XXXXXX"
+)"
 DERIVED_DATA="$(mktemp -d "${TMPDIR:-/tmp}/terrane-release-tests.XXXXXX")"
 DOWNLOAD="$(mktemp -d "${TMPDIR:-/tmp}/terrane-release-download.XXXXXX")"
 cleanup() {
-  rm -rf "$DERIVED_DATA" "$DOWNLOAD"
+  rm -rf "$NATIVE_TEST_SOURCE" "$DERIVED_DATA" "$DOWNLOAD"
 }
 trap cleanup EXIT
 
+git archive HEAD | tar -x -C "$NATIVE_TEST_SOURCE"
+cd "$NATIVE_TEST_SOURCE"
 xcodegen generate --spec host/macos/project.yml
 xcodebuild \
   -quiet \
@@ -134,6 +139,7 @@ xcodebuild \
   -derivedDataPath "$DERIVED_DATA" \
   CODE_SIGNING_ALLOWED=NO \
   test
+cd "$ROOT"
 
 if [[ -n "$(git status --porcelain)" ]]; then
   printf 'release verification changed tracked source files\n' >&2
