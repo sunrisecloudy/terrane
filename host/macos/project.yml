@@ -35,7 +35,31 @@ targets:
           - $(SRCROOT)/../../target/macos-static/release
         OTHER_LDFLAGS:
           - $(inherited)
-          - -force_load
+          - -Wl,-u,_terrane_blob_read
+          - -Wl,-u,_terrane_build_app
+          - -Wl,-u,_terrane_builder_generate
+          - -Wl,-u,_terrane_close
+          - -Wl,-u,_terrane_dispatch
+          - -Wl,-u,_terrane_home_page
+          - -Wl,-u,_terrane_host_run
+          - -Wl,-u,_terrane_i18n_bundle
+          - -Wl,-u,_terrane_i18n_import
+          - -Wl,-u,_terrane_i18n_negotiate
+          - -Wl,-u,_terrane_local_model_server_status
+          - -Wl,-u,_terrane_local_model_server_stop
+          - -Wl,-u,_terrane_local_model_setup_mlx
+          - -Wl,-u,_terrane_local_model_shutdown
+          - -Wl,-u,_terrane_mcp_handle_json_rpc
+          - -Wl,-u,_terrane_open_target
+          - -Wl,-u,_terrane_open_with_error
+          - -Wl,-u,_terrane_preview_create
+          - -Wl,-u,_terrane_preview_invoke
+          - -Wl,-u,_terrane_preview_read_asset
+          - -Wl,-u,_terrane_string_free
+          - -Wl,-u,_terrane_stt_push_pcm
+          - -Wl,-u,_terrane_stt_session_begin
+          - -Wl,-u,_terrane_stt_session_end
+          - -Wl,-u,_terrane_stt_shutdown
           - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
           - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
           - -lc++
@@ -138,13 +162,17 @@ targets:
               exit 1
             fi
             BUNDLE_COUNT="$(find "$TERRANE_CAP_BUNDLE_DIR" -maxdepth 1 -type f -name '*.tcap' | wc -l | tr -d ' ')"
-            if [ "$BUNDLE_COUNT" -ne 42 ]; then
+            if [ "${TERRANE_CAP_EXTERNAL:-0}" = "1" ] && [ "$BUNDLE_COUNT" -ne 0 ]; then
+              echo "External capability mode must embed no .tcap files, found $BUNDLE_COUNT" >&2
+              exit 1
+            fi
+            if [ "${TERRANE_CAP_EXTERNAL:-0}" != "1" ] && [ "$BUNDLE_COUNT" -ne 42 ]; then
               echo "Invalid native capability bundle directory: expected 42 .tcap files, found $BUNDLE_COUNT" >&2
               exit 1
             fi
             mkdir -p "$CAPABILITY_DESTINATION"
             rsync -a --delete "$TERRANE_CAP_BUNDLE_DIR/" "$CAPABILITY_DESTINATION/"
-            echo "Embedded 42 prebuilt signed native capabilities from $TERRANE_CAP_BUNDLE_DIR"
+            echo "Embedded capability catalog with $BUNDLE_COUNT archives from $TERRANE_CAP_BUNDLE_DIR"
             exit 0
           fi
           if [ -z "${TERRANE_CAP_SIGNING_KEY_HEX:-}" ]; then
@@ -183,7 +211,31 @@ targets:
           - $(SRCROOT)/../../target/macos-static/release
         OTHER_LDFLAGS:
           - $(inherited)
-          - -force_load
+          - -Wl,-u,_terrane_blob_read
+          - -Wl,-u,_terrane_build_app
+          - -Wl,-u,_terrane_builder_generate
+          - -Wl,-u,_terrane_close
+          - -Wl,-u,_terrane_dispatch
+          - -Wl,-u,_terrane_home_page
+          - -Wl,-u,_terrane_host_run
+          - -Wl,-u,_terrane_i18n_bundle
+          - -Wl,-u,_terrane_i18n_import
+          - -Wl,-u,_terrane_i18n_negotiate
+          - -Wl,-u,_terrane_local_model_server_status
+          - -Wl,-u,_terrane_local_model_server_stop
+          - -Wl,-u,_terrane_local_model_setup_mlx
+          - -Wl,-u,_terrane_local_model_shutdown
+          - -Wl,-u,_terrane_mcp_handle_json_rpc
+          - -Wl,-u,_terrane_open_target
+          - -Wl,-u,_terrane_open_with_error
+          - -Wl,-u,_terrane_preview_create
+          - -Wl,-u,_terrane_preview_invoke
+          - -Wl,-u,_terrane_preview_read_asset
+          - -Wl,-u,_terrane_string_free
+          - -Wl,-u,_terrane_stt_push_pcm
+          - -Wl,-u,_terrane_stt_session_begin
+          - -Wl,-u,_terrane_stt_session_end
+          - -Wl,-u,_terrane_stt_shutdown
           - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
           - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
           - -lc++

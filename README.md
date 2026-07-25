@@ -29,6 +29,9 @@ Until a Developer ID-signed production build is available, GitHub may contain
 explicitly labeled unsigned pre-releases for early testing. These builds are
 not notarized or Gatekeeper-trusted. Follow the warning and verification
 instructions in that pre-release's notes; do not treat it as production.
+To keep the initial DMG small, non-core native capabilities are downloaded
+from the same immutable GitHub release on first use and accepted only when
+their hashes match the app's signed capability index.
 
 See [the macOS release runbook](docs/RELEASING_MACOS.md), [privacy
 disclosure](PRIVACY.md), and [changelog](CHANGELOG.md).

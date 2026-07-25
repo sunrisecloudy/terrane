@@ -22,6 +22,11 @@ copies the package directory to
 `TerraneHost.app/Contents/Resources/capabilities`. The host also accepts
 `TERRANE_CAP_BUNDLE_DIR` for development and tests.
 
+Size-constrained desktop releases embed only `index.json` and
+`verifying-key.hex`; they publish the 42 `.tcap` files beside the DMG. The
+signed index pins the immutable release download URL and every archive hash.
+First use downloads only the required archive into the local capability cache.
+
 Set `TERRANE_CAP_INDEX_BASE_URL` while packaging to sign an exact-artifact
 repair origin into the index. Repair first validates the packaged `.tcap`, then
 downloads that same archive and accepts it only when its SHA-256 matches the

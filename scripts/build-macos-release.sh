@@ -7,6 +7,8 @@ BUILD_NUMBER="1"
 OUTPUT="$ROOT/artifacts/macos"
 UNSIGNED=0
 NOTARIZE=0
+EXTERNAL_CAPABILITIES=0
+MAX_DMG_BYTES=""
 
 usage() {
   cat <<'EOF'
@@ -19,6 +21,10 @@ Options:
   --output DIR      Final artifact directory (default: artifacts/macos)
   --unsigned        Build a local validation artifact without Developer ID
   --notarize        Notarize and staple both the app and DMG
+  --external-capabilities
+                    Embed only the signed capability index; emit the 42
+                    archives beside the DMG for on-demand download
+  --max-dmg-bytes N Fail if the final DMG exceeds N bytes
   --help            Show this help
 
 Signed builds require:
@@ -56,6 +62,14 @@ while [[ $# -gt 0 ]]; do
       NOTARIZE=1
       shift
       ;;
+    --external-capabilities)
+      EXTERNAL_CAPABILITIES=1
+      shift
+      ;;
+    --max-dmg-bytes)
+      MAX_DMG_BYTES="${2:-}"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -76,6 +90,10 @@ if [[ ! "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
   printf 'build number must be a positive integer\n' >&2
   exit 2
 fi
+if [[ -n "$MAX_DMG_BYTES" && ! "$MAX_DMG_BYTES" =~ ^[1-9][0-9]*$ ]]; then
+  printf 'maximum DMG bytes must be a positive integer\n' >&2
+  exit 2
+fi
 if [[ "$(uname -s)" != "Darwin" || "$(uname -m)" != "arm64" ]]; then
   printf 'Terrane macOS releases must be built on an Apple-silicon Mac\n' >&2
   exit 1
@@ -89,6 +107,9 @@ for command in cargo codesign ditto hdiutil plutil shasum xcodebuild xcodegen; d
 done
 
 : "${TERRANE_CAP_SIGNING_KEY_HEX:?set TERRANE_CAP_SIGNING_KEY_HEX to the production Ed25519 seed}"
+if [[ "$EXTERNAL_CAPABILITIES" -eq 1 ]]; then
+  : "${TERRANE_CAP_INDEX_BASE_URL:?set TERRANE_CAP_INDEX_BASE_URL for external capability downloads}"
+fi
 if [[ "$UNSIGNED" -eq 0 ]]; then
   : "${MACOS_SIGNING_IDENTITY:?set MACOS_SIGNING_IDENTITY to a Developer ID Application identity}"
   if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
@@ -126,6 +147,7 @@ OUTPUT="$(cd "$OUTPUT" && pwd)"
 WORK="$(mktemp -d "$OUTPUT/.terrane-release.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 CAPABILITIES="$WORK/capabilities"
+EMBEDDED_CAPABILITIES="$WORK/embedded-capabilities"
 DERIVED_DATA="$WORK/DerivedData"
 BUILD_DIR="$WORK/build"
 STAGING="$WORK/dmg"
@@ -140,6 +162,11 @@ for final_path in "$DMG" "$MANIFEST" "$CHECKSUMS"; do
     exit 1
   fi
 done
+if [[ "$EXTERNAL_CAPABILITIES" -eq 1 ]] &&
+   compgen -G "$OUTPUT/*.tcap" >/dev/null; then
+  printf 'refusing to overwrite existing capability artifacts in %s\n' "$OUTPUT" >&2
+  exit 1
+fi
 
 cd "$ROOT"
 xcodegen generate --spec host/macos/project.yml
@@ -151,7 +178,16 @@ else
   scripts/package-native-capabilities.sh "$CAPABILITIES"
 fi
 
-TERRANE_CAP_BUNDLE_DIR="$CAPABILITIES" \
+CAPABILITY_BUILD_SOURCE="$CAPABILITIES"
+if [[ "$EXTERNAL_CAPABILITIES" -eq 1 ]]; then
+  mkdir -p "$EMBEDDED_CAPABILITIES"
+  cp "$CAPABILITIES/index.json" "$CAPABILITIES/verifying-key.hex" \
+    "$EMBEDDED_CAPABILITIES/"
+  CAPABILITY_BUILD_SOURCE="$EMBEDDED_CAPABILITIES"
+fi
+
+TERRANE_CAP_BUNDLE_DIR="$CAPABILITY_BUILD_SOURCE" \
+TERRANE_CAP_EXTERNAL="$EXTERNAL_CAPABILITIES" \
 xcodebuild \
   -quiet \
   -project host/macos/Terrane.xcodeproj \
@@ -170,6 +206,8 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
+/usr/bin/strip -S -x "$APP/Contents/MacOS/Terrane"
+
 actual_version="$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")"
 actual_build="$(plutil -extract CFBundleVersion raw "$APP/Contents/Info.plist")"
 if [[ "$actual_version" != "$VERSION" || "$actual_build" != "$BUILD_NUMBER" ]]; then
@@ -179,8 +217,13 @@ if [[ "$actual_version" != "$VERSION" || "$actual_build" != "$BUILD_NUMBER" ]]; 
 fi
 
 capability_count="$(find "$APP/Contents/Resources/capabilities" -maxdepth 1 -type f -name '*.tcap' | wc -l | tr -d ' ')"
-if [[ "$capability_count" != "42" ]]; then
-  printf 'expected 42 packaged capabilities, found %s\n' "$capability_count" >&2
+expected_embedded_capabilities=42
+if [[ "$EXTERNAL_CAPABILITIES" -eq 1 ]]; then
+  expected_embedded_capabilities=0
+fi
+if [[ "$capability_count" != "$expected_embedded_capabilities" ]]; then
+  printf 'expected %s embedded capabilities, found %s\n' \
+    "$expected_embedded_capabilities" "$capability_count" >&2
   exit 1
 fi
 if [[ ! -f "$APP/Contents/Resources/capabilities/index.json" ||
@@ -239,6 +282,11 @@ fi
 
 dmg_sha="$(shasum -a 256 "$DMG" | awk '{print $1}')"
 dmg_bytes="$(stat -f '%z' "$DMG")"
+if [[ -n "$MAX_DMG_BYTES" && "$dmg_bytes" -gt "$MAX_DMG_BYTES" ]]; then
+  printf 'DMG size budget exceeded: %s bytes > %s bytes\n' \
+    "$dmg_bytes" "$MAX_DMG_BYTES" >&2
+  exit 1
+fi
 capability_key="$(tr -d '\n' < "$CAPABILITIES/verifying-key.hex")"
 commit="$(git rev-parse HEAD)"
 build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -249,6 +297,11 @@ if [[ "$UNSIGNED" -eq 1 ]]; then
 fi
 if [[ "$NOTARIZE" -eq 1 ]]; then
   notarized=true
+fi
+capability_delivery=embedded
+if [[ "$EXTERNAL_CAPABILITIES" -eq 1 ]]; then
+  capability_delivery=on-demand
+  cp "$CAPABILITIES"/*.tcap "$OUTPUT/"
 fi
 
 printf '%s  %s\n' "$dmg_sha" "$(basename "$DMG")" > "$CHECKSUMS"
@@ -267,6 +320,8 @@ cat > "$MANIFEST" <<EOF
   "notarized": $notarized,
   "builtInAppBundleCount": 14,
   "capabilityBundleCount": 42,
+  "embeddedCapabilityBundleCount": $capability_count,
+  "capabilityDelivery": "$capability_delivery",
   "capabilityVerifyingKey": "$capability_key",
   "artifacts": [
     {

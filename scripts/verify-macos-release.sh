@@ -2,15 +2,27 @@
 set -euo pipefail
 
 UNSIGNED=0
-if [[ "${1:-}" == "--unsigned" ]]; then
-  UNSIGNED=1
-  shift
-fi
+EXTERNAL_CAPABILITIES=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --unsigned)
+      UNSIGNED=1
+      shift
+      ;;
+    --external-capabilities)
+      EXTERNAL_CAPABILITIES="${2:-}"
+      shift 2
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 DMG="${1:-}"
 EXPECTED_VERSION="${2:-}"
 if [[ -z "$DMG" || ! -f "$DMG" ]]; then
-  printf 'usage: scripts/verify-macos-release.sh [--unsigned] <Terrane.dmg> [expected-version]\n' >&2
+  printf 'usage: scripts/verify-macos-release.sh [--unsigned] [--external-capabilities DIR] <Terrane.dmg> [expected-version]\n' >&2
   exit 2
 fi
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -88,8 +100,33 @@ fi
 
 CAPABILITIES="$APP/Contents/Resources/capabilities"
 capability_count="$(find "$CAPABILITIES" -maxdepth 1 -type f -name '*.tcap' | wc -l | tr -d ' ')"
-if [[ "$capability_count" != "42" ]]; then
-  printf 'expected 42 capability archives, found %s\n' "$capability_count" >&2
+ARCHIVE_SOURCE="$CAPABILITIES"
+expected_embedded_count=42
+if [[ -n "$EXTERNAL_CAPABILITIES" ]]; then
+  command -v jq >/dev/null || {
+    printf 'jq is required to verify external capabilities\n' >&2
+    exit 1
+  }
+  if [[ ! -d "$EXTERNAL_CAPABILITIES" ]]; then
+    printf 'external capability directory does not exist: %s\n' \
+      "$EXTERNAL_CAPABILITIES" >&2
+    exit 1
+  fi
+  expected_embedded_count=0
+  ARCHIVE_SOURCE="$EXTERNAL_CAPABILITIES"
+  index_count="$(jq -r '.artifacts | length' "$CAPABILITIES/index.json")"
+  external_count="$(find "$ARCHIVE_SOURCE" -maxdepth 1 -type f -name '*.tcap' | wc -l | tr -d ' ')"
+  download_base_url="$(jq -r '.downloadBaseUrl // empty' "$CAPABILITIES/index.json")"
+  if [[ "$index_count" != "42" || "$external_count" != "42" ||
+        -z "$download_base_url" ]]; then
+    printf 'invalid external capability set: index=%s archives=%s download=%s\n' \
+      "$index_count" "$external_count" "$download_base_url" >&2
+    exit 1
+  fi
+fi
+if [[ "$capability_count" != "$expected_embedded_count" ]]; then
+  printf 'expected %s embedded capability archives, found %s\n' \
+    "$expected_embedded_count" "$capability_count" >&2
   exit 1
 fi
 
@@ -98,8 +135,22 @@ if [[ "$app_bundle_count" != "14" ]]; then
   printf 'expected 14 built-in app bundles, found %s\n' "$app_bundle_count" >&2
   exit 1
 fi
-for archive in "$CAPABILITIES"/*.tcap; do
+for archive in "$ARCHIVE_SOURCE"/*.tcap; do
   namespace="$(basename "$archive" .tcap)"
+  if [[ -n "$EXTERNAL_CAPABILITIES" ]]; then
+    expected_archive_sha="$(
+      jq -r \
+        --arg archive "$(basename "$archive")" \
+        '.artifacts[] | select(.archive == $archive) | .archiveSha256' \
+        "$CAPABILITIES/index.json"
+    )"
+    actual_archive_sha="$(shasum -a 256 "$archive" | awk '{print $1}')"
+    if [[ -z "$expected_archive_sha" ||
+          "$actual_archive_sha" != "$expected_archive_sha" ]]; then
+      printf 'external capability hash mismatch: %s\n' "$archive" >&2
+      exit 1
+    fi
+  fi
   destination="$EXTRACTED/$namespace"
   mkdir -p "$destination"
   tar -xf "$archive" -C "$destination"
