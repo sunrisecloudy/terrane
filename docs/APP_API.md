@@ -457,11 +457,14 @@ macOS TCC/Accessibility prompts may still deny individual runs.
 | `ctx.resource.local-model.askJson(schema, prompt)` | call |
 | `ctx.resource.local-model.chat(prompt)` | call |
 | `ctx.resource.local-model.chatModel(model, prompt)` | call |
+| `ctx.resource.local-model.chatThread(thread, prompt)` | call |
+| `ctx.resource.local-model.chatThreadModel(thread, model, prompt)` | call |
 | `ctx.resource.local-model.embed(text)` | call |
 | `ctx.resource.local-model.embedQuery(text)` | call |
 | `ctx.resource.local-model.embedModel(model, text)` | call |
 | `ctx.resource.local-model.pullModel(repo, file)` | call |
 | `ctx.resource.local-model.resetChat()` | call |
+| `ctx.resource.local-model.resetChatThread(thread)` | call |
 | `ctx.resource.local-model.models()` | read |
 
 #### `ctx.resource.mcp`

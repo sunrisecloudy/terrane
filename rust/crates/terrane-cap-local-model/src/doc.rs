@@ -538,6 +538,34 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
              its own conversation context).",
         ), "string | null"),
         with_returns(resource_method(
+            "chatThread",
+            "call",
+            &[
+                param(
+                    "thread",
+                    "App-defined conversation thread id.",
+                    "string",
+                ),
+                param("prompt", "The next user message.", "string"),
+            ],
+            "A conversation turn isolated to the named thread, using the default model. \
+             Recorded context from other threads is not included.",
+        ), "string | null"),
+        with_returns(resource_method(
+            "chatThreadModel",
+            "call",
+            &[
+                param(
+                    "thread",
+                    "App-defined conversation thread id.",
+                    "string",
+                ),
+                param("model", "A registered local model id.", "model_id"),
+                param("prompt", "The next user message.", "string"),
+            ],
+            "Like chatThread, but with an explicitly named registered model.",
+        ), "string | null"),
+        with_returns(resource_method(
             "embed",
             "call",
             &[param("text", "Document-side text to encode.", "string")],
@@ -584,6 +612,17 @@ fn resource_method_docs() -> Vec<ResourceMethodDoc> {
             &[],
             "Start a fresh conversation: clears this app's recorded transcript so the \
              next chat call has no prior context.",
+        ), "\"ok\""),
+        with_returns(resource_method(
+            "resetChatThread",
+            "call",
+            &[param(
+                "thread",
+                "App-defined conversation thread id to clear.",
+                "string",
+            )],
+            "Clear only the named conversation thread, leaving the app's other threaded \
+             and default conversation histories intact.",
         ), "\"ok\""),
         with_returns(resource_method(
             "models",
