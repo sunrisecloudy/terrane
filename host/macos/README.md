@@ -124,3 +124,15 @@ TERRANE_HOME=~/.terrane ( cd ../.. && cargo run -q -p terrane-host --bin terrane
 
 The C ABI itself is covered by Rust tests in `rust/crates/terrane-host`
 (`cargo test -p terrane-host --test abi`); this host is the GUI layer over it.
+
+## Public bootstrap download
+
+The end-user GitHub download is built from the `TerraneBootstrap` target. It is
+an arm64-only AppKit bootstrap that downloads a signed, versioned `Terrane.app`
+runtime on first launch, displays native byte-accurate progress, verifies the
+artifact, activates it atomically, waits for a runtime health marker, and rolls
+back a failed version.
+
+See [`docs/MACOS_BOOTSTRAP_RELEASE.md`](../../docs/MACOS_BOOTSTRAP_RELEASE.md)
+for the machine-only build, local full-loop test, trust model, and GitHub release
+asset checklist.

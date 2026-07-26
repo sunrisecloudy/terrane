@@ -191,10 +191,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
     window.makeKeyAndOrderFront(nil)
     NSApp.activate(ignoringOtherApps: true)
+    writeBootstrapHealthMarker()
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     true
+  }
+
+  private func writeBootstrapHealthMarker() {
+    guard
+      let path = ProcessInfo.processInfo.environment["TERRANE_BOOTSTRAP_HEALTH_FILE"],
+      !path.isEmpty
+    else {
+      return
+    }
+    let url = URL(fileURLWithPath: path)
+    do {
+      try Data("healthy\n".utf8).write(to: url, options: .atomic)
+    } catch {
+      NSLog("terrane-host: could not acknowledge bootstrap health: \(error)")
+    }
   }
 
   func applicationWillTerminate(_ notification: Notification) {

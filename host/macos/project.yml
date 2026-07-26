@@ -12,8 +12,54 @@ settings:
     ARCHS: arm64
     ONLY_ACTIVE_ARCH: "YES"
     CODE_SIGN_IDENTITY: "-"
+    CODE_SIGN_INJECT_BASE_ENTITLEMENTS: "NO"
     ENABLE_HARDENED_RUNTIME: "NO"
+    TERRANE_RUST_LIB_DIR: $(SRCROOT)/../../target/macos-static/release
 targets:
+  TerraneBootstrap:
+    type: application
+    platform: macOS
+    supportedDestinations:
+      - macOS
+    sources:
+      - path: BootstrapSources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrane.bootstrap
+        PRODUCT_NAME: Terrane
+        EXECUTABLE_NAME: TerraneBootstrap
+        SWIFT_VERSION: "5.0"
+        DEAD_CODE_STRIPPING: "YES"
+        ENABLE_HARDENED_RUNTIME: "NO"
+        CODE_SIGN_IDENTITY: "-"
+    info:
+      path: BootstrapSources/Info.plist
+      properties:
+        NSPrincipalClass: NSApplication
+        NSHighResolutionCapable: true
+        CFBundleName: Terrane
+        CFBundleDisplayName: Terrane
+        LSMinimumSystemVersion: "13.0"
+        LSUIElement: false
+  TerraneBootstrapTests:
+    type: bundle.unit-test
+    platform: macOS
+    supportedDestinations:
+      - macOS
+    sources:
+      - path: BootstrapTests
+      - path: BootstrapSources
+        excludes:
+          - Info.plist
+          - main.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrane.bootstrap-tests
+        SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: "YES"
+        CODE_SIGN_IDENTITY: "-"
+        TEST_HOST: ""
+        BUNDLE_LOADER: ""
   TerraneHost:
     type: application
     platform: macOS
@@ -27,12 +73,12 @@ targets:
         DEAD_CODE_STRIPPING: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../target/macos-static/release
+          - $(TERRANE_RUST_LIB_DIR)
         OTHER_LDFLAGS:
           - $(inherited)
           - -force_load
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host_httplib.a
           - -lc++
           - -liconv
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
@@ -81,10 +127,16 @@ targets:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
         outputFiles:
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host_httplib.a
         script: |
           set -euo pipefail
+          if [ "${TERRANE_SKIP_RUST_BUILD:-0}" = "1" ]; then
+            test -f "$TERRANE_RUST_LIB_DIR/libterrane_host.a"
+            test -f "$TERRANE_RUST_LIB_DIR/libterrane_host_httplib.a"
+            echo "Using prebuilt Rust archives from $TERRANE_RUST_LIB_DIR"
+            exit 0
+          fi
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           export CARGO_TARGET_DIR="$SRCROOT/../../target/macos-static"
           export CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake"
@@ -171,12 +223,12 @@ targets:
         GENERATE_INFOPLIST_FILE: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
-          - $(SRCROOT)/../../target/macos-static/release
+          - $(TERRANE_RUST_LIB_DIR)
         OTHER_LDFLAGS:
           - $(inherited)
           - -force_load
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host_httplib.a
           - -lc++
           - -liconv
         SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneHost-Bridging-Header.h
@@ -199,10 +251,16 @@ targets:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
         outputFiles:
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host.a
-          - $(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host.a
+          - $(TERRANE_RUST_LIB_DIR)/libterrane_host_httplib.a
         script: |
           set -euo pipefail
+          if [ "${TERRANE_SKIP_RUST_BUILD:-0}" = "1" ]; then
+            test -f "$TERRANE_RUST_LIB_DIR/libterrane_host.a"
+            test -f "$TERRANE_RUST_LIB_DIR/libterrane_host_httplib.a"
+            echo "Using prebuilt Rust archives from $TERRANE_RUST_LIB_DIR"
+            exit 0
+          fi
           export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
           export CARGO_TARGET_DIR="$SRCROOT/../../target/macos-static"
           export CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake"
@@ -215,6 +273,28 @@ targets:
           fi
           cp "$HTTP_ARCHIVE" "$CARGO_TARGET_DIR/release/libterrane_host_httplib.a"
 schemes:
+  TerraneBootstrap:
+    build:
+      targets:
+        TerraneBootstrap: all
+    run:
+      config: Debug
+      executable: TerraneBootstrap
+    profile:
+      config: Release
+      executable: TerraneBootstrap
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+  TerraneBootstrapTests:
+    build:
+      targets:
+        TerraneBootstrapTests: all
+    test:
+      config: Debug
+      targets:
+        - TerraneBootstrapTests
   TerraneHost:
     build:
       targets:

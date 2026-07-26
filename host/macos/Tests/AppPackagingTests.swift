@@ -24,10 +24,13 @@ final class AppPackagingTests: XCTestCase {
     XCTAssertTrue(project.contains("DESTINATION_COUNT"), project)
     XCTAssertTrue(project.contains("-force_load"), project)
     XCTAssertTrue(
-      project.contains("$(SRCROOT)/../../target/macos-static/release/libterrane_host.a"), project)
+      project.contains("$(TERRANE_RUST_LIB_DIR)/libterrane_host.a"), project)
+    XCTAssertTrue(
+      project.contains("$(TERRANE_RUST_LIB_DIR)/libterrane_host_httplib.a"), project)
     XCTAssertTrue(
       project.contains(
-        "$(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a"), project)
+        "TERRANE_RUST_LIB_DIR: $(SRCROOT)/../../target/macos-static/release"), project)
+    XCTAssertTrue(project.contains(#"if [ "${TERRANE_SKIP_RUST_BUILD:-0}" = "1" ]"#), project)
     XCTAssertTrue(project.contains("outputFiles:"), project)
     XCTAssertTrue(project.contains(#"CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake""#))
     XCTAssertTrue(project.contains("llama-cpp-sys did not produce libcpp-httplib.a"), project)
@@ -44,6 +47,29 @@ final class AppPackagingTests: XCTestCase {
           atPath: directory.appendingPathComponent("manifest.json").path)
     }
     XCTAssertEqual(manifests.count, 12, "all checked-in app bundles must be packaged")
+  }
+
+  func testBootstrapIsASeparateThinApplication() throws {
+    let root = repositoryRoot()
+    let project = try String(
+      contentsOf: root.appendingPathComponent("host/macos/project.yml"),
+      encoding: .utf8
+    )
+    let configuration = try String(
+      contentsOf: root.appendingPathComponent(
+        "host/macos/BootstrapSources/BootstrapConfiguration.swift"),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(project.contains("TerraneBootstrap:"), project)
+    XCTAssertTrue(project.contains("PRODUCT_BUNDLE_IDENTIFIER: com.terrane.bootstrap"), project)
+    XCTAssertTrue(project.contains("EXECUTABLE_NAME: TerraneBootstrap"), project)
+    XCTAssertTrue(project.contains("TerraneBootstrapTests:"), project)
+    XCTAssertTrue(
+      configuration.contains(
+        "https://github.com/sunrisecloudy/terrane/releases/latest/download/terrane-bootstrap-manifest.json"),
+      configuration
+    )
   }
 
   private func repositoryRoot() -> URL {
