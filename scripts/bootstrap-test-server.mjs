@@ -13,12 +13,21 @@ function value(name, fallback) {
 const root = resolve(value("--root", ""));
 const port = Number(value("--port", "8765"));
 const bytesPerSecond = Number(value("--bytes-per-second", String(1024 * 1024)));
+const stallAfterBytes = Number(value("--stall-after-bytes", "0"));
+const stallSeconds = Number(value("--stall-seconds", "0"));
+const stallCount = Number(value("--stall-count", "1"));
 if (!root || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
   process.stderr.write(
-    "usage: bootstrap-test-server.mjs --root DIR [--port 8765] [--bytes-per-second 1048576]\n",
+    "usage: bootstrap-test-server.mjs --root DIR [--port 8765] "
+      + "[--bytes-per-second 1048576] [--stall-after-bytes 0] [--stall-seconds 0] "
+      + "[--stall-count 1]\n",
   );
   process.exit(2);
 }
+
+let activeResponses = 0;
+let peakResponses = 0;
+let stalledResponses = 0;
 
 const server = http.createServer(async (request, response) => {
   try {
@@ -29,28 +38,53 @@ const server = http.createServer(async (request, response) => {
     }
     const path = join(root, name);
     const info = await stat(path);
-    const range = request.headers.range?.match(/^bytes=(\d+)-$/);
+    const range = request.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
     const start = range ? Number(range[1]) : 0;
-    if (!Number.isSafeInteger(start) || start < 0 || start >= info.size) {
+    const end = range && range[2] ? Number(range[2]) : info.size - 1;
+    if (
+      !Number.isSafeInteger(start)
+      || !Number.isSafeInteger(end)
+      || start < 0
+      || start >= info.size
+      || end < start
+      || end >= info.size
+    ) {
       response.writeHead(416, { "Content-Range": `bytes */${info.size}` }).end();
       return;
     }
     const headers = {
       "Accept-Ranges": "bytes",
       "Cache-Control": "no-store",
-      "Content-Length": String(info.size - start),
+      "Content-Length": String(end - start + 1),
       "Content-Type": name.endsWith(".json") ? "application/json" : "application/zip",
     };
-    if (start > 0) {
-      headers["Content-Range"] = `bytes ${start}-${info.size - 1}/${info.size}`;
+    if (range) {
+      headers["Content-Range"] = `bytes ${start}-${end}/${info.size}`;
     }
-    response.writeHead(start > 0 ? 206 : 200, headers);
-    process.stdout.write(`${request.method} ${name} ${start}-${info.size - 1}\n`);
+    response.writeHead(range ? 206 : 200, headers);
+    process.stdout.write(`${request.method} ${name} ${start}-${end}\n`);
+    if (request.method === "HEAD") {
+      response.end();
+      return;
+    }
 
     const stream = createReadStream(path, {
       start,
+      end,
       highWaterMark: Math.max(16 * 1024, Math.floor(bytesPerSecond / 10)),
     });
+    activeResponses += 1;
+    peakResponses = Math.max(peakResponses, activeResponses);
+    process.stdout.write(`active=${activeResponses} peak=${peakResponses}\n`);
+    let responseClosed = false;
+    const closeResponse = () => {
+      if (responseClosed) return;
+      responseClosed = true;
+      activeResponses -= 1;
+    };
+    response.on("close", closeResponse);
+    let sent = 0;
+    let didStall = false;
     let queued = Promise.resolve();
     stream.on("data", (chunk) => {
       stream.pause();
@@ -58,14 +92,34 @@ const server = http.createServer(async (request, response) => {
         () =>
           new Promise((finish) => {
             response.write(chunk);
+            sent += chunk.length;
+            const shouldStall =
+              !didStall
+              && stalledResponses < stallCount
+              && stallAfterBytes > 0
+              && sent >= stallAfterBytes;
+            const stallDelay =
+              shouldStall
+                ? stallSeconds * 1000
+                : 0;
+            if (stallDelay > 0) {
+              didStall = true;
+              stalledResponses += 1;
+              process.stdout.write(`stall ${name} ${start}-${end} for ${stallSeconds}s\n`);
+            }
             setTimeout(() => {
               stream.resume();
               finish();
-            }, Math.max(1, Math.round((chunk.length / bytesPerSecond) * 1000)));
+            }, stallDelay + Math.max(1, Math.round((chunk.length / bytesPerSecond) * 1000)));
           }),
       );
     });
-    stream.on("end", () => queued.then(() => response.end()));
+    stream.on("end", () =>
+      queued.then(() => {
+        closeResponse();
+        response.end();
+      }),
+    );
     stream.on("error", (error) => response.destroy(error));
   } catch (error) {
     response.writeHead(500).end(`${error.message}\n`);

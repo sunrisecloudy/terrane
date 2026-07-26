@@ -61,6 +61,247 @@ final class BootstrapManifestTests: XCTestCase {
   }
 }
 
+final class SegmentedDownloaderTests: XCTestCase {
+  func testDownloaderAssemblesEightValidatedRanges() throws {
+    let temporary = try TemporaryDirectory()
+    let payload = Data((0..<65_537).map { UInt8($0 % 251) })
+    RangeURLProtocol.configure(payload: payload, stallFirstWave: false)
+    let delegate = DownloaderTestDelegate()
+    let completed = expectation(description: "download completed")
+    delegate.completionExpectation = completed
+    let destination = temporary.url.appendingPathComponent("runtime.zip")
+    let downloader = SegmentedDownloader(
+      url: URL(string: "https://fixture.invalid/runtime.zip")!,
+      expectedSize: Int64(payload.count),
+      destination: destination,
+      partsDirectory: temporary.url.appendingPathComponent("parts"),
+      connectionLimit: 8,
+      protocolClasses: [RangeURLProtocol.self]
+    )
+    downloader.delegate = delegate
+
+    downloader.start()
+    wait(for: [completed], timeout: 5)
+
+    XCTAssertEqual(try Data(contentsOf: destination), payload)
+    XCTAssertEqual(RangeURLProtocol.initialRangeRequestCount, 8)
+    XCTAssertNil(delegate.error)
+  }
+
+  func testDownloaderDetectsGlobalStallAndResumesParts() throws {
+    let temporary = try TemporaryDirectory()
+    let payload = Data((0..<65_537).map { UInt8($0 % 239) })
+    RangeURLProtocol.configure(payload: payload, stallFirstWave: true)
+    let delegate = DownloaderTestDelegate()
+    let retried = expectation(description: "stall retried")
+    let completed = expectation(description: "download completed")
+    delegate.retryExpectation = retried
+    delegate.completionExpectation = completed
+    let destination = temporary.url.appendingPathComponent("runtime.zip")
+    let downloader = SegmentedDownloader(
+      url: URL(string: "https://fixture.invalid/runtime.zip")!,
+      expectedSize: Int64(payload.count),
+      destination: destination,
+      partsDirectory: temporary.url.appendingPathComponent("parts"),
+      connectionLimit: 8,
+      stallTimeout: 2,
+      maximumRetries: 2,
+      protocolClasses: [RangeURLProtocol.self]
+    )
+    downloader.delegate = delegate
+
+    downloader.start()
+    wait(for: [retried, completed], timeout: 8)
+
+    XCTAssertEqual(try Data(contentsOf: destination), payload)
+    XCTAssertNil(delegate.error)
+  }
+
+  func testSegmentPlanUsesAtMostEightContiguousRanges() {
+    let segments = DownloadSegment.plan(size: 18_418_459, connectionLimit: 99)
+
+    XCTAssertEqual(segments.count, 8)
+    XCTAssertEqual(segments.first?.start, 0)
+    XCTAssertEqual(segments.last?.end, 18_418_458)
+    XCTAssertEqual(segments.reduce(0) { $0 + $1.length }, 18_418_459)
+    for pair in zip(segments, segments.dropFirst()) {
+      XCTAssertEqual(pair.0.end + 1, pair.1.start)
+    }
+  }
+
+  func testSegmentPlanDoesNotCreateEmptyRangesForSmallFiles() {
+    XCTAssertEqual(
+      DownloadSegment.plan(size: 3, connectionLimit: 8),
+      [
+        DownloadSegment(index: 0, start: 0, end: 0),
+        DownloadSegment(index: 1, start: 1, end: 1),
+        DownloadSegment(index: 2, start: 2, end: 2),
+      ])
+  }
+
+  func testRateEstimatorUsesRecentByteWindow() {
+    let start = Date(timeIntervalSince1970: 1_000)
+    var estimator = TransferRateEstimator(window: 5)
+    estimator.record(totalBytes: 0, at: start)
+    estimator.record(totalBytes: 2_000_000, at: start.addingTimeInterval(2))
+
+    XCTAssertEqual(
+      estimator.rate(at: start.addingTimeInterval(2)) ?? 0,
+      1_000_000,
+      accuracy: 0.001)
+  }
+
+  func testConfigurationBoundsConnectionAndRetrySettings() throws {
+    let configuration = try BootstrapConfiguration.resolve(
+      environment: [
+        "TERRANE_BOOTSTRAP_CONNECTIONS": "99",
+        "TERRANE_BOOTSTRAP_STALL_TIMEOUT": "0.1",
+        "TERRANE_BOOTSTRAP_MAX_RETRIES": "99",
+      ],
+      applicationSupport: FileManager.default.temporaryDirectory
+    )
+
+    XCTAssertEqual(configuration.maximumDownloadConnections, 8)
+    XCTAssertEqual(configuration.downloadStallTimeout, 2)
+    XCTAssertEqual(configuration.maximumDownloadRetries, 10)
+  }
+}
+
+private final class DownloaderTestDelegate: SegmentedDownloaderDelegate {
+  var completionExpectation: XCTestExpectation?
+  var retryExpectation: XCTestExpectation?
+  var error: Error?
+
+  func segmentedDownloader(
+    _ downloader: SegmentedDownloader, didUpdate progress: TransferProgress
+  ) {}
+
+  func segmentedDownloader(
+    _ downloader: SegmentedDownloader,
+    didRetry reason: String,
+    attempt: Int,
+    maximum: Int
+  ) {
+    if reason.contains("stalled") {
+      retryExpectation?.fulfill()
+      retryExpectation = nil
+    }
+  }
+
+  func segmentedDownloader(
+    _ downloader: SegmentedDownloader,
+    didComplete result: Result<URL, Error>
+  ) {
+    if case .failure(let error) = result {
+      self.error = error
+    }
+    completionExpectation?.fulfill()
+  }
+}
+
+private final class RangeURLProtocol: URLProtocol {
+  private static let lock = NSLock()
+  private static var payload = Data()
+  private static var shouldStallFirstWave = false
+  private static var rangeRequests = 0
+
+  static var initialRangeRequestCount: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return rangeRequests
+  }
+
+  static func configure(payload: Data, stallFirstWave: Bool) {
+    lock.lock()
+    self.payload = payload
+    shouldStallFirstWave = stallFirstWave
+    rangeRequests = 0
+    lock.unlock()
+  }
+
+  override class func canInit(with request: URLRequest) -> Bool { true }
+
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    Self.lock.lock()
+    let payload = Self.payload
+    let shouldStall = Self.shouldStallFirstWave && Self.rangeRequests < 8
+    if request.value(forHTTPHeaderField: "Range") != nil {
+      Self.rangeRequests += 1
+    }
+    Self.lock.unlock()
+
+    if request.httpMethod == "HEAD" {
+      respond(
+        status: 200,
+        headers: [
+          "Accept-Ranges": "bytes",
+          "Content-Length": String(payload.count),
+        ],
+        data: nil,
+        finish: true
+      )
+      return
+    }
+
+    guard let range = request.value(forHTTPHeaderField: "Range"),
+      let bounds = Self.parse(range: range),
+      bounds.start >= 0,
+      bounds.end < payload.count,
+      bounds.start <= bounds.end
+    else {
+      respond(status: 400, headers: [:], data: nil, finish: true)
+      return
+    }
+    let requested = payload.subdata(in: bounds.start..<(bounds.end + 1))
+    let delivered =
+      shouldStall ? Data(requested.prefix(min(256, requested.count))) : requested
+    respond(
+      status: 206,
+      headers: [
+        "Accept-Ranges": "bytes",
+        "Content-Length": String(requested.count),
+        "Content-Range": "bytes \(bounds.start)-\(bounds.end)/\(payload.count)",
+      ],
+      data: delivered,
+      finish: !shouldStall
+    )
+  }
+
+  override func stopLoading() {}
+
+  private func respond(
+    status: Int,
+    headers: [String: String],
+    data: Data?,
+    finish: Bool
+  ) {
+    let response = HTTPURLResponse(
+      url: request.url!,
+      statusCode: status,
+      httpVersion: "HTTP/1.1",
+      headerFields: headers
+    )!
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    if let data {
+      client?.urlProtocol(self, didLoad: data)
+    }
+    if finish {
+      client?.urlProtocolDidFinishLoading(self)
+    }
+  }
+
+  private static func parse(range: String) -> (start: Int, end: Int)? {
+    let value = range.replacingOccurrences(of: "bytes=", with: "")
+    let pieces = value.split(separator: "-", omittingEmptySubsequences: false)
+    guard pieces.count == 2, let start = Int(pieces[0]), let end = Int(pieces[1]) else {
+      return nil
+    }
+    return (start, end)
+  }
+}
+
 final class RuntimeStoreTests: XCTestCase {
   func testInstallActivateAndRollbackUseVersionedAtomicState() throws {
     let temporary = try TemporaryDirectory()

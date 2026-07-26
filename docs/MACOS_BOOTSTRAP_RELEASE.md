@@ -45,9 +45,24 @@ The bootstrap stores runtime data under:
 ```text
 ~/Library/Application Support/Terrane/
 ├── downloads/<sha256>.zip
+├── downloads/<sha256>.parts/part-*
 ├── versions/<version>/Terrane.app
 └── runtime-state.json
 ```
+
+When the release server advertises byte-range support and the exact expected
+length, the bootstrap downloads with up to eight connections. Every response
+must return the requested `Content-Range`; otherwise it safely falls back to one
+stream. Partial ranges remain resumable across bounded automatic retries.
+
+The native progress window displays downloaded and total bytes, current
+five-second transfer speed, estimated time remaining, active connection count,
+and download elapsed time. Verification and installation have separate elapsed
+timers so a slow transfer is distinguishable from local processing.
+
+If all connections stop making progress for 12 seconds, the bootstrap cancels
+the stalled requests and resumes their partial ranges. It retries a maximum of
+three times before showing the manual **Try Again** action.
 
 Installation verifies the manifest signature, exact byte count, SHA-256, safe
 archive layout, and the app's recursive code signature. Extraction happens in a
@@ -98,10 +113,10 @@ Build a release:
 
 ```sh
 export TERRANE_UPDATE_SIGNING_KEY="$PWD/.terrane-release/update-signing-key.pem"
-export TERRANE_UPDATE_BASE_URL="https://github.com/sunrisecloudy/terrane/releases/download/v0.2.0-preview.3"
+export TERRANE_UPDATE_BASE_URL="https://github.com/sunrisecloudy/terrane/releases/download/v0.2.0-preview.4"
 scripts/build-macos-bootstrap-release.sh \
-  0.2.0-preview.3 \
-  artifacts/macos-bootstrap/0.2.0-preview.3
+  0.2.0-preview.4 \
+  artifacts/macos-bootstrap/0.2.0-preview.4
 ```
 
 The build pins every Rust and C/C++ object to macOS 13, uses the shared Cargo
@@ -132,11 +147,11 @@ The manifest's runtime URL is immutable and includes the exact release tag.
 Example publication command:
 
 ```sh
-gh release create v0.2.0-preview.3 \
-  artifacts/macos-bootstrap/0.2.0-preview.3/Terrane-Bootstrap-arm64.dmg \
-  artifacts/macos-bootstrap/0.2.0-preview.3/TerraneRuntime-arm64.zip \
-  artifacts/macos-bootstrap/0.2.0-preview.3/terrane-bootstrap-manifest.json \
-  artifacts/macos-bootstrap/0.2.0-preview.3/SHA256SUMS \
+gh release create v0.2.0-preview.4 \
+  artifacts/macos-bootstrap/0.2.0-preview.4/Terrane-Bootstrap-arm64.dmg \
+  artifacts/macos-bootstrap/0.2.0-preview.4/TerraneRuntime-arm64.zip \
+  artifacts/macos-bootstrap/0.2.0-preview.4/terrane-bootstrap-manifest.json \
+  artifacts/macos-bootstrap/0.2.0-preview.4/SHA256SUMS \
   --target <release-commit-sha> \
   --title "Terrane 0.2.0 Preview 3 (Unsigned)" \
   --notes-file <release-notes.md> \
@@ -151,14 +166,17 @@ Create the runtime package with a loopback URL, then serve it slowly:
 scripts/package-bootstrap-runtime.mjs \
   --app /path/to/Terrane.app \
   --output /tmp/terrane-bootstrap-fixture \
-  --version 0.2.0-preview.3 \
+  --version 0.2.0-preview.4 \
   --base-url http://127.0.0.1:8765 \
   --signing-key .terrane-release/update-signing-key.pem
 
 scripts/bootstrap-test-server.mjs \
   --root /tmp/terrane-bootstrap-fixture \
   --port 8765 \
-  --bytes-per-second 524288
+  --bytes-per-second 131072 \
+  --stall-after-bytes 262144 \
+  --stall-seconds 15 \
+  --stall-count 8
 ```
 
 Launch the bootstrap with an isolated store:
@@ -169,12 +187,21 @@ open -n \
   --env TERRANE_BOOTSTRAP_ALLOW_INSECURE_LOCALHOST=1 \
   --env TERRANE_BOOTSTRAP_HOME=/tmp/terrane-bootstrap-home \
   --env TERRANE_BOOTSTRAP_RUNTIME_HOME=/tmp/terrane-runtime-home \
+  --env TERRANE_BOOTSTRAP_CONNECTIONS=8 \
   /path/to/bootstrap/Terrane.app
 ```
 
+For a faster automated stall test, set
+`TERRANE_BOOTSTRAP_STALL_TIMEOUT=2`. Production defaults to 12 seconds. The
+connection count is bounded to 1–8 and automatic retries default to three.
+
 Acceptance requires:
 
-- visible determinate progress and exact downloaded/total bytes
+- visible determinate progress, exact bytes, current speed, ETA, connection
+  count, and elapsed download time
+- eight non-overlapping range requests with complete byte coverage
+- automatic partial-range resume after a forced all-connection stall
+- separate visible verification and installation timers
 - signed-manifest rejection after any field is changed
 - hash or size mismatch rejection before extraction
 - successful verified extraction and code-signature verification
@@ -190,7 +217,8 @@ Acceptance requires:
 - Both report `minos 13.0`.
 - No linker warnings report objects built for a newer macOS version.
 - Bootstrap unit tests pass.
-- The throttled first-run loop is visually checked.
+- The throttled eight-connection first-run loop is visually checked.
+- Forced stall detection and automatic partial-range resume are exercised.
 - Failure, retry, successful activation, and second-launch paths are exercised.
 - DMG and runtime sizes are recorded in the release notes.
 - `shasum -a 256 -c SHA256SUMS` passes.

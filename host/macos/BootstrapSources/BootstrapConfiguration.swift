@@ -15,6 +15,9 @@ struct BootstrapConfiguration {
   let allowInsecureLocalhost: Bool
   let healthTimeout: TimeInterval
   let runtimeHome: String?
+  let maximumDownloadConnections: Int
+  let downloadStallTimeout: TimeInterval
+  let maximumDownloadRetries: Int
 
   static func resolve(
     environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -46,6 +49,12 @@ struct BootstrapConfiguration {
       environment["TERRANE_BOOTSTRAP_HEALTH_TIMEOUT"].flatMap(TimeInterval.init) ?? 20
     let runtimeHome = environment["TERRANE_BOOTSTRAP_RUNTIME_HOME"]
       .flatMap { $0.isEmpty ? nil : $0 }
+    let connections =
+      environment["TERRANE_BOOTSTRAP_CONNECTIONS"].flatMap(Int.init) ?? 8
+    let stallTimeout =
+      environment["TERRANE_BOOTSTRAP_STALL_TIMEOUT"].flatMap(TimeInterval.init) ?? 12
+    let retries =
+      environment["TERRANE_BOOTSTRAP_MAX_RETRIES"].flatMap(Int.init) ?? 3
     return BootstrapConfiguration(
       manifestURL: manifestURL,
       publicKeyHex: publicKeyHex,
@@ -53,7 +62,10 @@ struct BootstrapConfiguration {
       skipRuntimeLaunch: skipLaunch,
       allowInsecureLocalhost: allowLocal,
       healthTimeout: max(1, min(timeout, 120)),
-      runtimeHome: runtimeHome
+      runtimeHome: runtimeHome,
+      maximumDownloadConnections: max(1, min(connections, 8)),
+      downloadStallTimeout: max(2, min(stallTimeout, 120)),
+      maximumDownloadRetries: max(0, min(retries, 10))
     )
   }
 }

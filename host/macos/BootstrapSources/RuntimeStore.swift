@@ -71,6 +71,11 @@ final class RuntimeStore {
     downloadsDirectory.appendingPathComponent("\(manifest.artifactSHA256.lowercased()).zip")
   }
 
+  func downloadPartsDirectory(for manifest: BootstrapManifest) -> URL {
+    downloadsDirectory.appendingPathComponent(
+      "\(manifest.artifactSHA256.lowercased()).parts", isDirectory: true)
+  }
+
   func install(archive: URL, manifest: BootstrapManifest) throws -> URL {
     try prepare()
     let attributes = try fileManager.attributesOfItem(atPath: archive.path)

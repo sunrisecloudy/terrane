@@ -25,32 +25,28 @@ protocol BootstrapManagerDelegate: AnyObject {
   func bootstrapManagerDidComplete(_ manager: BootstrapManager)
 }
 
-final class BootstrapManager: NSObject, URLSessionDownloadDelegate {
+final class BootstrapManager: NSObject, SegmentedDownloaderDelegate {
   weak var delegate: BootstrapManagerDelegate?
 
   private let configuration: BootstrapConfiguration
   private let store: RuntimeStore
-  private var session: URLSession!
+  private let manifestSession: URLSession
   private var manifest: BootstrapManifest?
-  private var downloadedTemporaryURL: URL?
-  private var completionError: Error?
-  private var didFinishDownload = false
+  private var downloader: SegmentedDownloader?
   private var runningApplication: NSRunningApplication?
+  private var phaseTimer: Timer?
+  private var phaseStartedAt: Date?
 
   init(configuration: BootstrapConfiguration, store: RuntimeStore? = nil) {
     self.configuration = configuration
     self.store = store ?? RuntimeStore(root: configuration.storeRoot)
-    super.init()
     let sessionConfiguration = URLSessionConfiguration.ephemeral
     sessionConfiguration.waitsForConnectivity = true
     sessionConfiguration.timeoutIntervalForRequest = 60
     sessionConfiguration.timeoutIntervalForResource = 60 * 60
-    sessionConfiguration.httpMaximumConnectionsPerHost = 2
-    session = URLSession(
-      configuration: sessionConfiguration,
-      delegate: self,
-      delegateQueue: OperationQueue()
-    )
+    sessionConfiguration.httpMaximumConnectionsPerHost = configuration.maximumDownloadConnections
+    manifestSession = URLSession(configuration: sessionConfiguration)
+    super.init()
   }
 
   func start() {
@@ -70,9 +66,8 @@ final class BootstrapManager: NSObject, URLSessionDownloadDelegate {
   }
 
   func retry() {
-    completionError = nil
-    downloadedTemporaryURL = nil
-    didFinishDownload = false
+    downloader?.cancel()
+    downloader = nil
     start()
   }
 
@@ -82,7 +77,7 @@ final class BootstrapManager: NSObject, URLSessionDownloadDelegate {
       cachePolicy: .reloadIgnoringLocalAndRemoteCacheData,
       timeoutInterval: 60
     )
-    session.dataTask(with: request) { [weak self] data, response, error in
+    manifestSession.dataTask(with: request) { [weak self] data, response, error in
       guard let self else { return }
       if let error {
         self.useInstalledRuntimeOrFail(BootstrapError.download(error.localizedDescription))
@@ -135,117 +130,103 @@ final class BootstrapManager: NSObject, URLSessionDownloadDelegate {
       fail(BootstrapError.invalidManifest("artifact URL is missing"))
       return
     }
+    stopPhaseTimer()
     update(
       phase: .downloading,
       title: "Downloading Terrane",
-      detail: "You can keep using your Mac while Terrane gets ready.",
+      detail: "Starting up to \(configuration.maximumDownloadConnections) secure connections…",
       progress: 0,
-      byteDetail: "0 of \(Self.formatBytes(manifest.artifactSize))"
+      byteDetail: "0 of \(Self.formatBytes(manifest.artifactSize)) • measuring speed…"
     )
-    if let resumeData = try? Data(contentsOf: store.resumeDataURL(for: manifest)),
-      !resumeData.isEmpty
-    {
-      session.downloadTask(withResumeData: resumeData).resume()
-    } else {
-      session.downloadTask(with: URLRequest(url: url)).resume()
-    }
+    let downloader = SegmentedDownloader(
+      url: url,
+      expectedSize: manifest.artifactSize,
+      destination: store.downloadURL(for: manifest),
+      partsDirectory: store.downloadPartsDirectory(for: manifest),
+      connectionLimit: configuration.maximumDownloadConnections,
+      stallTimeout: configuration.downloadStallTimeout,
+      maximumRetries: configuration.maximumDownloadRetries
+    )
+    self.downloader = downloader
+    downloader.delegate = self
+    downloader.start()
   }
 
-  func urlSession(
-    _ session: URLSession,
-    downloadTask: URLSessionDownloadTask,
-    didWriteData bytesWritten: Int64,
-    totalBytesWritten: Int64,
-    totalBytesExpectedToWrite: Int64
+  func segmentedDownloader(
+    _ downloader: SegmentedDownloader, didUpdate progress: TransferProgress
   ) {
-    guard let manifest else { return }
-    let expected = manifest.artifactSize
-    guard totalBytesWritten <= expected + 1024 * 1024 else {
-      downloadTask.cancel()
-      completionError = BootstrapError.artifactSize(
-        expected: expected, actual: totalBytesWritten)
-      return
-    }
-    let progress = min(1, max(0, Double(totalBytesWritten) / Double(expected)))
+    guard downloader === self.downloader else { return }
+    let fraction = min(
+      1, max(0, Double(progress.receivedBytes) / Double(progress.totalBytes)))
+    let speed =
+      progress.bytesPerSecond.map { "\(Self.formatBytes(Int64($0)))/s" }
+      ?? "measuring speed…"
+    let eta =
+      progress.estimatedSecondsRemaining.map { "\(Self.formatDuration($0)) remaining" }
+      ?? "estimating time…"
+    let connections =
+      progress.activeConnections == 1
+      ? "1 connection" : "\(progress.activeConnections) connections"
     update(
       phase: .downloading,
       title: "Downloading Terrane",
-      detail: "You can keep using your Mac while Terrane gets ready.",
-      progress: progress,
+      detail: "\(connections) • \(Self.formatDuration(progress.elapsed)) elapsed",
+      progress: fraction,
       byteDetail:
-        "\(Self.formatBytes(totalBytesWritten)) of \(Self.formatBytes(expected))"
+        "\(Self.formatBytes(progress.receivedBytes)) of \(Self.formatBytes(progress.totalBytes))"
+        + " • \(speed) • \(eta)"
     )
   }
 
-  func urlSession(
-    _ session: URLSession,
-    downloadTask: URLSessionDownloadTask,
-    didFinishDownloadingTo location: URL
+  func segmentedDownloader(
+    _ downloader: SegmentedDownloader,
+    didRetry reason: String,
+    attempt: Int,
+    maximum: Int
   ) {
-    guard let manifest else { return }
-    if let response = downloadTask.response as? HTTPURLResponse,
-      !(200...299).contains(response.statusCode)
-    {
-      completionError = BootstrapError.download(
-        "release server returned HTTP \(response.statusCode)")
-      return
-    }
-    do {
-      let destination = store.downloadURL(for: manifest)
-      if FileManager.default.fileExists(atPath: destination.path) {
-        try FileManager.default.removeItem(at: destination)
-      }
-      try FileManager.default.moveItem(at: location, to: destination)
-      downloadedTemporaryURL = destination
-      didFinishDownload = true
-      store.removeResumeData(for: manifest)
-    } catch {
-      completionError = error
-    }
+    guard downloader === self.downloader, let manifest else { return }
+    update(
+      phase: .downloading,
+      title: "Downloading Terrane",
+      detail: "\(reason) (\(attempt)/\(maximum))",
+      progress: nil,
+      byteDetail: "Keeping verified partial data • \(Self.formatBytes(manifest.artifactSize)) total"
+    )
   }
 
-  func urlSession(
-    _ session: URLSession,
-    task: URLSessionTask,
-    didCompleteWithError error: Error?
+  func segmentedDownloader(
+    _ downloader: SegmentedDownloader,
+    didComplete result: Result<URL, Error>
   ) {
-    guard task is URLSessionDownloadTask else { return }
-    if let resumeData = (error as NSError?)?.userInfo[
-      NSURLSessionDownloadTaskResumeData] as? Data
-    {
-      if let manifest {
-        try? resumeData.write(to: store.resumeDataURL(for: manifest), options: .atomic)
-      }
-    }
-    if let completionError {
-      fail(completionError)
-    } else if let error {
-      fail(BootstrapError.download(error.localizedDescription))
-    } else if didFinishDownload, let archive = downloadedTemporaryURL {
+    guard downloader === self.downloader else { return }
+    self.downloader = nil
+    switch result {
+    case .success(let archive):
       verifyAndInstall(archive: archive)
+    case .failure(let error):
+      fail(error)
     }
   }
 
   private func verifyAndInstall(archive: URL) {
     guard let manifest else { return }
-    update(
+    beginTimedPhase(
       phase: .verifying,
       title: "Verifying Terrane",
-      detail: "Checking the signed release before it is installed…",
-      progress: nil
+      detail: "Checking signature, size, and archive integrity…"
     )
     DispatchQueue.global(qos: .userInitiated).async { [weak self] in
       guard let self else { return }
       do {
         let app = try self.store.install(archive: archive, manifest: manifest)
-        self.update(
+        self.beginTimedPhase(
           phase: .installing,
           title: "Finishing installation",
-          detail: "Activating Terrane \(manifest.version)…",
-          progress: nil
+          detail: "Activating Terrane \(manifest.version)…"
         )
         _ = try self.store.activate(manifest: manifest)
         if self.configuration.skipRuntimeLaunch {
+          self.stopPhaseTimer()
           self.update(
             phase: .complete,
             title: "Terrane is ready",
@@ -263,6 +244,7 @@ final class BootstrapManager: NSObject, URLSessionDownloadDelegate {
   }
 
   private func launch(app: URL, version: String, newlyInstalled: Bool) {
+    stopPhaseTimer()
     update(
       phase: .launching,
       title: "Opening Terrane",
@@ -365,6 +347,7 @@ final class BootstrapManager: NSObject, URLSessionDownloadDelegate {
   }
 
   private func fail(_ error: Error) {
+    stopPhaseTimer()
     let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     update(
       phase: .failed,
@@ -399,5 +382,61 @@ final class BootstrapManager: NSObject, URLSessionDownloadDelegate {
 
   private static func formatBytes(_ bytes: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+  }
+
+  private static func formatDuration(_ seconds: TimeInterval) -> String {
+    let value = max(0, seconds)
+    if value < 10 {
+      return String(format: "%.1fs", value)
+    }
+    if value < 60 {
+      return "\(Int(value.rounded()))s"
+    }
+    let minutes = Int(value) / 60
+    let remaining = Int(value) % 60
+    return "\(minutes)m \(remaining)s"
+  }
+
+  private func beginTimedPhase(
+    phase: BootstrapViewState.Phase,
+    title: String,
+    detail: String
+  ) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      self.stopPhaseTimerOnMain()
+      let started = Date()
+      self.phaseStartedAt = started
+      self.update(
+        phase: phase,
+        title: title,
+        detail: detail,
+        progress: nil,
+        byteDetail: "0.0s elapsed"
+      )
+      self.phaseTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) {
+        [weak self] _ in
+        guard let self, self.phaseStartedAt == started else { return }
+        self.update(
+          phase: phase,
+          title: title,
+          detail: detail,
+          progress: nil,
+          byteDetail: "\(Self.formatDuration(Date().timeIntervalSince(started))) elapsed"
+        )
+      }
+    }
+  }
+
+  private func stopPhaseTimer() {
+    DispatchQueue.main.async { [weak self] in
+      self?.stopPhaseTimerOnMain()
+    }
+  }
+
+  private func stopPhaseTimerOnMain() {
+    phaseTimer?.invalidate()
+    phaseTimer = nil
+    phaseStartedAt = nil
   }
 }
