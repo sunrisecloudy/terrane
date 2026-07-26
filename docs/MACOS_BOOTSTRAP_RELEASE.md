@@ -85,6 +85,7 @@ Requirements:
 - Xcode and XcodeGen
 - Node.js
 - OpenSSL for generating the separate Ed25519 key
+- librsvg (`rsvg-convert`) when regenerating the canonical macOS icon
 - the project Cargo/sccache setup
 
 One-time signing-key creation:
@@ -113,16 +114,17 @@ Build a release:
 
 ```sh
 export TERRANE_UPDATE_SIGNING_KEY="$PWD/.terrane-release/update-signing-key.pem"
-export TERRANE_UPDATE_BASE_URL="https://github.com/sunrisecloudy/terrane/releases/download/v0.2.0-preview.4"
+export TERRANE_UPDATE_BASE_URL="https://github.com/sunrisecloudy/terrane/releases/download/v0.2.0-preview.5"
 scripts/build-macos-bootstrap-release.sh \
-  0.2.0-preview.4 \
-  artifacts/macos-bootstrap/0.2.0-preview.4
+  0.2.0-preview.5 \
+  artifacts/macos-bootstrap/0.2.0-preview.5
 ```
 
 The build pins every Rust and C/C++ object to macOS 13, uses the shared Cargo
 cache, builds arm64-only applications, verifies both application signatures and
-Mach-O deployment targets, creates the runtime ZIP and bootstrap DMG, then
-checks all release hashes.
+Mach-O deployment targets, verifies both bundles contain the canonical
+organic-T AppIcon through 1024px, creates the runtime ZIP and bootstrap DMG,
+then checks all release hashes.
 
 Upload these assets to the matching GitHub release:
 
@@ -147,13 +149,13 @@ The manifest's runtime URL is immutable and includes the exact release tag.
 Example publication command:
 
 ```sh
-gh release create v0.2.0-preview.4 \
-  artifacts/macos-bootstrap/0.2.0-preview.4/Terrane-Bootstrap-arm64.dmg \
-  artifacts/macos-bootstrap/0.2.0-preview.4/TerraneRuntime-arm64.zip \
-  artifacts/macos-bootstrap/0.2.0-preview.4/terrane-bootstrap-manifest.json \
-  artifacts/macos-bootstrap/0.2.0-preview.4/SHA256SUMS \
+gh release create v0.2.0-preview.5 \
+  artifacts/macos-bootstrap/0.2.0-preview.5/Terrane-Bootstrap-arm64.dmg \
+  artifacts/macos-bootstrap/0.2.0-preview.5/TerraneRuntime-arm64.zip \
+  artifacts/macos-bootstrap/0.2.0-preview.5/terrane-bootstrap-manifest.json \
+  artifacts/macos-bootstrap/0.2.0-preview.5/SHA256SUMS \
   --target <release-commit-sha> \
-  --title "Terrane 0.2.0 Preview 3 (Unsigned)" \
+  --title "Terrane 0.2.0 Preview 5 (Canonical Icon, Unsigned)" \
   --notes-file <release-notes.md> \
   --latest
 ```
@@ -166,7 +168,7 @@ Create the runtime package with a loopback URL, then serve it slowly:
 scripts/package-bootstrap-runtime.mjs \
   --app /path/to/Terrane.app \
   --output /tmp/terrane-bootstrap-fixture \
-  --version 0.2.0-preview.4 \
+  --version 0.2.0-preview.5 \
   --base-url http://127.0.0.1:8765 \
   --signing-key .terrane-release/update-signing-key.pem
 
@@ -214,6 +216,7 @@ Acceptance requires:
 
 - Working tree and intended commit are recorded.
 - Bootstrap and runtime are arm64-only.
+- Bootstrap, DMG app, Dock entry, and runtime expose the same canonical AppIcon.
 - Both report `minos 13.0`.
 - No linker warnings report objects built for a newer macOS version.
 - Bootstrap unit tests pass.

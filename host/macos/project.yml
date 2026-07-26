@@ -23,6 +23,7 @@ targets:
       - macOS
     sources:
       - path: BootstrapSources
+      - path: SharedAssets/TerraneAssets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.bootstrap
@@ -32,6 +33,7 @@ targets:
         DEAD_CODE_STRIPPING: "YES"
         ENABLE_HARDENED_RUNTIME: "NO"
         CODE_SIGN_IDENTITY: "-"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: BootstrapSources/Info.plist
       properties:
@@ -67,10 +69,12 @@ targets:
       - macOS
     sources:
       - path: Sources
+      - path: SharedAssets/TerraneAssets.xcassets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host
         DEAD_CODE_STRIPPING: "YES"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
           - $(TERRANE_RUST_LIB_DIR)

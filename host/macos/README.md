@@ -138,3 +138,18 @@ segments, and automatically reconnects after a bounded stall timeout.
 See [`docs/MACOS_BOOTSTRAP_RELEASE.md`](../../docs/MACOS_BOOTSTRAP_RELEASE.md)
 for the machine-only build, local full-loop test, trust model, and GitHub release
 asset checklist.
+
+## Canonical macOS icon
+
+The bootstrap window, Finder bundle, Dock entry, DMG application, and installed
+runtime all use the same organic-T icon from
+`SharedAssets/TerraneIcon.svg`. Regenerate the checked-in AppIcon renditions
+after editing that source:
+
+```sh
+scripts/generate-macos-icons.sh
+```
+
+The generator requires `rsvg-convert` (`brew install librsvg`). Release builds
+fail if either app is missing `CFBundleIconName=AppIcon`, the compiled icon
+resources, or the 1024px rendition.

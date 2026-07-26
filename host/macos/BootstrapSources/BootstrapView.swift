@@ -88,45 +88,13 @@ final class BootstrapLogoView: NSView {
 
   override func draw(_ dirtyRect: NSRect) {
     super.draw(dirtyRect)
-    let tile = bounds.insetBy(dx: 3, dy: 3)
-    let background = NSBezierPath(roundedRect: tile, xRadius: 19, yRadius: 19)
-    NSColor(calibratedRed: 0.075, green: 0.16, blue: 0.14, alpha: 1).setFill()
-    background.fill()
-
-    // The crossbar deliberately reaches outside the stem's visual bounds,
-    // giving the T the organic, slightly unruly silhouette used by Terrane.
-    let mark = NSBezierPath()
-    mark.move(to: NSPoint(x: tile.minX + 11, y: tile.maxY - 23))
-    mark.curve(
-      to: NSPoint(x: tile.maxX - 8, y: tile.maxY - 18),
-      controlPoint1: NSPoint(x: tile.minX + 23, y: tile.maxY - 32),
-      controlPoint2: NSPoint(x: tile.maxX - 25, y: tile.maxY - 10)
+    NSGraphicsContext.current?.imageInterpolation = .high
+    NSApp.applicationIconImage.draw(
+      in: bounds,
+      from: .zero,
+      operation: .sourceOver,
+      fraction: 1
     )
-    mark.line(to: NSPoint(x: tile.maxX - 12, y: tile.maxY - 31))
-    mark.curve(
-      to: NSPoint(x: tile.midX + 7, y: tile.maxY - 31),
-      controlPoint1: NSPoint(x: tile.maxX - 26, y: tile.maxY - 27),
-      controlPoint2: NSPoint(x: tile.midX + 13, y: tile.maxY - 31)
-    )
-    mark.curve(
-      to: NSPoint(x: tile.midX + 2, y: tile.minY + 12),
-      controlPoint1: NSPoint(x: tile.midX + 8, y: tile.midY + 7),
-      controlPoint2: NSPoint(x: tile.midX + 12, y: tile.minY + 20)
-    )
-    mark.line(to: NSPoint(x: tile.midX - 12, y: tile.minY + 15))
-    mark.curve(
-      to: NSPoint(x: tile.midX - 6, y: tile.maxY - 31),
-      controlPoint1: NSPoint(x: tile.midX - 4, y: tile.minY + 29),
-      controlPoint2: NSPoint(x: tile.midX - 8, y: tile.midY + 12)
-    )
-    mark.curve(
-      to: NSPoint(x: tile.minX + 14, y: tile.maxY - 34),
-      controlPoint1: NSPoint(x: tile.midX - 17, y: tile.maxY - 31),
-      controlPoint2: NSPoint(x: tile.minX + 23, y: tile.maxY - 31)
-    )
-    mark.close()
-    NSColor(calibratedRed: 0.50, green: 0.92, blue: 0.74, alpha: 1).setFill()
-    mark.fill()
   }
 }
 

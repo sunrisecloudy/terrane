@@ -93,8 +93,30 @@ BOOTSTRAP_EXECUTABLE="$BOOTSTRAP_APP/Contents/MacOS/$(
   /usr/bin/plutil -extract CFBundleExecutable raw "$BOOTSTRAP_APP/Contents/Info.plist"
 )"
 
+verify_app_icon() {
+  local app="$1"
+  local plist="$app/Contents/Info.plist"
+  local resources="$app/Contents/Resources"
+  if [[ "$(/usr/bin/plutil -extract CFBundleIconName raw "$plist")" != "AppIcon" ]]; then
+    echo "application does not declare the canonical AppIcon: $app" >&2
+    exit 1
+  fi
+  if [[ ! -f "$resources/AppIcon.icns" || ! -f "$resources/Assets.car" ]]; then
+    echo "application is missing compiled AppIcon resources: $app" >&2
+    exit 1
+  fi
+  if ! /usr/bin/assetutil --info "$resources/Assets.car" \
+    | grep -q '"PixelWidth" : 1024'
+  then
+    echo "application icon catalog is missing its 1024px rendition: $app" >&2
+    exit 1
+  fi
+}
+
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$RUNTIME_APP"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$BOOTSTRAP_APP"
+verify_app_icon "$RUNTIME_APP"
+verify_app_icon "$BOOTSTRAP_APP"
 if /usr/bin/codesign -d --entitlements :- "$RUNTIME_APP" 2>/dev/null \
   | grep -q 'com.apple.security.get-task-allow'
 then

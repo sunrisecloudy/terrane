@@ -35,6 +35,38 @@ final class AppPackagingTests: XCTestCase {
     XCTAssertTrue(project.contains(#"CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake""#))
     XCTAssertTrue(project.contains("llama-cpp-sys did not produce libcpp-httplib.a"), project)
     XCTAssertTrue(project.contains(#"DEAD_CODE_STRIPPING: "YES""#), project)
+    XCTAssertEqual(
+      project.components(separatedBy: "ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon").count - 1,
+      2,
+      "bootstrap and runtime must use the canonical AppIcon asset"
+    )
+    XCTAssertEqual(
+      project.components(separatedBy: "path: SharedAssets/TerraneAssets.xcassets").count - 1,
+      2,
+      "bootstrap and runtime must embed the same icon catalog"
+    )
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath:
+          root.appendingPathComponent(
+            "host/macos/SharedAssets/TerraneAssets.xcassets/AppIcon.appiconset/Contents.json"
+          ).path
+      )
+    )
+    let iconContentsURL = root.appendingPathComponent(
+      "host/macos/SharedAssets/TerraneAssets.xcassets/AppIcon.appiconset/Contents.json")
+    let iconContents = try String(contentsOf: iconContentsURL, encoding: .utf8)
+    let iconFilenames = iconContents.matches(of: /"filename"\s*:\s*"([^"]+)"/)
+      .map { String($0.1) }
+    XCTAssertEqual(iconFilenames.count, 10, "macOS AppIcon must contain every 1x and 2x size")
+    for filename in iconFilenames {
+      XCTAssertTrue(
+        FileManager.default.fileExists(
+          atPath: iconContentsURL.deletingLastPathComponent()
+            .appendingPathComponent(filename).path),
+        "missing generated icon rendition: \(filename)"
+      )
+    }
     XCTAssertFalse(project.contains("-lterrane_host"), project)
     XCTAssertTrue(bridge.contains(#""--refresh-source""#), bridge)
     let manifests = try FileManager.default.contentsOfDirectory(
@@ -67,7 +99,8 @@ final class AppPackagingTests: XCTestCase {
     XCTAssertTrue(project.contains("TerraneBootstrapTests:"), project)
     XCTAssertTrue(
       configuration.contains(
-        "https://github.com/sunrisecloudy/terrane/releases/latest/download/terrane-bootstrap-manifest.json"),
+        "https://github.com/sunrisecloudy/terrane/releases/latest/download/terrane-bootstrap-manifest.json"
+      ),
       configuration
     )
   }
