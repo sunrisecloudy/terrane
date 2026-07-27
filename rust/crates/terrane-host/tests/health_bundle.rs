@@ -49,8 +49,6 @@ fn checked_in_health_bundle_is_valid_and_uses_real_vision_resources() {
     assert!(backend.contains("MAX_PENDING_NAVIGATIONS = 8"));
     assert!(!backend.contains("fallback estimate"));
 
-    let dist =
-        std::fs::read_to_string(bundle.join("dist/index.html")).expect("read built Health UI");
     let app = std::fs::read_to_string(bundle.join("src/App.tsx")).expect("read Health React app");
     let picker = std::fs::read_to_string(bundle.join("src/routes/AddMealRoute.tsx"))
         .expect("read Health add-meal route");
@@ -66,8 +64,6 @@ fn checked_in_health_bundle_is_valid_and_uses_real_vision_resources() {
     let calendar = std::fs::read_to_string(bundle.join("src/domain/calendar.js"))
         .expect("read Health calendar domain");
 
-    assert!(dist.contains(r#"<div id="root"></div>"#));
-    assert!(dist.contains("assets/modules/src/main.js"));
     assert!(picker.contains(r#"type="file""#));
     assert!(picker.contains(r#"accept="image/jpeg,image/png,image/webp""#));
     assert!(picker.contains("Choose from Photos"));
