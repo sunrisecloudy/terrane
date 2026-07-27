@@ -12,15 +12,31 @@ fn backup_create_restore_preserves_replay_state() {
     let source = src_dir.path();
     let target = dst_dir.path().join("restored");
     let archive = archive_dir.path().join("home.tzst");
+    let blob_input = source.join("attachment.txt");
+    let blob_output = target.join("attachment.txt");
 
     let (ok, _, err) = terrane(source, &["app", "add", "notes", "Notes"]);
     assert!(ok, "app add failed: {err}");
     let (ok, _, err) = terrane(source, &["kv", "set", "notes", "theme", "dark"]);
     assert!(ok, "kv set failed: {err}");
+    fs::write(&blob_input, b"backup blob").unwrap();
+    let (ok, _, err) = terrane(
+        source,
+        &[
+            "blob",
+            "put",
+            "notes",
+            "attachment.txt",
+            "text/plain",
+            blob_input.to_str().unwrap(),
+        ],
+    );
+    assert!(ok, "blob put failed: {err}");
 
     let (ok, out, err) = terrane(source, &["backup", "create", archive.to_str().unwrap()]);
     assert!(ok, "backup create failed: {err}");
     assert!(out.contains("backup created"), "out: {out}");
+    assert!(out.contains("terrane.blobs.db"), "out: {out}");
 
     let (ok, out, err) = terrane(
         source,
@@ -40,6 +56,20 @@ fn backup_create_restore_preserves_replay_state() {
     let restored_core = terrane_host::open_at_home(&target).unwrap();
     assert_eq!(source_core.state(), restored_core.state());
     assert!(restored_core.replay_matches().unwrap());
+    assert!(target.join("terrane.blobs.db").is_file());
+    drop(restored_core);
+    let (ok, _, err) = terrane(
+        &target,
+        &[
+            "blob",
+            "get",
+            "notes",
+            "attachment.txt",
+            blob_output.to_str().unwrap(),
+        ],
+    );
+    assert!(ok, "restored blob get failed: {err}");
+    assert_eq!(fs::read(blob_output).unwrap(), b"backup blob");
 }
 
 #[test]
@@ -148,15 +178,41 @@ fn export_import_round_trips_one_app_and_refuses_existing_id() {
     let source = src_dir.path();
     let target = dst_dir.path();
     let archive = archive_dir.path().join("notes.tzst");
+    let blob_input = source.join("export-attachment.txt");
+    let blob_output = target.join("export-attachment.txt");
 
     assert!(terrane(source, &["app", "add", "notes", "Notes"]).0);
     assert!(terrane(source, &["app", "add", "other", "Other"]).0);
     assert!(terrane(source, &["kv", "set", "notes", "theme", "dark"]).0);
     assert!(terrane(source, &["kv", "set", "other", "theme", "light"]).0);
+    fs::write(&blob_input, b"export blob").unwrap();
+    assert!(
+        terrane(
+            source,
+            &[
+                "blob",
+                "put",
+                "notes",
+                "attachment.txt",
+                "text/plain",
+                blob_input.to_str().unwrap(),
+            ],
+        )
+        .0
+    );
 
     let (ok, out, err) = terrane(source, &["export", "notes", archive.to_str().unwrap()]);
     assert!(ok, "export failed: {err}");
     assert!(out.contains("exported notes"), "out: {out}");
+    let info = terrane_host::backup::backup_info(&archive).unwrap();
+    assert!(
+        info.manifest
+            .files
+            .iter()
+            .any(|file| file.path == "terrane.blobs.db"),
+        "files: {:?}",
+        info.manifest.files
+    );
 
     let (ok, out, err) = terrane(target, &["import", archive.to_str().unwrap()]);
     assert!(ok, "import failed: {err}");
@@ -174,6 +230,19 @@ fn export_import_round_trips_one_app_and_refuses_existing_id() {
         Some(&"dark".to_string())
     );
     drop(imported);
+    assert!(target.join("terrane.blobs.db").is_file());
+    let (ok, _, err) = terrane(
+        target,
+        &[
+            "blob",
+            "get",
+            "notes",
+            "attachment.txt",
+            blob_output.to_str().unwrap(),
+        ],
+    );
+    assert!(ok, "imported blob get failed: {err}");
+    assert_eq!(fs::read(blob_output).unwrap(), b"export blob");
 
     let (ok, out, err) = terrane(target, &["import", archive.to_str().unwrap()]);
     assert!(!ok, "second import should fail: {out}");

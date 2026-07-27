@@ -150,7 +150,7 @@ var lines = ctx.resource.telemetry.read("warn");"#
                 .to_string(),
             "App removal cleanup is driven by the app.removed subscription and does not require a telemetry-specific command."
                 .to_string(),
-            "The buffer is written only by the host edge; the core never opens it — same stance as blobs.sqlite3."
+            "The buffer is written only by the host edge; the core never opens it — same stance as terrane.blobs.db."
                 .to_string(),
         ],
         internal: if include_internal {

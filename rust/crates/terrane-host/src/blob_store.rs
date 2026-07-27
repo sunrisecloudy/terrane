@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest as _, Sha256};
 use terrane_core::{Error, Result};
 
-pub const BLOB_DB_NAME: &str = "blobs.sqlite3";
+pub const BLOB_DB_NAME: &str = "terrane.blobs.db";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobHealth {

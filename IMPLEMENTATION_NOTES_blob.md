@@ -41,7 +41,7 @@
   - `blob.stored { app, name, hash, size, mime }`
   - `blob.removed { app, name, hash }`
 - `blob.put` validates app/name/mime/size, decodes base64, computes SHA-256 in `decide`, and returns `Effect::BlobStore`. The event is produced only after the edge writes or confirms the content-addressed sidecar row.
-- The SQLite sidecar lives at `storage_home/blobs.sqlite3` through the same host-home plumbing used by existing sidecar storage. The table is keyed by lowercase SHA-256 hex and stores raw bytes separately from the event log.
+- The SQLite sidecar lives at `storage_home/terrane.blobs.db` through the same host-home plumbing used by existing sidecar storage. The table is keyed by lowercase SHA-256 hex and stores raw bytes separately from the event log.
 - Reads verify the row hash and size before returning bytes. Missing rows, invalid hashes, corrupt rows, and oversized inputs return typed errors instead of panicking.
 - Replay only folds blob metadata and refcounts. It never rewrites bytes. Missing bytes are detected at read/verify time.
 - `blob.link` exists for sync/import metadata repair when bytes are copied separately; it records metadata by hash without needing local bytes at decide time.

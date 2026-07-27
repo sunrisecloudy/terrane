@@ -15,7 +15,7 @@ error, not a replay failure.
 
 ## Storage layout
 
-- File: `$TERRANE_HOME/blobs.sqlite3` (sidecar, sibling of the event log).
+- File: `$TERRANE_HOME/terrane.blobs.db` (sidecar, sibling of the event log).
   Opened by the host edge, never by the core — the core sees only events.
 - Schema (v1, `PRAGMA user_version = 1`):
 
@@ -120,7 +120,7 @@ future event-log compaction could otherwise race it.
    fold, resource reads, describe), `doc.rs`, `stored_event()` constructor.
    `sha2` dep (workspace). No rusqlite here — the crate is pure.
 3. **CAS module:** `terrane-host/src/blob_store.rs` — open/create
-   `blobs.sqlite3`, `insert_if_absent(hash, bytes)`, `read(hash)`,
+   `terrane.blobs.db`, `insert_if_absent(hash, bytes)`, `read(hash)`,
    `verify(hash)`, gc query. Wire `Effect::BlobStore` into `EdgeRunner::run`.
    Resource `get` read path wired through the existing `LiveHost` hook (same
    pattern sysinfo uses for live reads).

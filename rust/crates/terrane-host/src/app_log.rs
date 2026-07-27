@@ -3,7 +3,7 @@
 //! Lives at `$TERRANE_HOME/logs/<app>/current.jsonl`, rotated at
 //! [`ROTATE_BYTES`] into `1.jsonl` … `3.jsonl` (oldest dropped); one line per
 //! entry: `{ts, level, msg, data, source?}`. Written only by this host edge;
-//! the core never opens it (same stance as `blobs.sqlite3`). Fold never reads
+//! the core never opens it (same stance as `terrane.blobs.db`). Fold never reads
 //! the filesystem — replay reproduces `TelemetryState` from the recorded
 //! `telemetry.error` events alone.
 

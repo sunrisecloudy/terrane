@@ -30,7 +30,7 @@ fn blob_cli_round_trip_uses_verified_sqlite_cas() {
     );
     assert!(ok, "blob put failed: {err}");
     assert!(out.contains("blob.stored"), "put out: {out}");
-    assert!(home.join("blobs.sqlite3").is_file());
+    assert!(home.join("terrane.blobs.db").is_file());
 
     let (ok, out, err) = terrane(home, &["blob", "stat", "gallery", "images/hello.txt"]);
     assert!(ok, "blob stat failed: {err}");
@@ -78,7 +78,7 @@ fn blob_verify_reports_corrupt_bytes_without_panicking() {
     );
     assert!(ok, "blob put failed: {err}");
     let hash = only_blob_hash(home);
-    let conn = Connection::open(home.join("blobs.sqlite3")).unwrap();
+    let conn = Connection::open(home.join("terrane.blobs.db")).unwrap();
     conn.execute(
         "UPDATE blobs SET bytes = ?1 WHERE hash = ?2",
         params![b"not the same".as_slice(), hash],
@@ -169,7 +169,7 @@ fn sync_from_home_copies_blob_metadata_and_sidecar_bytes() {
 }
 
 fn only_blob_hash(home: &Path) -> String {
-    Connection::open(home.join("blobs.sqlite3"))
+    Connection::open(home.join("terrane.blobs.db"))
         .unwrap()
         .query_row("SELECT hash FROM blobs", [], |row| row.get(0))
         .unwrap()

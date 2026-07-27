@@ -318,7 +318,7 @@ pub enum Effect {
     /// `debug`/`info`/`warn` write — recorded NOTHING — and recorded (an error
     /// line) when emitted as an `error` call, where the edge also returns the
     /// `telemetry.error` event so crash facts fold into State on replay. The
-    /// core never opens the buffer; only the host edge does, like `blobs.sqlite3`.
+    /// core never opens the buffer; only the host edge does, like `terrane.blobs.db`.
     AppLog {
         app: String,
         level: String,

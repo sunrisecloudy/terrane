@@ -79,7 +79,7 @@ version vector identically to the uncompacted home.
   automatic — a future event-log compaction could otherwise race it".
   Resolved here: both operations open the core, so both hold the exclusive
   home file lock (`terrane_core::filelock`) and serialize by construction;
-  compaction never touches `blobs.sqlite3`; and gc's input (refcounts in
+  compaction never touches `terrane.blobs.db`; and gc's input (refcounts in
   folded state) is replay-identical before and after compaction, so ordering
   between the two is immaterial. Both stay manual commands.
 - **Backup/restore.** Archives include `snapshot.bin` + `log.bin` as a pair
@@ -129,7 +129,7 @@ Gate after each step:
 
 Automatic/scheduled compaction, shallow (history-dropping) crdt snapshots,
 incremental/delta snapshots, snapshot exchange over the wire (retain window +
-archive cover it), compacting `blobs.sqlite3` (that is blob gc's job), any
+archive cover it), compacting `terrane.blobs.db` (that is blob gc's job), any
 app-visible surface.
 
 ## Decisions to confirm

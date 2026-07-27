@@ -158,7 +158,7 @@ pub fn blob_doc(include_internal: bool) -> CapabilityDoc {
         ],
         compatibility: vec![
             "SHA-256 lowercase hex is the wire identity format and must not change in v1.".to_string(),
-            "The v1 host CAS is $TERRANE_HOME/blobs.sqlite3 with PRAGMA user_version = 1.".to_string(),
+            "The v1 host CAS is $TERRANE_HOME/terrane.blobs.db with PRAGMA user_version = 1.".to_string(),
         ],
         internal: if include_internal {
             vec![InternalNote {

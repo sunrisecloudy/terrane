@@ -68,7 +68,7 @@ fn tts_render_writes_blob_and_replays() {
     assert!(ok, "tts render failed: out={out} err={err}");
     assert!(out.contains("blob.stored"), "render out: {out}");
     assert!(out.contains("tts.rendered"), "render out: {out}");
-    assert!(home.join("blobs.sqlite3").is_file());
+    assert!(home.join("terrane.blobs.db").is_file());
 
     let (ok, out, err) = terrane(home, &["tts", "renders", "demo"]);
     assert!(ok, "tts renders failed: {err}");

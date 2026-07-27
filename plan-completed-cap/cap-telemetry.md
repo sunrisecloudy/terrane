@@ -75,7 +75,7 @@ recorded** (the existing `TransientEffect` contract in
 - One line per entry: `{ts, level, msg, data, verb?, source?}` — `ts` is
   edge wall-clock (fine: nothing folds from it).
 - Written only by the host edge; the core never opens it (same stance as
-  `blobs.sqlite3` in [cap-blob.md](cap-blob.md)).
+  `terrane.blobs.db` in [cap-blob.md](cap-blob.md)).
 
 ## Retrieval
 

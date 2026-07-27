@@ -70,7 +70,7 @@ Fold: `NetState` gains `requests: BTreeMap<AppId, BTreeMap<RequestKey, RecordedR
 
 - `responseBody: "auto"` (default): bodies **≤ 256 KiB** and text-typed are
   inlined in the event; larger or binary bodies are written into the blob CAS
-  (`blobs.sqlite3`, same edge module as `cap-blob`) and the event carries
+  (`terrane.blobs.db`, same edge module as `cap-blob`) and the event carries
   `body_kind: "blob"` + `body_hash/body_size/body_mime`. Hard cap **32 MiB**
   (typed error above).
 - Reading a blob body from an app requires the `blob` resource grant; the

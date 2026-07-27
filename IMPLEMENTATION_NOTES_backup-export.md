@@ -27,7 +27,7 @@
 
 ## Deviations / notes
 
-- The plan called out SQLite backup API / `VACUUM INTO`; full backup uses `VACUUM INTO` for `blobs.sqlite3`.
+- The plan called out SQLite backup API / `VACUUM INTO`; full backup uses `VACUUM INTO` for `terrane.blobs.db`.
 - Archive construction uses temporary directories for verified restore/import and sliced export logs. The CLI streams tar to zstd for the final archive, but file metadata is precomputed for manifest hashes.
 - Existing replica inline tests were updated in place because that crate already had inline tests; no new inline test module was introduced.
 

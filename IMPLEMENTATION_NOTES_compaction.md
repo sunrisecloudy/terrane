@@ -37,7 +37,7 @@
 - `compact_log` snapshots the prefix up to `len - retain`, writes a retained tail log, verifies `restore(snapshot) + tail == full replay`, copies the old full log to `log.bin.archive`, then swaps files.
 - `log.bin.archive` is retained by default. `--prune-archive` explicitly removes a previous archive before compacting again.
 - CRDT snapshots use Loro `ExportMode::Snapshot` and import into fresh docs, preserving version-vector delta export after compaction.
-- Blob GC safety comes from the existing home lock plus replay-equivalent folded blob refcounts before and after compaction; compaction does not touch `blobs.sqlite3`.
+- Blob GC safety comes from the existing home lock plus replay-equivalent folded blob refcounts before and after compaction; compaction does not touch `terrane.blobs.db`.
 
 ## Deviations
 

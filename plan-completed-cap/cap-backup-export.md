@@ -4,7 +4,7 @@
 crate, no new namespace, no app surface. A Terrane home
 (`$TERRANE_HOME`: `log.bin` event log, `terrane.db` kv projection,
 `log.bin.lock`, installed `apps/<id>/` bundles, and — once their plans land —
-`blobs.sqlite3` and `snapshot.bin`) is the user's entire world, and today the
+`terrane.blobs.db` and `snapshot.bin`) is the user's entire world, and today the
 only "backup" is copying a directory and hoping no writer was mid-append.
 This adds a consistent, versioned, verifiable archive format plus a selective
 per-app export.
@@ -30,7 +30,7 @@ manifest.json      { "formatVersion": 1, "createdAtMs": …, "terraneVersion": "
                      "files": [ { "path": "log.bin", "sha256": "…", "bytes": … }, … ] }
 log.bin            # the event log — the source of truth
 snapshot.bin       # if present (compacted home, see cap-compaction.md)
-blobs.sqlite3      # if present (cap-blob.md CAS) — copied via SQLite's
+terrane.blobs.db   # if present (cap-blob.md CAS) — copied via SQLite's
                    # backup API / `VACUUM INTO`, not a raw file copy
 apps/…             # installed bundles (app.source paths point here)
 ```
@@ -88,7 +88,7 @@ referenced blobs and bundle.
   the app) are excluded in v1: grants are re-approved on the destination, the
   honest behaviour for a cross-machine move.
 - **Blob pass:** collect the hashes referenced by the app's folded blob state,
-  copy those CAS rows into an archive-local `blobs.sqlite3`
+  copy those CAS rows into an archive-local `terrane.blobs.db`
   ([cap-blob.md](cap-blob.md) sync pattern).
 - **Import:** `terrane import <path.tzst>` appends the sliced events to the
   local log (refusing if the app id already exists — no merge semantics; that
