@@ -1,11 +1,16 @@
 {
   "id": "health",
   "name": "Health",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "runtime": "js",
   "backend": "main.js",
-  "ui": "index.html",
+  "ui": "dist/index.html",
   "icon": "icon.svg",
+  "frontend": {
+    "tool": "terrane-app-build",
+    "entry": "src/main.tsx",
+    "styles": ["src/app.css"]
+  },
   "resources": ["kv", "blob", "model"],
   "interfaces": ["items"]
 }

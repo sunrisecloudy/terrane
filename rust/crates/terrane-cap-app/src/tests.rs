@@ -124,7 +124,11 @@ fn add_event_describes_and_folds_into_state() {
     }
     assert_eq!(store.app.apps["demo"].name, "Demo");
     assert_eq!(store.app.apps["demo"].runtime, "js");
-    assert_eq!(store.app.apps["demo"].links.len(), 3);
+    assert_eq!(store.app.apps["demo"].links.len(), 4);
+    assert!(store.app.apps["demo"]
+        .links
+        .iter()
+        .any(|link| link.spec == "terrane://app/demo/route/*"));
     assert!(!store.app.apps["demo"].requirements_resolved);
 }
 

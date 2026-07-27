@@ -2,10 +2,16 @@ use std::path::Path;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
-use serde_json::json;
+use serde_json::{json, Map, Value};
 use terrane_cap_interface::parse_item_uri;
 
 use crate::{dispatch_on_core, HostCore};
+
+const MAX_ROUTE_SEGMENTS: usize = 16;
+const MAX_ROUTE_SEGMENT_BYTES: usize = 128;
+const MAX_ROUTE_QUERY_PAIRS: usize = 16;
+const MAX_ROUTE_QUERY_KEY_BYTES: usize = 64;
+const MAX_ROUTE_QUERY_VALUE_BYTES: usize = 512;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenOutcome {
@@ -41,11 +47,24 @@ pub fn open_target_on_core(core: &mut HostCore, target: &str) -> Result<OpenOutc
 }
 
 fn open_url_on_core(core: &mut HostCore, url: &str) -> Result<OpenOutcome, String> {
+    if url.len() > terrane_cap_interop::MAX_ARGS_BYTES {
+        return Err(format!(
+            "Terrane URL exceeds {} bytes",
+            terrane_cap_interop::MAX_ARGS_BYTES
+        ));
+    }
     if let Ok(item) = parse_item_uri(url) {
         let payload = json!({ "item": item.item }).to_string();
         deliver(core, &item.app, "link", payload)?;
         return Ok(OpenOutcome::Delivered {
             app: item.app,
+            kind: "link".to_string(),
+        });
+    }
+    if let Some((app, payload)) = parse_route_url(url)? {
+        deliver(core, &app, "link", payload)?;
+        return Ok(OpenOutcome::Delivered {
+            app,
             kind: "link".to_string(),
         });
     }
@@ -78,6 +97,95 @@ fn open_url_on_core(core: &mut HostCore, url: &str) -> Result<OpenOutcome, Strin
         });
     }
     Err(format!("unsupported Terrane URL: {url}"))
+}
+
+fn parse_route_url(url: &str) -> Result<Option<(String, String)>, String> {
+    let Some(rest) = url.strip_prefix("terrane://app/") else {
+        return Ok(None);
+    };
+    let (path, query) = split_query(rest);
+    if path.contains('#') || query.contains('#') {
+        return Err("Terrane route URLs must not contain fragments".into());
+    }
+    let raw_segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
+    if raw_segments.get(1).copied() != Some("route") {
+        return Ok(None);
+    }
+    if raw_segments.len() < 3 || raw_segments[2].is_empty() {
+        return Err("Terrane route URL missing route name".into());
+    }
+
+    let app = route_app(raw_segments[0])?;
+    let route = decode_route_segment(raw_segments[2], "route name")?;
+    let raw_tail = &raw_segments[3..];
+    if raw_tail.len() > MAX_ROUTE_SEGMENTS {
+        return Err(format!(
+            "Terrane route has more than {MAX_ROUTE_SEGMENTS} path segments"
+        ));
+    }
+    let segments = raw_tail
+        .iter()
+        .map(|segment| decode_route_segment(segment, "route path segment"))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let pairs = parse_query(query)?;
+    if pairs.len() > MAX_ROUTE_QUERY_PAIRS {
+        return Err(format!(
+            "Terrane route has more than {MAX_ROUTE_QUERY_PAIRS} query parameters"
+        ));
+    }
+    let mut params = Map::new();
+    for (key, value) in pairs {
+        if key.is_empty() || key.len() > MAX_ROUTE_QUERY_KEY_BYTES {
+            return Err(format!(
+                "Terrane route query key must contain 1..={MAX_ROUTE_QUERY_KEY_BYTES} bytes"
+            ));
+        }
+        if value.len() > MAX_ROUTE_QUERY_VALUE_BYTES {
+            return Err(format!(
+                "Terrane route query value exceeds {MAX_ROUTE_QUERY_VALUE_BYTES} bytes"
+            ));
+        }
+        if key.chars().any(char::is_control) || value.chars().any(char::is_control) {
+            return Err(
+                "Terrane route query parameters must not contain control characters".into(),
+            );
+        }
+        if params.insert(key.clone(), Value::String(value)).is_some() {
+            return Err(format!("duplicate Terrane route query parameter: {key}"));
+        }
+    }
+
+    let payload = json!({
+        "version": 1,
+        "route": route,
+        "segments": segments,
+        "params": params,
+    })
+    .to_string();
+    if payload.len() > terrane_cap_interop::MAX_ARGS_BYTES {
+        return Err(format!(
+            "Terrane route payload exceeds {} bytes",
+            terrane_cap_interop::MAX_ARGS_BYTES
+        ));
+    }
+    Ok(Some((app, payload)))
+}
+
+fn decode_route_segment(raw: &str, label: &str) -> Result<String, String> {
+    let value = percent_decode(raw)?;
+    if value.is_empty() || value.len() > MAX_ROUTE_SEGMENT_BYTES {
+        return Err(format!(
+            "Terrane {label} must contain 1..={MAX_ROUTE_SEGMENT_BYTES} bytes"
+        ));
+    }
+    if matches!(value.as_str(), "." | "..")
+        || value.contains(['/', '\\'])
+        || value.chars().any(char::is_control)
+    {
+        return Err(format!("unsafe Terrane {label}: {value:?}"));
+    }
+    Ok(value)
 }
 
 fn open_file_on_core(core: &mut HostCore, path: &Path) -> Result<OpenOutcome, String> {

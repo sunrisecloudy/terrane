@@ -94,6 +94,63 @@ fn terrane_open_item_uri_delivers_item_focus_payload() {
 }
 
 #[test]
+fn terrane_open_route_uri_delivers_bounded_navigation_payload() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let bundle = home.join("receiver-bundle");
+    write_receiver_bundle(&bundle);
+
+    let (ok, out, err) = terrane(home, &["app", "install", bundle.to_str().unwrap()]);
+    assert!(ok, "install failed: {out} {err}");
+
+    let (ok, out, err) = terrane(
+        home,
+        &[
+            "open",
+            "terrane://app/receiver/route/calendar/week?date=2026-07-27&period=week",
+        ],
+    );
+    assert!(ok, "open route failed: {out} {err}");
+
+    let (ok, out, err) = terrane(home, &["state"]);
+    assert!(ok, "state failed: {err}");
+    assert!(out.contains(r#""version":1"#), "out: {out}");
+    assert!(out.contains(r#""route":"calendar""#), "out: {out}");
+    assert!(out.contains(r#""segments":["week"]"#), "out: {out}");
+    assert!(out.contains(r#""date":"2026-07-27""#), "out: {out}");
+    assert!(out.contains(r#""period":"week""#), "out: {out}");
+
+    let (ok, log, err) = terrane(home, &["log"]);
+    assert!(ok, "log failed: {err}");
+    assert!(
+        log.contains("app.link.registered receiver scheme-route terrane://app/receiver/route/*"),
+        "log: {log}"
+    );
+}
+
+#[test]
+fn terrane_open_route_uri_rejects_malformed_or_ambiguous_routes() {
+    let dir = tempdir().unwrap();
+    let home = dir.path();
+    let bundle = home.join("receiver-bundle");
+    write_receiver_bundle(&bundle);
+
+    let (ok, out, err) = terrane(home, &["app", "install", bundle.to_str().unwrap()]);
+    assert!(ok, "install failed: {out} {err}");
+
+    for url in [
+        "terrane://app/receiver/route/",
+        "terrane://app/receiver/route/calendar/%2Fescape",
+        "terrane://app/receiver/route/calendar?date=one&date=two",
+        "terrane://app/receiver/route/calendar#fragment",
+    ] {
+        let (ok, _out, err) = terrane(home, &["open", url]);
+        assert!(!ok, "route should fail: {url}");
+        assert!(!err.is_empty(), "route error should be clear: {url}");
+    }
+}
+
+#[test]
 fn terrane_open_registered_file_imports_blob_and_delivers_reference() {
     let dir = tempdir().unwrap();
     let home = dir.path();

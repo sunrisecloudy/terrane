@@ -141,8 +141,14 @@ fn app_add_registers_filetypes_and_rejects_bad_link_specs() {
             .iter()
             .filter(|event| event.kind == "app.link.registered")
             .count(),
-        5
+        6
     );
+    assert!(events.iter().any(|event| {
+        event.kind == "app.link.registered"
+            && cap
+                .describe(event)
+                .is_some_and(|description| description.contains("terrane://app/viewer/route/*"))
+    }));
 
     assert!(matches!(
         cap.decide(

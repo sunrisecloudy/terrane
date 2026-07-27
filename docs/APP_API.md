@@ -86,6 +86,35 @@ Items are named by `terrane://app/<appId>/item/<itemId>`, where `itemId` is
 percent-encoded. The URI is a name, not a bearer token; resolving it still goes
 through interop authorization and the owning app's live `common.get`.
 
+Apps with multiple client-side pages can also register one generic route
+family:
+
+```text
+terrane://app/<appId>/route/<routeName>/<optional-segments>?key=value
+```
+
+The host does not interpret app route names and cannot invoke a route-specific
+backend verb. It validates bounded path/query input, selects the target app,
+and delivers:
+
+```json
+{
+  "version": 1,
+  "route": "calendar",
+  "segments": [],
+  "params": { "date": "2026-07-27", "period": "week" }
+}
+```
+
+as `common.receive("link", payloadJson)`. The receiving app must allowlist its
+routes and parameters before persisting or forwarding navigation to its UI.
+Route URLs are navigation names, not authorization tokens, and do not broaden
+the app's resource grants. The default install registration covers
+`terrane://app/<appId>/route/*`; every page below that prefix is therefore
+deep-linkable when the app recognizes it. Existing item URIs remain the
+canonical cross-app item contract and may be mapped to an internal item-detail
+route by the receiver.
+
 To hand data off without knowing the receiver, call
 `ctx.resource.interop.send(interface, kind, payloadJson)`. It resolves the
 caller's picked default target for the interface and delivers

@@ -750,6 +750,10 @@ pub fn default_scheme_links(app: &str) -> Vec<LinkRegistration> {
             kind: "scheme-route".to_string(),
             spec: format!("terrane://app/{app}/item/*"),
         },
+        LinkRegistration {
+            kind: "scheme-route".to_string(),
+            spec: format!("terrane://app/{app}/route/*"),
+        },
     ]
 }
 
