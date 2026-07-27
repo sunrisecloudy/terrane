@@ -76,7 +76,10 @@ targets:
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: Network.framework
+      - sdk: PhotosUI.framework
       - sdk: Security.framework
+      - sdk: SwiftUI.framework
+      - sdk: UniformTypeIdentifiers.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
@@ -163,6 +166,7 @@ targets:
       - path: Sources/McpLoopbackServer.swift
       - path: Sources/NativeCameraCapture.swift
       - path: Sources/NativeCameraFrameStreamer.swift
+      - path: Sources/NativeMediaPicker.swift
       - path: Sources/SourceEditor.swift
     settings:
       base:
@@ -188,6 +192,9 @@ targets:
       - sdk: WebKit.framework
       - sdk: AppKit.framework
       - sdk: AVFoundation.framework
+      - sdk: PhotosUI.framework
+      - sdk: SwiftUI.framework
+      - sdk: UniformTypeIdentifiers.framework
       - sdk: Accelerate.framework
       - sdk: CoreLocation.framework
       - sdk: IOKit.framework

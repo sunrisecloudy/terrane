@@ -6,6 +6,7 @@ use std::fs;
 use std::path::Path;
 use std::ptr;
 
+use base64::Engine as _;
 use borsh::BorshSerialize;
 use tempfile::tempdir;
 use terrane_core::{fold_records_in_memory, local_owner_subject, read_log, Core, State};
@@ -89,6 +90,22 @@ fn write_crdt_bundle(dir: &Path) -> String {
     bundle.to_str().unwrap().to_string()
 }
 
+fn write_blob_bundle(dir: &Path) -> String {
+    let bundle = dir.join("blob-bundle");
+    fs::create_dir(&bundle).unwrap();
+    fs::write(
+        bundle.join("manifest.json"),
+        r#"{ "id": "picker_demo", "name":"Picker Demo","runtime":"js","backend":"main.js", "resources": ["blob"] }"#,
+    )
+    .unwrap();
+    fs::write(
+        bundle.join("main.js"),
+        "function handle() { return \"ok\"; }",
+    )
+    .unwrap();
+    bundle.to_str().unwrap().to_string()
+}
+
 /// Call an extern fn with a (name/app, args) tuple; return (code, output, error).
 unsafe fn call(
     f: unsafe extern "C" fn(
@@ -127,6 +144,32 @@ unsafe fn take_c_string(p: *mut c_char) -> Option<String> {
         terrane_string_free(p);
         Some(s)
     }
+}
+
+unsafe fn call_blob_import(
+    h: *mut TerraneHandle,
+    app: &str,
+    name: &str,
+    mime: &str,
+    bytes: *const u8,
+    len: usize,
+) -> (i32, Option<String>, Option<String>) {
+    let app = CString::new(app).unwrap();
+    let name = CString::new(name).unwrap();
+    let mime = CString::new(mime).unwrap();
+    let mut out: *mut c_char = ptr::null_mut();
+    let mut err: *mut c_char = ptr::null_mut();
+    let code = terrane_blob_import(
+        h,
+        app.as_ptr(),
+        name.as_ptr(),
+        mime.as_ptr(),
+        bytes,
+        len,
+        &mut out,
+        &mut err,
+    );
+    (code, take_c_string(out), take_c_string(err))
 }
 
 fn owner_subject_from_log(log: &Path) -> String {
@@ -259,6 +302,142 @@ fn open_host_run_output_free_round_trip() {
         );
 
         terrane_close(h);
+    }
+}
+
+#[test]
+fn picker_blob_import_enforces_grant_bounds_and_replays_exact_bytes() {
+    let dir = tempdir().unwrap();
+    let src = write_blob_bundle(dir.path());
+    let home = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let log = dir.path().join("log.bin");
+    let bytes = b"\xff\xd8\xff\xe0normalized-picker-jpeg\xff\xd9";
+    let name = "imports/123e4567-e89b-12d3-a456-426614174000.jpg";
+
+    unsafe {
+        let h = terrane_open(home.as_ptr());
+        assert!(!h.is_null());
+        let owner_subject = owner_subject_from_log(&log);
+        let (code, _, err) = call(
+            terrane_dispatch,
+            h,
+            "app.add",
+            &["picker_demo", "Picker Demo", "--source", &src],
+        );
+        assert_eq!(code, TERRANE_OK, "app.add err: {err:?}");
+
+        let (code, _, err) = call_blob_import(
+            h,
+            "missing",
+            name,
+            "image/jpeg",
+            bytes.as_ptr(),
+            bytes.len(),
+        );
+        assert_eq!(code, TERRANE_ERR_DISPATCH);
+        assert!(err.unwrap().contains("no such app"));
+
+        let (code, _, err) = call_blob_import(
+            h,
+            "picker_demo",
+            name,
+            "image/jpeg",
+            bytes.as_ptr(),
+            bytes.len(),
+        );
+        assert_eq!(code, TERRANE_ERR_DISPATCH);
+        assert!(err.unwrap().contains("grant blob"));
+
+        let (code, _, err) = call(
+            terrane_dispatch,
+            h,
+            "auth.grant",
+            &[&owner_subject, "picker_demo", "blob"],
+        );
+        assert_eq!(code, TERRANE_OK, "auth.grant err: {err:?}");
+
+        let invalid = [
+            ("meal/photo.jpg", "image/jpeg"),
+            (
+                "imports/123e4567-e89b-12d3-a456-426614174000.jpg",
+                "image/png",
+            ),
+        ];
+        for (invalid_name, invalid_mime) in invalid {
+            let (code, _, _) = call_blob_import(
+                h,
+                "picker_demo",
+                invalid_name,
+                invalid_mime,
+                bytes.as_ptr(),
+                bytes.len(),
+            );
+            assert_eq!(code, TERRANE_ERR_DISPATCH);
+        }
+        let (code, _, err) =
+            call_blob_import(h, "picker_demo", name, "image/jpeg", bytes.as_ptr(), 0);
+        assert_eq!(code, TERRANE_ERR_DISPATCH);
+        assert!(err.unwrap().contains("must not be empty"));
+        let (code, _, err) = call_blob_import(
+            h,
+            "picker_demo",
+            name,
+            "image/jpeg",
+            bytes.as_ptr(),
+            TERRANE_PICKER_IMPORT_MAX_BYTES + 1,
+        );
+        assert_eq!(code, TERRANE_ERR_DISPATCH);
+        assert!(err.unwrap().contains("exceeds"));
+        let (code, _, _) = call_blob_import(
+            h,
+            "picker_demo",
+            name,
+            "image/jpeg",
+            ptr::null(),
+            bytes.len(),
+        );
+        assert_eq!(code, TERRANE_ERR_NULL_ARG);
+
+        let (code, out, err) = call_blob_import(
+            h,
+            "picker_demo",
+            name,
+            "image/jpeg",
+            bytes.as_ptr(),
+            bytes.len(),
+        );
+        assert_eq!(code, TERRANE_OK, "import err: {err:?}");
+        let descriptor: serde_json::Value =
+            serde_json::from_str(out.as_deref().unwrap()).expect("descriptor JSON");
+        assert_eq!(descriptor["kind"], "blob");
+        assert_eq!(descriptor["name"], name);
+        assert_eq!(descriptor["mime"], "image/jpeg");
+        assert_eq!(descriptor["size"], bytes.len());
+        let hash = descriptor["hash"].as_str().unwrap().to_string();
+        assert_eq!(
+            terrane_host::blob_store::read_verified(dir.path(), &hash).unwrap(),
+            bytes
+        );
+        terrane_close(h);
+
+        let reopened = terrane_open(home.as_ptr());
+        assert!(!reopened.is_null());
+        let app = CString::new("picker_demo").unwrap();
+        let name_c = CString::new(name).unwrap();
+        let mut out: *mut c_char = ptr::null_mut();
+        let mut err: *mut c_char = ptr::null_mut();
+        let code = terrane_blob_read(reopened, app.as_ptr(), name_c.as_ptr(), &mut out, &mut err);
+        assert_eq!(code, TERRANE_OK, "blob read err: {:?}", take_c_string(err));
+        let read: serde_json::Value =
+            serde_json::from_str(&take_c_string(out).unwrap()).expect("blob read JSON");
+        assert_eq!(read["hash"], hash);
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(read["content"].as_str().unwrap())
+                .unwrap(),
+            bytes
+        );
+        terrane_close(reopened);
     }
 }
 
@@ -661,6 +840,7 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "int terrane_preview_read_asset(",
         "int terrane_preview_asset(",
         "int terrane_preview_invoke(",
+        "int terrane_blob_import(",
         "int terrane_builder_generate(",
         "int terrane_build_app(",
         "int terrane_home_page(",

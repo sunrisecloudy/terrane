@@ -963,6 +963,59 @@ const items = JSON.parse(await window.terrane.invoke("items"));
 await window.terrane.invoke("add", "buy milk");
 ```
 
+### macOS user-mediated picker
+
+The macOS selected-app host exposes one generic document-start entry point:
+
+```js
+const result = await window.terrane.pick({
+  source: "photos",
+  types: ["image"],
+  multiple: false
+});
+```
+
+The initial implementation supports exactly the shape above. Unknown sources,
+non-image or mixed `types`, and `multiple: true` reject with a validation error.
+User cancellation resolves normally:
+
+```json
+{"cancelled":true,"items":[]}
+```
+
+A selection resolves to one bounded descriptor:
+
+```json
+{
+  "cancelled": false,
+  "items": [{
+    "kind": "blob",
+    "name": "imports/7f5a3a89-8d6f-4a62-8ef8-7fa19a5a728d.jpg",
+    "hash": "<sha256>",
+    "size": 123456,
+    "mime": "image/jpeg",
+    "width": 2048,
+    "height": 1365
+  }]
+}
+```
+
+`originalName` may appear when a host can provide a safe display name. No
+filesystem path, Photos asset identifier, base64/data URL, or full image
+metadata is returned. Preview with `window.terrane.blobUrl(item.name)`.
+
+The picker is accepted only from the active selected app's main frame. The
+macOS Photos UI transfers only the explicitly selected image; Terrane does not
+enumerate the library or request ambient/full-library access. The host bounds
+source bytes and decoded pixels, applies orientation, caps the longest edge at
+2048 pixels, and writes a metadata-stripped JPEG of at most 10 MiB. Import then
+passes through the selected app's existing `blob` grant and canonical blob
+event/CAS path. Apps using `pick` therefore declare `blob`; they do not need a
+`native` resource solely for this shell-mediated picker.
+
+`pick` is currently macOS-only. Portable apps should retain ordinary HTML file
+input/drop behavior when the method is absent.
+
 A host that has no UI (CLI-only apps) simply never loads `index.html`; the same
 backend works unchanged.
 

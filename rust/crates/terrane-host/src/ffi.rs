@@ -22,6 +22,7 @@ use std::sync::Mutex;
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
+use sha2::{Digest as _, Sha256};
 use terrane_core::{local_owner_principal, Request};
 
 pub const TERRANE_OK: c_int = 0;
@@ -30,6 +31,7 @@ pub const TERRANE_ERR_UTF8: c_int = 2;
 pub const TERRANE_ERR_DISPATCH: c_int = 3;
 pub const TERRANE_ERR_PANIC: c_int = 4;
 pub const TERRANE_ERR_INTERNAL: c_int = 5;
+pub const TERRANE_PICKER_IMPORT_MAX_BYTES: usize = 10 * 1024 * 1024;
 
 /// Opaque handle to an open workspace. Only ever crossed as a pointer.
 pub struct TerraneHandle {
@@ -454,6 +456,152 @@ pub unsafe extern "C" fn terrane_blob_read(
         }
     }));
     finish(code, out_error)
+}
+
+/// Import host-normalized picker bytes into an app's authorized blob namespace.
+///
+/// This is deliberately narrower than `blob.put`: native hosts may only import
+/// bounded JPEGs under the host-owned `imports/<uuid>.jpg` prefix. The bytes
+/// enter the same content-addressed sidecar and `blob.stored` event path as all
+/// other blob writes, so replay, refcounts, GC, backup, and scheme reads remain
+/// authoritative.
+///
+/// # Safety
+/// `app`, `name`, and `mime` must be valid C strings. `bytes` must point to
+/// `len` readable bytes. `out_output`/`out_error` must be valid pointers to
+/// write a `char*` into (or null to ignore).
+#[no_mangle]
+pub unsafe extern "C" fn terrane_blob_import(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    name: *const c_char,
+    mime: *const c_char,
+    bytes: *const u8,
+    len: usize,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let app = match read_str(app) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let name = match read_str(name) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let mime = match read_str(mime) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        if bytes.is_null() {
+            return TERRANE_ERR_NULL_ARG;
+        }
+        if len == 0 {
+            write_out(out_error, "picker import bytes must not be empty".into());
+            return TERRANE_ERR_DISPATCH;
+        }
+        if len > TERRANE_PICKER_IMPORT_MAX_BYTES {
+            write_out(
+                out_error,
+                format!(
+                    "picker import exceeds {} bytes",
+                    TERRANE_PICKER_IMPORT_MAX_BYTES
+                ),
+            );
+            return TERRANE_ERR_DISPATCH;
+        }
+        if !valid_picker_import_name(&name) {
+            write_out(
+                out_error,
+                "picker import name must match imports/<uuid>.jpg".into(),
+            );
+            return TERRANE_ERR_DISPATCH;
+        }
+        if mime != "image/jpeg" {
+            write_out(out_error, "picker import MIME must be image/jpeg".into());
+            return TERRANE_ERR_DISPATCH;
+        }
+
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if !core.state().app.apps.contains_key(&app) {
+            write_out(out_error, format!("no such app: {app}"));
+            return TERRANE_ERR_DISPATCH;
+        }
+        match terrane_cap_auth::namespace_granted(
+            core.state(),
+            &local_owner_principal(core.state()),
+            &app,
+            "blob",
+        ) {
+            Ok(true) => {}
+            Ok(false) => {
+                write_out(
+                    out_error,
+                    format!("permission required for app {app}: grant blob"),
+                );
+                return TERRANE_ERR_DISPATCH;
+            }
+            Err(error) => {
+                write_out(out_error, error.to_string());
+                return TERRANE_ERR_DISPATCH;
+            }
+        }
+
+        // The size bound above is checked before constructing the slice, which
+        // also keeps hostile lengths away from pointer arithmetic.
+        let payload = std::slice::from_raw_parts(bytes, len);
+        let hash = format!("{:x}", Sha256::digest(payload));
+        if let Err(error) = crate::blob_store::insert_if_absent(&handle.home, &hash, payload) {
+            write_out(out_error, error.to_string());
+            return TERRANE_ERR_DISPATCH;
+        }
+        let args = [
+            app.clone(),
+            name.clone(),
+            hash.clone(),
+            len.to_string(),
+            mime.clone(),
+        ];
+        if let Err(error) = crate::dispatch_on_core(&mut core, "blob.link", &args) {
+            write_out(out_error, error);
+            return TERRANE_ERR_DISPATCH;
+        }
+        write_out(
+            out_output,
+            format!(
+                "{{\"kind\":\"blob\",\"name\":\"{}\",\"hash\":\"{}\",\"size\":{},\"mime\":\"{}\"}}",
+                json_string_content(&name),
+                hash,
+                len,
+                mime
+            ),
+        );
+        TERRANE_OK
+    }));
+    finish(code, out_error)
+}
+
+fn valid_picker_import_name(name: &str) -> bool {
+    let Some(id) = name
+        .strip_prefix("imports/")
+        .and_then(|value| value.strip_suffix(".jpg"))
+    else {
+        return false;
+    };
+    if id.len() != 36 {
+        return false;
+    }
+    id.bytes().enumerate().all(|(index, byte)| match index {
+        8 | 13 | 18 | 23 => byte == b'-',
+        _ => byte.is_ascii_hexdigit(),
+    })
 }
 
 /// Read an in-memory preview asset by preview id and frame-relative path.

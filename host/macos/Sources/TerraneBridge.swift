@@ -117,6 +117,9 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   var onCameraCapturePhoto: ((@escaping (Any?, String?) -> Void) -> Void)?
   var onCameraStreamStart: ((@escaping (Any?, String?) -> Void) -> Void)?
   var onCameraStreamStop: ((@escaping (Any?, String?) -> Void) -> Void)?
+  /// Present one host-owned, user-mediated picker. The JS surface stays generic;
+  /// the initial macOS implementation supports only Photos images.
+  var onPick: ((NativePickOptions, @escaping (Any?, String?) -> Void) -> Void)?
 
   var terraneHandle: OpaquePointer { handle }
 
@@ -277,6 +280,30 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         return
       }
       onCameraStreamStop(replyHandler)
+    case "pick":
+      guard !appId.isEmpty else {
+        replyHandler(nil, "terrane: pick requires an active selected app")
+        return
+      }
+      guard
+        message.frameInfo.isMainFrame,
+        message.frameInfo.securityOrigin.host == appId
+      else {
+        replyHandler(nil, "terrane: pick is only available to the selected app main frame")
+        return
+      }
+      let options: NativePickOptions
+      do {
+        options = try NativePickOptions.parse(body["options"])
+      } catch {
+        replyHandler(nil, error.localizedDescription)
+        return
+      }
+      guard let onPick else {
+        replyHandler(nil, "terrane: Photos picker is unavailable on this host")
+        return
+      }
+      onPick(options, replyHandler)
     default:
       replyHandler(nil, "terrane: unknown bridge message")
     }
@@ -985,6 +1012,9 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         blobUrl: function (name) {
           var app = window.location.host || "";
           return "terrane-app://" + app + "/blob/" + encodeURIComponent(String(name == null ? "" : name));
+        },
+        pick: function (options) {
+          return post({ kind: "pick", options: options });
         },
         preview: function (files) {
           return post({ kind: "preview", files: files });

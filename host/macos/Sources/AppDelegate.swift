@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var bridge: TerraneBridge?
   private var sttCapture: SttCapture?
   private var cameraFrameStreamer: NativeCameraFrameStreamer?
+  private var nativePickCoordinator: NativePickCoordinator?
   private var sttMicButton: NSButton!
   private var sttListeningLabel: NSTextField!
   private var appSchemeHandler: AppSchemeHandler?
@@ -147,6 +148,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         self?.cameraFrameStreamer?.stop()
         self?.cameraFrameStreamer = nil
         completion(["ok": true], nil)
+      }
+    }
+    let nativePickCoordinator = NativePickCoordinator(
+      picker: PhotosNativeMediaPicker(),
+      importer: TerraneBlobImporter(handle: bridge.terraneHandle)
+    )
+    self.nativePickCoordinator = nativePickCoordinator
+    bridge.onPick = { [weak self, weak bridge] options, completion in
+      DispatchQueue.main.async {
+        guard let self, let bridge else {
+          completion(nil, "terrane: host is unavailable")
+          return
+        }
+        let appId = bridge.selectedAppId
+        nativePickCoordinator.pick(
+          options: options,
+          appId: appId,
+          parent: self.window,
+          selectedAppId: { [weak bridge] in bridge?.selectedAppId ?? "" },
+          completion: completion
+        )
       }
     }
     // Mark our app-serving custom schemes as secure contexts. WebKit only

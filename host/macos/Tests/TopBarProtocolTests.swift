@@ -27,6 +27,7 @@ final class TopBarProtocolTests: XCTestCase {
     for needle in [
       "getDocument:",
       "blobUrl:",
+      "pick:",
       "setDocument:",
       "onDocument:",
       "getTheme:",
@@ -39,6 +40,7 @@ final class TopBarProtocolTests: XCTestCase {
       "t:",
       "window.__terrane_apply",
       "kind: \"document:set\"",
+      "kind: \"pick\"",
     ] {
       XCTAssertTrue(shim.contains(needle), "shim missing \(needle)")
     }

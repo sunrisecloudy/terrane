@@ -78,6 +78,13 @@ int terrane_preview_asset(TerraneHandle *h, const char *preview_id,
 int terrane_blob_read(TerraneHandle *h, const char *app, const char *name,
                       char **out_output, char **out_error);
 
+/* Import one host-normalized picker JPEG into an app's authorized blob
+ * namespace. `name` must be imports/<uuid>.jpg and `bytes` must contain 1 to
+ * 10 MiB. On success returns the canonical blob descriptor as JSON. */
+int terrane_blob_import(TerraneHandle *h, const char *app, const char *name,
+                        const char *mime, const unsigned char *bytes, size_t len,
+                        char **out_output, char **out_error);
+
 /* Invoke a preview backend verb with string args. On success writes the
  * backend's returned output string. */
 int terrane_preview_invoke(TerraneHandle *h, const char *preview_id,

@@ -385,6 +385,31 @@ There are two permission layers:
 
 Both outcomes must be visible in recorded native events and docs.
 
+### Selected-app Photos picker boundary
+
+The macOS shell now implements `window.terrane.pick({source:"photos",
+types:["image"],multiple:false})` as a synchronous, user-mediated selected-app
+bridge operation. This is intentionally not presented as execution by the
+shared `NativeConnector`: that connector remains unsupported for macOS OS work,
+and no replayed `native.requested` fact is allowed to reopen Photos UI.
+
+This narrow shell path is appropriate because the host already owns the
+`WKWebView`, selected app identity, main-frame routing, and parent window. The
+operation grants access only to the single user-selected transferable. Before
+persistence the shell decodes, orientation-corrects, bounds, and re-encodes the
+image without source metadata. A byte-pointer C ABI then verifies the active
+app's existing `blob` namespace grant and records the ordinary canonical
+`blob.stored` path. The result is a blob reference, not a path or inline
+payload. Consequently:
+
+- it does not add a broad `native` grant to picker-using apps;
+- blob replay remains truthful (the stored bytes and metadata replay, the UI
+  action does not);
+- `native.supports("media.pick")` must not claim connector support for this
+  shell-only implementation; and
+- a future cross-platform async `media.pick` capability still requires an
+  explicit selector-aware operation and real platform connectors.
+
 ## Implementation Slices
 
 ### Slice 1: Planning and Catalog

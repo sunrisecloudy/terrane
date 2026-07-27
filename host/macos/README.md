@@ -38,6 +38,22 @@ The sidebar discovers plain HTML UIs from:
 or `dist/index.html`. `react:` entries are intentionally skipped; this host only
 runs compiled app assets.
 
+The checked-in Health app demonstrates the image-model path. On macOS its
+Photos button calls the generic `window.terrane.pick(...)` bridge; the host
+receives only the selected transferable, normalizes it to a metadata-stripped
+JPEG with a 2048-pixel longest edge, and imports it through Health's existing
+blob grant. Health previews that canonical blob with `blobUrl` and asks
+`ctx.resource.model` to attach the same verified blob, avoiding a second
+upload. Ordinary JPEG/PNG/WebP HTML file input remains available on web and
+non-native hosts and is normalized in the page before `blob.put`.
+
+OpenCode with `opencode-go/kimi-k2.6` is the default vision path; users can
+select another configured OpenCode multimodal model or Codex. Nutrition values
+are presented as editable estimates with confidence, assumptions, and a
+non-medical disclaimer. KV stores only settings, nutrition records, and the
+logical blob name; bytes remain in the per-app blob CAS. Model calls default to
+a 120-second timeout, configurable with `TERRANE_MODEL_TIMEOUT_MS`.
+
 ## App Builder preview
 
 The injected shim also exposes `window.terrane.preview(files)`. App Builder
