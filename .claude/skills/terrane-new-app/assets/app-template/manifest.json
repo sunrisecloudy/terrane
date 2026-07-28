@@ -7,5 +7,9 @@
   "ui": "index.html",
   "icon": "icon.svg",
   "resources": ["kv"],
-  "interfaces": ["items"]
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "This starter uses one notes list as its complete surface and has no useful lower-sidebar navigation."
+  }
 }

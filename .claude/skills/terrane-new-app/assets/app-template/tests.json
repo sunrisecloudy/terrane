@@ -1,5 +1,24 @@
 [
+  {
+    "verb": "__actions__",
+    "expect": {
+      "jsonSubset": {
+        "app": "my-app",
+        "title": "My App"
+      }
+    }
+  },
   { "verb": "items", "expect": { "shape": "array" } },
+  {
+    "verb": "common.receive",
+    "args": ["text", "\"hello\""],
+    "expect": {
+      "jsonSubset": {
+        "ok": true,
+        "kind": "text"
+      }
+    }
+  },
   { "verb": "common.list", "expect": { "shape": "array" } },
   {
     "verb": "common.get",

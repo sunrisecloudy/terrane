@@ -1,182 +1,246 @@
 ---
 name: terrane-new-app
-description: Best practice and step-by-step workflow for creating a new Terrane app — a JS bundle under apps/ with manifest.json, a main.js backend over ctx.resource.*, an optional index.html UI over window.terrane, i18n catalogs, and tests.json smoke tests. Use when asked to create, make, scaffold, or add a new Terrane app, write or fix an app backend or UI, wire app localization, or install, run, grant, and verify an app bundle. Not for new commands/namespaces — those are capabilities (Rust crates) and follow docs/cap-best-practice/.
+description: Create, install, verify, or update a Terrane app through the current GUI-owned MCP builder and native host. Use when asked to create, make, scaffold, add, install, run, or visually verify a Terrane app; modify an app backend or UI; add localization, smoke tests, resources, interop, file intake, or a meaningful app-owned sidebar; or promote a GUI-tested app into the repository. Not for adding a new command namespace or ctx.resource surface; those are capabilities and follow docs/cap-best-practice/.
 ---
 
-# Creating a new Terrane app
+# Create a Terrane app
 
-## App or capability? Decide first
+Build through the live Terrane contract, not from memory. A source bundle,
+preview, backend invocation, or passing unit test alone does not prove a visible
+app is complete.
 
-- **App** — a JS bundle in `apps/<id>/` that composes existing resources
-  (`ctx.resource.kv`, `crdt`, `local-model`, …) behind user-facing verbs. This
-  skill.
-- **Capability** — a new command namespace / new `ctx.resource.*` surface. That
-  is a Rust crate under `rust/crates/terrane-cap-<name>/`; follow
-  `docs/cap-best-practice/README.md` instead.
+## Establish the current contract
 
-## Authoritative sources (read before writing code)
+Before writing:
 
-- `docs/APP_API.md` — the full app contract, **drift-guarded by tests** (the
-  `ctx.resource` reference is generated; regenerate with `UPDATE_DOCS=1 cargo
-  test`). Trust it over memory. Key sections: "Recommended: an `actions`
-  table", "Required common verbs and items", "Default-deny resources & the
-  permission handshake", "Client (UI)", "Localization", "Manifest".
-- Example apps: `apps/todo` (plain JS + kv, the canonical shape),
-  `apps/bmi-calculator` (frontend build step, `src/` → `dist/`),
-  `apps/chat` (kv + local-model).
-- Template to copy: this skill's `assets/app-template/` — a complete minimal
-  bundle (manifest, actions-table backend, UI with localize, i18n, tests.json,
-  icon).
+1. Inspect checkout and worktree state. Identify the worktree that owns local
+   `main`; do not assume the current checkout is current or clean.
+2. Read `docs/APP_API.md` and `host/mcp/docs/APP_BUILDING.md`.
+3. Inspect `terrane_api::mcp_tools()` or call `tools/list` when tool shape
+   matters. Query capability docs for the resources the app will use; do not
+   copy a remembered namespace list.
+4. Use this skill's `assets/app-template/` as a starter/reference, but prefer
+   live tool-generated scaffold contracts when building through MCP.
 
-## The contract (non-negotiable)
+If this skill or its template disagrees with the current validator or generated
+contract, the current source wins. Update the skill/template in the same bounded
+change when appropriate so the next app does not repeat the drift.
 
-- The backend is invoked as `handle([verb, ...args])` and **must return a
-  string**. JSON-stringify structured replies.
-- Each run is a **fresh context** — no state survives between runs. All
-  persistence goes through resources; writes are recorded as events and replay
-  **without re-running your JS** (Option A). Never use the clock, randomness,
-  or external state except through a resource.
-- Resources are **default-deny**. `manifest.resources` only *requests* a
-  namespace; `ctx.resource.<ns>` is **absent** until an admin grants it.
-  Feature-detect every namespace and degrade with a plain string — never throw.
-- The UI's only bridge is `window.terrane.invoke(verb, ...args)` to its **own**
-  backend. It never touches `ctx.resource` or names another app.
-- A backend run has a wall-clock budget — no unbounded loops.
+## Decide app or capability
 
-## Workflow
+- **App**: a bundle that composes existing `ctx.resource.*` namespaces behind
+  user-facing actions. Use this skill.
+- **Capability**: a new command namespace, runtime surface, or
+  `ctx.resource.*` API. Follow `docs/cap-best-practice/README.md`.
 
-### 1. Scaffold
+## Use the GUI-owned MCP path
 
-Copy `assets/app-template/` from this skill to `apps/<id>/` and rename: set
-`id` (kebab-case, stable forever), `name`, and the strings in `main.js` /
-`index.html`. Or copy `apps/todo` for a working reference.
+For a real new app, connect `terrane-mcp` to the running native GUI Core. GUI
+and MCP must resolve the same `TERRANE_HOME`. Prefer GUI-only launch-or-attach
+mode when the client must never open a second Core. The authenticated loopback
+discovery record is host-owned; never copy or expose its per-launch token.
 
-### 2. Manifest
+The built-in App Builder may use Codex, Claude Code, or OpenCode to generate
+files and render an in-memory preview. Preview does **not** install the bundle,
+write it under `TERRANE_HOME/apps`, or add it to the catalog. Continue through
+the staged MCP flow.
+
+### Canonical staged flow
+
+1. For blank context, call `workflows_list`, then the matching
+   `workflow_info`. Use `app_recipe` when scaffold/resource orientation helps.
+2. Start a visible app with:
+
+   ```json
+   {
+     "id": "my-app",
+     "name": "My App",
+     "kind": "js_kv_app",
+     "withUi": true
+   }
+   ```
+
+   Call `app_build_start` with those arguments. Use `withUi: true` for anything
+   a person sees. Do not choose the backend-only notes demo for a UI request.
+3. Replace changed files using `app_build_put_file`. Send complete file
+   contents. Batch writes are allowed and all-or-nothing.
+4. Call `app_build_validate`. Fix every error and consciously review warnings.
+5. Call `app_build_commit` with the returned `draftId` and
+   `validationToken`. Commit is create-only and deletes the draft.
+6. Confirm with `list_apps`, discover verbs with `app_actions`, then call
+   `invoke` using a documented verb.
+
+If work stalls, recover with `app_build_list`, then `app_build_get`. Do not
+start duplicate drafts or re-read unchanged scaffold files without a reason.
+The older `app_scaffold`/`app_register_inline` and filesystem bundle flows are
+compatibility paths, not the default for a new app.
+
+## Bundle contract
+
+### Manifest
+
+Use the current manifest schema. A typical visible JS app includes:
 
 ```json
 {
-  "id": "my-app", "name": "My App", "version": "0.1.0",
-  "runtime": "js", "backend": "main.js", "ui": "index.html",
-  "icon": "icon.svg", "resources": ["kv"], "interfaces": ["items"]
+  "id": "my-app",
+  "name": "My App",
+  "version": "0.1.0",
+  "runtime": "js",
+  "backend": "main.js",
+  "ui": "index.html",
+  "icon": "icon.svg",
+  "resources": ["kv"],
+  "interfaces": ["items"],
+  "sidebar": {
+    "mode": "none",
+    "reason": "This app has one workspace and no useful lower-sidebar navigation."
+  }
 }
 ```
 
-- `interfaces`: `items` is required, `inbox` is implied. Omit `ui` for
-  CLI-only apps. `fileTypes: [{ext,mime}]` opts into `terrane open <file>`
-  delivery via `common.receive("blob", ref)`.
-- Request only the resources actually used. Grantable today: `kv`, `crdt`,
-  `relational_db`, `build` (others are skipped by the granter, not blocked —
-  see APP_API.md "Grantable namespaces & verbs").
+- Keep `id` stable and kebab-case.
+- `ui` is a string path, not an object. Omit it for backend-only apps.
+- `interfaces` includes `items`; `inbox` is implied.
+- Request only resources the backend actually uses. A request is not a grant.
+- Checked-in apps declare an SVG icon. User-installed apps may temporarily use
+  the host fallback, but a finished first-party app should not.
+- Add `fileTypes` only for intentional `common.receive("blob", ref)` delivery.
 
-### 3. Backend (`main.js`)
+Every new app makes an explicit `sidebar` decision:
 
-Use the **actions table** (not a hand-rolled `handle`): each entry holds
-summary + args + `run(args, usage)` together, and the runtime synthesizes verb
-dispatch, `__actions__` discovery (the MCP `app_actions` tool), `usage()`, and
-unknown-verb help.
+- Use `{"mode":"section"}` only for meaningful, durable app-owned workspaces or
+  items. Publish them with
+  `setSidebarSection({title,items,selectedItemId,createLabel?})`, handle
+  `onSidebarItemSelect`, and handle `onSidebarCreate` when creation is useful.
+- Otherwise use `{"mode":"none","reason":"..."}` with an app-specific reason.
+- The app-owned lower section is not the host's Apps list. Never add fake or
+  decorative rows merely to satisfy validation.
 
-Required common verbs — the runtime scaffolds defaults for actions-table apps;
-**override `common.list` / `common.get` whenever the app has real items**
-(the template shows how):
+### Backend
+
+Prefer an `actions` table so action metadata, dispatch, usage, and
+`__actions__` discovery share one source of truth.
+
+- A run starts in a fresh QuickJS context. Persist only through resources.
+- Every action returns a string; JSON-stringify structured values.
+- Avoid imports, modules, `require`, Node/Deno APIs, unbounded loops, ambient
+  filesystem state, clocks, and randomness outside a declared resource.
+- Feature-detect every `ctx.resource.<namespace>`. Resources are default-deny
+  and absent until granted.
+- Wrap optional `kv.get`/`rm` operations because missing keys can throw.
+- Prefer one KV key per fact and stable string item IDs; parse stored values
+  defensively.
+
+Required common verbs:
 
 | Verb | Contract |
 | --- | --- |
-| `common.receive` | `(kind, payloadJson)` — deep links, file imports, share deliveries enter here |
-| `common.list` | `(filterJson?)` → JSON array of `{id,title,kind}`; `[]` is valid |
-| `common.get` | `(id)` → item JSON or `{"ok":false,"error":{"code":"NotFound","id":"…"}}` |
+| `common.receive` | `(kind, payloadJson)` receives links, shares, or blob references |
+| `common.list` | `(filterJson?)` returns a JSON array of `{id,title,kind}` |
+| `common.get` | `(id)` returns item JSON or typed `NotFound` JSON |
 
-Best practice, paid for in review:
+Actions-table defaults are acceptable only when the app has no meaningful item
+behavior. Override `common.list` and `common.get` for real items. For cross-app
+handoff, use `ctx.resource.interop.send` and the host powerbox picker; do not
+hardcode another app.
 
-- **One kv key per fact** — each mutation is exactly one recorded `kv.*` event
-  (e.g. `seq` + `item:<id>`), so replay folds cleanly. Don't serialize one big
-  JSON blob per app.
-- Parse stored values defensively (`parseInt` + `isNaN` guard); a key can be
-  missing or stale.
-- Item ids are **stable strings**; items are addressable as
-  `terrane://app/<id>/item/<itemId>` and resolve through live `common.get`.
-- To hand data to another app, call `ctx.resource.interop.send(interface,
-  kind, payloadJson)` — the host raises the powerbox picker; never hardcode a
-  target app.
+### UI
 
-### 4. UI (`index.html`)
+The UI calls only its own backend:
 
-- Render backend JSON from an `items`-style verb; assign text with
-  `textContent`, **never `innerHTML`**.
-- Localize: set `document.documentElement.dir = window.terrane.getDir()`, use
-  `window.terrane.t(key, { default: "…" })` on `[data-i18n]` elements, and
-  re-run in `onMessages` (template has the snippet). Always pass `default:` so
-  the first paint works before the bundle arrives and headless hosts keep
-  working.
-- Use CSS logical properties (`margin-inline-start`, `text-align: start`) so
-  RTL (`ar`) mirrors. Respect the host theme (`color-scheme: light dark`;
-  `window.terrane.getTheme()`/`onTheme` if the app needs to react).
-- Optional top-bar document name: `getDocument`/`setDocument`/`onDocument`.
-
-### 5. i18n catalogs
-
-Ship flat JSON per language at `apps/<id>/i18n/<code>.json`. Keep **`en`
-complete** — it is the fallback and the key inventory. Supported codes:
-`en, es, zh-Hans, ar, pt-BR, fr, de, ja, id, th-TH, ko, vi`. Hosts seed
-catalogs into public KV on startup; `terrane i18n import <path>` does it on
-demand. Backend return strings are not auto-localized (v1) — localize the UI.
-
-### 6. Optional: frontend build step
-
-For a TSX/bundled UI (see `apps/bmi-calculator`): add to the manifest
-
-```json
-"ui": "dist/index.html",
-"frontend": { "tool": "terrane-app-build", "entry": "src/main.tsx", "styles": ["src/app.css"] }
+```js
+await window.terrane.invoke("verb", "arg1", "arg2");
 ```
 
-then rebuild `dist/` with `terrane app build apps/<id>` after every `src/`
-edit. Commit `dist/` (bundles ship prebuilt); add the app-local `.gitignore`
-with `!dist/` + `!dist/**` to un-ignore it.
+Pass positional string arguments, not an array or object. Keep backend behavior
+in `main.js` and browser behavior in the UI. Use `textContent`, never
+`innerHTML`, for app/backend/user text.
 
-### 7. Smoke tests (`tests.json`)
+For localization:
 
-Add backend smoke cases beside the manifest; they run during bundle validation
-(`app install`, `app.import`, builder staging). Expectations: `contains`
-(substring), `jsonSubset`, `shape` (type names: `string`, `number`, `boolean`,
-`null`, `array`, `object`, `any`). Write cases that pass **without grants**
-(validation runs ungranted — e.g. `items` → `[]`, `common.get` unknown id →
-NotFound JSON).
+- Keep `i18n/en.json` complete as fallback and key inventory.
+- Prefer all supported locale catalogs for a finished user-facing app.
+- Always supply `default:` to `window.terrane.t`.
+- Re-render on `onMessages`, set `documentElement.dir`, and use CSS logical
+  properties for RTL.
+- Respect host theme and document-name APIs when relevant.
+- Keep a portable fallback for host-specific helpers such as the macOS picker.
 
-### 8. Install, grant, run, verify
+### Smoke tests
 
-```sh
-# Dev catalog (repo apps). TERRANE_HOME defaults to ./.terrane
-cargo run -p terrane-host --bin terrane -- app add <id> <Name…> --source apps/<id>
-# or validate the bundle like a real install (runs tests.json):
-cargo run -p terrane-host --bin terrane -- app install apps/<id>
+Include `tests.json` for meaningful backend behavior. Validation runs tests
+in an isolated runtime with temporary grants for the resources declared by the
+manifest. Test action discovery, real resource-backed behavior, `common.list`,
+and typed `common.get` failure. Test graceful ungranted behavior separately
+through the real permission handshake. Use `contains`, `jsonSubset`, or `shape`
+assertions. A missing `tests.json` is allowed but is not best practice for a
+non-trivial app.
 
-# Resources are default-deny — grant before first use (local subject is fixed):
-cargo run -p terrane-host --bin terrane -- auth grant user:local-owner <id> kv
+## Permissions and runtime verification
 
-# Exercise the backend and verify:
-cargo run -p terrane-host --bin terrane -- run <id> <verb> [args…]
-cargo run -p terrane-host --bin terrane -- logs <id>        # backend log buffer
-cargo run -p terrane-host --bin terrane -- replay           # replay-identity check
-```
+`manifest.resources` requests namespaces; it never grants them. A first
+`app_actions` or `invoke` may return `permission_required`.
 
-If an invoke returns a `permission_required` error instead, that is the
-handshake, not a bug: run the `grantCommands` it contains (or approve at its
-`adminUrl`), then retry the same call — see APP_API.md "Default-deny resources
-& the permission handshake".
+1. Treat that response as the expected handshake, not an app failure.
+2. Surface the `grantCommands` or `adminUrl`. MCP cannot grant itself.
+3. Let the trusted GUI/admin/CLI approve, poll `permission_check` when needed,
+   then retry the exact same invocation.
+4. Do not delete, rewrite, or re-register the app because permission is pending.
 
-To see the UI, start the web host (`.claude/launch.json` → `terrane-web`,
-http://127.0.0.1:8795) and open the app from the shell. In a fresh agent
-worktree, first copy the canonical home:
-`scripts/copy-terrane-home.sh --to "$PWD/.terrane"`.
+Verify at least one real mutation and readback. Check app logs when relevant and
+run replay verification for persistent behavior.
 
-### 9. Done checklist
+## Native acceptance
 
-- [ ] `manifest.json` valid; `interfaces` includes `items`; only-needed `resources`
-- [ ] actions table; every `run` returns a string; `common.list`/`common.get` real
-- [ ] every `ctx.resource.<ns>` feature-detected; degrades without grants
-- [ ] one kv key per fact; no clock/randomness outside resources
-- [ ] UI uses only `window.terrane`; `textContent`; localize + `dir`; logical CSS
-- [ ] `i18n/en.json` complete (+ the other 11 codes when localizing)
-- [ ] `tests.json` passes ungranted: `terrane app install apps/<id>` green
-- [ ] `terrane run <id> …` works end-to-end after `auth grant`; `terrane replay` green
-- [ ] stage only your own files; commit small and green
+For a visible app, backend and preview checks are insufficient. Test in the
+real native Terrane GUI:
+
+1. App appears in live discovery and opens from the host.
+2. HTML and browser JS load without errors.
+3. A real control calls the intended backend verb.
+4. The displayed result matches the request.
+5. State survives navigation/reload or relaunch as appropriate.
+6. Permission UI works on first use.
+7. Sidebar selection/create persists correctly, or the explicit opt-out is
+   accurate.
+8. Theme, localization, empty/error states, keyboard interaction, and narrow
+   layout are usable for the requested surface.
+
+Do not claim GUI acceptance from generated files, a preview iframe, screenshots
+without interaction, source inspection, or backend invokes alone.
+
+## Promote a checked-in app
+
+When the app must become a first-party bundle under `apps/<id>`:
+
+1. Promote the exact GUI-tested bundle; verify byte equivalence before changing
+   it further.
+2. Run `app_bundle_validate` or the equivalent real install validation.
+3. Rebuild committed frontend output after source edits.
+4. Run focused app tests plus native packaging tests that prove every checked-in
+   bundle and icon ships.
+5. Use the repository-required shared Cargo cache:
+
+   ```sh
+   scripts/with-cargo-cache.sh cargo test --workspace --locked
+   scripts/with-cargo-cache.sh cargo clippy --workspace --all-targets --locked -- -D warnings
+   ```
+
+6. Preserve unrelated dirty work. Stage only the app/skill files in scope.
+   Commit, merge, push, or deploy only when explicitly requested.
+
+## Done checklist
+
+- [ ] Current `APP_API.md`, MCP tool schema, and capability docs were consulted
+- [ ] GUI and MCP used the same `TERRANE_HOME`
+- [ ] Staged builder validated and committed with a matching token
+- [ ] Manifest requests only used resources and makes an explicit sidebar decision
+- [ ] Actions return strings; required common verbs match real item behavior
+- [ ] Optional resource reads degrade safely before grants
+- [ ] UI uses positional `window.terrane.invoke`, safe text, theme, and localization
+- [ ] `tests.json` passes through real bundle validation
+- [ ] Permission handshake, mutation/readback, and replay were verified
+- [ ] A real native GUI interaction passed
+- [ ] Checked-in bundle/icon/frontend packaging passed when promoting to source
+- [ ] Unrelated work was preserved; no unrequested merge, push, or deployment

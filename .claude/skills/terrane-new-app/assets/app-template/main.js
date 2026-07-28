@@ -1,6 +1,6 @@
 // <my-app> backend for Terrane.
 //
-// One kv key per fact, so each mutation is exactly one recorded kv.* event —
+// One kv key per fact, so each stored fact has its own recorded kv.* event.
 // Option-A replay rebuilds state by folding those events, never by re-running
 // this JS:
 //
@@ -22,8 +22,27 @@ function kvOrNull() {
   return (ctx.resource && ctx.resource.kv) || null;
 }
 
+function kvGetOrNull(kv, key) {
+  try {
+    return kv.get(key);
+  } catch (err) {
+    if (String(err).indexOf("not found") !== -1) return null;
+    throw err;
+  }
+}
+
+function kvRmIfPresent(kv, key) {
+  try {
+    kv.rm(key);
+    return true;
+  } catch (err) {
+    if (String(err).indexOf("not found") !== -1) return false;
+    throw err;
+  }
+}
+
 function readSeq(kv) {
-  var raw = kv.get(SEQ_KEY);
+  var raw = kvGetOrNull(kv, SEQ_KEY);
   if (raw == null) return 0;
   var n = parseInt(raw, 10);
   return isNaN(n) || n < 0 ? 0 : n;
@@ -43,6 +62,13 @@ function readNotes(kv) {
   return notes;
 }
 
+function addNote(kv, text) {
+  var id = readSeq(kv) + 1;
+  kv.set(SEQ_KEY, String(id));
+  kv.set(NOTE_PREFIX + id, text);
+  return id;
+}
+
 var description = "A minimal kv-backed notes app (template).";
 
 var actions = {
@@ -55,9 +81,7 @@ var actions = {
       if (!kv) return "kv not granted yet";
       var text = args.join(" ").trim();
       if (text === "") return usage();
-      var id = readSeq(kv) + 1;
-      kv.set(SEQ_KEY, String(id));
-      kv.set(NOTE_PREFIX + id, text);
+      var id = addNote(kv, text);
       return "added #" + id + " " + text;
     },
   },
@@ -72,8 +96,7 @@ var actions = {
       var id = parseInt(args[0], 10);
       if (isNaN(id)) return usage();
       var key = NOTE_PREFIX + id;
-      if (kv.get(key) == null) return "no note #" + id;
-      kv.rm(key);
+      if (!kvRmIfPresent(kv, key)) return "no note #" + id;
       return "removed #" + id;
     },
   },
@@ -102,6 +125,36 @@ var actions = {
     },
   },
 
+  "common.receive": {
+    summary: "Receive an inbound payload as a note.",
+    args: [
+      { name: "kind", required: true },
+      { name: "payloadJson", required: true },
+    ],
+    returns: "JSON acknowledgement or resource-unavailable status",
+    run: function (args) {
+      var kv = kvOrNull();
+      if (!kv) {
+        return JSON.stringify({
+          ok: false,
+          error: { code: "ResourceUnavailable", resource: "kv" },
+        });
+      }
+      var kind = String(args[0] || "json");
+      var payload = String(args[1] || "");
+      var text = payload;
+      try {
+        var parsed = JSON.parse(payload);
+        if (typeof parsed === "string") text = parsed;
+        else if (parsed && typeof parsed.text === "string") text = parsed.text;
+        else if (parsed && typeof parsed.title === "string") text = parsed.title;
+      } catch (_) {}
+      if (text.trim() === "") text = "[" + kind + "]";
+      var id = addNote(kv, text);
+      return JSON.stringify({ ok: true, id: String(id), kind: kind });
+    },
+  },
+
   // Required items interface — every note is addressable as
   // terrane://app/<appId>/item/<id> and resolvable via common.get.
   "common.list": {
@@ -124,7 +177,7 @@ var actions = {
     run: function (args) {
       var kv = kvOrNull();
       var id = parseInt(args[0], 10);
-      var raw = kv && !isNaN(id) ? kv.get(NOTE_PREFIX + id) : null;
+      var raw = kv && !isNaN(id) ? kvGetOrNull(kv, NOTE_PREFIX + id) : null;
       if (raw == null) {
         return JSON.stringify({ ok: false, error: { code: "NotFound", id: String(args[0] || "") } });
       }
