@@ -85,11 +85,19 @@ fi
 
 if swift format --version >/dev/null 2>&1; then
   if [[ "$CHECK" -eq 1 ]]; then
-    log "swift format lint host/macos/Sources host/macos/Tests"
-    swift format lint --strict --recursive "$ROOT/host/macos/Sources" "$ROOT/host/macos/Tests"
+    log "swift format lint Apple host sources and tests"
+    swift format lint --strict --recursive \
+      "$ROOT/host/macos/Sources" \
+      "$ROOT/host/macos/Tests" \
+      "$ROOT/host/apple/TerranePremiumSession/Sources" \
+      "$ROOT/host/apple/TerranePremiumSession/Tests"
   else
-    log "swift format host/macos/Sources host/macos/Tests"
-    swift format format --in-place --recursive "$ROOT/host/macos/Sources" "$ROOT/host/macos/Tests"
+    log "swift format Apple host sources and tests"
+    swift format format --in-place --recursive \
+      "$ROOT/host/macos/Sources" \
+      "$ROOT/host/macos/Tests" \
+      "$ROOT/host/apple/TerranePremiumSession/Sources" \
+      "$ROOT/host/apple/TerranePremiumSession/Tests"
   fi
 else
   log "swift format unavailable; skipping Swift formatting"

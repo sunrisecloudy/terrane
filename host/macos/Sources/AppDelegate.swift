@@ -1,4 +1,5 @@
 import AppKit
+import TerranePremiumSession
 import WebKit
 
 /// The macOS host window: a native app switcher over plain HTML app UIs, with a
@@ -31,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var home: URL!
   private var apps: [TerraneApp] = []
   private var premiumURL: URL?
+  private var premiumSessionClient: PremiumSessionClient?
   private var premiumApps: [PremiumApp] = []
   private var selectedApp: TerraneApp?
   // The system-negotiated locale + the shell-chrome bundle for native strings.
@@ -41,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     home = Self.resolveHome()
     setenv("TERRANE_HOME", home.path, 1)
     premiumURL = Self.resolvePremiumURL()
+    configurePremiumSession()
     apps = AppCatalog.discover(home: home)
     loopbackHost = Self.resolveRepoAppsDirectory()
       .flatMap { LoopbackAppHost(home: home, appsDirectory: $0) }
@@ -1031,6 +1034,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       return nil
     }
     return URL(string: trimmed)
+  }
+
+  private func configurePremiumSession() {
+    guard let premiumURL else { return }
+    let version =
+      Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+      ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+      ?? "development"
+    let device = PremiumDeviceMetadata(
+      platform: .macOS,
+      deviceName: Host.current().localizedName ?? "Mac",
+      clientVersion: version
+    )
+    do {
+      let client = try PremiumSessionClient(baseURL: premiumURL, device: device)
+      premiumSessionClient = client
+      Task { await client.restoreSession() }
+    } catch {
+      NSLog("terrane-host: Premium session client unavailable: \(error.localizedDescription)")
+    }
   }
 
   static func safeDownloadFilename(_ suggested: String) -> String {

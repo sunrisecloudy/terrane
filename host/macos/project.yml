@@ -13,6 +13,9 @@ settings:
     ONLY_ACTIVE_ARCH: "YES"
     CODE_SIGN_IDENTITY: "-"
     ENABLE_HARDENED_RUNTIME: "NO"
+packages:
+  TerranePremiumSession:
+    path: ../apple/TerranePremiumSession
 targets:
   TerraneHost:
     type: application
@@ -68,6 +71,7 @@ targets:
               - public.data
         LSUIElement: false
     dependencies:
+      - package: TerranePremiumSession
       - sdk: WebKit.framework
       - sdk: AppKit.framework
       - sdk: AVFoundation.framework
