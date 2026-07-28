@@ -200,6 +200,9 @@ public actor PremiumSessionClient {
     }
   }
 
+  /// Cancels a host-owned provider sheet without disturbing an existing
+  /// signed-in account. This is used by native Apple/Google UI when the user
+  /// dismisses authorization before an exchange occurs.
   public func cancelAuthentication() {
     guard case .authenticating = state else { return }
     state = account.map(PremiumSessionState.signedIn) ?? .signedOut

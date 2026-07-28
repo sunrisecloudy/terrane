@@ -13,9 +13,17 @@ settings:
     ONLY_ACTIVE_ARCH: "YES"
     CODE_SIGN_IDENTITY: "-"
     ENABLE_HARDENED_RUNTIME: "NO"
+    # Public OAuth identifiers only. Supply them through an untracked local
+    # xcconfig or CI build settings; never put provider secrets in this file.
+    TERRANE_GOOGLE_CLIENT_ID: ""
+    TERRANE_GOOGLE_SERVER_CLIENT_ID: ""
+    TERRANE_GOOGLE_REVERSED_CLIENT_ID: ""
 packages:
   TerranePremiumSession:
     path: ../apple/TerranePremiumSession
+  GoogleSignIn:
+    url: https://github.com/google/GoogleSignIn-iOS
+    exactVersion: 9.2.0
 targets:
   TerraneHost:
     type: application
@@ -56,6 +64,11 @@ targets:
           - CFBundleURLName: com.terrane.host.deep-links
             CFBundleURLSchemes:
               - terrane
+          - CFBundleURLName: com.terrane.host.google-sign-in
+            CFBundleURLSchemes:
+              - $(TERRANE_GOOGLE_REVERSED_CLIENT_ID)
+        GIDClientID: $(TERRANE_GOOGLE_CLIENT_ID)
+        GIDServerClientID: $(TERRANE_GOOGLE_SERVER_CLIENT_ID)
         CFBundleDocumentTypes:
           - CFBundleTypeName: Terrane Text Import
             CFBundleTypeRole: Viewer
@@ -87,6 +100,10 @@ targets:
       - sdk: SwiftUI.framework
       - sdk: UniformTypeIdentifiers.framework
       - sdk: Vision.framework
+      - package: GoogleSignIn
+        product: GoogleSignIn
+      - package: GoogleSignIn
+        product: GoogleSignInSwift
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
@@ -99,7 +116,7 @@ targets:
           export CARGO_TARGET_DIR="$SRCROOT/../../target/macos-static"
           export CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake"
           cd "$SRCROOT/../.."
-          cargo build -p terrane-host -p terrane-host-web --release
+          scripts/with-cargo-cache.sh cargo build -p terrane-host -p terrane-host-web --release
           HTTP_ARCHIVE="$(find "$CARGO_TARGET_DIR/release/build" -path '*/out/build/vendor/cpp-httplib/libcpp-httplib.a' -type f -print | sort | tail -n 1)"
           if [ -z "$HTTP_ARCHIVE" ]; then
             echo "llama-cpp-sys did not produce libcpp-httplib.a" >&2
@@ -176,6 +193,7 @@ targets:
       - path: Sources/NativeMediaPicker.swift
       - path: Sources/VisualIntakePhotoService.swift
       - path: Sources/SourceEditor.swift
+      - path: Sources/PremiumNativeAuth.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host.e2e-tests
@@ -197,6 +215,7 @@ targets:
           - $(inherited)
           - $(SRCROOT)/../../rust/crates/terrane-host/include
     dependencies:
+      - package: TerranePremiumSession
       - sdk: WebKit.framework
       - sdk: AppKit.framework
       - sdk: AVFoundation.framework
@@ -212,6 +231,10 @@ targets:
       - sdk: Photos.framework
       - sdk: Security.framework
       - sdk: Vision.framework
+      - package: GoogleSignIn
+        product: GoogleSignIn
+      - package: GoogleSignIn
+        product: GoogleSignInSwift
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
@@ -224,7 +247,7 @@ targets:
           export CARGO_TARGET_DIR="$SRCROOT/../../target/macos-static"
           export CMAKE_TOOLCHAIN_FILE="$SRCROOT/cmake/static-host.cmake"
           cd "$SRCROOT/../.."
-          cargo build -p terrane-host -p terrane-host-web --release
+          scripts/with-cargo-cache.sh cargo build -p terrane-host -p terrane-host-web --release
           HTTP_ARCHIVE="$(find "$CARGO_TARGET_DIR/release/build" -path '*/out/build/vendor/cpp-httplib/libcpp-httplib.a' -type f -print | sort | tail -n 1)"
           if [ -z "$HTTP_ARCHIVE" ]; then
             echo "llama-cpp-sys did not produce libcpp-httplib.a" >&2

@@ -360,6 +360,25 @@ final class PremiumSessionClientTests: XCTestCase {
     XCTAssertEqual(hookEvents, ["link:google:begin", "link:google:finish:true"])
   }
 
+  func testCancelProviderLinkRestoresExistingSignedInAccount() async throws {
+    let tokenStore = MemoryTokenStore("refresh-current")
+    let transport = RecordingTransport { request in
+      if request.url?.path.hasSuffix("/challenge") == true {
+        return Self.response(request, status: 200, json: #"{"challengeId":"link-cancel"}"#)
+      }
+      return Self.response(request, status: 200, json: Self.sessionJSON)
+    }
+    let client = try PremiumSessionClient(
+      baseURL: baseURL, device: device, tokenStore: tokenStore, transport: transport)
+    let account = try await client.refresh(force: true)
+
+    _ = try await client.beginAuthentication(provider: .google)
+    await client.cancelAuthentication()
+
+    let state = await client.state
+    XCTAssertEqual(state, .signedIn(account))
+  }
+
   private struct ValueResponse: Decodable, Sendable {
     let value: String
   }

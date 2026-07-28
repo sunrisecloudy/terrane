@@ -1,0 +1,6 @@
+// Copy this file outside the repository (or inject equivalent CI build
+// settings). These are public OAuth identifiers, not secrets. Never add a
+// client secret, SaaS access token, or refresh token to an xcconfig.
+TERRANE_GOOGLE_CLIENT_ID = 000000000000-example.apps.googleusercontent.com
+TERRANE_GOOGLE_SERVER_CLIENT_ID = 000000000000-example.apps.googleusercontent.com
+TERRANE_GOOGLE_REVERSED_CLIENT_ID = com.googleusercontent.apps.000000000000-example

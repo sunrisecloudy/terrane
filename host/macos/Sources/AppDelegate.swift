@@ -1,6 +1,27 @@
 import AppKit
+import GoogleSignIn
 import TerranePremiumSession
 import WebKit
+
+private struct PremiumCatalogResponse: Decodable, Sendable {
+  let apps: [PremiumCatalogEntry]
+}
+
+private struct PremiumCatalogEntry: Decodable, Sendable {
+  let id: String
+  let name: String?
+  let publisher: String?
+  let icon: String?
+
+  var app: PremiumApp {
+    PremiumApp(
+      id: id,
+      name: name ?? id,
+      publisher: publisher ?? "Premium",
+      icon: icon ?? ""
+    )
+  }
+}
 
 /// The macOS host window: a native app switcher over plain HTML app UIs, with a
 /// WKWebView stage and a Terrane bridge scoped to the selected app.
@@ -14,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var appSidebar: AppSidebarView!
   private var appSidebarWidthConstraint: NSLayoutConstraint!
   private var codeButton: NSButton!
+  private var accountButton: NSButton!
   private var appIconView: NSImageView!
   private var appNameLabel: NSTextField!
   private var crumbSeparator: NSTextField!
@@ -34,6 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var premiumURL: URL?
   private var premiumSessionClient: PremiumSessionClient?
   private var premiumApps: [PremiumApp] = []
+  private var premiumAuthCoordinator: PremiumNativeAuthCoordinator?
+  private var premiumSignInSheet: PremiumSignInSheetController?
   private var selectedApp: TerraneApp?
   // The system-negotiated locale + the shell-chrome bundle for native strings.
   private var currentLocale = "en"
@@ -43,7 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     home = Self.resolveHome()
     setenv("TERRANE_HOME", home.path, 1)
     premiumURL = Self.resolvePremiumURL()
-    configurePremiumSession()
     apps = AppCatalog.discover(home: home)
     loopbackHost = Self.resolveRepoAppsDirectory()
       .flatMap { LoopbackAppHost(home: home, appsDirectory: $0) }
@@ -53,7 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       let alert = NSAlert()
       alert.alertStyle = .critical
       alert.messageText = "Terrane could not open this workspace"
-      alert.informativeText = TerraneBridge.lastOpenError
+      alert.informativeText =
+        TerraneBridge.lastOpenError
         ?? "The workspace at \(home.path) could not be opened."
       alert.addButton(withTitle: "Quit")
       alert.runModal()
@@ -223,6 +247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     window.title = "Terrane"
     window.center()
     window.contentView = buildContentView()
+    configurePremiumAccount()
 
     renderAppSwitcher()
     refreshPremiumCatalog()
@@ -255,6 +280,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   func application(_ application: NSApplication, open urls: [URL]) {
     for url in urls {
+      if GIDSignIn.sharedInstance.handle(url) {
+        continue
+      }
       handleExternalOpen(url.absoluteString)
     }
   }
@@ -375,7 +403,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     let panel = NSSavePanel()
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = Self.safeDownloadFilename(suggestedFilename)
-    panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    panel.directoryURL =
+      FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
 
     if let window {
       panel.beginSheetModal(for: window) { result in
@@ -476,6 +505,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     codeButton.bezelStyle = .rounded
     codeButton.translatesAutoresizingMaskIntoConstraints = false
 
+    accountButton = NSButton(
+      title: "Local", target: self, action: #selector(accountButtonClicked(_:)))
+    accountButton.bezelStyle = .rounded
+    accountButton.imagePosition = .imageLeading
+    accountButton.image = NSImage(
+      systemSymbolName: "person.crop.circle", accessibilityDescription: "Premium account")
+    accountButton.toolTip = "Terrane Premium account"
+    accountButton.isHidden = premiumURL == nil
+    accountButton.translatesAutoresizingMaskIntoConstraints = false
+
     appIconView = NSImageView()
     appIconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold)
     appIconView.contentTintColor = .secondaryLabelColor
@@ -525,6 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     bar.addSubview(sttListeningLabel)
     bar.addSubview(sttMicButton)
     bar.addSubview(codeButton)
+    bar.addSubview(accountButton)
     content.addSubview(appSidebar)
     content.addSubview(bar)
     content.addSubview(webView)
@@ -544,13 +584,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       bar.topAnchor.constraint(equalTo: content.topAnchor),
       bar.heightAnchor.constraint(equalToConstant: 48),
 
-      codeButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -16),
+      accountButton.trailingAnchor.constraint(equalTo: bar.trailingAnchor, constant: -16),
+      accountButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
+
+      codeButton.trailingAnchor.constraint(equalTo: accountButton.leadingAnchor, constant: -10),
       codeButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
 
       sttMicButton.trailingAnchor.constraint(equalTo: codeButton.leadingAnchor, constant: -10),
       sttMicButton.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
 
-      sttListeningLabel.trailingAnchor.constraint(equalTo: sttMicButton.leadingAnchor, constant: -8),
+      sttListeningLabel.trailingAnchor.constraint(
+        equalTo: sttMicButton.leadingAnchor, constant: -8),
       sttListeningLabel.centerYAnchor.constraint(equalTo: bar.centerYAnchor),
 
       appIconView.leadingAnchor.constraint(equalTo: bar.leadingAnchor, constant: 16),
@@ -709,7 +753,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
 
   private func premiumDashboardURL(for app: PremiumApp) -> URL? {
     guard let premiumURL else { return nil }
-    var components = URLComponents(url: premiumURL.appendingPathComponent("apps.html"), resolvingAgainstBaseURL: false)
+    var components = URLComponents(
+      url: premiumURL.appendingPathComponent("apps.html"), resolvingAgainstBaseURL: false)
     components?.fragment = app.dashboardFragment
     return components?.url
   }
@@ -740,6 +785,222 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     docField.stringValue = ""
   }
 
+  private func configurePremiumAccount() {
+    guard let premiumURL else {
+      accountButton?.isHidden = true
+      return
+    }
+    let version =
+      Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+      ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+      ?? "development"
+    let device = PremiumDeviceMetadata(
+      platform: .macOS,
+      deviceName: Host.current().localizedName ?? "Mac",
+      clientVersion: version
+    )
+    do {
+      let client = try PremiumSessionClient(
+        baseURL: premiumURL,
+        device: device,
+        stateObserver: { [weak self] state in
+          DispatchQueue.main.async {
+            self?.updatePremiumAccountControl(state)
+            if case .signedIn = state {
+              self?.refreshPremiumCatalog()
+            }
+          }
+        }
+      )
+      premiumSessionClient = client
+      let coordinator = PremiumNativeAuthCoordinator(window: window, session: client)
+      premiumAuthCoordinator = coordinator
+      coordinator.onCompletion = { [weak self] result in
+        guard case .failure(let error) = result,
+          (error as? PremiumNativeAuthError) != .cancelled
+        else { return }
+        self?.presentPremiumError(error)
+      }
+      premiumSignInSheet = PremiumSignInSheetController(parent: window) {
+        [weak coordinator] provider in
+        coordinator?.signIn(with: provider)
+      }
+      updatePremiumAccountControl(.signedOut)
+      Task { await client.restoreSession() }
+    } catch {
+      accountButton.title = "Premium unavailable"
+      accountButton.isEnabled = false
+      NSLog("terrane-host: Premium session client unavailable: \(error.localizedDescription)")
+    }
+  }
+
+  private func updatePremiumAccountControl(_ state: PremiumSessionState) {
+    guard let accountButton else { return }
+    accountButton.isHidden = premiumURL == nil
+    accountButton.isEnabled = true
+    accountButton.image = NSImage(
+      systemSymbolName: "person.crop.circle", accessibilityDescription: "Premium account")
+    switch state {
+    case .signedOut:
+      accountButton.title = "Sign In"
+      accountButton.toolTip = "Sign in to optional Terrane Premium services"
+    case .refreshing(_):
+      accountButton.title = "Connecting…"
+      accountButton.isEnabled = false
+    case .authenticating(let context):
+      accountButton.title = context.provider == .apple ? "Apple…" : "Google…"
+      accountButton.isEnabled = false
+    case .signedIn(let account):
+      accountButton.title =
+        account.displayName ?? account.email ?? "Premium"
+      accountButton.image = NSImage(
+        systemSymbolName: "person.crop.circle.fill", accessibilityDescription: "Signed in")
+      accountButton.toolTip = account.email ?? "Terrane Premium account"
+    case .offline(let context):
+      accountButton.title =
+        context.account?.displayName ?? context.account?.email ?? "Offline"
+      accountButton.image = NSImage(
+        systemSymbolName: "person.crop.circle.badge.exclamationmark",
+        accessibilityDescription: "Premium account offline")
+      accountButton.toolTip = "Premium is offline; local Terrane apps remain available"
+    case .revoked:
+      accountButton.title = "Sign In"
+      accountButton.toolTip = "Your Premium session was revoked. Sign in again."
+    }
+  }
+
+  @objc private func accountButtonClicked(_ sender: NSButton) {
+    guard let client = premiumSessionClient else { return }
+    Task { [weak self, weak sender] in
+      let state = await client.state
+      await MainActor.run {
+        guard let self, let sender else { return }
+        switch state {
+        case .signedIn(let account), .refreshing(let account?):
+          self.presentPremiumAccountMenu(account: account, sender: sender)
+        case .offline(let context) where context.account != nil:
+          self.presentPremiumAccountMenu(account: context.account!, sender: sender)
+        default:
+          self.premiumSignInSheet?.present()
+        }
+      }
+    }
+  }
+
+  private func presentPremiumAccountMenu(account: PremiumAccount, sender: NSButton) {
+    let menu = NSMenu()
+    let identity = NSMenuItem(
+      title: account.displayName ?? account.email ?? "Terrane Premium",
+      action: nil,
+      keyEquivalent: ""
+    )
+    identity.isEnabled = false
+    menu.addItem(identity)
+    if let email = account.email, account.displayName != nil {
+      let emailItem = NSMenuItem(title: email, action: nil, keyEquivalent: "")
+      emailItem.isEnabled = false
+      menu.addItem(emailItem)
+    }
+    menu.addItem(.separator())
+
+    let refresh = NSMenuItem(
+      title: "Refresh Session", action: #selector(refreshPremiumSession), keyEquivalent: "")
+    refresh.target = self
+    menu.addItem(refresh)
+
+    for provider in PremiumIdentityProvider.allCases
+    where !account.linkedProviders.contains(provider) {
+      let item = NSMenuItem(
+        title: "Link \(provider == .apple ? "Apple" : "Google")",
+        action: provider == .apple ? #selector(linkPremiumApple) : #selector(linkPremiumGoogle),
+        keyEquivalent: ""
+      )
+      item.target = self
+      menu.addItem(item)
+    }
+    menu.addItem(.separator())
+    let logout = NSMenuItem(
+      title: "Sign Out", action: #selector(logoutPremium), keyEquivalent: "")
+    logout.target = self
+    menu.addItem(logout)
+    if let event = NSApp.currentEvent {
+      NSMenu.popUpContextMenu(menu, with: event, for: sender)
+    } else {
+      menu.popUp(
+        positioning: nil,
+        at: NSPoint(x: 0, y: sender.bounds.maxY + 4),
+        in: sender
+      )
+    }
+  }
+
+  @objc private func refreshPremiumSession() {
+    guard let client = premiumSessionClient else { return }
+    Task { [weak self] in
+      do {
+        _ = try await client.refresh(force: true)
+      } catch {
+        await MainActor.run {
+          if !Self.isExpectedOfflineError(error) {
+            self?.presentPremiumError(error)
+          }
+        }
+      }
+    }
+  }
+
+  @objc private func linkPremiumApple() {
+    premiumAuthCoordinator?.link(.apple)
+  }
+
+  @objc private func linkPremiumGoogle() {
+    premiumAuthCoordinator?.link(.google)
+  }
+
+  @objc private func logoutPremium() {
+    guard let client = premiumSessionClient else { return }
+    Task { [weak self] in
+      do {
+        try await client.logout()
+      } catch {
+        await MainActor.run {
+          if !Self.isExpectedOfflineError(error) {
+            self?.presentPremiumError(error)
+          }
+        }
+      }
+      await MainActor.run { self?.refreshPremiumCatalog() }
+    }
+  }
+
+  private func presentPremiumError(_ error: Error) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "Terrane Premium"
+    alert.informativeText = error.localizedDescription
+    alert.addButton(withTitle: "OK")
+    if let window {
+      alert.beginSheetModal(for: window)
+    } else {
+      alert.runModal()
+    }
+  }
+
+  private static func isExpectedOfflineError(_ error: Error) -> Bool {
+    if case .transport = error as? PremiumSessionError {
+      return true
+    }
+    let error = error as NSError
+    return error.domain == NSURLErrorDomain
+      && [
+        NSURLErrorNotConnectedToInternet,
+        NSURLErrorNetworkConnectionLost,
+        NSURLErrorCannotConnectToHost,
+        NSURLErrorCannotFindHost,
+        NSURLErrorTimedOut,
+      ].contains(error.code)
+  }
+
   /// The shared landing page: also the empty state when nothing is installed.
   private func showHome(confirmUnsaved: Bool = false) {
     if confirmUnsaved, selectedApp != nil, !sourceEditor.confirmDiscardIfNeeded(window: window) {
@@ -759,9 +1020,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   }
 
   private func refreshPremiumCatalog() {
+    guard premiumURL != nil else { return }
+    guard let client = premiumSessionClient else {
+      refreshPublicPremiumCatalog()
+      return
+    }
+    Task { [weak self] in
+      let state = await client.state
+      if case .signedIn = state {
+        do {
+          let response: PremiumCatalogResponse = try await client.send(
+            path: "marketplace/premium-apps")
+          await MainActor.run {
+            self?.premiumApps = response.apps.map(\.app)
+            self?.renderAppSwitcher()
+          }
+          return
+        } catch {
+          NSLog(
+            "terrane-host: authenticated Premium catalog unavailable: \(error.localizedDescription)"
+          )
+        }
+      }
+      await MainActor.run { self?.refreshPublicPremiumCatalog() }
+    }
+  }
+
+  private func refreshPublicPremiumCatalog() {
     guard let premiumURL else { return }
-    let catalogURL = premiumURL.appendingPathComponent("marketplace/premium-apps")
-    URLSession.shared.dataTask(with: catalogURL) { [weak self] data, _, _ in
+    URLSession.shared.dataTask(
+      with: premiumURL.appendingPathComponent("marketplace/premium-apps")
+    ) { [weak self] data, _, _ in
       let apps = data.map(PremiumCatalog.parse) ?? []
       DispatchQueue.main.async {
         self?.premiumApps = apps
@@ -798,7 +1087,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     alert.addButton(withTitle: "Allow")
     alert.addButton(withTitle: "Deny")
 
-    let handleDecision: (NSApplication.ModalResponse) -> Void = { [weak self, weak bridge] response in
+    let handleDecision: (NSApplication.ModalResponse) -> Void = {
+      [weak self, weak bridge] response in
       guard response == .alertFirstButtonReturn else {
         completion(false)
         return
@@ -1027,33 +1317,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     let cliValue = args.indices.dropLast().first { args[$0] == "--premium-url" }
       .map { args[$0 + 1] }
     let raw = cliValue ?? ProcessInfo.processInfo.environment["TERRANE_PREMIUM_URL"]
-    guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
-      .trimmingCharacters(in: CharacterSet(charactersIn: "/")),
+    guard
+      let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        .trimmingCharacters(in: CharacterSet(charactersIn: "/")),
       !trimmed.isEmpty
     else {
       return nil
     }
     return URL(string: trimmed)
-  }
-
-  private func configurePremiumSession() {
-    guard let premiumURL else { return }
-    let version =
-      Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-      ?? Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-      ?? "development"
-    let device = PremiumDeviceMetadata(
-      platform: .macOS,
-      deviceName: Host.current().localizedName ?? "Mac",
-      clientVersion: version
-    )
-    do {
-      let client = try PremiumSessionClient(baseURL: premiumURL, device: device)
-      premiumSessionClient = client
-      Task { await client.restoreSession() }
-    } catch {
-      NSLog("terrane-host: Premium session client unavailable: \(error.localizedDescription)")
-    }
   }
 
   static func safeDownloadFilename(_ suggested: String) -> String {
@@ -1066,7 +1337,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   /// The empty state shown when no HTML app UIs are installed, with a localized
   /// `message` (HTML-escaped since it is dropped into the body).
   private static func emptyStateHTML(_ message: String) -> String {
-    let safe = message
+    let safe =
+      message
       .replacingOccurrences(of: "&", with: "&amp;")
       .replacingOccurrences(of: "<", with: "&lt;")
       .replacingOccurrences(of: ">", with: "&gt;")

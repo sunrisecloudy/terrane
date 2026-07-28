@@ -74,6 +74,72 @@ preview documents call `terrane.invoke(verb, ...args)`, the shim detects the
 Preview state lives in Rust behind the FFI handle. The macOS host does not write
 a temp app bundle or add preview apps to the catalog.
 
+## Native Premium account
+
+Premium sign-in is optional native host chrome. If no Premium URL is supplied,
+the account control is hidden and Terrane remains a local-first unsigned app
+host. Signing in is never required to discover, open, edit, or run local apps.
+
+The account button and provider chooser are outside the app-content
+`WKWebView`. Sign in with Apple uses `ASAuthorizationController`; Sign in with
+Google uses the official `GoogleSignIn` and `GoogleSignInSwift` package pinned
+in `project.yml`. Provider credentials are sent directly to the Premium native
+exchange endpoint. After capturing Google's ID token, the host immediately
+calls the SDK's `signOut()` so Google OAuth credentials are removed from the
+SDK Keychain.
+
+The host integrates the shared `TerranePremiumSession` Swift package under
+`host/apple/TerranePremiumSession`; `PremiumSessionClient` is the single
+account/session boundary used by Apple hosts:
+
+- `/auth/native/challenge`
+- `/auth/apple/native/exchange`
+- `/auth/google/native/exchange`
+- `/account/session/refresh`
+- `/account/session/logout`
+
+The service uses the Premium `{ok,result}` envelope.
+Credential-bearing requests require HTTPS; plain HTTP is accepted only for
+`localhost`, `127.0.0.1`, or `::1` development servers.
+Session responses must contain an access token, rotating refresh token, and an
+account/user id. Only the rotating Premium refresh token is stored, as a
+non-synchronizing `kSecClassGenericPassword` item with
+`AfterFirstUnlockThisDeviceOnly` accessibility. The access token, account
+metadata, and provider ID/auth codes remain in host memory.
+
+Refresh is single-flight, rotates the stored token before publishing a new
+in-memory access token, retries a host-owned request once after a 401, preserves
+the refresh token when offline, and deletes it on revoked/reused sessions.
+Logout always clears local credentials even if the server is unreachable.
+Provider linking reuses the challenge/exchange endpoints with an in-memory
+bearer token. Account deletion is wrapped by the shared module's lifecycle
+hooks; a successful authoritative deletion clears all local session state. No
+deletion route is invented here because it is not part of the native server
+contract above.
+
+Premium catalog requests are made by this host boundary with an access token
+when one is available. Tokens are never injected into remote pages,
+`TerraneBridge`, generated-app APIs, URL fragments, local storage, or app
+events. Premium dashboard content therefore receives no native bearer
+credential.
+
+### Provider configuration
+
+The checked-in build settings are intentionally blank. Copy
+`Configs/PremiumAuth.xcconfig.example` to an untracked location and supply the
+three public OAuth identifiers:
+
+```xcconfig
+TERRANE_GOOGLE_CLIENT_ID = <macOS OAuth client id>
+TERRANE_GOOGLE_SERVER_CLIENT_ID = <backend audience client id>
+TERRANE_GOOGLE_REVERSED_CLIENT_ID = <reversed redirect scheme>
+```
+
+Do not add Google client secrets, Apple private keys, SaaS tokens, or any real
+user credential to this repository or an app bundle. Configure the Google
+redirect URI for the app bundle id and configure the server client id as the
+backend ID-token audience.
+
 ## Build
 
 Requires `xcodegen` (`brew install xcodegen`), Xcode, and `cargo`. The project
@@ -98,6 +164,46 @@ xcodebuild -project Terrane.xcodeproj -scheme TerraneHost -configuration Debug \
   -derivedDataPath ./.derived CONFIGURATION_BUILD_DIR="$PWD/build/Debug" \
   CODE_SIGNING_ALLOWED=NO build
 ```
+
+The unsigned command above is valid for local-only use. Provider sign-in
+requires a signed build because AuthenticationServices and Keychain access are
+code-signing capabilities.
+
+### Signed Premium build
+
+Before release, enable Sign in with Apple for `com.terrane.host` in the Apple
+Developer portal and use a provisioning profile containing that entitlement.
+The checked-in entitlements declare Sign in with Apple and put the private
+default app Keychain access group first, as required by Google Sign-In on
+macOS. Keep the group app-specific; do not substitute a shared Keychain group.
+
+Generate, archive, and sign with public OAuth configuration injected from an
+untracked file:
+
+```sh
+cd host/macos
+xcodegen generate
+xcodebuild -project Terrane.xcodeproj -scheme TerraneHost \
+  -configuration Release -xcconfig /secure/path/PremiumAuth.xcconfig \
+  DEVELOPMENT_TEAM=<team-id> CODE_SIGN_STYLE=Automatic \
+  ENABLE_HARDENED_RUNTIME=YES archive \
+  -archivePath "$PWD/build/TerraneHost.xcarchive"
+```
+
+Verify the signed product before notarization:
+
+```sh
+APP="build/TerraneHost.xcarchive/Products/Applications/TerraneHost.app"
+codesign --verify --deep --strict --verbose=2 "$APP"
+codesign -d --entitlements :- "$APP"
+plutil -p "$APP/Contents/Info.plist"
+```
+
+Acceptance requires `com.apple.developer.applesignin`,
+`keychain-access-groups`, `GIDClientID`, `GIDServerClientID`, the reversed
+Google URL scheme, Hardened Runtime, and the expected Developer ID or Apple
+Development identity. Also confirm that no token-like value appears in the
+Info.plist, entitlements, generated project, app resources, or logs.
 
 ## Run
 
@@ -140,3 +246,16 @@ TERRANE_HOME=~/.terrane ( cd ../.. && cargo run -q -p terrane-host --bin terrane
 
 The C ABI itself is covered by Rust tests in `rust/crates/terrane-host`
 (`cargo test -p terrane-host --test abi`); this host is the GUI layer over it.
+
+Focused Premium account verification:
+
+```sh
+cd host/macos
+xcodegen generate
+xcodebuild test -quiet -project Terrane.xcodeproj \
+  -scheme TerraneHostE2ETests -destination 'platform=macOS' \
+  -only-testing:TerraneHostE2ETests/PremiumNativeAuthTests \
+  CODE_SIGNING_ALLOWED=NO
+
+swift test --package-path ../apple/TerranePremiumSession
+```

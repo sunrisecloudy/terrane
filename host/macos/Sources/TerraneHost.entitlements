@@ -2,6 +2,18 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- Native Sign in with Apple is host-owned and never delegated to an app
+	     WKWebView. Release provisioning must include this capability. -->
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
+	<!-- GoogleSignIn and Terrane's refresh-token item use the app's private
+	     default Keychain group. Do not replace this with a shared group. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
+	</array>
 	<!--
 	  WKWebView getUserMedia and the host-owned AVFoundation capture paths need
 	  device access in the signed host. The corresponding usage descriptions
