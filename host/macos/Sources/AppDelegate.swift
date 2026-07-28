@@ -842,8 +842,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       systemSymbolName: "person.crop.circle", accessibilityDescription: "Premium account")
     switch state {
     case .signedOut:
-      accountButton.title = "Sign In"
-      accountButton.toolTip = "Sign in to optional Terrane Premium services"
+      accountButton.title = "Enable Sync"
+      accountButton.toolTip = "Enable optional Terrane sync and Premium services"
     case .refreshing(_):
       accountButton.title = "Connecting…"
       accountButton.isEnabled = false
@@ -864,8 +864,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         accessibilityDescription: "Premium account offline")
       accountButton.toolTip = "Premium is offline; local Terrane apps remain available"
     case .revoked:
-      accountButton.title = "Sign In"
-      accountButton.toolTip = "Your Premium session was revoked. Sign in again."
+      accountButton.title = "Enable Sync"
+      accountButton.toolTip = "Your Premium session ended. Enable sync to sign in again."
     }
   }
 

@@ -16,6 +16,57 @@ final class PremiumNativeAuthTests: XCTestCase {
     )
   }
 
+  func testProviderSheetPreservesLocalFirstBoundaryUntilExplicitlyPresented() {
+    let parent = NSWindow()
+    let sheet = PremiumSignInSheetController(parent: parent) { _ in }
+    let labels = descendants(of: sheet.panelForTesting.contentView)
+      .compactMap { ($0 as? NSTextField)?.stringValue }
+
+    XCTAssertNil(sheet.panelForTesting.sheetParent)
+    XCTAssertTrue(labels.contains("Enable Terrane Sync"))
+    XCTAssertTrue(
+      labels.contains {
+        $0.contains("Sign in only to enable sync")
+          && $0.contains("fully usable locally and offline without an account")
+      }
+    )
+  }
+
+  func testStartupConfigurationCannotPresentProviderSheet() throws {
+    let source = try String(
+      contentsOf: repoRoot().appendingPathComponent("host/macos/Sources/AppDelegate.swift"),
+      encoding: .utf8
+    )
+    let configure = try XCTUnwrap(
+      source.range(
+        of: "private func configurePremiumAccount()",
+        range: source.startIndex..<source.endIndex
+      )
+    )
+    let update = try XCTUnwrap(
+      source.range(
+        of: "private func updatePremiumAccountControl",
+        range: configure.upperBound..<source.endIndex
+      )
+    )
+    let accountClick = try XCTUnwrap(
+      source.range(
+        of: "@objc private func accountButtonClicked",
+        range: update.upperBound..<source.endIndex
+      )
+    )
+    let accountMenu = try XCTUnwrap(
+      source.range(
+        of: "private func presentPremiumAccountMenu",
+        range: accountClick.upperBound..<source.endIndex
+      )
+    )
+
+    XCTAssertFalse(source[configure.lowerBound..<update.lowerBound].contains(".present()"))
+    XCTAssertTrue(source[accountClick.lowerBound..<accountMenu.lowerBound].contains(".present()"))
+    XCTAssertTrue(source.contains("accountButton.title = \"Enable Sync\""))
+  }
+
   func testNativeCoordinatorUsesSharedSessionBoundaryAndDropsGoogleSDKSession() throws {
     let source = try String(
       contentsOf: repoRoot()

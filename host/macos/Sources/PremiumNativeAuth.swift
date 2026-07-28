@@ -306,18 +306,18 @@ final class PremiumSignInSheetController: NSObject {
   var panelForTesting: NSPanel { panel }
 
   private func configure() {
-    panel.title = "Terrane Premium"
+    panel.title = "Enable Sync"
     panel.isMovable = false
 
     let content = NSView()
-    let title = NSTextField(labelWithString: "Sign in to Terrane Premium")
+    let title = NSTextField(labelWithString: "Enable Terrane Sync")
     title.font = .systemFont(ofSize: 18, weight: .semibold)
     title.alignment = .center
     title.translatesAutoresizingMaskIntoConstraints = false
 
     let detail = NSTextField(
       wrappingLabelWithString:
-        "Sync and Premium services are optional. Terrane stays fully usable offline without an account."
+        "Sign in only to enable sync and Premium services. Terrane stays fully usable locally and offline without an account."
     )
     detail.textColor = .secondaryLabelColor
     detail.alignment = .center
