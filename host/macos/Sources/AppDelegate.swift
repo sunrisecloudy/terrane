@@ -320,6 +320,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     download.delegate = self
   }
 
+  func webView(
+    _ webView: WKWebView,
+    runOpenPanelWith parameters: WKOpenPanelParameters,
+    initiatedByFrame frame: WKFrameInfo,
+    completionHandler: @escaping ([URL]?) -> Void
+  ) {
+    let panel = NSOpenPanel()
+    panel.canChooseFiles = true
+    panel.canChooseDirectories = parameters.allowsDirectories
+    panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+    panel.canCreateDirectories = false
+    panel.directoryURL =
+      FileManager.default.urls(for: .picturesDirectory, in: .userDomainMask).first
+
+    let finish: (NSApplication.ModalResponse) -> Void = { response in
+      completionHandler(response == .OK ? panel.urls : nil)
+    }
+    if let window = webView.window ?? window {
+      panel.beginSheetModal(for: window, completionHandler: finish)
+    } else {
+      panel.begin(completionHandler: finish)
+    }
+  }
+
   func download(
     _ download: WKDownload,
     decideDestinationUsing response: URLResponse,

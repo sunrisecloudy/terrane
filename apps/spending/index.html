@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Spending</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --accent: #00b894;
+        --accent-strong: #087b67;
+        --blue: #4c83ff;
+        --violet: #8b6cff;
+        --amber: #f2a93b;
+        --coral: #ee6c67;
+        --ink: CanvasText;
+        --muted: color-mix(in srgb, CanvasText 56%, transparent);
+        --line: color-mix(in srgb, CanvasText 12%, transparent);
+        --panel: color-mix(in srgb, Canvas 92%, CanvasText 4%);
+        --soft: color-mix(in srgb, Canvas 88%, var(--accent) 12%);
+        --danger: #dc4c57;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 5% -5%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 30%),
+          Canvas;
+        font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      button, input, select, textarea { font: inherit; }
+      button { cursor: pointer; }
+      .shell { width: min(1220px, calc(100vw - 42px)); margin: 0 auto; padding: 26px 0 48px; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .brand-mark {
+        display: grid; width: 44px; height: 44px; place-items: center; border-radius: 14px;
+        color: #052b23; background: var(--accent);
+        box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 24%, transparent);
+      }
+      .brand-mark svg { width: 27px; height: 27px; }
+      h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
+      .subtitle { margin: 5px 0 0; color: var(--muted); }
+      .header-actions { display: flex; align-items: center; gap: 9px; }
+      .local-note { color: var(--muted); font-size: 12px; }
+      .local-note::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--accent); }
+      .button {
+        min-height: 38px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px;
+        color: var(--ink); background: color-mix(in srgb, Canvas 88%, CanvasText 5%); font-weight: 650;
+      }
+      .button.primary { border-color: transparent; color: #052b23; background: var(--accent); }
+      .button:disabled { opacity: .45; cursor: default; }
+      .tabs {
+        display: inline-flex; gap: 4px; margin-bottom: 18px; padding: 4px;
+        border: 1px solid var(--line); border-radius: 12px; background: var(--panel);
+      }
+      .tab { min-height: 32px; padding: 0 13px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; }
+      .tab.active { color: var(--ink); background: color-mix(in srgb, Canvas 82%, CanvasText 8%); font-weight: 700; }
+      .view { display: none; }
+      .view.active { display: block; }
+      .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+      .stat, .panel, .pocket {
+        border: 1px solid var(--line); border-radius: 16px; background: var(--panel);
+        box-shadow: 0 14px 34px color-mix(in srgb, #000 6%, transparent);
+      }
+      .stat { padding: 17px; }
+      .stat-label { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 12px; }
+      .stat-label span:last-child { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 8px; background: var(--soft); color: var(--accent-strong); }
+      .stat-value { margin-top: 14px; font-size: 26px; font-weight: 780; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+      .stat-detail { margin-top: 5px; color: var(--muted); font-size: 11px; }
+      .overview-grid { display: grid; grid-template-columns: 1.16fr .84fr; gap: 16px; margin-top: 16px; }
+      .panel { overflow: hidden; }
+      .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 17px 18px; border-bottom: 1px solid var(--line); }
+      .panel-title { margin: 0; font-size: 15px; }
+      .panel-help { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+      .panel-body { padding: 18px; }
+      .category-list { display: grid; gap: 15px; }
+      .category-copy { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; font-size: 12px; }
+      .category-copy span:last-child { font-variant-numeric: tabular-nums; font-weight: 650; }
+      .track { height: 7px; overflow: hidden; border-radius: 99px; background: color-mix(in srgb, CanvasText 8%, transparent); }
+      .fill { height: 100%; min-width: 3px; border-radius: inherit; background: var(--accent); }
+      .recent-list { display: grid; }
+      .expense-row {
+        display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 11px; align-items: center;
+        width: 100%; padding: 12px 18px; border: 0; border-bottom: 1px solid var(--line);
+        color: var(--ink); background: transparent; text-align: left;
+      }
+      .expense-row:last-child { border-bottom: 0; }
+      .expense-row:hover { background: color-mix(in srgb, CanvasText 4%, transparent); }
+      .expense-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 11px; color: var(--accent-strong); background: var(--soft); font-weight: 800; }
+      .expense-copy { min-width: 0; }
+      .expense-copy strong, .expense-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .expense-copy span { margin-top: 4px; color: var(--muted); font-size: 11px; }
+      .expense-money { text-align: right; font-weight: 750; font-variant-numeric: tabular-nums; }
+      .expense-money span { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; font-weight: 500; }
+      .empty { padding: 38px 20px; color: var(--muted); text-align: center; line-height: 1.5; }
+      .toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+      .toolbar-copy h2 { margin: 0; font-size: 19px; }
+      .toolbar-copy p { margin: 5px 0 0; color: var(--muted); }
+      .filters { display: flex; gap: 8px; }
+      .filters input, .filters select {
+        min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 9px;
+        color: var(--ink); background: Field;
+      }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; }
+      th { color: var(--muted); font-size: 11px; font-weight: 650; text-transform: uppercase; letter-spacing: .05em; }
+      td:last-child, th:last-child { text-align: right; }
+      tbody tr { cursor: pointer; }
+      tbody tr:hover { background: color-mix(in srgb, CanvasText 4%, transparent); }
+      .badge { display: inline-flex; padding: 4px 8px; border-radius: 999px; color: var(--muted); background: color-mix(in srgb, CanvasText 7%, transparent); font-size: 11px; }
+      .badge.paid { color: var(--accent-strong); background: var(--soft); }
+      .pocket-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+      .pocket { padding: 17px; }
+      .pocket-top { display: flex; justify-content: space-between; gap: 12px; }
+      .pocket-dot { width: 10px; height: 10px; margin-top: 4px; border-radius: 50%; background: var(--pocket-color); }
+      .pocket h3 { margin: 0; font-size: 15px; }
+      .pocket .balance { margin: 18px 0 5px; font-size: 25px; font-weight: 780; font-variant-numeric: tabular-nums; }
+      .pocket .target { color: var(--muted); font-size: 11px; }
+      .pocket .track { margin-top: 14px; }
+      .pocket .fill { background: var(--pocket-color); }
+      .pocket-footer { display: flex; justify-content: space-between; margin-top: 8px; color: var(--muted); font-size: 11px; }
+      .link { border: 0; padding: 0; color: var(--accent-strong); background: transparent; font-weight: 650; }
+      .overlay {
+        position: fixed; z-index: 10; inset: 0; display: none; align-items: flex-start; justify-content: flex-end;
+        padding: 18px; background: rgba(0,0,0,.42); backdrop-filter: blur(4px);
+      }
+      .overlay.visible { display: flex; }
+      .sheet {
+        width: min(650px, calc(100vw - 36px)); max-height: calc(100vh - 36px); overflow: auto;
+        border: 1px solid var(--line); border-radius: 19px; color: var(--ink); background: Canvas;
+        box-shadow: 0 30px 80px rgba(0,0,0,.28);
+      }
+      .sheet-head {
+        position: sticky; z-index: 2; top: 0; display: flex; align-items: center; justify-content: space-between;
+        padding: 17px 19px; border-bottom: 1px solid var(--line); background: Canvas;
+      }
+      .sheet-head h2 { margin: 0; font-size: 17px; }
+      .close { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 9px; color: var(--muted); background: color-mix(in srgb, CanvasText 7%, transparent); }
+      .sheet-body { padding: 19px; }
+      .intake-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin-bottom: 15px; }
+      .intake-tab { min-height: 36px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: transparent; }
+      .intake-tab.active { color: var(--ink); border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); background: var(--soft); font-weight: 700; }
+      .drop {
+        position: relative; display: grid; min-height: 235px; place-items: center; overflow: hidden;
+        border: 1.5px dashed color-mix(in srgb, var(--accent) 48%, var(--line)); border-radius: 14px;
+        background: var(--soft); text-align: center;
+      }
+      .drop.dragging { border-color: var(--accent); }
+      .drop.has-photo { border-style: solid; background: #111; }
+      .preview { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+      .drop-content { position: relative; z-index: 1; padding: 25px; }
+      .has-photo .drop-content { align-self: end; width: 100%; padding: 58px 16px 15px; color: white; background: linear-gradient(transparent, rgba(0,0,0,.8)); }
+      .upload-icon { font-size: 30px; }
+      .upload-title { margin-top: 7px; font-size: 15px; font-weight: 720; }
+      .upload-detail { margin-top: 5px; color: var(--muted); font-size: 12px; }
+      .has-photo .upload-detail { color: rgba(255,255,255,.7); }
+      #file {
+        position: absolute; z-index: 2; inset: 0; width: 100%; height: 100%;
+        opacity: 0; cursor: pointer;
+      }
+      .choose { display: inline-flex; min-height: 35px; align-items: center; margin-top: 12px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; color: ButtonText; background: ButtonFace; }
+      .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .field { display: grid; gap: 6px; }
+      .field.full { grid-column: 1 / -1; }
+      .field span { color: var(--muted); font-size: 11px; font-weight: 650; }
+      .field input, .field select, .field textarea {
+        width: 100%; min-height: 37px; padding: 8px 10px; border: 1px solid var(--line);
+        border-radius: 9px; color: var(--ink); background: Field;
+      }
+      .field textarea { min-height: 66px; resize: vertical; }
+      .model-row { display: grid; grid-template-columns: .76fr 1.24fr; gap: 9px; margin: 13px 0; }
+      .model-help { margin: -4px 0 13px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+      .analyze { width: 100%; min-height: 43px; border: 0; border-radius: 10px; color: #052b23; background: var(--accent); font-weight: 760; }
+      .analyze:disabled { opacity: .45; }
+      .status { display: none; align-items: center; gap: 9px; margin-top: 11px; padding: 11px; border-radius: 9px; color: var(--muted); background: var(--soft); }
+      .status.visible { display: flex; }
+      .spinner { width: 16px; height: 16px; border: 2px solid color-mix(in srgb, var(--accent) 28%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      .error { display: none; margin-top: 11px; padding: 10px 11px; border-radius: 9px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+      .error.visible { display: block; }
+      .review { display: none; }
+      .review.visible { display: block; }
+      .review-banner { margin-bottom: 14px; padding: 11px 12px; border-radius: 10px; color: var(--muted); background: var(--soft); font-size: 12px; line-height: 1.45; }
+      .review-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+      .warning-list { margin: 13px 0 0; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+      .line-items { margin-top: 13px; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; }
+      .line-items h3 { margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+      .line-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+      .line-item:last-child { border-bottom: 0; }
+      .line-item strong, .line-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .line-item span { color: var(--muted); font-size: 11px; }
+      .line-item div:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+      .pocket-form { display: none; margin-bottom: 15px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
+      .pocket-form.visible { display: block; }
+      @media (max-width: 900px) {
+        .stat-grid { grid-template-columns: repeat(2, 1fr); }
+        .overview-grid { grid-template-columns: 1fr; }
+        .pocket-grid { grid-template-columns: repeat(2, 1fr); }
+      }
+      @media (max-width: 620px) {
+        .shell { width: min(100vw - 24px, 560px); padding-top: 16px; }
+        header, .toolbar { align-items: flex-start; flex-direction: column; }
+        .header-actions { width: 100%; justify-content: space-between; }
+        .local-note { display: none; }
+        .stat-grid, .pocket-grid, .field-grid, .model-row { grid-template-columns: 1fr; }
+        .field.full { grid-column: auto; }
+        .filters { width: 100%; }
+        .filters input { min-width: 0; flex: 1; }
+        .table-wrap { overflow-x: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 3.5h11l3 3V20.5H5Z"/><path d="M16 3.5v3h3M8 10h8M8 13.5h5"/><circle cx="15.8" cy="16.7" r="2.2"/>
+            </svg>
+          </div>
+          <div><h1>Spending</h1><p class="subtitle">Every office expense, readable and under control.</p></div>
+        </div>
+        <div class="header-actions">
+          <span class="local-note">Invoices stay in your Terrane home</span>
+          <button class="button primary" id="open-intake" type="button">＋ New expense</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="Spending views">
+        <button class="tab active" data-view="overview" type="button">Overview</button>
+        <button class="tab" data-view="expenses" type="button">Expenses</button>
+        <button class="tab" data-view="pockets" type="button">Pockets</button>
+      </nav>
+
+      <main>
+        <section class="view active" id="view-overview">
+          <div class="stat-grid">
+            <article class="stat"><div class="stat-label"><span>Total spending</span><span>↗</span></div><div class="stat-value" id="stat-total">$0.00</div><div class="stat-detail" id="stat-count">No expenses yet</div></article>
+            <article class="stat"><div class="stat-label"><span>Pending</span><span>◷</span></div><div class="stat-value" id="stat-pending">$0.00</div><div class="stat-detail">Invoices waiting to be paid</div></article>
+            <article class="stat"><div class="stat-label"><span>Reimbursable</span><span>↺</span></div><div class="stat-value" id="stat-reimbursable">$0.00</div><div class="stat-detail">Money owed back to the team</div></article>
+            <article class="stat"><div class="stat-label"><span>Budget pockets</span><span>◎</span></div><div class="stat-value" id="stat-pockets">0</div><div class="stat-detail" id="stat-pocket-detail">Create a goal to start planning</div></article>
+          </div>
+          <div class="overview-grid">
+            <section class="panel">
+              <div class="panel-head"><div><h2 class="panel-title">Spending by category</h2><p class="panel-help">Based on saved expense records</p></div></div>
+              <div class="panel-body"><div id="category-list" class="category-list"></div></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head"><div><h2 class="panel-title">Recent expenses</h2><p class="panel-help">Select one to review or correct it</p></div><button class="link" data-go="expenses" type="button">View all</button></div>
+              <div id="recent-list" class="recent-list"></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" id="view-expenses">
+          <div class="toolbar">
+            <div class="toolbar-copy"><h2>Office expenses</h2><p>Invoices and manually entered spending in one ledger.</p></div>
+            <div class="filters"><input id="search" type="search" placeholder="Search vendor or invoice"><select id="category-filter"><option value="">All categories</option></select></div>
+          </div>
+          <section class="panel table-wrap">
+            <table>
+              <thead><tr><th>Vendor</th><th>Date</th><th>Category</th><th>Status</th><th>Total</th></tr></thead>
+              <tbody id="expense-table"></tbody>
+            </table>
+            <div id="expense-empty" class="empty">No expenses yet. Analyze an invoice or add one manually.</div>
+          </section>
+        </section>
+
+        <section class="view" id="view-pockets">
+          <div class="toolbar">
+            <div class="toolbar-copy"><h2>Budget pockets</h2><p>Set money aside for goals such as equipment, travel, or tax.</p></div>
+            <button class="button primary" id="toggle-pocket-form" type="button">＋ New pocket</button>
+          </div>
+          <form id="pocket-form" class="pocket-form">
+            <div class="field-grid">
+              <label class="field"><span>Pocket name</span><input id="pocket-name" required maxlength="80" placeholder="New laptops"></label>
+              <label class="field"><span>Color</span><select id="pocket-color"><option value="mint">Mint</option><option value="blue">Blue</option><option value="violet">Violet</option><option value="amber">Amber</option><option value="coral">Coral</option></select></label>
+              <label class="field"><span>Goal amount</span><input id="pocket-target" type="number" min="0.01" step=".01" required placeholder="5000"></label>
+              <label class="field"><span>Already set aside</span><input id="pocket-balance" type="number" min="0" step=".01" required value="0"></label>
+            </div>
+            <div class="review-actions"><button class="button" id="cancel-pocket" type="button">Cancel</button><button class="button primary" type="submit">Save pocket</button></div>
+          </form>
+          <div id="pocket-grid" class="pocket-grid"></div>
+          <div id="pocket-empty" class="empty">No pockets yet. Create a goal-based budget without moving real money.</div>
+        </section>
+      </main>
+    </div>
+
+    <div id="intake-overlay" class="overlay" role="dialog" aria-modal="true" aria-labelledby="intake-title">
+      <section class="sheet">
+        <div class="sheet-head"><h2 id="intake-title">New expense</h2><button id="close-intake" class="close" type="button" aria-label="Close">×</button></div>
+        <div class="sheet-body">
+          <div class="intake-tabs"><button class="intake-tab active" data-mode="invoice" type="button">Analyze invoice</button><button class="intake-tab" data-mode="manual" type="button">Enter manually</button></div>
+          <div id="invoice-intake">
+            <div id="drop" class="drop">
+              <img id="preview" class="preview" alt="Selected invoice" hidden>
+              <div class="drop-content">
+                <div class="upload-icon">▧</div>
+                <div id="upload-title" class="upload-title">Choose an invoice from Photos</div>
+                <div id="upload-detail" class="upload-detail">Or drop a JPEG, PNG, or WebP here</div>
+                <label class="choose" for="file">Choose image…</label>
+                <input id="file" type="file" accept="image/jpeg,image/png,image/webp" aria-label="Choose invoice image from Photos">
+              </div>
+            </div>
+            <label class="field full" style="margin-top:13px"><span>Context for the analyzer (optional)</span><textarea id="invoice-note" maxlength="500" placeholder="e.g. supplier invoice for the Bangkok office"></textarea></label>
+            <div class="model-row">
+              <label class="field"><span>Vision provider</span><select id="provider"><option value="opencode">OpenCode</option><option value="codex">Codex</option></select></label>
+              <label class="field"><span>Vision model</span><input id="model" list="vision-models" value="opencode-go/kimi-k2.6" autocomplete="off" spellcheck="false"><datalist id="vision-models"><option value="opencode-go/kimi-k2.6"><option value="openrouter/google/gemini-2.5-flash"><option value="openrouter/qwen/qwen3-vl-32b-instruct"><option value="openrouter/z-ai/glm-4.6v"></datalist></label>
+            </div>
+            <p id="model-help" class="model-help">Choose a configured multimodal model. The invoice image is passed as a real vision attachment.</p>
+            <button id="analyze" class="analyze" type="button" disabled>Analyze invoice</button>
+            <div id="status" class="status" role="status"><span class="spinner"></span><span id="status-text">Preparing invoice…</span></div>
+          </div>
+
+          <div id="review" class="review">
+            <div class="review-banner"><strong>Review before saving.</strong> Vision makes invoices readable, but you remain in control of totals, tax, category, and payment status.</div>
+            <div class="field-grid">
+              <label class="field"><span>Vendor</span><input id="vendor" maxlength="120"></label>
+              <label class="field"><span>Invoice number</span><input id="invoice-number" maxlength="80"></label>
+              <label class="field"><span>Invoice date</span><input id="invoice-date" type="date"></label>
+              <label class="field"><span>Due date</span><input id="due-date" type="date"></label>
+              <label class="field"><span>Currency</span><input id="currency" maxlength="3" value="USD"></label>
+              <label class="field"><span>Total</span><input id="total" type="number" min="0" step=".01"></label>
+              <label class="field"><span>Subtotal</span><input id="subtotal" type="number" min="0" step=".01"></label>
+              <label class="field"><span>Tax</span><input id="tax" type="number" min="0" step=".01"></label>
+              <label class="field"><span>Category</span><select id="category"></select></label>
+              <label class="field"><span>Expense type</span><select id="expense-type"></select></label>
+              <label class="field"><span>Payment status</span><select id="payment-status"></select></label>
+              <label class="field full"><span>Description</span><textarea id="description" maxlength="240"></textarea></label>
+            </div>
+            <div id="line-items" class="line-items"></div>
+            <ul id="warning-list" class="warning-list"></ul>
+            <div class="review-actions"><button class="button" id="back-to-intake" type="button">Back</button><button class="button primary" id="save-expense" type="button">Save expense</button></div>
+          </div>
+          <div id="error" class="error" role="alert"></div>
+        </div>
+      </section>
+    </div>
+
+    <script>
+      var appState = { expenses: [], pockets: [], summary: {}, categories: [], expense_types: [], payment_statuses: [] };
+      var selectedFile = null;
+      var preparedImage = null;
+      var currentExpense = null;
+      var intakeMode = "invoice";
+      var activeView = "overview";
+      var currencyCode = "USD";
+      var colorMap = { mint: "var(--accent)", blue: "var(--blue)", violet: "var(--violet)", amber: "var(--amber)", coral: "var(--coral)" };
+
+      function invoke() {
+        if (!window.terrane || typeof window.terrane.invoke !== "function") return Promise.reject(new Error("Terrane bridge unavailable"));
+        return window.terrane.invoke.apply(window.terrane, arguments);
+      }
+
+      function money(value, code) {
+        try { return new Intl.NumberFormat(undefined, { style: "currency", currency: code || currencyCode, maximumFractionDigits: 2 }).format(Number(value) || 0); }
+        catch (_error) { return (code || currencyCode) + " " + (Number(value) || 0).toFixed(2); }
+      }
+
+      function showError(message) {
+        var element = document.getElementById("error");
+        element.textContent = message || "";
+        element.classList.toggle("visible", Boolean(message));
+      }
+
+      function optionList(element, values) {
+        element.textContent = "";
+        values.forEach(function (value) {
+          var option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          element.appendChild(option);
+        });
+      }
+
+      function setView(name) {
+        activeView = ["overview", "expenses", "pockets"].indexOf(name) >= 0 ? name : "overview";
+        document.querySelectorAll(".view").forEach(function (element) { element.classList.toggle("active", element.id === "view-" + activeView); });
+        document.querySelectorAll(".tab").forEach(function (element) { element.classList.toggle("active", element.getAttribute("data-view") === activeView); });
+        publishSidebar();
+      }
+
+      function publishSidebar() {
+        if (!window.terrane || typeof window.terrane.setSidebarSection !== "function") return;
+        window.terrane.setSidebarSection({
+          title: "Spending",
+          items: [
+            { id: "overview", title: "Overview", subtitle: (appState.expenses || []).length + " expenses" },
+            { id: "expenses", title: "Expenses", subtitle: money((appState.summary || {}).total || 0) + " tracked" },
+            { id: "pockets", title: "Pockets", subtitle: (appState.pockets || []).length + " goals" }
+          ],
+          selectedItemId: activeView,
+          createLabel: "New expense"
+        }).catch(function () {});
+      }
+
+      function renderState(state) {
+        appState = state;
+        if (state.expenses && state.expenses[0] && state.expenses[0].currency) currencyCode = state.expenses[0].currency;
+        var summary = state.summary || {};
+        document.getElementById("stat-total").textContent = money(summary.total || 0);
+        document.getElementById("stat-pending").textContent = money(summary.pending || 0);
+        document.getElementById("stat-reimbursable").textContent = money(summary.reimbursable || 0);
+        document.getElementById("stat-count").textContent = summary.count ? summary.count + (summary.count === 1 ? " saved expense" : " saved expenses") : "No expenses yet";
+        document.getElementById("stat-pockets").textContent = (state.pockets || []).length;
+        var pocketBalance = (state.pockets || []).reduce(function (sum, pocket) { return sum + (Number(pocket.balance) || 0); }, 0);
+        document.getElementById("stat-pocket-detail").textContent = state.pockets && state.pockets.length ? money(pocketBalance) + " set aside in plans" : "Create a goal to start planning";
+        optionList(document.getElementById("category"), state.categories || []);
+        optionList(document.getElementById("expense-type"), state.expense_types || []);
+        optionList(document.getElementById("payment-status"), state.payment_statuses || []);
+        var filter = document.getElementById("category-filter");
+        var previous = filter.value;
+        filter.innerHTML = '<option value="">All categories</option>';
+        (state.categories || []).forEach(function (category) {
+          var option = document.createElement("option");
+          option.value = category; option.textContent = category; filter.appendChild(option);
+        });
+        filter.value = previous;
+        renderCategories();
+        renderRecent();
+        renderExpenses();
+        renderPockets();
+        publishSidebar();
+      }
+
+      function renderCategories() {
+        var container = document.getElementById("category-list");
+        var entries = Object.keys((appState.summary || {}).by_category || {}).map(function (name) {
+          return { name: name, total: appState.summary.by_category[name] };
+        }).sort(function (a, b) { return b.total - a.total; }).slice(0, 6);
+        container.textContent = "";
+        if (!entries.length) { container.innerHTML = '<div class="empty">Categories appear after you save an expense.</div>'; return; }
+        var max = entries[0].total || 1;
+        entries.forEach(function (entry) {
+          var row = document.createElement("div");
+          row.innerHTML = '<div class="category-copy"><span></span><span></span></div><div class="track"><div class="fill"></div></div>';
+          row.querySelector(".category-copy span:first-child").textContent = entry.name;
+          row.querySelector(".category-copy span:last-child").textContent = money(entry.total);
+          row.querySelector(".fill").style.width = Math.max(3, entry.total / max * 100) + "%";
+          container.appendChild(row);
+        });
+      }
+
+      function expenseRow(expense) {
+        var button = document.createElement("button");
+        button.type = "button"; button.className = "expense-row";
+        button.innerHTML = '<span class="expense-icon"></span><span class="expense-copy"><strong></strong><span></span></span><span class="expense-money"></span>';
+        button.querySelector(".expense-icon").textContent = (expense.vendor || "?").slice(0, 1).toUpperCase();
+        button.querySelector(".expense-copy strong").textContent = expense.vendor || "Unknown vendor";
+        button.querySelector(".expense-copy span").textContent = [expense.category, expense.invoice_date || "No date"].filter(Boolean).join(" · ");
+        button.querySelector(".expense-money").textContent = money(expense.total, expense.currency);
+        var status = document.createElement("span"); status.textContent = expense.payment_status; button.querySelector(".expense-money").appendChild(status);
+        button.onclick = function () { openReview(expense); };
+        return button;
+      }
+
+      function renderRecent() {
+        var container = document.getElementById("recent-list");
+        container.textContent = "";
+        var items = (appState.expenses || []).slice(0, 5);
+        if (!items.length) { container.innerHTML = '<div class="empty">Your latest invoices will appear here.</div>'; return; }
+        items.forEach(function (expense) { container.appendChild(expenseRow(expense)); });
+      }
+
+      function renderExpenses() {
+        var query = document.getElementById("search").value.trim().toLowerCase();
+        var category = document.getElementById("category-filter").value;
+        var items = (appState.expenses || []).filter(function (expense) {
+          var matchesQuery = !query || [expense.vendor, expense.invoice_number, expense.description].join(" ").toLowerCase().indexOf(query) >= 0;
+          return matchesQuery && (!category || expense.category === category);
+        });
+        var body = document.getElementById("expense-table");
+        body.textContent = "";
+        document.getElementById("expense-empty").style.display = items.length ? "none" : "block";
+        items.forEach(function (expense) {
+          var row = document.createElement("tr");
+          row.innerHTML = "<td></td><td></td><td></td><td></td><td></td>";
+          row.children[0].textContent = expense.vendor;
+          row.children[1].textContent = expense.invoice_date || "—";
+          row.children[2].textContent = expense.category;
+          var badge = document.createElement("span"); badge.className = "badge " + (expense.payment_status === "Paid" ? "paid" : ""); badge.textContent = expense.payment_status; row.children[3].appendChild(badge);
+          row.children[4].textContent = money(expense.total, expense.currency);
+          row.onclick = function () { openReview(expense); };
+          body.appendChild(row);
+        });
+      }
+
+      function renderPockets() {
+        var container = document.getElementById("pocket-grid");
+        var items = appState.pockets || [];
+        container.textContent = "";
+        document.getElementById("pocket-empty").style.display = items.length ? "none" : "block";
+        items.forEach(function (pocket) {
+          var ratio = pocket.target > 0 ? Math.min(100, pocket.balance / pocket.target * 100) : 0;
+          var card = document.createElement("article");
+          card.className = "pocket";
+          card.style.setProperty("--pocket-color", colorMap[pocket.color] || colorMap.mint);
+          card.innerHTML = '<div class="pocket-top"><div><h3></h3></div><span class="pocket-dot"></span></div><div class="balance"></div><div class="target"></div><div class="track"><div class="fill"></div></div><div class="pocket-footer"><span></span><button class="link" type="button">Edit</button></div>';
+          card.querySelector("h3").textContent = pocket.name;
+          card.querySelector(".balance").textContent = money(pocket.balance);
+          card.querySelector(".target").textContent = "of " + money(pocket.target) + " goal";
+          card.querySelector(".fill").style.width = Math.max(2, ratio) + "%";
+          card.querySelector(".pocket-footer span").textContent = Math.round(ratio) + "% funded";
+          card.querySelector("button").onclick = function () { editPocket(pocket); };
+          container.appendChild(card);
+        });
+      }
+
+      function refresh() {
+        return invoke("state").then(function (raw) {
+          var state = JSON.parse(raw);
+          if (!state.ok) throw new Error(state.error || "Could not load Spending.");
+          renderState(state);
+        }).catch(function (error) { showError(error.message || String(error)); });
+      }
+
+      function openIntake(mode) {
+        document.getElementById("intake-overlay").classList.add("visible");
+        setIntakeMode(mode || "invoice");
+        showError("");
+      }
+      function closeIntake() { document.getElementById("intake-overlay").classList.remove("visible"); }
+      function setIntakeMode(mode) {
+        intakeMode = mode === "manual" ? "manual" : "invoice";
+        document.querySelectorAll(".intake-tab").forEach(function (button) { button.classList.toggle("active", button.getAttribute("data-mode") === intakeMode); });
+        document.getElementById("invoice-intake").style.display = intakeMode === "invoice" ? "block" : "none";
+        currentExpense = intakeMode === "manual" ? null : currentExpense;
+        if (intakeMode === "manual") {
+          renderReview({
+            vendor: "", invoice_number: "", invoice_date: "", due_date: "", currency: currencyCode,
+            subtotal: 0, tax: 0, total: 0, category: "Other", expense_type: "Operating",
+            payment_status: "Pending", description: "", line_items: [], confidence: 1, warnings: []
+          });
+        } else {
+          document.getElementById("review").classList.remove("visible");
+        }
+      }
+
+      function selectFile(file) {
+        if (!file || ["image/jpeg", "image/png", "image/webp"].indexOf(file.type) < 0) { showError("Choose a JPEG, PNG, or WebP invoice image."); return; }
+        selectedFile = file; preparedImage = null; showError("");
+        var preview = document.getElementById("preview");
+        preview.src = URL.createObjectURL(file); preview.hidden = false;
+        document.getElementById("drop").classList.add("has-photo");
+        document.getElementById("upload-title").textContent = file.name || "Invoice image";
+        document.getElementById("upload-detail").textContent = "Choose image to replace";
+        document.getElementById("analyze").disabled = false;
+      }
+
+      function prepareImage(file) {
+        return new Promise(function (resolve, reject) {
+          var reader = new FileReader();
+          reader.onerror = function () { reject(new Error("Could not read this image.")); };
+          reader.onload = function () {
+            var image = new Image();
+            image.onerror = function () { reject(new Error("Could not decode this image.")); };
+            image.onload = function () {
+              var maxSide = 1600;
+              var scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+              var canvas = document.createElement("canvas");
+              canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+              canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+              var context = canvas.getContext("2d");
+              context.drawImage(image, 0, 0, canvas.width, canvas.height);
+              var dataUrl = canvas.toDataURL("image/jpeg", .84);
+              resolve({ mime: "image/jpeg", base64: dataUrl.split(",")[1] });
+            };
+            image.src = reader.result;
+          };
+          reader.readAsDataURL(file);
+        });
+      }
+
+      function settings() { return { provider: document.getElementById("provider").value === "codex" ? "codex" : "opencode", model: document.getElementById("model").value.trim() || "opencode-go/kimi-k2.6" }; }
+      function setBusy(busy, text) {
+        document.getElementById("analyze").disabled = busy || !selectedFile;
+        document.getElementById("status").classList.toggle("visible", busy);
+        if (text) document.getElementById("status-text").textContent = text;
+      }
+
+      async function analyzeInvoice() {
+        if (!selectedFile) return;
+        showError(""); setBusy(true, "Preparing invoice image…");
+        try {
+          preparedImage = preparedImage || await prepareImage(selectedFile);
+          setBusy(true, "Reading vendor, totals, tax, dates, and line items…");
+          var selected = settings();
+          var raw = await invoke("analyze_invoice", preparedImage.base64, preparedImage.mime, document.getElementById("invoice-note").value, selected.provider, selected.model, "preview");
+          var state = JSON.parse(raw);
+          if (!state.ok) throw new Error(state.error || "Could not analyze this invoice.");
+          renderState(state);
+          currentExpense = state.expense;
+          renderReview(state.expense);
+        } catch (error) { showError(error.message || String(error)); }
+        finally { setBusy(false); }
+      }
+
+      function setValue(id, value) { document.getElementById(id).value = value == null ? "" : value; }
+      function renderReview(expense) {
+        currentExpense = expense && expense.id ? expense : currentExpense;
+        setValue("vendor", expense.vendor); setValue("invoice-number", expense.invoice_number);
+        setValue("invoice-date", expense.invoice_date); setValue("due-date", expense.due_date);
+        setValue("currency", expense.currency || currencyCode); setValue("total", expense.total);
+        setValue("subtotal", expense.subtotal); setValue("tax", expense.tax);
+        setValue("category", expense.category); setValue("expense-type", expense.expense_type);
+        setValue("payment-status", expense.payment_status); setValue("description", expense.description);
+        var lineItems = document.getElementById("line-items");
+        lineItems.textContent = "";
+        if (expense.line_items && expense.line_items.length) {
+          var heading = document.createElement("h3"); heading.textContent = "Invoice line items"; lineItems.appendChild(heading);
+          expense.line_items.forEach(function (line) {
+            var row = document.createElement("div"); row.className = "line-item";
+            var copy = document.createElement("div"); var name = document.createElement("strong"); var detail = document.createElement("span");
+            name.textContent = line.description; detail.textContent = (line.quantity || 0) + " × " + money(line.unit_price, expense.currency);
+            copy.appendChild(name); copy.appendChild(detail);
+            var amount = document.createElement("div"); amount.textContent = money(line.amount, expense.currency);
+            row.appendChild(copy); row.appendChild(amount); lineItems.appendChild(row);
+          });
+          lineItems.style.display = "block";
+        } else {
+          lineItems.style.display = "none";
+        }
+        var warnings = document.getElementById("warning-list"); warnings.textContent = "";
+        (expense.warnings || []).forEach(function (warning) { var item = document.createElement("li"); item.textContent = warning; warnings.appendChild(item); });
+        document.getElementById("review").classList.add("visible");
+      }
+
+      function reviewPayload() {
+        return {
+          vendor: document.getElementById("vendor").value,
+          invoice_number: document.getElementById("invoice-number").value,
+          invoice_date: document.getElementById("invoice-date").value,
+          due_date: document.getElementById("due-date").value,
+          currency: document.getElementById("currency").value,
+          total: Number(document.getElementById("total").value),
+          subtotal: Number(document.getElementById("subtotal").value),
+          tax: Number(document.getElementById("tax").value),
+          category: document.getElementById("category").value,
+          expense_type: document.getElementById("expense-type").value,
+          payment_status: document.getElementById("payment-status").value,
+          description: document.getElementById("description").value,
+          line_items: (currentExpense && currentExpense.line_items) || [],
+          confidence: (currentExpense && currentExpense.confidence) || 1,
+          warnings: (currentExpense && currentExpense.warnings) || [],
+          id: currentExpense && currentExpense.id,
+          blob_name: (currentExpense && currentExpense.blob_name) || "",
+          source: (currentExpense && currentExpense.source) || "manual",
+          note: (currentExpense && currentExpense.note) || "",
+          provider: (currentExpense && currentExpense.provider) || "",
+          model: (currentExpense && currentExpense.model) || "",
+          created_at: currentExpense && currentExpense.created_at
+        };
+      }
+
+      async function saveExpense() {
+        showError("");
+        try {
+          var payload = JSON.stringify(reviewPayload());
+          var raw = currentExpense && currentExpense.id ? await invoke("update_expense", currentExpense.id, payload) : await invoke("create_manual", payload);
+          var state = JSON.parse(raw);
+          if (!state.ok) throw new Error(state.error || "Could not save this expense.");
+          renderState(state); closeIntake(); setView("expenses");
+        } catch (error) { showError(error.message || String(error)); }
+      }
+
+      function openReview(expense) {
+        openIntake("manual");
+        currentExpense = expense;
+        renderReview(expense);
+        document.querySelectorAll(".intake-tab").forEach(function (button) { button.classList.remove("active"); });
+        document.getElementById("intake-title").textContent = "Review expense";
+      }
+
+      function showPocketForm(show) { document.getElementById("pocket-form").classList.toggle("visible", show); if (show) document.getElementById("pocket-name").focus(); }
+      function editPocket(pocket) {
+        showPocketForm(true);
+        document.getElementById("pocket-form").dataset.id = pocket.id;
+        setValue("pocket-name", pocket.name); setValue("pocket-target", pocket.target); setValue("pocket-balance", pocket.balance); setValue("pocket-color", pocket.color);
+      }
+
+      document.querySelectorAll(".tab").forEach(function (button) { button.onclick = function () { setView(button.getAttribute("data-view")); }; });
+      document.querySelectorAll("[data-go]").forEach(function (button) { button.onclick = function () { setView(button.getAttribute("data-go")); }; });
+      document.getElementById("open-intake").onclick = function () { document.getElementById("intake-title").textContent = "New expense"; currentExpense = null; openIntake("invoice"); };
+      document.getElementById("close-intake").onclick = closeIntake;
+      document.getElementById("intake-overlay").onclick = function (event) { if (event.target === event.currentTarget) closeIntake(); };
+      document.querySelectorAll(".intake-tab").forEach(function (button) { button.onclick = function () { currentExpense = null; setIntakeMode(button.getAttribute("data-mode")); }; });
+      document.getElementById("file").onchange = function (event) { selectFile(event.target.files && event.target.files[0]); };
+      ["dragenter", "dragover"].forEach(function (name) { document.getElementById("drop").addEventListener(name, function (event) { event.preventDefault(); event.currentTarget.classList.add("dragging"); }); });
+      ["dragleave", "drop"].forEach(function (name) { document.getElementById("drop").addEventListener(name, function (event) { event.preventDefault(); event.currentTarget.classList.remove("dragging"); }); });
+      document.getElementById("drop").addEventListener("drop", function (event) { selectFile(event.dataTransfer.files && event.dataTransfer.files[0]); });
+      document.getElementById("analyze").onclick = analyzeInvoice;
+      document.getElementById("back-to-intake").onclick = function () { if (intakeMode === "invoice") document.getElementById("review").classList.remove("visible"); else closeIntake(); };
+      document.getElementById("save-expense").onclick = saveExpense;
+      document.getElementById("provider").onchange = function () {
+        var isOpenCode = this.value === "opencode";
+        document.getElementById("model").disabled = !isOpenCode;
+        var selected = settings();
+        invoke("configure", selected.provider, selected.model).catch(function () {});
+      };
+      document.getElementById("model").onchange = function () { var selected = settings(); invoke("configure", selected.provider, selected.model).catch(function () {}); };
+      document.getElementById("search").oninput = renderExpenses;
+      document.getElementById("category-filter").onchange = renderExpenses;
+      document.getElementById("toggle-pocket-form").onclick = function () { delete document.getElementById("pocket-form").dataset.id; document.getElementById("pocket-form").reset(); document.getElementById("pocket-balance").value = "0"; showPocketForm(true); };
+      document.getElementById("cancel-pocket").onclick = function () { showPocketForm(false); };
+      document.getElementById("pocket-form").onsubmit = async function (event) {
+        event.preventDefault(); showError("");
+        var form = event.currentTarget;
+        var pocket = JSON.stringify({ name: document.getElementById("pocket-name").value, target: Number(document.getElementById("pocket-target").value), balance: Number(document.getElementById("pocket-balance").value), color: document.getElementById("pocket-color").value });
+        try {
+          var raw = form.dataset.id ? await invoke("update_pocket", form.dataset.id, pocket) : await invoke("create_pocket", pocket);
+          var state = JSON.parse(raw); if (!state.ok) throw new Error(state.error || "Could not save pocket.");
+          renderState(state); showPocketForm(false); form.reset(); delete form.dataset.id;
+        } catch (error) { showError(error.message || String(error)); }
+      };
+      if (window.terrane && typeof window.terrane.onSidebarItemSelect === "function") window.terrane.onSidebarItemSelect(setView);
+      if (window.terrane && typeof window.terrane.onSidebarCreate === "function") window.terrane.onSidebarCreate(function () { currentExpense = null; openIntake("invoice"); });
+
+      refresh().then(function () {
+        var stateSettings = appState.settings || { provider: "opencode", model: "opencode-go/kimi-k2.6" };
+        document.getElementById("provider").value = stateSettings.provider || "opencode";
+        document.getElementById("model").value = stateSettings.model || "opencode-go/kimi-k2.6";
+      });
+    </script>
+  </body>
+</html>
