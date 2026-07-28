@@ -1,3 +1,10 @@
+// Production Google OAuth identifiers. OAuth client IDs are public build
+// metadata; never add a client secret to this file or any application bundle.
+GOOGLE_CLIENT_ID = 197171768448-jbtt8f6qmnjkd0uuhdbe55jddr8mn8ms.apps.googleusercontent.com
+GOOGLE_SERVER_CLIENT_ID = 197171768448-b3nlita3kfbq3paffe4gscp27qvnlcdd.apps.googleusercontent.com
+REVERSED_GOOGLE_CLIENT_ID = com.googleusercontent.apps.197171768448-jbtt8f6qmnjkd0uuhdbe55jddr8mn8ms
+
+// Optional developer-local values override the checked-in defaults.
 #include? "Local.xcconfig"
 
 LIBRARY_SEARCH_PATHS[sdk=iphone*] = $(inherited) $(DERIVED_FILE_DIR)/TerraneRust

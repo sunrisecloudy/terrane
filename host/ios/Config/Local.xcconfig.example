@@ -1,5 +1,9 @@
-// Copy to Local.xcconfig. Do not commit real OAuth identifiers or credentials.
+// Copy to Local.xcconfig for developer-local overrides. The checked-in runtime
+// config already supplies Terrane's public production Google OAuth client IDs.
+// Never put a Google client secret, SaaS token, or user credential here.
 TERRANE_PREMIUM_BASE_URL = https:/$()/premium.example.com
-GOOGLE_CLIENT_ID = example.apps.googleusercontent.com
-GOOGLE_SERVER_CLIENT_ID = example.apps.googleusercontent.com
-REVERSED_GOOGLE_CLIENT_ID = com.googleusercontent.apps.example
+
+// Optional OAuth overrides for a separate development Google Cloud project:
+// GOOGLE_CLIENT_ID = 000000000000-example.apps.googleusercontent.com
+// GOOGLE_SERVER_CLIENT_ID = 000000000000-example.apps.googleusercontent.com
+// REVERSED_GOOGLE_CLIENT_ID = com.googleusercontent.apps.000000000000-example

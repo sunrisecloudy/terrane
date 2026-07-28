@@ -125,20 +125,24 @@ credential.
 
 ### Provider configuration
 
-The checked-in build settings are intentionally blank. Copy
-`Configs/PremiumAuth.xcconfig.example` to an untracked location and supply the
-three public OAuth identifiers:
+The checked-in `Configs/PremiumAuth.xcconfig` supplies Terrane's three public
+production OAuth identifiers:
 
 ```xcconfig
-TERRANE_GOOGLE_CLIENT_ID = <macOS OAuth client id>
-TERRANE_GOOGLE_SERVER_CLIENT_ID = <backend audience client id>
-TERRANE_GOOGLE_REVERSED_CLIENT_ID = <reversed redirect scheme>
+TERRANE_GOOGLE_CLIENT_ID = <macOS OAuth client ID>
+TERRANE_GOOGLE_SERVER_CLIENT_ID = <web/server client ID>
+TERRANE_GOOGLE_REVERSED_CLIENT_ID = <reversed macOS client scheme>
 ```
 
+`GIDServerClientID` therefore uses the web/server client ID, while the callback
+scheme is derived only from the macOS client ID. For a separate development
+Google Cloud project, copy `Configs/PremiumAuth.xcconfig.example` to the
+gitignored `Configs/PremiumAuth.local.xcconfig`; its values override the
+checked-in defaults because it is included last.
+
 Do not add Google client secrets, Apple private keys, SaaS tokens, or any real
-user credential to this repository or an app bundle. Configure the Google
-redirect URI for the app bundle id and configure the server client id as the
-backend ID-token audience.
+user credential to this repository or an app bundle. Configure the server
+client ID as the backend ID-token audience.
 
 ## Build
 
@@ -177,15 +181,15 @@ The checked-in entitlements declare Sign in with Apple and put the private
 default app Keychain access group first, as required by Google Sign-In on
 macOS. Keep the group app-specific; do not substitute a shared Keychain group.
 
-Generate, archive, and sign with public OAuth configuration injected from an
-untracked file:
+Generate, archive, and sign with the checked-in public production OAuth
+configuration. If present, `Configs/PremiumAuth.local.xcconfig` is applied
+automatically for a developer-only override:
 
 ```sh
 cd host/macos
 xcodegen generate
 xcodebuild -project Terrane.xcodeproj -scheme TerraneHost \
-  -configuration Release -xcconfig /secure/path/PremiumAuth.xcconfig \
-  DEVELOPMENT_TEAM=<team-id> CODE_SIGN_STYLE=Automatic \
+  -configuration Release DEVELOPMENT_TEAM=<team-id> CODE_SIGN_STYLE=Automatic \
   ENABLE_HARDENED_RUNTIME=YES archive \
   -archivePath "$PWD/build/TerraneHost.xcarchive"
 ```

@@ -1,0 +1,8 @@
+// Production Google OAuth identifiers. OAuth client IDs are public build
+// metadata; never add a client secret to this file or any application bundle.
+TERRANE_GOOGLE_CLIENT_ID = 197171768448-tl1pi4kba12r6u56me6js9limo3srejk.apps.googleusercontent.com
+TERRANE_GOOGLE_SERVER_CLIENT_ID = 197171768448-b3nlita3kfbq3paffe4gscp27qvnlcdd.apps.googleusercontent.com
+TERRANE_GOOGLE_REVERSED_CLIENT_ID = com.googleusercontent.apps.197171768448-tl1pi4kba12r6u56me6js9limo3srejk
+
+// Optional developer-local values override the checked-in defaults.
+#include? "PremiumAuth.local.xcconfig"

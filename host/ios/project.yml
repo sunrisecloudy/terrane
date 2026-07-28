@@ -15,10 +15,6 @@ settings:
   base:
     SWIFT_VERSION: "5.9"
     TARGETED_DEVICE_FAMILY: "1,2"
-    TERRANE_PREMIUM_BASE_URL: ""
-    GOOGLE_CLIENT_ID: ""
-    GOOGLE_SERVER_CLIENT_ID: ""
-    REVERSED_GOOGLE_CLIENT_ID: ""
 targets:
   TerraneIOS:
     type: application

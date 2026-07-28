@@ -13,11 +13,6 @@ settings:
     ONLY_ACTIVE_ARCH: "YES"
     CODE_SIGN_IDENTITY: "-"
     ENABLE_HARDENED_RUNTIME: "NO"
-    # Public OAuth identifiers only. Supply them through an untracked local
-    # xcconfig or CI build settings; never put provider secrets in this file.
-    TERRANE_GOOGLE_CLIENT_ID: ""
-    TERRANE_GOOGLE_SERVER_CLIENT_ID: ""
-    TERRANE_GOOGLE_REVERSED_CLIENT_ID: ""
 packages:
   TerranePremiumSession:
     path: ../apple/TerranePremiumSession
@@ -30,6 +25,9 @@ targets:
     platform: macOS
     supportedDestinations:
       - macOS
+    configFiles:
+      Debug: Configs/PremiumAuth.xcconfig
+      Release: Configs/PremiumAuth.xcconfig
     sources:
       - path: Sources
     settings:

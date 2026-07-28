@@ -114,7 +114,7 @@ private struct ConfiguredPremiumAccountView: View {
         .accessibilityIdentifier("premium.sign-in.google")
 
         if configuration.googleClientID == nil {
-          Text("Google Sign-In requires GOOGLE_CLIENT_ID in Local.xcconfig.")
+          Text("Google Sign-In is not configured for this build.")
             .font(.caption)
             .foregroundStyle(.secondary)
         }

@@ -3,3 +3,4 @@
 build/
 .derived/
 Sources/Info.plist
+Configs/PremiumAuth.local.xcconfig

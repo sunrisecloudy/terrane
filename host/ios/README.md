@@ -21,9 +21,15 @@ It does not use the archived Forge-era mobile runtime.
 
 ## Configuration
 
-Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig` and replace the
-placeholder values locally. Never commit OAuth identifiers from a private
-environment or any credentials.
+The checked-in `Config/Runtime.xcconfig` supplies Terrane's public production
+Google OAuth client IDs. `GIDServerClientID` uses the web/server client ID, and
+the callback scheme is the reversed iOS client ID.
+
+For a developer-local Premium URL or a separate Google Cloud development
+project, copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`.
+Because the optional include is last, those untracked values override the
+checked-in defaults. Never add a Google client secret or any user credential
+to an xcconfig or application bundle.
 
 The build consumes Google Sign-In 9.x through Swift Package Manager. The iOS
 OAuth redirect scheme must match `REVERSED_GOOGLE_CLIENT_ID`. Enable the Sign in
