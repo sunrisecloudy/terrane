@@ -431,10 +431,24 @@ final class AppSidebarView: NSVisualEffectView, NSSplitViewDelegate {
 
   static func iconImage(for app: TerraneApp) -> NSImage? {
     if let iconURL = app.iconURL, let image = NSImage(contentsOf: iconURL) {
-      image.isTemplate = true
-      return image
+      return normalizedSidebarIcon(image)
     }
     return NSImage(systemSymbolName: "app.dashed", accessibilityDescription: nil)
+  }
+
+  private static func normalizedSidebarIcon(_ image: NSImage) -> NSImage {
+    let targetSize = NSSize(width: 18, height: 18)
+    let sourceSize = image.size
+    guard sourceSize.width > 0, sourceSize.height > 0 else { return image }
+
+    let scale = min(targetSize.width / sourceSize.width, targetSize.height / sourceSize.height)
+    let normalized = (image.copy() as? NSImage) ?? image
+    normalized.size = NSSize(
+      width: sourceSize.width * scale,
+      height: sourceSize.height * scale
+    )
+    normalized.isTemplate = true
+    return normalized
   }
 
   static func iconImage(for app: PremiumApp) -> NSImage? {

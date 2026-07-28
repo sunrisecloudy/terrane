@@ -271,6 +271,29 @@ final class BmiCalculatorE2ETests: XCTestCase {
     }
   }
 
+  func testAppSidebarNormalizesOversizedManifestIcons() throws {
+    try runOnMainThread {
+      let root = repoRoot()
+      for appId in ["tomorrow", "visual-intake"] {
+        let directory = root.appendingPathComponent("apps/\(appId)")
+        let app = TerraneApp(
+          id: appId,
+          name: appId,
+          directory: directory,
+          uiURL: directory.appendingPathComponent("index.html"),
+          iconPath: "icon.svg",
+          iconURL: directory.appendingPathComponent("icon.svg"),
+          browserPermissions: []
+        )
+
+        let icon = try XCTUnwrap(AppSidebarView.iconImage(for: app))
+        XCTAssertLessThanOrEqual(icon.size.width, 18)
+        XCTAssertLessThanOrEqual(icon.size.height, 18)
+        XCTAssertTrue(icon.isTemplate)
+      }
+    }
+  }
+
   func testAppSidebarResetsAppsScrollOnlyWhenSelectionChanges() throws {
     try runOnMainThread {
       let base = URL(fileURLWithPath: "/tmp/terrane-sidebar-scroll-test")
