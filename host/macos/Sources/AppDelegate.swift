@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var sttCapture: SttCapture?
   private var cameraFrameStreamer: NativeCameraFrameStreamer?
   private var nativePickCoordinator: NativePickCoordinator?
+  private var visualIntakePhotoService: VisualIntakePhotoService?
   private var sttMicButton: NSButton!
   private var sttListeningLabel: NSTextField!
   private var appSchemeHandler: AppSchemeHandler?
@@ -171,6 +172,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         )
       }
     }
+    let visualIntakePhotoService = VisualIntakePhotoService()
+    self.visualIntakePhotoService = visualIntakePhotoService
+    visualIntakePhotoService.onNewImage = { [weak self] result in
+      self?.pushVisualIntakeImage(result)
+    }
+    bridge.onVisualIntakeStart = { [weak visualIntakePhotoService] completion in
+      visualIntakePhotoService?.requestAccessAndStart(completion: completion)
+    }
+    bridge.onVisualIntakeLatest = { [weak visualIntakePhotoService] completion in
+      visualIntakePhotoService?.analyzeLatest(completion: completion)
+    }
+    bridge.onVisualIntakeStop = { [weak visualIntakePhotoService] completion in
+      visualIntakePhotoService?.stop(completion: completion)
+    }
+    bridge.onVisualIntakeStatus = { [weak visualIntakePhotoService] completion in
+      visualIntakePhotoService?.status(completion: completion)
+    }
     // Mark our app-serving custom schemes as secure contexts. WebKit only
     // exposes powerful web APIs (getUserMedia for camera/mic, etc.) on secure
     // origins, and a bare WKURLSchemeHandler scheme is not trustworthy by
@@ -222,6 +240,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   func applicationWillTerminate(_ notification: Notification) {
     sttCapture?.stop(reason: "host-exit")
     cameraFrameStreamer?.stop()
+    visualIntakePhotoService?.stop { _, _ in }
     loopbackHost?.stop()
     mcpServer?.stop()
     terrane_stt_shutdown()
@@ -649,6 +668,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     }
     webView.evaluateJavaScript(
       "window.dispatchEvent(new CustomEvent('terrane:cameraFrame', { detail: \(json) }));")
+  }
+
+  private func pushVisualIntakeImage(_ payload: [String: Any]) {
+    guard bridge?.selectedAppId == "visual-intake",
+      let data = try? JSONSerialization.data(withJSONObject: payload),
+      let json = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    webView.evaluateJavaScript(
+      "window.dispatchEvent(new CustomEvent('terrane:visualIntakeImage', { detail: \(json) }));")
   }
 
   private func openPremium(_ app: PremiumApp) {

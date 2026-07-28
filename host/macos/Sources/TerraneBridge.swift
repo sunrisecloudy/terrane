@@ -120,6 +120,12 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// Present one host-owned, user-mediated picker. The JS surface stays generic;
   /// the initial macOS implementation supports only Photos images.
   var onPick: ((NativePickOptions, @escaping (Any?, String?) -> Void) -> Void)?
+  /// Developer-preview Photos/Vision entry points. The trusted host owns
+  /// PhotoKit authorization and never exposes ambient library access to app JS.
+  var onVisualIntakeStart: ((@escaping (Any?, String?) -> Void) -> Void)?
+  var onVisualIntakeLatest: ((@escaping (Any?, String?) -> Void) -> Void)?
+  var onVisualIntakeStop: ((@escaping (Any?, String?) -> Void) -> Void)?
+  var onVisualIntakeStatus: ((@escaping (Any?, String?) -> Void) -> Void)?
 
   var terraneHandle: OpaquePointer { handle }
 
@@ -304,6 +310,54 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         return
       }
       onPick(options, replyHandler)
+    case "visualIntake:start":
+      guard message.frameInfo.isMainFrame else {
+        replyHandler(nil, "terrane: Visual Intake is only available to the selected app frame")
+        return
+      }
+      guard appId == "visual-intake", browserPermissions.contains("photos") else {
+        replyHandler(nil, "terrane: Photos intake is not declared by this app")
+        return
+      }
+      guard let onVisualIntakeStart else {
+        replyHandler(nil, "terrane: native Visual Intake is unavailable")
+        return
+      }
+      onVisualIntakeStart(replyHandler)
+    case "visualIntake:latest":
+      guard message.frameInfo.isMainFrame else {
+        replyHandler(nil, "terrane: Visual Intake is only available to the selected app frame")
+        return
+      }
+      guard appId == "visual-intake", browserPermissions.contains("photos") else {
+        replyHandler(nil, "terrane: Photos intake is not declared by this app")
+        return
+      }
+      guard let onVisualIntakeLatest else {
+        replyHandler(nil, "terrane: native Visual Intake is unavailable")
+        return
+      }
+      onVisualIntakeLatest(replyHandler)
+    case "visualIntake:stop":
+      guard appId == "visual-intake", browserPermissions.contains("photos") else {
+        replyHandler(nil, "terrane: Photos intake is not declared by this app")
+        return
+      }
+      guard let onVisualIntakeStop else {
+        replyHandler(["ok": true, "watching": false], nil)
+        return
+      }
+      onVisualIntakeStop(replyHandler)
+    case "visualIntake:status":
+      guard appId == "visual-intake", browserPermissions.contains("photos") else {
+        replyHandler(nil, "terrane: Photos intake is not declared by this app")
+        return
+      }
+      guard let onVisualIntakeStatus else {
+        replyHandler(nil, "terrane: native Visual Intake is unavailable")
+        return
+      }
+      onVisualIntakeStatus(replyHandler)
     default:
       replyHandler(nil, "terrane: unknown bridge message")
     }
@@ -1039,6 +1093,18 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
         },
         stopCameraStream: function () {
           return post({ kind: "camera:stopStream" });
+        },
+        startVisualIntake: function () {
+          return post({ kind: "visualIntake:start" });
+        },
+        analyzeLatestPhoto: function () {
+          return post({ kind: "visualIntake:latest" });
+        },
+        stopVisualIntake: function () {
+          return post({ kind: "visualIntake:stop" });
+        },
+        visualIntakeStatus: function () {
+          return post({ kind: "visualIntake:status" });
         },
         // --- Top-bar document/theme (host chrome) — parity with the web host ---
         getDocument: function () {

@@ -1,0 +1,12 @@
+{
+  "id": "visual-intake",
+  "name": "Visual Intake",
+  "version": "0.1.0",
+  "runtime": "js",
+  "backend": "main.js",
+  "ui": "index.html",
+  "icon": "icon.svg",
+  "resources": [],
+  "interfaces": ["items"],
+  "browser_permissions": ["photos"]
+}

@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Visual Intake</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f5f5f7;
+        --panel: rgba(255, 255, 255, 0.86);
+        --text: #171719;
+        --muted: #66666f;
+        --line: rgba(23, 23, 25, 0.12);
+        --accent: #5b51d8;
+        --accent-soft: rgba(91, 81, 216, 0.12);
+        --success: #247a4a;
+        --warning: #9a5b00;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #171719;
+          --panel: rgba(39, 39, 43, 0.92);
+          --text: #f5f5f7;
+          --muted: #acacb5;
+          --line: rgba(255, 255, 255, 0.12);
+          --accent: #9a91ff;
+          --accent-soft: rgba(154, 145, 255, 0.14);
+          --success: #62c991;
+          --warning: #f0ad4e;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          radial-gradient(circle at top right, var(--accent-soft), transparent 34rem),
+          var(--bg);
+        color: var(--text);
+        font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      }
+      main { max-width: 980px; margin: 0 auto; padding: 38px 34px 60px; }
+      header { display: flex; gap: 24px; align-items: flex-start; justify-content: space-between; }
+      h1 { margin: 0; font-size: 34px; letter-spacing: -0.8px; }
+      .subtitle { max-width: 630px; margin: 8px 0 0; color: var(--muted); font-size: 15px; }
+      .badge {
+        padding: 7px 11px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+      .notice, .empty, .item {
+        margin-top: 24px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: var(--panel);
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.06);
+      }
+      .notice { padding: 18px 20px; display: grid; grid-template-columns: auto 1fr; gap: 14px; }
+      .notice strong { display: block; margin-bottom: 3px; }
+      .notice p { margin: 0; color: var(--muted); }
+      .shield { font-size: 23px; }
+      .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 20px; }
+      button {
+        appearance: none;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        padding: 9px 14px;
+        background: var(--panel);
+        color: var(--text);
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button.primary { color: white; background: #5b51d8; border-color: #5b51d8; }
+      button:disabled { opacity: 0.55; cursor: default; }
+      #status { color: var(--muted); margin-left: 4px; }
+      .empty { padding: 48px 24px; text-align: center; color: var(--muted); }
+      .empty strong { display: block; color: var(--text); font-size: 17px; margin-bottom: 4px; }
+      .items { display: grid; gap: 18px; margin-top: 24px; }
+      .item { overflow: hidden; display: grid; grid-template-columns: minmax(220px, 42%) 1fr; }
+      .preview { min-height: 260px; background: #0d0d0f; display: grid; place-items: center; }
+      .preview img { width: 100%; height: 100%; max-height: 390px; object-fit: contain; }
+      .details { padding: 22px; min-width: 0; }
+      .eyebrow { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+      .route { margin: 7px 0 3px; font-size: 25px; font-weight: 750; letter-spacing: -0.4px; }
+      .route.none { color: var(--muted); }
+      .facts { display: flex; flex-wrap: wrap; gap: 7px; margin: 15px 0; }
+      .fact { padding: 5px 8px; border-radius: 7px; background: var(--accent-soft); color: var(--accent); font-size: 12px; }
+      .safety { margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--line); color: var(--success); }
+      .safety.review { color: var(--warning); }
+      .error { color: #c43b3b; }
+      @media (max-width: 720px) {
+        main { padding: 24px 18px 45px; }
+        header { display: block; }
+        .badge { display: inline-block; margin-top: 13px; }
+        .item { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>Visual Intake</h1>
+          <p class="subtitle">A local desktop proof for treating new Photos images as Terrane inputs and recommending the right app.</p>
+        </div>
+        <span class="badge">Developer preview</span>
+      </header>
+
+      <section class="notice">
+        <span class="shield" aria-hidden="true">◈</span>
+        <div>
+          <strong>Local inspection only</strong>
+          <p>This test uses Apple Photos and Vision on this Mac. It does not invoke an external model, execute a route, modify Photos, or persist the image in Terrane.</p>
+        </div>
+      </section>
+
+      <div class="controls">
+        <button id="watch" class="primary">Enable and watch new images</button>
+        <button id="latest">Analyze latest image</button>
+        <button id="stop">Stop watching</button>
+        <span id="status" role="status">Checking status…</span>
+      </div>
+
+      <section id="empty" class="empty">
+        <strong>No images considered yet</strong>
+        Analyze the latest Photos image, or enable watching and add a new image to Photos.
+      </section>
+      <section id="items" class="items" aria-live="polite"></section>
+    </main>
+
+    <script>
+      (function () {
+        var bridge = window.terrane || {};
+        var statusEl = document.getElementById("status");
+        var itemsEl = document.getElementById("items");
+        var emptyEl = document.getElementById("empty");
+        var watchButton = document.getElementById("watch");
+        var latestButton = document.getElementById("latest");
+        var stopButton = document.getElementById("stop");
+        var seen = {};
+
+        function setBusy(busy, message) {
+          watchButton.disabled = busy;
+          latestButton.disabled = busy;
+          stopButton.disabled = busy;
+          if (message) statusEl.textContent = message;
+        }
+
+        function call(name) {
+          if (typeof bridge[name] !== "function") {
+            return Promise.reject(new Error("Native Visual Intake bridge is unavailable."));
+          }
+          return bridge[name]();
+        }
+
+        function escapeText(value) {
+          return String(value == null ? "" : value);
+        }
+
+        function percent(value) {
+          var number = Number(value);
+          return isFinite(number) ? Math.round(number * 100) + "%" : "—";
+        }
+
+        function addResult(result) {
+          if (!result) return;
+          if (result.ok === false) {
+            statusEl.textContent = result.error || "Live intake failed.";
+            statusEl.className = "error";
+            return;
+          }
+          var key = [result.capturedAtMs, result.width, result.height, result.origin].join(":");
+          if (seen[key]) return;
+          seen[key] = true;
+          emptyEl.hidden = true;
+
+          var article = document.createElement("article");
+          article.className = "item";
+
+          var preview = document.createElement("div");
+          preview.className = "preview";
+          var image = document.createElement("img");
+          image.src = result.dataUrl;
+          image.alt = "Locally loaded Photos preview";
+          preview.appendChild(image);
+
+          var details = document.createElement("div");
+          details.className = "details";
+          var eyebrow = document.createElement("div");
+          eyebrow.className = "eyebrow";
+          eyebrow.textContent = result.origin === "live" ? "New Photos image" : "Latest Photos image";
+          details.appendChild(eyebrow);
+
+          var route = document.createElement("div");
+          route.className = "route" + (result.recommendation ? "" : " none");
+          route.textContent = result.recommendation
+            ? "Recommend " + escapeText(result.recommendation.appName)
+            : "No matching app yet";
+          details.appendChild(route);
+
+          var summary = document.createElement("div");
+          var top = result.intents && result.intents[0];
+          summary.textContent = top
+            ? escapeText(top.name) + " · " + percent(top.confidence)
+            : "No intent result";
+          details.appendChild(summary);
+
+          var facts = document.createElement("div");
+          facts.className = "facts";
+          (result.evidenceCodes || []).forEach(function (code) {
+            var fact = document.createElement("span");
+            fact.className = "fact";
+            fact.textContent = escapeText(code);
+            facts.appendChild(fact);
+          });
+          details.appendChild(facts);
+
+          var safety = document.createElement("div");
+          safety.className = "safety" + (result.sensitivity === "normal" ? "" : " review");
+          safety.textContent =
+            (result.sensitivity === "normal" ? "Local-only proof" : "Review required") +
+            " · No model invoked · No route executed";
+          details.appendChild(safety);
+
+          article.appendChild(preview);
+          article.appendChild(details);
+          itemsEl.prepend(article);
+        }
+
+        function refreshStatus() {
+          return call("visualIntakeStatus")
+            .then(function (result) {
+              statusEl.className = "";
+              statusEl.textContent = result.watching
+                ? "Watching · Photos " + result.authorization
+                : "Not watching · Photos " + result.authorization;
+              (result.recent || []).slice().reverse().forEach(addResult);
+            })
+            .catch(function (error) {
+              statusEl.className = "error";
+              statusEl.textContent = error.message;
+            });
+        }
+
+        watchButton.addEventListener("click", function () {
+          setBusy(true, "Requesting Photos access…");
+          call("startVisualIntake")
+            .then(function (result) {
+              statusEl.className = "";
+              statusEl.textContent = "Watching new images · baseline " + result.baselineCount;
+            })
+            .catch(function (error) {
+              statusEl.className = "error";
+              statusEl.textContent = error.message;
+            })
+            .then(function () { setBusy(false); });
+        });
+
+        latestButton.addEventListener("click", function () {
+          setBusy(true, "Loading and classifying locally…");
+          call("analyzeLatestPhoto")
+            .then(function (result) {
+              statusEl.className = "";
+              statusEl.textContent = "Local analysis complete";
+              addResult(result);
+            })
+            .catch(function (error) {
+              statusEl.className = "error";
+              statusEl.textContent = error.message;
+            })
+            .then(function () { setBusy(false); });
+        });
+
+        stopButton.addEventListener("click", function () {
+          setBusy(true, "Stopping…");
+          call("stopVisualIntake")
+            .then(function () {
+              statusEl.className = "";
+              statusEl.textContent = "Not watching";
+            })
+            .catch(function (error) {
+              statusEl.className = "error";
+              statusEl.textContent = error.message;
+            })
+            .then(function () { setBusy(false); });
+        });
+
+        window.addEventListener("terrane:visualIntakeImage", function (event) {
+          addResult(event.detail);
+          if (event.detail && event.detail.ok !== false) {
+            statusEl.className = "";
+            statusEl.textContent = "New image classified locally";
+          }
+        });
+
+        refreshStatus();
+      })();
+    </script>
+  </body>
+</html>

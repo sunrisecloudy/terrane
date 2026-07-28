@@ -47,6 +47,7 @@ targets:
         NSHighResolutionCapable: true
         NSCameraUsageDescription: "Photobooth uses the camera only when you start the camera and take a picture."
         NSMicrophoneUsageDescription: "Terrane transcribes speech locally when you enable the microphone for ambient dictation."
+        NSPhotoLibraryUsageDescription: "Terrane watches new photos you add so it can privately recommend apps and workflows. Images stay on this Mac unless you approve another action."
         CFBundleName: Terrane
         CFBundleURLTypes:
           - CFBundleURLName: com.terrane.host.deep-links
@@ -76,10 +77,12 @@ targets:
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: Network.framework
+      - sdk: Photos.framework
       - sdk: PhotosUI.framework
       - sdk: Security.framework
       - sdk: SwiftUI.framework
       - sdk: UniformTypeIdentifiers.framework
+      - sdk: Vision.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
@@ -167,6 +170,7 @@ targets:
       - path: Sources/NativeCameraCapture.swift
       - path: Sources/NativeCameraFrameStreamer.swift
       - path: Sources/NativeMediaPicker.swift
+      - path: Sources/VisualIntakePhotoService.swift
       - path: Sources/SourceEditor.swift
     settings:
       base:
@@ -201,7 +205,9 @@ targets:
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: Network.framework
+      - sdk: Photos.framework
       - sdk: Security.framework
+      - sdk: Vision.framework
     preBuildScripts:
       - name: "Build terrane-host (Rust staticlib)"
         basedOnDependencyAnalysis: false
