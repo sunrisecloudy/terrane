@@ -200,6 +200,11 @@ public actor PremiumSessionClient {
     }
   }
 
+  public func cancelAuthentication() {
+    guard case .authenticating = state else { return }
+    state = account.map(PremiumSessionState.signedIn) ?? .signedOut
+  }
+
   @discardableResult
   public func exchangeAppleCredential(
     challengeId: String,

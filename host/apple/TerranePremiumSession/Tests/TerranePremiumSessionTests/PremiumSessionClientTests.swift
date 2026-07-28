@@ -102,6 +102,31 @@ final class PremiumSessionClientTests: XCTestCase {
     )
   }
 
+  func testCancelAuthenticationReturnsToSignedOut() async throws {
+    let client = try PremiumSessionClient(
+      baseURL: baseURL,
+      device: device,
+      tokenStore: MemoryTokenStore(),
+      transport: RecordingTransport { request in
+        Self.response(request, status: 200, json: #"{"challengeId":"cancel-1"}"#)
+      }
+    )
+
+    _ = try await client.beginAuthentication(provider: .apple)
+    let authenticatingState = await client.state
+    XCTAssertEqual(
+      authenticatingState,
+      .authenticating(
+        PremiumAuthenticationContext(provider: .apple, challengeId: "cancel-1")
+      )
+    )
+
+    await client.cancelAuthentication()
+
+    let canceledState = await client.state
+    XCTAssertEqual(canceledState, .signedOut)
+  }
+
   func testRefreshIsSingleFlightAndAccessTokenStaysInsideClient() async throws {
     let tokenStore = MemoryTokenStore("stored-refresh")
     let counter = RequestCounter()

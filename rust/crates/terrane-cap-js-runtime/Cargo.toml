@@ -13,7 +13,14 @@ terrane-cap-interface.workspace = true
 terrane-cap-web-publish.workspace = true
 terrane-cap-telemetry.workspace = true
 nanoserde.workspace = true
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
 rquickjs = { version = "0.12", features = ["macro"] }
+
+# rquickjs ships no checked-in aarch64-apple-ios bindings. Generate them from
+# the vendored QuickJS headers for the supported embedded iOS host.
+[target.'cfg(target_os = "ios")'.dependencies]
+rquickjs = { version = "0.12", features = ["bindgen", "macro"] }
 
 [dev-dependencies]
 tempfile.workspace = true

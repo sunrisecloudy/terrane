@@ -1,0 +1,4 @@
+#include? "Local.xcconfig"
+
+LIBRARY_SEARCH_PATHS[sdk=iphone*] = $(inherited) $(DERIVED_FILE_DIR)/TerraneRust
+OTHER_LDFLAGS[sdk=iphone*] = $(inherited) -lterrane_host -lc++ -lsqlite3 -liconv -framework Security -framework SystemConfiguration

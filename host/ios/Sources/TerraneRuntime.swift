@@ -1,0 +1,143 @@
+import Foundation
+
+protocol TerraneRuntime: AnyObject {
+  var availability: RuntimeAvailability { get }
+  func invoke(appID: String, verb: String, arguments: [String]) async throws -> String
+  func dispatch(command: String, arguments: [String]) async throws -> String
+  func close()
+}
+
+enum RuntimeAvailability: Equatable {
+  case embedded
+  case unavailable(String)
+}
+
+enum TerraneRuntimeError: LocalizedError {
+  case unavailable(String)
+  case invocation(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .unavailable(let message), .invocation(let message): return message
+    }
+  }
+}
+
+enum TerraneRuntimeFactory {
+  static func make() -> any TerraneRuntime {
+    RustTerraneRuntime()
+  }
+}
+
+final class RustTerraneRuntime: TerraneRuntime {
+  private let queue = DispatchQueue(label: "com.terrane.ios.runtime", qos: .userInitiated)
+  private var handle: OpaquePointer?
+  private(set) var availability: RuntimeAvailability
+
+  init() {
+    let home = Self.homeURL()
+    try? FileManager.default.createDirectory(
+      at: home,
+      withIntermediateDirectories: true,
+      attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+    )
+    var error: UnsafeMutablePointer<CChar>?
+    handle = home.path.withCString { terrane_open_with_error($0, &error) }
+    if handle != nil {
+      availability = .embedded
+    } else {
+      let message = error.map { String(cString: UnsafePointer($0)) }
+        ?? "Terrane could not open the local workspace."
+      if let error { terrane_string_free(error) }
+      availability = .unavailable(message)
+    }
+  }
+
+  deinit {
+    close()
+  }
+
+  func invoke(appID: String, verb: String, arguments: [String]) async throws -> String {
+    try await call { handle, output, error in
+      let args = [verb] + arguments
+      return Self.withCStringArray(args) { argc, argv in
+        appID.withCString {
+          terrane_host_run(handle, $0, argc, argv, output, error)
+        }
+      }
+    }
+  }
+
+  func dispatch(command: String, arguments: [String]) async throws -> String {
+    try await call { handle, output, error in
+      Self.withCStringArray(arguments) { argc, argv in
+        command.withCString {
+          terrane_dispatch(handle, $0, argc, argv, output, error)
+        }
+      }
+    }
+  }
+
+  func close() {
+    guard let handle else { return }
+    terrane_close(handle)
+    self.handle = nil
+  }
+
+  private func call(
+    _ body: @escaping (
+      OpaquePointer,
+      UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+      UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+    ) -> Int32
+  ) async throws -> String {
+    guard let handle else {
+      if case .unavailable(let message) = availability {
+        throw TerraneRuntimeError.unavailable(message)
+      }
+      throw TerraneRuntimeError.unavailable("Terrane runtime is closed.")
+    }
+    return try await withCheckedThrowingContinuation { continuation in
+      queue.async {
+        var output: UnsafeMutablePointer<CChar>?
+        var error: UnsafeMutablePointer<CChar>?
+        let status = body(handle, &output, &error)
+        defer {
+          if let output { terrane_string_free(output) }
+          if let error { terrane_string_free(error) }
+        }
+        if status == TERRANE_OK {
+          continuation.resume(
+            returning: output.map { String(cString: UnsafePointer($0)) } ?? ""
+          )
+        } else {
+          continuation.resume(
+            throwing: TerraneRuntimeError.invocation(
+              error.map { String(cString: UnsafePointer($0)) }
+                ?? "Terrane runtime request failed."
+            )
+          )
+        }
+      }
+    }
+  }
+
+  private static func withCStringArray<T>(
+    _ values: [String],
+    _ body: (Int, UnsafePointer<UnsafePointer<CChar>?>?) -> T
+  ) -> T {
+    let storage = values.map { strdup($0) }
+    defer { storage.forEach { free($0) } }
+    let immutableStorage = storage.map { pointer in
+      pointer.map { UnsafePointer($0) }
+    }
+    return immutableStorage.withUnsafeBufferPointer { buffer in
+      body(buffer.count, buffer.baseAddress)
+    }
+  }
+
+  private static func homeURL() -> URL {
+    let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    return root.appendingPathComponent("Terrane", isDirectory: true)
+  }
+}

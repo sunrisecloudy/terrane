@@ -1,0 +1,140 @@
+name: TerraneIOS
+options:
+  bundleIdPrefix: com.terrane
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+  xcodeVersion: "26.0"
+packages:
+  TerranePremiumSession:
+    path: ../apple/TerranePremiumSession
+  GoogleSignIn:
+    url: https://github.com/google/GoogleSignIn-iOS
+    from: 9.0.0
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    TERRANE_PREMIUM_BASE_URL: ""
+    GOOGLE_CLIENT_ID: ""
+    GOOGLE_SERVER_CLIENT_ID: ""
+    REVERSED_GOOGLE_CLIENT_ID: ""
+targets:
+  TerraneIOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: ../../apps
+        type: folder
+        buildPhase: resources
+    configFiles:
+      Debug: Config/Runtime.xcconfig
+      Release: Config/Runtime.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrane.ios
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/TerraneIOS-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../../rust/crates/terrane-host/include
+        CODE_SIGN_ENTITLEMENTS: Sources/TerraneIOS.entitlements
+        ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: "YES"
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Terrane
+        CFBundleURLTypes:
+          - CFBundleURLName: com.googleusercontent.apps
+            CFBundleURLSchemes:
+              - $(REVERSED_GOOGLE_CLIENT_ID)
+        GIDClientID: $(GOOGLE_CLIENT_ID)
+        GIDServerClientID: $(GOOGLE_SERVER_CLIENT_ID)
+        TerranePremiumBaseURL: $(TERRANE_PREMIUM_BASE_URL)
+        ITSAppUsesNonExemptEncryption: false
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
+    dependencies:
+      - package: TerranePremiumSession
+        product: TerranePremiumSession
+      - package: GoogleSignIn
+        product: GoogleSignIn
+      - package: GoogleSignIn
+        product: GoogleSignInSwift
+      - sdk: AuthenticationServices.framework
+      - sdk: Security.framework
+      - sdk: WebKit.framework
+    preBuildScripts:
+      - name: Build Terrane Rust runtime for iPhone
+        basedOnDependencyAnalysis: false
+        script: |
+          set -euo pipefail
+          case "$PLATFORM_NAME" in
+            iphoneos)
+              RUST_TARGET="aarch64-apple-ios"
+              ;;
+            iphonesimulator)
+              RUST_TARGET="aarch64-apple-ios-sim"
+              ;;
+            *)
+              echo "Unsupported Apple platform: $PLATFORM_NAME" >&2
+              exit 1
+              ;;
+          esac
+          export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+          cd "$SRCROOT/../.."
+          . scripts/cargo-cache-env.sh --quiet
+          cargo build \
+            -p terrane-host \
+            --lib \
+            --release \
+            --locked \
+            --no-default-features \
+            --target "$RUST_TARGET"
+          RUST_STAGING_DIR="$DERIVED_FILE_DIR/TerraneRust"
+          mkdir -p "$RUST_STAGING_DIR"
+          cp "$CARGO_TARGET_DIR/$RUST_TARGET/release/libterrane_host.a" \
+            "$RUST_STAGING_DIR/libterrane_host.a"
+  TerraneIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: TerraneIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrane.ios.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        HEADER_SEARCH_PATHS:
+          - $(inherited)
+          - $(SRCROOT)/../../rust/crates/terrane-host/include
+  TerraneIOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: TerraneIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.terrane.ios.ui-tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+schemes:
+  TerraneIOS:
+    build:
+      targets:
+        TerraneIOS: all
+        TerraneIOSTests: [test]
+        TerraneIOSUITests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - TerraneIOSTests
+        - TerraneIOSUITests
