@@ -1,121 +1,124 @@
 # Terrane
 
-The root Rust workspace for Terrane — rebuilt from scratch.
+**A local-first home for personal apps on your Mac.**
 
-Terrane is a local-first platform for personal apps. This repository is a
-deliberate reset: instead of growing the platform outward (sync, server, UI,
-native hosts, FFI, policy, …), we start from the one thing that is actually _the
-system_ and add nothing until a real need forces it.
+Terrane brings useful everyday tools into one native macOS app while keeping
+your data under your control. Open an app, get something done, and keep working
+even when you are offline. Accounts and sync are optional.
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for the high-level layer model (apps ▸
-host ▸ `terrane-core` engine crate ▸ resources), and
-[docs/APP_API.md](docs/APP_API.md) for the JavaScript API an app's backend and
-UI get (drift-guarded by a test).
+> **Recommended release: Terrane for macOS v0.3.0**
+>
+> [Download Terrane v0.3.0 for Apple silicon][release]. This is the recommended
+> version for everyday use and replaces the older unsigned preview builds.
 
-## Download for macOS
+[release]: https://github.com/sunrisecloudy/terrane/releases/tag/v0.3.0
 
-Production releases are available from
-[GitHub Releases](https://github.com/sunrisecloudy/terrane/releases).
-The supported desktop build is for M-series Macs (`arm64`) running macOS 13 or
-newer. Intel Macs are not supported.
+## Why use Terrane?
 
-Download the versioned `Terrane-*-macos-arm64.dmg` together with
-`SHA256SUMS`, verify the checksum, open the DMG, and drag Terrane to
-Applications. Production assets are Developer ID-signed, Apple-notarized, and
-verified with Gatekeeper before publication. Source archives generated
-automatically by GitHub are not application installers.
+- **Local-first by default.** Core apps remain useful without an account,
+  network connection, or cloud service.
+- **One place for personal tools.** Switch between apps from the native macOS
+  sidebar instead of managing a collection of unrelated utilities.
+- **Private, app-scoped storage.** Apps receive only the capabilities and data
+  boundaries declared in their manifests.
+- **Optional sync.** Enable Premium sync explicitly when you want it; signing
+  in is never required for local apps.
+- **Built to be extended.** App Builder and the documented app API make it
+  possible to create new Terrane apps without changing the core.
 
-Until a Developer ID-signed production build is available, GitHub may contain
-explicitly labeled unsigned pre-releases for early testing. These builds are
-not notarized or Gatekeeper-trusted. Follow the warning and verification
-instructions in that pre-release's notes; do not treat it as production.
-To keep the initial DMG small, non-core native capabilities are downloaded
-from the same immutable GitHub release on first use and accepted only when
-their hashes match the app's signed capability index.
+## What is included in v0.3.0?
 
-See [the macOS release runbook](docs/RELEASING_MACOS.md), [privacy
-disclosure](PRIVACY.md), and [changelog](CHANGELOG.md).
+Terrane ships with a growing catalog of built-in apps, including:
 
-## The one rule
+- **Todo** for simple local task management
+- **Health** for meal, nutrition, history, and calendar views
+- **Spending** for local invoice and expense organization
+- **Visual Intake** for bringing selected photos into private workflows
+- **Chat** for conversations with registered local models
+- **Photobooth, Scribe, Pixel Paint, Search Notes, OS Monitor,** and more
+- **Control Room** for a read-only view of installed apps, capabilities,
+  permissions, models, and runtimes
+- **App Builder** for creating and validating your own Terrane apps
 
-Everything goes through a single front door and a single shape:
+The `v0.3.0` macOS release adds native Premium sign-in, optional sync
+boundaries, the Health and Spending experiences, native photo intake, and
+refined app icons in the sidebar.
 
-```
-argv ──▶ terrane-host::cli ──▶ Request ──▶ terrane-core ──▶ [Event] ──▶ State
-                                          │                         │
-                                          └── persist log ──────────┘
-                                                    │
-                                            replay ─┘  (must reproduce identical State)
-```
+## Install on macOS
 
-- The **CLI never touches data directly.** It only speaks requests to the core.
-- The core is **deterministic and replayable**: re-applying the event log
-  reproduces identical state. That property is what earns the word _core_.
-- Platform effects (sync, network, native shells, servers) are _layers_ added
-  later, at the edge — never inside the core.
+Terrane `v0.3.0` supports Apple silicon Macs running macOS 13 or newer. Intel
+Macs are not currently supported.
 
-## Layout
+1. Open the [Terrane v0.3.0 release][release].
+2. Download `Terrane-0.3.0-macos-arm64.dmg` and `SHA256SUMS`.
+3. Verify the checksum, open the DMG, and drag **Terrane** to Applications.
+4. Open Terrane from Finder.
 
-```
-Cargo.toml     # root Cargo workspace for all Rust crates and host adapters
-rust/
-  crates/
-    terrane-core/           # shared vocabulary + deterministic engine + host_runtime
-    terrane-cap-*/          # standalone capabilities over terrane-cap-interface
-    terrane-host/           # host services, `terrane` binary, C ABI, sync, preview, MCP
-host/
-  cli/                      # CLI adapter package
-  mcp/                      # MCP adapter package
-  web/                      # web adapter package
-apps/                       # JS app bundles (todo, chat, …), each with i18n/<code>.json
-i18n/system/                # host/shell chrome translation catalogs, per language
-```
+Use the versioned DMG—not the source archives generated automatically by
+GitHub. Production downloads are Developer ID-signed, Apple-notarized, and
+verified with Gatekeeper before publication. Non-core native capabilities are
+downloaded from the same immutable release when first used and accepted only
+when their hashes match the app's signed capability index.
 
-## Localization
+See the [macOS release runbook](docs/RELEASING_MACOS.md),
+[privacy disclosure](PRIVACY.md), [security policy](SECURITY.md), and
+[changelog](CHANGELOG.md).
 
-Terrane detects the user's language (web `Accept-Language` / an in-shell picker;
-macOS system language) and localizes the host chrome and apps. Translations are
-stored once in a shared **public KV** bucket (`i18n/<code>/<domain>.<key>`) and
-reused across every app and platform; apps read the active locale + a message
-bundle through `window.terrane` (`getLocale`/`getDir`/`t`). Ship catalogs as
-`i18n/system/<code>.json` and `apps/<id>/i18n/<code>.json`; hosts seed them on
-startup (or `terrane i18n import <dir>`). Details: [docs/APP_API.md](docs/APP_API.md).
-Supported: `en, es, zh-Hans, ar, pt-BR, fr, de, ja, id, th-TH, ko, vi`.
+## Privacy and accounts
 
-## Build
+Terrane starts in local mode. You can browse, open, edit, and run local apps
+without signing in. If you choose to enable sync, authentication happens in
+native host UI and credentials are not exposed to generated apps, web views, or
+app event logs.
 
-```sh
-cargo test
-cargo run -p terrane-host --bin terrane -- help
-```
+For Developer ID distribution, Premium sync uses Google sign-in. Apple does
+not make its Sign in with Apple entitlement available to Developer ID apps
+distributed outside the Mac App Store.
 
-For linked worktrees, use the shared Cargo/sccache environment so Rust build
-artifacts are reused across checkouts:
+## For developers
 
-```sh
-source scripts/cargo-cache-env.sh
-cargo test
+Terrane is a Rust workspace with native Apple hosts and web-based app bundles:
+
+```text
+apps/                       Built-in personal app bundles
+host/macos/                 Native AppKit + WebKit macOS host
+host/ios/                   Native SwiftUI iPhone host
+host/apple/                 Shared Apple Premium session client
+rust/crates/terrane-core/   Deterministic local-first engine
+rust/crates/terrane-host/   Host services, CLI, C ABI, preview, sync, and MCP
 ```
 
-Or run a single command through the wrapper:
+The core follows one rule: requests enter through the host, become events, and
+replay into the same state.
+
+```text
+argv ──▶ terrane-host ──▶ Request ──▶ terrane-core ──▶ [Event] ──▶ State
+                                           │                         │
+                                           └── persist log ──────────┘
+```
+
+Build and test the Rust workspace with the shared cache wrapper:
 
 ```sh
 scripts/with-cargo-cache.sh cargo test --workspace --locked
 ```
 
-Codex, Claude Code, and opencode have project hooks/plugins that apply this same
-cache convention to agent-run shell commands.
-
-See [docs/CARGO_CACHE.md](docs/CARGO_CACHE.md) for the full setup and
-troubleshooting runbook.
-
-For a local unsigned packaging preflight on an M-series Mac:
+Generate the macOS Xcode project:
 
 ```sh
-export TERRANE_CAP_SIGNING_KEY_HEX=\
-000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
-scripts/build-macos-release.sh --version 0.2.0 --unsigned
+cd host/macos
+xcodegen generate
 ```
 
-Unsigned preview artifacts may only be distributed as clearly labeled GitHub
-pre-releases with checksum, manifest, warning, and install instructions.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the system model,
+[docs/APP_API.md](docs/APP_API.md) for the app API, and
+[host/macos/README.md](host/macos/README.md) for native build and signing
+details.
+
+## Versioning
+
+The current recommended release is `v0.3.0`. Feature releases advance one
+minor version at a time: `v0.4.0`, `v0.5.0`, and so on until Terrane is ready
+for `v1.0.0`.
+
+Bug-fix releases use the patch number, such as `v0.3.1`.
