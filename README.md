@@ -1,83 +1,88 @@
 # Terrane
 
-**A local-first home for personal apps on your Mac.**
+**Your tools. Your Mac. Your data.**
 
-Terrane brings useful everyday tools into one native macOS app while keeping
-your data under your control. Open an app, get something done, and keep working
-even when you are offline. Accounts and sync are optional.
+Terrane is a local-first home for the everyday apps you use to plan, create,
+organize, and understand your life. Everything lives in one native Mac app,
+works without an account, and stays useful when you are offline.
 
-> **Recommended release: Terrane for macOS v0.3.0**
+> **[Download Terrane v0.3.0 for macOS][download]**
 >
-> [Download Terrane v0.3.0 for Apple silicon][release]. This is the recommended
-> version for everyday use and replaces the older unsigned preview builds.
+> For Apple silicon Macs running macOS 13 or newer. Developer ID-signed,
+> Apple-notarized, and ready for everyday use.
 
 [release]: https://github.com/sunrisecloudy/terrane/releases/tag/v0.3.0
+[download]: https://github.com/sunrisecloudy/terrane/releases/download/v0.3.0/Terrane-0.3.0-macos-arm64.dmg
 
-## Why use Terrane?
+## One app, many useful tools
 
-- **Local-first by default.** Core apps remain useful without an account,
-  network connection, or cloud service.
-- **One place for personal tools.** Switch between apps from the native macOS
-  sidebar instead of managing a collection of unrelated utilities.
-- **Private, app-scoped storage.** Apps receive only the capabilities and data
-  boundaries declared in their manifests.
-- **Optional sync.** Enable Premium sync explicitly when you want it; signing
-  in is never required for local apps.
-- **Built to be extended.** App Builder and the documented app API make it
-  possible to create new Terrane apps without changing the core.
+Terrane ships with 17 built-in app bundles. Highlights in the native sidebar
+include:
 
-## What is included in v0.3.0?
+| What you want to do | Apps to get you started |
+| --- | --- |
+| Plan your days | Todo, Tomorrow |
+| Look after yourself | Health, BMI Calculator |
+| Understand your spending | Spending |
+| Capture and create | Photobooth, Scribe, Pixel Paint |
+| Find and explore | Search Notes, Chat, Visual Intake |
+| Stay in control | Password Manager, OS Monitor, Control Room |
+| Make something new | App Builder |
 
-Terrane ships with 17 built-in apps, including:
+Open a tool, do the work, and move on. There is no account wall and no cloud
+setup between you and the local apps.
 
-- **Todo** for simple local task management
-- **Health** for meal, nutrition, history, and calendar views
-- **Spending** for local invoice and expense organization
-- **Visual Intake** for bringing selected photos into private workflows
-- **Chat** for conversations with registered local models
-- **Photobooth, Scribe, Pixel Paint, Search Notes, OS Monitor,** and more
-- **Control Room** for a read-only view of installed apps, capabilities,
-  permissions, models, and runtimes
-- **App Builder** for creating and validating your own Terrane apps
+## Local-first by design
 
-The `v0.3.0` macOS release adds native Premium sign-in, optional sync
-boundaries, the Health and Spending experiences, native photo intake, and
-refined app icons in the sidebar.
+- **Useful offline.** Core apps keep working without a network connection.
+- **No sign-in required.** Terrane starts in local mode; an account is optional.
+- **App-scoped access.** Each app receives only its declared capabilities and
+  data boundaries.
+- **Sync when you choose.** Premium sync is an explicit opt-in, not a
+  prerequisite.
+- **Extensible without surrendering control.** App Builder and the documented
+  app API let you create tools that follow the same boundaries.
 
-## Install on macOS
+Native capability workers are delivered from the same immutable release only
+when needed and are accepted only when their hashes match Terrane's signed
+capability index.
 
-Terrane `v0.3.0` supports Apple silicon Macs running macOS 13 or newer. Intel
-Macs are not currently supported.
+## Get started
 
-1. Open the [Terrane v0.3.0 release][release].
-2. Download `Terrane-0.3.0-macos-arm64.dmg` and `SHA256SUMS`.
-3. Verify the checksum, open the DMG, and drag **Terrane** to Applications.
-4. Open Terrane from Finder.
+1. [Download the Terrane v0.3.0 DMG][download].
+2. Open it and drag **Terrane** into **Applications**.
+3. Launch Terrane and choose an app from the sidebar.
 
-Use the versioned DMG—not the source archives generated automatically by
-GitHub. Production downloads are Developer ID-signed, Apple-notarized, and
-verified with Gatekeeper before publication. Non-core native capabilities are
-downloaded from the same immutable release when first used and accepted only
-when their hashes match the app's signed capability index.
+For an independent integrity check, download `SHA256SUMS` from the
+[v0.3.0 release page][release] and compare it with the DMG before opening it.
+Intel Macs are not currently supported.
+
+## What is new in v0.3.0?
+
+- Health experiences for meals, nutrition, history, calendar, and insights
+- Spending tools for local invoice and expense organization
+- Native photo selection and the Visual Intake workflow
+- Optional native Premium sign-in and sync boundaries
+- Refined app icons and a cleaner native sidebar
+
+This is the recommended release and replaces the older unsigned preview
+builds.
+
+## Privacy
+
+Terrane starts in local mode. You can browse, open, edit, and run local apps
+without signing in. If you enable sync, authentication stays in trusted native
+host UI; credentials are not exposed to generated apps, web views, or app
+event logs.
 
 See the [macOS release runbook](docs/RELEASING_MACOS.md),
 [privacy disclosure](PRIVACY.md), [security policy](SECURITY.md), and
 [changelog](CHANGELOG.md).
 
-## Privacy and accounts
-
-Terrane starts in local mode. You can browse, open, edit, and run local apps
-without signing in. If you choose to enable sync, authentication happens in
-native host UI and credentials are not exposed to generated apps, web views, or
-app event logs.
-
-For Developer ID distribution, Premium sync uses Google sign-in. Apple does
-not make its Sign in with Apple entitlement available to Developer ID apps
-distributed outside the Mac App Store.
-
 ## For developers
 
-Terrane is a Rust workspace with native Apple hosts and web-based app bundles:
+Terrane is open source, built around a deterministic Rust core, native Apple
+hosts, and portable web-based app bundles:
 
 ```text
 apps/                       Built-in personal app bundles
