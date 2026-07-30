@@ -7,6 +7,28 @@ public protocol PremiumRefreshTokenStore: Sendable {
   func delete() async throws
 }
 
+/// Process-local token storage for tests and unsigned development hosts.
+/// Production applications should continue to use `PremiumKeychainRefreshTokenStore`.
+public actor PremiumVolatileRefreshTokenStore: PremiumRefreshTokenStore {
+  private var refreshToken: String?
+
+  public init(refreshToken: String? = nil) {
+    self.refreshToken = refreshToken
+  }
+
+  public func read() async throws -> String? {
+    refreshToken
+  }
+
+  public func save(_ refreshToken: String) async throws {
+    self.refreshToken = refreshToken
+  }
+
+  public func delete() async throws {
+    refreshToken = nil
+  }
+}
+
 public enum PremiumKeychainError: Error, Equatable, Sendable {
   case unexpectedStatus(OSStatus)
   case invalidData

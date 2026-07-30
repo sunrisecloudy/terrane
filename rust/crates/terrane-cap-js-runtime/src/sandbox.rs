@@ -104,6 +104,26 @@ fn backend_budget() -> std::time::Duration {
     std::time::Duration::from_millis(ms)
 }
 
+fn execution_budget(resources: &[String]) -> std::time::Duration {
+    let ordinary = backend_budget();
+    let has_model = resources.iter().any(|resource| {
+        resource
+            .split_once(':')
+            .map(|(namespace, _)| namespace)
+            .unwrap_or(resource)
+            == "model"
+    });
+    if !has_model {
+        return ordinary;
+    }
+    let model_ms = std::env::var("TERRANE_MODEL_BACKEND_BUDGET_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(130_000);
+    ordinary.max(std::time::Duration::from_millis(model_ms))
+}
+
 /// Build a QuickJS context, install declared resources, eval the backend script,
 /// synthesize `handle` from an `actions` table if needed, then call
 /// `handle(input)` and return its string result.
@@ -119,7 +139,7 @@ fn execute_js(
     let rt = Runtime::new().map_err(js_err)?;
     rt.set_max_stack_size(512 * 1024);
     rt.set_memory_limit(64 * 1024 * 1024);
-    let deadline = std::time::Instant::now() + backend_budget();
+    let deadline = std::time::Instant::now() + execution_budget(resources);
     rt.set_interrupt_handler(Some(Box::new(move || {
         std::time::Instant::now() >= deadline
     })));

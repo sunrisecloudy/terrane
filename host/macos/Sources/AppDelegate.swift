@@ -55,6 +55,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var apps: [TerraneApp] = []
   private var premiumURL: URL?
   private var premiumSessionClient: PremiumSessionClient?
+  private var healthAutoSync: MacHealthAutoSyncCoordinator?
   private var premiumApps: [PremiumApp] = []
   private var premiumAuthCoordinator: PremiumNativeAuthCoordinator?
   private var premiumSignInSheet: PremiumSignInSheetController?
@@ -272,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     loopbackHost?.stop()
     mcpServer?.stop()
     terrane_stt_shutdown()
+    healthAutoSync?.stop()
     bridge?.close()
     // Cached local-model engines must be released before ggml's static
     // destructors run at exit, or the process aborts.
@@ -800,14 +802,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       clientVersion: version
     )
     do {
+      let tokenStore: any PremiumRefreshTokenStore
+      #if DEBUG
+        if let refreshToken = ProcessInfo.processInfo.environment[
+          "TERRANE_E2E_PREMIUM_REFRESH_TOKEN"
+        ], !refreshToken.isEmpty {
+          tokenStore = PremiumVolatileRefreshTokenStore(refreshToken: refreshToken)
+        } else {
+          tokenStore = PremiumKeychainRefreshTokenStore(
+            service: "com.terrane.host.premium-session"
+          )
+        }
+      #else
+        tokenStore = PremiumKeychainRefreshTokenStore(
+          service: "com.terrane.host.premium-session"
+        )
+      #endif
       let client = try PremiumSessionClient(
         baseURL: premiumURL,
         device: device,
+        tokenStore: tokenStore,
         stateObserver: { [weak self] state in
           DispatchQueue.main.async {
             self?.updatePremiumAccountControl(state)
+            if case .offline(let context) = state {
+              NSLog("terrane-host: Premium restore offline: \(context.message)")
+              #if DEBUG
+                if let errorPath = ProcessInfo.processInfo.environment[
+                  "TERRANE_E2E_PREMIUM_ERROR_PATH"
+                ], !errorPath.isEmpty {
+                  try? context.message.write(
+                    to: URL(fileURLWithPath: errorPath),
+                    atomically: true,
+                    encoding: .utf8
+                  )
+                }
+              #endif
+            }
             if case .signedIn = state {
               self?.refreshPremiumCatalog()
+              if let session = self?.premiumSessionClient {
+                self?.startHealthAutoSync(session: session)
+              }
+            } else if case .revoked = state {
+              self?.healthAutoSync?.stop()
             }
           }
         }
@@ -826,12 +864,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
         coordinator?.signIn(with: provider)
       }
       updatePremiumAccountControl(.signedOut)
-      Task { await client.restoreSession() }
+      Task {
+        #if DEBUG
+          if let refreshToken = ProcessInfo.processInfo.environment[
+            "TERRANE_E2E_PREMIUM_REFRESH_TOKEN"
+          ], !refreshToken.isEmpty {
+            try? await tokenStore.save(refreshToken)
+          }
+        #endif
+        await client.restoreSession()
+      }
     } catch {
       accountButton.title = "Premium unavailable"
       accountButton.isEnabled = false
       NSLog("terrane-host: Premium session client unavailable: \(error.localizedDescription)")
     }
+  }
+
+  private func startHealthAutoSync(session: PremiumSessionClient) {
+    guard let bridge else { return }
+    if healthAutoSync == nil {
+      #if DEBUG
+        if ProcessInfo.processInfo.environment["TERRANE_E2E_HEALTH_AUTO_GRANT"] == "1" {
+          for namespace in ["kv", "blob", "model"] {
+            _ = bridge.grant(app: "health", namespace: namespace)
+          }
+        }
+      #endif
+      let coordinator = MacHealthAutoSyncCoordinator(session: session, bridge: bridge)
+      coordinator.onNutritionReady = { [weak self] mealID, _ in
+        guard let self,
+          let health = self.apps.first(where: { $0.id == "health" })
+        else { return }
+        self.select(health, confirmUnsaved: false)
+        self.webView.evaluateJavaScript(
+          "window.location.hash = '#/meal/\(mealID)';"
+        )
+      }
+      healthAutoSync = coordinator
+    }
+    healthAutoSync?.start()
   }
 
   private func updatePremiumAccountControl(_ state: PremiumSessionState) {

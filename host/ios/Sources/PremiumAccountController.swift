@@ -16,12 +16,24 @@ final class PremiumAccountController: ObservableObject {
   let accountDeletionURL: URL
 
   private let client: PremiumSessionClient
+  private let tokenStore: any PremiumRefreshTokenStore
 
   init?(baseURL: URL, keychainService: String, bundle: Bundle = .main) {
     let version =
       bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
       ?? "development"
     do {
+      #if DEBUG
+        if let refreshToken = ProcessInfo.processInfo.environment[
+          "TERRANE_E2E_PREMIUM_REFRESH_TOKEN"
+        ], !refreshToken.isEmpty {
+          tokenStore = PremiumVolatileRefreshTokenStore(refreshToken: refreshToken)
+        } else {
+          tokenStore = PremiumKeychainRefreshTokenStore(service: keychainService)
+        }
+      #else
+        tokenStore = PremiumKeychainRefreshTokenStore(service: keychainService)
+      #endif
       client = try PremiumSessionClient(
         baseURL: baseURL,
         device: PremiumDeviceMetadata(
@@ -29,7 +41,7 @@ final class PremiumAccountController: ObservableObject {
           deviceName: UIDevice.current.name,
           clientVersion: version
         ),
-        tokenStore: PremiumKeychainRefreshTokenStore(service: keychainService)
+        tokenStore: tokenStore
       )
     } catch {
       return nil
@@ -38,8 +50,28 @@ final class PremiumAccountController: ObservableObject {
   }
 
   func restore() async {
+    #if DEBUG
+      if let refreshToken = ProcessInfo.processInfo.environment[
+        "TERRANE_E2E_PREMIUM_REFRESH_TOKEN"
+      ], !refreshToken.isEmpty {
+        try? await tokenStore.save(refreshToken)
+      }
+    #endif
     await client.restoreSession()
     await synchronizeState()
+  }
+
+  func makeHealthImageSyncClient(
+    keyStore: any PremiumHealthImageKeyStore,
+    deviceKeyStore: any PremiumHealthDeviceKeyStore =
+      PremiumKeychainHealthDeviceKeyStore()
+  ) -> PremiumHealthImageSyncClient {
+    PremiumHealthImageSyncClient(
+      session: client,
+      keyStore: keyStore,
+      deviceKeyStore: deviceKeyStore,
+      platform: .iOS
+    )
   }
 
   func begin(

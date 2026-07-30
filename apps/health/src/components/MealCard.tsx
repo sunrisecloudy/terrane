@@ -20,7 +20,13 @@ export function MealCard({
         <span>
           {Math.round(entry.calories_kcal)} kcal
           {entry.dishes?.length > 1 ? ` · ${entry.dishes.length} dishes` : ""}
-          {` · ${date} · ${entry.provider === "codex" ? "Codex" : "OpenCode"}`}
+          {` · ${date} · ${
+            entry.provider === "codex"
+              ? "Codex"
+              : entry.provider === "claude"
+                ? "Claude"
+                : "OpenCode"
+          }`}
           {entry.reviewed ? " · reviewed" : ""}
         </span>
       </div>

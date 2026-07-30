@@ -24,6 +24,9 @@ targets:
       - path: ../../apps
         type: folder
         buildPhase: resources
+      - path: UITests/Fixtures/FoodImages
+        type: folder
+        buildPhase: resources
     configFiles:
       Debug: Config/Runtime.xcconfig
       Release: Config/Runtime.xcconfig
@@ -36,6 +39,7 @@ targets:
           - $(SRCROOT)/../../rust/crates/terrane-host/include
         CODE_SIGN_ENTITLEMENTS: Sources/TerraneIOS.entitlements
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: "YES"
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
     info:
       path: Sources/Info.plist
       properties:

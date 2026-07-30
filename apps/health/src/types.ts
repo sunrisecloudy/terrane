@@ -1,7 +1,7 @@
 export type Period = "day" | "week" | "month";
 
 export type Settings = {
-  provider: "opencode" | "codex";
+  provider: "opencode" | "codex" | "claude";
   model: string;
 };
 
@@ -22,7 +22,7 @@ export type MealEntry = Dish & {
   id: string;
   blob_name: string;
   note: string;
-  provider: "opencode" | "codex";
+  provider: "opencode" | "codex" | "claude";
   model: string;
   eaten_at: string;
   reviewed: boolean;

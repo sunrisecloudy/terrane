@@ -151,9 +151,9 @@ impl EffectRunner for EdgeRunner {
                 app,
                 agent,
                 prompt,
-                image_parts: _,
+                image_parts,
             } => {
-                let (response, exit_code) = run_agent(agent, prompt)?;
+                let (response, exit_code) = run_agent(self.home()?, agent, prompt, image_parts)?;
                 Ok(vec![responded_event(
                     app, agent, prompt, response, exit_code,
                 )?])
@@ -895,16 +895,69 @@ fn new_peer_id() -> Result<u64> {
 
 /// Run an agent CLI non-interactively and capture its output.
 /// `claude -p "<prompt>"` (Claude Code print mode) or `codex exec "<prompt>"`.
-fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
+fn run_agent(
+    home: &Path,
+    agent: &str,
+    prompt: &str,
+    image_parts: &[terrane_core::ModelImagePart],
+) -> Result<(String, i32)> {
+    let image_dir = if image_parts.is_empty() {
+        None
+    } else {
+        Some(
+            tempfile::tempdir()
+                .map_err(|e| Error::Storage(format!("create model image directory: {e}")))?,
+        )
+    };
+    let mut image_paths = Vec::with_capacity(image_parts.len());
+    if let Some(dir) = image_dir.as_ref() {
+        for (index, part) in image_parts.iter().enumerate() {
+            let extension = match part.mime.as_str() {
+                "image/jpeg" => "jpg",
+                "image/png" => "png",
+                "image/webp" => "webp",
+                other => {
+                    return Err(Error::InvalidInput(format!(
+                        "unsupported model image MIME type: {other}"
+                    )))
+                }
+            };
+            let bytes = crate::blob_store::read_verified(home, &part.hash)?;
+            let actual_size = u64::try_from(bytes.len())
+                .map_err(|_| Error::Storage("model image size overflow".into()))?;
+            if actual_size != part.size {
+                return Err(Error::Storage(format!(
+                    "model image size mismatch for {}: expected {}, got {actual_size}",
+                    part.hash, part.size
+                )));
+            }
+            let path = dir.path().join(format!("image-{index}.{extension}"));
+            std::fs::write(&path, bytes)
+                .map_err(|e| Error::Storage(format!("write temporary model image: {e}")))?;
+            image_paths.push(path);
+        }
+    }
+
     let mut command = match agent {
         "claude" => {
             let mut c = Command::new("claude");
-            c.arg("-p").arg(prompt);
+            c.arg("-p");
+            if let Some(dir) = image_dir.as_ref() {
+                c.args(["--tools", "Read", "--allowedTools", "Read"]);
+                c.args(["--permission-mode", "dontAsk"]);
+                c.arg("--add-dir").arg(dir.path());
+            }
+            c.arg("--")
+                .arg(model_prompt_with_images(prompt, &image_paths));
             c
         }
         "codex" => {
             let mut c = Command::new("codex");
-            c.arg("exec").arg(prompt);
+            c.arg("exec");
+            for path in &image_paths {
+                c.arg("--image").arg(path);
+            }
+            c.arg(prompt);
             c
         }
         other => return Err(Error::InvalidInput(format!("unknown agent: {other}"))),
@@ -932,7 +985,7 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
     let stdout_reader = thread::spawn(move || read_pipe(stdout));
     let stderr_reader = thread::spawn(move || read_pipe(stderr));
 
-    let timeout = edge_timeout();
+    let timeout = model_timeout();
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child
@@ -970,6 +1023,26 @@ fn run_agent(agent: &str, prompt: &str) -> Result<(String, i32)> {
         }
     }
     Ok((response, exit_code))
+}
+
+fn model_prompt_with_images(prompt: &str, image_paths: &[PathBuf]) -> String {
+    if image_paths.is_empty() {
+        return prompt.to_string();
+    }
+    let mut augmented = String::with_capacity(prompt.len() + image_paths.len() * 96);
+    augmented.push_str(prompt);
+    augmented.push_str("\n\nRead and analyze the attached image file");
+    if image_paths.len() == 1 {
+        augmented.push_str(" before answering:\n");
+    } else {
+        augmented.push_str("s before answering:\n");
+    }
+    for path in image_paths {
+        augmented.push_str("- ");
+        augmented.push_str(&path.to_string_lossy());
+        augmented.push('\n');
+    }
+    augmented
 }
 
 fn generate_app_with_harness(
@@ -2942,6 +3015,15 @@ fn edge_timeout() -> Duration {
         .filter(|millis| *millis > 0)
         .map(Duration::from_millis)
         .unwrap_or(DEFAULT_EDGE_TIMEOUT)
+}
+
+fn model_timeout() -> Duration {
+    std::env::var("TERRANE_MODEL_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|millis| *millis > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(120))
 }
 
 fn harness_timeout() -> Duration {

@@ -25,7 +25,7 @@ fn checked_in_health_bundle_is_valid_and_uses_real_vision_resources() {
     );
 
     let backend = std::fs::read_to_string(bundle.join("main.js")).expect("read Health backend");
-    assert!(backend.contains("blob.put(blobName, base64, mime)"));
+    assert!(backend.contains("blob.put(blobName, mime, base64)"));
     assert!(backend.contains("function estimateBlob(args, usage)"));
     assert!(backend.contains("blob.stat(blobName)"));
     assert!(backend.contains("analyzeStoredBlob(blobName, note, settings, id)"));
