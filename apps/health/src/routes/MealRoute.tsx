@@ -60,7 +60,9 @@ export function MealRoute({
     () =>
       draft?.provider === "codex"
         ? "Analyzed with Codex"
-        : `Analyzed with OpenCode · ${draft?.model || "opencode-go/kimi-k2.6"}`,
+        : draft?.provider === "claude"
+          ? "Analyzed with Claude"
+          : `Analyzed with OpenCode · ${draft?.model || "opencode-go/kimi-k2.6"}`,
     [draft],
   );
 

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 
 import {
+  autoUploadHealthImage,
   fileToBase64,
+  hasHealthAutoUpload,
   hasPhotosPicker,
   invokeJson,
   pickPhoto,
@@ -29,6 +31,7 @@ export function AddMealRoute({
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("");
+  const [syncStatus, setSyncStatus] = useState("");
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const preview = useMemo(
@@ -61,6 +64,20 @@ export function AddMealRoute({
     setNativeBlob(null);
     setFile(next);
     setError("");
+    if (hasHealthAutoUpload()) {
+      setSyncStatus("Encrypting and syncing to desktop…");
+      autoUploadHealthImage(next)
+        .then((result) => {
+          setSyncStatus(result?.ok ? "Encrypted photo uploaded" : "");
+        })
+        .catch((caught) => {
+          setSyncStatus(
+            caught instanceof Error
+              ? `Encrypted sync unavailable: ${caught.message}`
+              : "Encrypted sync unavailable",
+          );
+        });
+    }
   }
 
   async function openPhotos() {
@@ -205,19 +222,25 @@ export function AddMealRoute({
                   onChange={(event) =>
                     updateSettings({
                       ...settings,
-                      provider: event.target.value === "codex" ? "codex" : "opencode",
+                      provider:
+                        event.target.value === "codex"
+                          ? "codex"
+                          : event.target.value === "claude"
+                            ? "claude"
+                            : "opencode",
                     })
                   }
                 >
                   <option value="opencode">OpenCode</option>
                   <option value="codex">Codex</option>
+                  <option value="claude">Claude</option>
                 </select>
               </label>
               <label className="model-control">
                 <span>Vision model</span>
                 <input
                   value={settings.model}
-                  disabled={settings.provider === "codex"}
+                  disabled={settings.provider !== "opencode"}
                   onChange={(event) => onSettings({ ...settings, model: event.target.value })}
                   onBlur={() => updateSettings(settings)}
                   list="vision-models"
@@ -231,7 +254,9 @@ export function AddMealRoute({
               <p className="model-help">
                 {settings.provider === "opencode"
                   ? "OpenCode uses Kimi K2.6 by default."
-                  : "Codex uses your signed-in Codex CLI configuration."}
+                  : settings.provider === "claude"
+                    ? "Claude uses your signed-in Claude CLI configuration."
+                    : "Codex uses your signed-in Codex CLI configuration."}
               </p>
             </div>
             <label className="note-label">
@@ -258,6 +283,11 @@ export function AddMealRoute({
               </div>
             ) : null}
             {error ? <div className="error visible" role="alert">{error}</div> : null}
+            {syncStatus ? (
+              <div className="status visible" role="status">
+                <span>{syncStatus}</span>
+              </div>
+            ) : null}
             <p className="disclaimer">
               Estimates are approximate and can vary with portion size and ingredients.
               Review against labels when accuracy matters. This is not medical advice.

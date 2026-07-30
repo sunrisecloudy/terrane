@@ -68,8 +68,9 @@ public actor PremiumSessionClient {
       let token: String
       let refreshToken: String
       let userId: String
-      let authMethod: PremiumIdentityProvider?
+      let authMethod: String?
       let accessExpiresAt: Date?
+      let deviceId: String?
     }
 
     init(from decoder: Decoder) throws {
@@ -85,8 +86,11 @@ public actor PremiumSessionClient {
           decodedAccount
           ?? PremiumAccount(
             id: session.userId,
-            linkedProviders: session.authMethod.map { [$0] } ?? []
+            linkedProviders: session.authMethod
+              .flatMap(PremiumIdentityProvider.init(rawValue:))
+              .map { [$0] } ?? []
           )
+        deviceId = session.deviceId
         return
       }
       accessToken = try container.decode(String.self, forKey: .accessToken)
@@ -98,7 +102,10 @@ public actor PremiumSessionClient {
       account =
         try container.decodeIfPresent(PremiumAccount.self, forKey: .account)
         ?? container.decodeIfPresent(PremiumAccount.self, forKey: .user)
+      deviceId = nil
     }
+
+    let deviceId: String?
   }
 
   private struct APIEnvelope<Value: Decodable>: Decodable {
@@ -119,6 +126,7 @@ public actor PremiumSessionClient {
   public private(set) var state: PremiumSessionState = .signedOut {
     didSet { stateObserver?(state) }
   }
+  public private(set) var currentDeviceID: String?
 
   private let baseURL: URL
   private let device: PremiumDeviceMetadata
@@ -156,7 +164,7 @@ public actor PremiumSessionClient {
     self.now = now
     encoder = JSONEncoder()
     let decoder = JSONDecoder()
-    decoder.dateDecodingStrategy = .iso8601
+    decoder.dateDecodingStrategy = .custom(PremiumDateCoding.decode)
     self.decoder = decoder
   }
 
@@ -485,6 +493,7 @@ public actor PremiumSessionClient {
     }
     try await tokenStore.save(session.refreshToken)
     accessCredential = AccessCredential(token: session.accessToken, expiresAt: session.expiresAt)
+    currentDeviceID = session.deviceId ?? currentDeviceID
     account = resolvedAccount
     state = .signedIn(resolvedAccount)
     return resolvedAccount
@@ -494,6 +503,7 @@ public actor PremiumSessionClient {
     refreshTask?.cancel()
     refreshTask = nil
     accessCredential = nil
+    currentDeviceID = nil
     account = nil
     state = .signedOut
   }

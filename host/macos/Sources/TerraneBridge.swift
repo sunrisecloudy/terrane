@@ -1,6 +1,20 @@
 import Foundation
 import WebKit
 
+enum TerraneBridgeInvocationError: LocalizedError {
+  case closed
+  case failed(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .closed:
+      return "The Terrane bridge is closed."
+    case .failed(let message):
+      return message
+    }
+  }
+}
+
 struct PermissionRequiredPrompt: Equatable {
   let appId: String
   let appName: String
@@ -559,7 +573,26 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
     guard !appId.isEmpty else {
       return (false, "terrane: no app selected")
     }
-    return hostRun(argv: [verb] + args)
+    return hostRun(appID: appId, argv: [verb] + args)
+  }
+
+  func invoke(appID: String, verb: String, args: [String]) async throws -> String {
+    try await withCheckedThrowingContinuation { continuation in
+      worker.async { [weak self] in
+        guard let self else {
+          continuation.resume(throwing: TerraneBridgeInvocationError.closed)
+          return
+        }
+        let result = self.hostRun(appID: appID, argv: [verb] + args)
+        if result.0 {
+          continuation.resume(returning: result.1)
+        } else {
+          continuation.resume(
+            throwing: TerraneBridgeInvocationError.failed(result.1)
+          )
+        }
+      }
+    }
   }
 
   func openExternal(target: String) -> (Bool, String) {
@@ -791,8 +824,8 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   }
 
   /// Marshal Swift strings → C argv, call terrane_host_run, return (ok, text).
-  private func hostRun(argv: [String]) -> (Bool, String) {
-    appId.withCString { appC -> (Bool, String) in
+  private func hostRun(appID: String, argv: [String]) -> (Bool, String) {
+    appID.withCString { appC -> (Bool, String) in
       var cargs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
       defer {
         for carg in cargs {

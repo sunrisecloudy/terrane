@@ -5,9 +5,10 @@ import WebKit
 struct TerraneAppWebView: UIViewRepresentable {
   let app: TerraneApp
   let runtime: any TerraneRuntime
+  let healthAutoSync: IOSHealthAutoSync?
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(app: app, runtime: runtime)
+    Coordinator(app: app, runtime: runtime, healthAutoSync: healthAutoSync)
   }
 
   func makeUIView(context: Context) -> WKWebView {
@@ -52,8 +53,14 @@ struct TerraneAppWebView: UIViewRepresentable {
             typeof value === "string" ? value : JSON.stringify(value)
           )
         });
+      const uploadHealthImage = (base64, mime) =>
+        window.webkit.messageHandlers.terrane.postMessage({
+          kind: "health:autoUpload",
+          base64: String(base64),
+          mime: String(mime)
+        });
       Object.defineProperty(window, "terrane", {
-        value: Object.freeze({ invoke }),
+        value: Object.freeze({ invoke, uploadHealthImage }),
         enumerable: true,
         configurable: false,
         writable: false
@@ -65,10 +72,16 @@ struct TerraneAppWebView: UIViewRepresentable {
     let app: TerraneApp
     let runtime: any TerraneRuntime
     let frameURL: URL
+    weak var healthAutoSync: IOSHealthAutoSync?
 
-    init(app: TerraneApp, runtime: any TerraneRuntime) {
+    init(
+      app: TerraneApp,
+      runtime: any TerraneRuntime,
+      healthAutoSync: IOSHealthAutoSync?
+    ) {
       self.app = app
       self.runtime = runtime
+      self.healthAutoSync = healthAutoSync
       var components = URLComponents()
       components.scheme = "terrane-app"
       components.host = app.id
@@ -84,11 +97,44 @@ struct TerraneAppWebView: UIViewRepresentable {
       guard message.frameInfo.securityOrigin.protocol == "terrane-app",
             message.frameInfo.securityOrigin.host == app.id,
             let body = message.body as? [String: Any],
-            body["kind"] as? String == "invoke",
-            let verb = body["verb"] as? String,
-            !verb.isEmpty
+            let kind = body["kind"] as? String
       else {
         replyHandler(nil, "terrane: rejected untrusted bridge message")
+        return
+      }
+      if kind == "health:autoUpload" {
+        guard app.id == "health",
+          let healthAutoSync,
+          let base64 = body["base64"] as? String,
+          !base64.isEmpty,
+          base64.count <= 16 * 1024 * 1024,
+          let mime = body["mime"] as? String
+        else {
+          replyHandler(nil, "terrane: Health sync is unavailable")
+          return
+        }
+        Task { @MainActor in
+          do {
+            let attachment = try await healthAutoSync.upload(base64: base64, mime: mime)
+            replyHandler(
+              [
+                "ok": true,
+                "attachmentId": attachment.id,
+                "clientId": attachment.clientId,
+              ],
+              nil
+            )
+          } catch {
+            replyHandler(nil, error.localizedDescription)
+          }
+        }
+        return
+      }
+      guard kind == "invoke",
+        let verb = body["verb"] as? String,
+        !verb.isEmpty
+      else {
+        replyHandler(nil, "terrane: rejected unsupported bridge message")
         return
       }
       let arguments = (body["args"] as? [Any] ?? []).map {

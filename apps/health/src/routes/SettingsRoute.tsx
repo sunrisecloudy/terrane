@@ -40,25 +40,31 @@ export function SettingsRoute({
             onChange={(event) =>
               setDraft({
                 ...draft,
-                provider: event.target.value === "codex" ? "codex" : "opencode",
+                provider:
+                  event.target.value === "codex"
+                    ? "codex"
+                    : event.target.value === "claude"
+                      ? "claude"
+                      : "opencode",
               })
             }
           >
             <option value="opencode">OpenCode</option>
             <option value="codex">Codex</option>
+            <option value="claude">Claude</option>
           </select>
         </label>
         <label className="model-control">
-          <span>OpenCode vision model</span>
+          <span>Vision model</span>
           <input
             value={draft.model}
-            disabled={draft.provider === "codex"}
+            disabled={draft.provider !== "opencode"}
             onChange={(event) => setDraft({ ...draft, model: event.target.value })}
           />
         </label>
         <p className="panel-help">
-          OpenCode defaults to <strong>opencode-go/kimi-k2.6</strong>. Codex uses
-          your signed-in Codex CLI configuration.
+          OpenCode defaults to <strong>opencode-go/kimi-k2.6</strong>. Codex and
+          Claude use their signed-in CLI configurations.
         </p>
         <div className="settings-actions">
           <button className="save" type="button" onClick={save}>Save settings</button>

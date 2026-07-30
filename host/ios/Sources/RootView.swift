@@ -57,7 +57,11 @@ private struct AppListView: View {
     .navigationTitle("Terrane")
     .navigationDestination(for: String.self) { id in
       if let app = model.apps.first(where: { $0.id == id }) {
-        TerraneAppWebView(app: app, runtime: model.runtime)
+        TerraneAppWebView(
+          app: app,
+          runtime: model.runtime,
+          healthAutoSync: model.healthAutoSync
+        )
           .navigationTitle(app.name)
           .navigationBarTitleDisplayMode(.inline)
       }
@@ -69,16 +73,26 @@ private struct AppListView: View {
 
   @ViewBuilder
   private var runtimeStatus: some View {
-    switch model.runtime.availability {
-    case .embedded:
-      EmptyView()
-    case .unavailable(let message):
-      Text(message)
+    VStack(spacing: 0) {
+      if !model.healthSyncStatus.isEmpty {
+        Text(model.healthSyncStatus)
+          .accessibilityIdentifier("health.sync.status")
+          .font(.caption)
+          .foregroundStyle(
+            model.healthSyncStatus.contains("failed") ? Color.red : Color.secondary
+          )
+          .padding(.vertical, 6)
+          .frame(maxWidth: .infinity)
+          .background(.bar)
+      }
+      if case .unavailable(let message) = model.runtime.availability {
+        Text(message)
         .font(.caption)
         .foregroundStyle(.red)
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity)
         .background(.bar)
+      }
     }
   }
 

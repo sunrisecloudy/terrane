@@ -53,7 +53,7 @@ function stringList(value, limit) {
 }
 
 function normalizeProvider(value) {
-  return value === "codex" ? "codex" : DEFAULT_PROVIDER;
+  return value === "codex" || value === "claude" ? value : DEFAULT_PROVIDER;
 }
 
 function normalizeOpenCodeModel(value) {
@@ -95,8 +95,8 @@ function saveSettings(settings) {
 }
 
 function agentSelector(settings) {
-  return settings.provider === "codex"
-    ? "codex"
+  return settings.provider === "codex" || settings.provider === "claude"
+    ? settings.provider
     : "opencode:" + settings.model;
 }
 
@@ -361,7 +361,9 @@ function estimate(args, usage) {
   var extension = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
   var blobName = "meal/" + id + "." + extension;
   try {
-    blob.put(blobName, base64, mime);
+    // The resource host scopes the app id before dispatching to the command
+    // layout: app, name, mime, bytes_base64.
+    blob.put(blobName, mime, base64);
     var entry = analyzeStoredBlob(blobName, note, settings, id);
     if (!entry) {
       blob.rm(blobName);

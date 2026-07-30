@@ -20,6 +20,10 @@ type TerraneApi = {
     types: ["image"];
     multiple: false;
   }) => Promise<PickResult>;
+  uploadHealthImage?: (
+    base64: string,
+    mime: string,
+  ) => Promise<{ ok: boolean; attachmentId: string; clientId: string }>;
   setSidebarSection?: (section: SidebarSection) => void;
   onSidebarItemSelect?: (callback: (id: string) => void) => void;
   onSidebarCreate?: (callback: () => void) => void;
@@ -46,6 +50,21 @@ export function blobUrl(name: string): string {
 
 export function hasPhotosPicker(): boolean {
   return Boolean(window.terrane && typeof window.terrane.pick === "function");
+}
+
+export function hasHealthAutoUpload(): boolean {
+  return Boolean(
+    window.terrane && typeof window.terrane.uploadHealthImage === "function",
+  );
+}
+
+export async function autoUploadHealthImage(
+  file: File,
+): Promise<{ ok: boolean; attachmentId: string; clientId: string } | null> {
+  if (!window.terrane || typeof window.terrane.uploadHealthImage !== "function") {
+    return null;
+  }
+  return window.terrane.uploadHealthImage(await fileToBase64(file), file.type);
 }
 
 export async function pickPhoto(): Promise<PickResult> {

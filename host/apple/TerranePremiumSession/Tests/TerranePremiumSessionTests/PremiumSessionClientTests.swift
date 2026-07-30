@@ -384,7 +384,7 @@ final class PremiumSessionClientTests: XCTestCase {
   }
 
   private static let sessionJSON =
-    #"{"user":{"id":"account-1","email":"person@example.test","displayName":"Test Person"},"session":{"id":"session-1","token":"access-1","refreshToken":"refresh-1","userId":"account-1","deviceId":"device-1","authMethod":"apple","accessExpiresAt":"2026-07-28T13:00:00Z"}}"#
+    #"{"user":{"id":"account-1","email":"person@example.test","displayName":"Test Person"},"session":{"id":"session-1","token":"access-1","refreshToken":"refresh-1","userId":"account-1","deviceId":"device-1","authMethod":"apple","accessExpiresAt":"2099-07-28T13:00:00Z"}}"#
 
   private static func response(
     _ request: URLRequest, status: Int, json: String
