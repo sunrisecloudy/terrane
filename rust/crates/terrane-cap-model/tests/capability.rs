@@ -78,6 +78,27 @@ fn model_capability_returns_effect_and_folds_recorded_turn() {
             image_parts: Vec::new(),
         })
     );
+    assert_eq!(
+        cap.decide(
+            CommandCtx {
+                state: &store,
+                bus: &bus,
+            },
+            "model.ask",
+            &[
+                "demo".into(),
+                "opencode:opencode-go/kimi-k2.6".into(),
+                "analyze".into(),
+            ],
+        )
+        .unwrap(),
+        Decision::Effect(Effect::ModelCall {
+            app: "demo".into(),
+            agent: "opencode:opencode-go/kimi-k2.6".into(),
+            prompt: "analyze".into(),
+            image_parts: Vec::new(),
+        })
+    );
 
     cap.fold(
         &mut store,
