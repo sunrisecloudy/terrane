@@ -196,7 +196,7 @@ fn capability_command_and_query_tools_use_core_without_protocol_errors() {
     )
     .unwrap();
     assert!(
-        committed.contains(r#"\"records\":4"#) && committed.contains(r#""isError":false"#),
+        committed.contains(r#"\"records\":5"#) && committed.contains(r#""isError":false"#),
         "commit: {committed}"
     );
 
@@ -549,7 +549,7 @@ fn weak_model_workflows_app_helpers_and_structured_results_work() {
     )
     .unwrap();
     assert!(
-        commit.contains(r#""command":"app.add"#) && commit.contains(r#"\"records\":4"#),
+        commit.contains(r#""command":"app.add"#) && commit.contains(r#"\"records\":5"#),
         "app_register commit: {commit}"
     );
 
@@ -770,7 +770,7 @@ fn app_build_staged_tools_validate_and_commit_without_resending_files() {
     )
     .unwrap();
     let committed = structured_content(&commit);
-    assert_eq!(committed["records"], 4, "commit: {commit}");
+    assert_eq!(committed["records"], 5, "commit: {commit}");
     assert_eq!(committed["draftDiscarded"], true, "commit: {commit}");
     assert!(
         dir.path()

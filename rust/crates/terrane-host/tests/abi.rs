@@ -13,7 +13,7 @@ use terrane_core::{fold_records_in_memory, local_owner_subject, read_log, Core, 
 use terrane_host::ffi::*;
 
 const APP_ADD_WITH_LINKS: &str =
-    "app.added\napp.link.registered\napp.link.registered\napp.link.registered";
+    "app.added\napp.link.registered\napp.link.registered\napp.link.registered\napp.link.registered";
 
 /// A backend exposing `set` and an `items` verb that returns JSON.
 const BACKEND: &str = r#"
