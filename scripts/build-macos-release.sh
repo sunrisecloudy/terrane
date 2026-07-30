@@ -192,7 +192,7 @@ xcodebuild \
   -quiet \
   -project host/macos/Terrane.xcodeproj \
   -scheme TerraneHost \
-  -configuration Release \
+  -configuration DeveloperID \
   -destination 'platform=macOS,arch=arm64' \
   -derivedDataPath "$DERIVED_DATA" \
   CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
@@ -240,7 +240,7 @@ fi
 
 if [[ "$UNSIGNED" -eq 0 ]]; then
   codesign --force --timestamp --options runtime \
-    --entitlements host/macos/Sources/TerraneHost.entitlements \
+    --entitlements host/macos/Sources/TerraneHostDeveloperID.entitlements \
     --sign "$MACOS_SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict --verbose=4 "$APP"
   if ! codesign -dvv "$APP" 2>&1 | grep -q 'flags=.*runtime'; then
