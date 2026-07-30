@@ -175,7 +175,7 @@ jq -e \
     .notarized == true and
     .architecture == "arm64" and
     .minimumSystemVersion == "13.0" and
-    .builtInAppBundleCount == 14 and
+    .builtInAppBundleCount == 17 and
     .capabilityBundleCount == 42 and
     .embeddedCapabilityBundleCount == 0 and
     .capabilityDelivery == "on-demand"

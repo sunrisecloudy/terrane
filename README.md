@@ -28,7 +28,7 @@ even when you are offline. Accounts and sync are optional.
 
 ## What is included in v0.3.0?
 
-Terrane ships with a growing catalog of built-in apps, including:
+Terrane ships with 17 built-in apps, including:
 
 - **Todo** for simple local task management
 - **Health** for meal, nutrition, history, and calendar views

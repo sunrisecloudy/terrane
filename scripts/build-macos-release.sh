@@ -233,8 +233,8 @@ if [[ ! -f "$APP/Contents/Resources/capabilities/index.json" ||
 fi
 
 app_bundle_count="$(find "$APP/Contents/Resources/apps" -mindepth 2 -maxdepth 2 -type f -name manifest.json | wc -l | tr -d ' ')"
-if [[ "$app_bundle_count" != "14" ]]; then
-  printf 'expected 14 built-in app bundles, found %s\n' "$app_bundle_count" >&2
+if [[ "$app_bundle_count" != "17" ]]; then
+  printf 'expected 17 built-in app bundles, found %s\n' "$app_bundle_count" >&2
   exit 1
 fi
 
@@ -318,7 +318,7 @@ cat > "$MANIFEST" <<EOF
   "minimumSystemVersion": "13.0",
   "developerIdSigned": $signed,
   "notarized": $notarized,
-  "builtInAppBundleCount": 14,
+  "builtInAppBundleCount": 17,
   "capabilityBundleCount": 42,
   "embeddedCapabilityBundleCount": $capability_count,
   "capabilityDelivery": "$capability_delivery",
