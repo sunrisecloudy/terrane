@@ -243,7 +243,8 @@ if [[ "$UNSIGNED" -eq 0 ]]; then
     --entitlements host/macos/Sources/TerraneHostDeveloperID.entitlements \
     --sign "$MACOS_SIGNING_IDENTITY" "$APP"
   codesign --verify --deep --strict --verbose=4 "$APP"
-  if ! codesign -dvv "$APP" 2>&1 | grep -q 'flags=.*runtime'; then
+  signature="$(codesign -dvv "$APP" 2>&1)"
+  if ! grep -q 'flags=.*runtime' <<<"$signature"; then
     printf 'signed app does not have hardened runtime enabled\n' >&2
     exit 1
   fi
