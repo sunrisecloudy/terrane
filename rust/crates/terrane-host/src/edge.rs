@@ -901,6 +901,14 @@ fn run_agent(
     prompt: &str,
     image_parts: &[terrane_core::ModelImagePart],
 ) -> Result<(String, i32)> {
+    let opencode_work_dir = if agent.starts_with("opencode:") {
+        Some(
+            tempfile::tempdir()
+                .map_err(|e| Error::Storage(format!("create OpenCode work directory: {e}")))?,
+        )
+    } else {
+        None
+    };
     let image_dir = if image_parts.is_empty() {
         None
     } else {
@@ -957,6 +965,24 @@ fn run_agent(
             for path in &image_paths {
                 c.arg("--image").arg(path);
             }
+            c.arg(prompt);
+            c
+        }
+        selector if selector.starts_with("opencode:") => {
+            let model = selector
+                .strip_prefix("opencode:")
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| Error::InvalidInput("OpenCode model is missing".into()))?;
+            let work_dir = opencode_work_dir
+                .as_ref()
+                .expect("OpenCode work directory exists for an OpenCode selector");
+            let mut c = Command::new("opencode");
+            c.args(["run", "--pure", "--model", model]);
+            c.arg("--dir").arg(work_dir.path());
+            for path in &image_paths {
+                c.arg("--file").arg(path);
+            }
+            c.arg("--");
             c.arg(prompt);
             c
         }

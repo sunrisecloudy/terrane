@@ -1,4 +1,4 @@
-//! The `model` capability — calls to agent CLIs (`claude`, `codex`), recorded.
+//! The `model` capability — calls to agent CLIs (`claude`, `codex`, `opencode`), recorded.
 //!
 //! Like `net`, the call is an [`Effect`](crate::Effect) run at the edge; its
 //! output is recorded as an event, so replay reproduces the conversation without
@@ -19,8 +19,8 @@ use terrane_cap_interface::{
 
 mod doc;
 
-/// The agents this capability knows how to drive.
-pub const AGENTS: [&str; 2] = ["claude", "codex"];
+/// The agent selectors this capability knows how to drive.
+pub const AGENTS: [&str; 3] = ["claude", "codex", "opencode:<provider/model>"];
 pub const MAX_MODEL_CALLS_PER_APP: usize = 64;
 pub const MAX_IMAGE_PARTS_PER_CALL: usize = 16;
 pub const MAX_IMAGE_PART_BYTES: u64 = 16 * 1024 * 1024;
@@ -110,11 +110,11 @@ impl Capability for ModelCapability {
         match name {
             "model.ask" => {
                 let app = arg(args, 0, "app")?;
-                let agent = arg(args, 1, "agent (claude|codex)")?;
+                let agent = arg(args, 1, "agent (claude|codex|opencode:<provider/model>)")?;
                 let prompt = join_tail(args, 2);
                 // Validate purely; the agent runs at the edge.
                 ensure_app_exists(ctx.bus, &app)?;
-                if !AGENTS.contains(&agent.as_str()) {
+                if !is_supported_agent(&agent) {
                     return Err(Error::InvalidInput(format!(
                         "unknown agent {agent:?}; expected one of {AGENTS:?}"
                     )));
@@ -200,6 +200,26 @@ impl Capability for ModelCapability {
 
 #[cfg(test)]
 mod tests;
+
+fn is_supported_agent(agent: &str) -> bool {
+    if matches!(agent, "claude" | "codex") {
+        return true;
+    }
+    let Some(model) = agent.strip_prefix("opencode:") else {
+        return false;
+    };
+    if model.len() > 200 {
+        return false;
+    }
+    let Some((provider, model_id)) = model.split_once('/') else {
+        return false;
+    };
+    !provider.is_empty()
+        && !model_id.is_empty()
+        && model
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._~:/-".contains(&byte))
+}
 
 struct NormalizedPrompt {
     prompt_json: String,

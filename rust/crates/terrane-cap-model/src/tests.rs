@@ -92,6 +92,52 @@ fn ask_decision_rejects_unknown_agents_and_empty_prompts() {
                     bus: &bus,
                 },
                 "model.ask",
+                &[
+                    "demo".into(),
+                    "opencode:opencode-go/kimi-k2.6".into(),
+                    "analyze".into(),
+                ],
+            )
+            .unwrap(),
+        Decision::Effect(Effect::ModelCall {
+            app: "demo".into(),
+            agent: "opencode:opencode-go/kimi-k2.6".into(),
+            prompt: "analyze".into(),
+            image_parts: Vec::new(),
+        })
+    );
+    for selector in [
+        "opencode:",
+        "opencode:kimi-k2.6",
+        "opencode:/kimi-k2.6",
+        "opencode:opencode-go/",
+        "opencode:opencode-go/kimi k2.6",
+        "opencode:opencode-go/kimi-k2.6;touch-/tmp/no",
+    ] {
+        assert!(
+            ModelCapability
+                .decide(
+                    CommandCtx {
+                        state: &store,
+                        bus: &bus,
+                    },
+                    "model.ask",
+                    &["demo".into(), selector.into(), "prompt".into()],
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("unknown agent"),
+            "selector should be rejected: {selector}"
+        );
+    }
+    assert_eq!(
+        ModelCapability
+            .decide(
+                CommandCtx {
+                    state: &store,
+                    bus: &bus,
+                },
+                "model.ask",
                 &["demo".into(), "codex".into()],
             )
             .unwrap_err(),

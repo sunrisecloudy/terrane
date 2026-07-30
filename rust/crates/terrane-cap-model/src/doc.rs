@@ -58,7 +58,11 @@ pub fn model_doc(include_internal: bool) -> CapabilityDoc {
             "Folding app.removed removes all recorded model turns for that app.".to_string(),
         ],
         limits: vec![
-            limit("supportedAgents", &AGENTS.join(","), "Initial recorded agent CLI allow-list."),
+            limit(
+                "supportedAgents",
+                &AGENTS.join(","),
+                "Recorded agent CLI selector allow-list.",
+            ),
             limit("transcriptScope", "app", "Model turns are stored under the app that requested them."),
             limit("maxModelCallsPerApp", &crate::MAX_MODEL_CALLS_PER_APP.to_string(), "Recorded model calls retained per app before decide refuses more."),
             limit("maxImagePartsPerCall", &crate::MAX_IMAGE_PARTS_PER_CALL.to_string(), "Maximum image blob refs in one prompt."),
