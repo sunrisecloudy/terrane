@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -183,15 +184,36 @@ fn write_archive(bundle: &Path, target: &Path, executable: &str) -> Result<(), S
     let file = fs::File::create(target).map_err(|error| error.to_string())?;
     let encoder = zstd::Encoder::new(file, 3).map_err(|error| error.to_string())?;
     let mut archive = tar::Builder::new(encoder);
-    archive
-        .append_path_with_name(bundle.join("manifest.json"), "manifest.json")
-        .map_err(|error| error.to_string())?;
-    archive
-        .append_path_with_name(bundle.join(executable), executable)
-        .map_err(|error| error.to_string())?;
+    append_regular_file(
+        &mut archive,
+        &bundle.join("manifest.json"),
+        "manifest.json",
+        0o644,
+    )?;
+    append_regular_file(&mut archive, &bundle.join(executable), executable, 0o755)?;
     let encoder = archive.into_inner().map_err(|error| error.to_string())?;
     encoder.finish().map_err(|error| error.to_string())?;
     Ok(())
+}
+
+fn append_regular_file<W: Write>(
+    archive: &mut tar::Builder<W>,
+    source: &Path,
+    archive_path: &str,
+    mode: u32,
+) -> Result<(), String> {
+    let mut file = fs::File::open(source).map_err(|error| error.to_string())?;
+    let size = file.metadata().map_err(|error| error.to_string())?.len();
+    let mut header = tar::Header::new_gnu();
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_size(size);
+    header.set_mode(mode);
+    header.set_uid(0);
+    header.set_gid(0);
+    header.set_mtime(0);
+    archive
+        .append_data(&mut header, archive_path, &mut file)
+        .map_err(|error| error.to_string())
 }
 
 fn manifest_for(
@@ -353,5 +375,41 @@ mod tests {
         }
         assert_eq!(manifests["automation"].dependencies, vec!["query"]);
         assert_eq!(manifests["webhook"].activation, ActivationMode::Background);
+    }
+
+    #[test]
+    fn capability_archives_contain_only_portable_regular_files() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = root.path().join("bundle");
+        fs::create_dir(&bundle).unwrap();
+        fs::write(bundle.join("manifest.json"), b"{}").unwrap();
+        let original_worker = root.path().join("worker-source");
+        fs::write(&original_worker, b"worker").unwrap();
+        fs::hard_link(&original_worker, bundle.join("terrane-cap-time-worker")).unwrap();
+
+        let target = root.path().join("time.tcap");
+        write_archive(&bundle, &target, "terrane-cap-time-worker").unwrap();
+
+        let decoder = zstd::Decoder::new(fs::File::open(target).unwrap()).unwrap();
+        let mut archive = tar::Archive::new(decoder);
+        let entries = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let entry = entry.unwrap();
+                assert!(entry.header().entry_type().is_file());
+                (
+                    entry.path().unwrap().into_owned(),
+                    entry.header().mode().unwrap(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![
+                (PathBuf::from("manifest.json"), 0o644),
+                (PathBuf::from("terrane-cap-time-worker"), 0o755),
+            ]
+        );
     }
 }

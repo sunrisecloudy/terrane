@@ -22,9 +22,10 @@ final class AppPackagingTests: XCTestCase {
     )
     XCTAssertTrue(project.contains("rsync -a --delete"), project)
     XCTAssertTrue(project.contains("DESTINATION_COUNT"), project)
-    XCTAssertTrue(project.contains("-force_load"), project)
     XCTAssertTrue(
-      project.contains("$(SRCROOT)/../../target/macos-static/release/libterrane_host.a"), project)
+      project.contains(
+        "$(SRCROOT)/../../target/macos-static/release/libterrane_host.a"), project)
+    XCTAssertFalse(project.contains("-force_load"), project)
     XCTAssertTrue(
       project.contains(
         "$(SRCROOT)/../../target/macos-static/release/libterrane_host_httplib.a"), project)

@@ -8,9 +8,8 @@ even when you are offline. Accounts and sync are optional.
 
 > **Recommended release: Terrane for macOS v0.3.0**
 >
-> [Download Terrane v0.3.0 for Apple silicon][release] from GitHub Releases.
-> This is the recommended version for everyday use and replaces the older
-> unsigned preview builds.
+> [Download Terrane v0.3.0 for Apple silicon][release]. This is the recommended
+> version for everyday use and replaces the older unsigned preview builds.
 
 [release]: https://github.com/sunrisecloudy/terrane/releases/tag/v0.3.0
 
@@ -47,17 +46,23 @@ refined app icons in the sidebar.
 
 ## Install on macOS
 
-Terrane `v0.3.0` currently supports Apple silicon Macs running macOS 13 or
-newer.
+Terrane `v0.3.0` supports Apple silicon Macs running macOS 13 or newer. Intel
+Macs are not currently supported.
 
 1. Open the [Terrane v0.3.0 release][release].
-2. Download the macOS Apple silicon archive.
-3. Unzip it and move **Terrane** to `/Applications`.
+2. Download `Terrane-0.3.0-macos-arm64.dmg` and `SHA256SUMS`.
+3. Verify the checksum, open the DMG, and drag **Terrane** to Applications.
 4. Open Terrane from Finder.
 
-The public build is signed with an Apple Developer ID and distributed with
-Hardened Runtime. Release downloads are notarized before publication so macOS
-can verify their origin.
+Use the versioned DMG—not the source archives generated automatically by
+GitHub. Production downloads are Developer ID-signed, Apple-notarized, and
+verified with Gatekeeper before publication. Non-core native capabilities are
+downloaded from the same immutable release when first used and accepted only
+when their hashes match the app's signed capability index.
+
+See the [macOS release runbook](docs/RELEASING_MACOS.md),
+[privacy disclosure](PRIVACY.md), [security policy](SECURITY.md), and
+[changelog](CHANGELOG.md).
 
 ## Privacy and accounts
 
@@ -107,8 +112,8 @@ xcodegen generate
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the system model,
 [docs/APP_API.md](docs/APP_API.md) for the app API, and
-[host/macos/README.md](host/macos/README.md) for native build, signing, and
-release instructions.
+[host/macos/README.md](host/macos/README.md) for native build and signing
+details.
 
 ## Versioning
 

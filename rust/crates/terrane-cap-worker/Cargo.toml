@@ -27,6 +27,7 @@ cap-browser = ["dep:terrane-cap-browser"]
 cap-build = ["dep:terrane-cap-build"]
 cap-builder = ["dep:terrane-cap-builder"]
 cap-common = ["dep:terrane-cap-common"]
+cap-control-room = ["dep:terrane-cap-control-room"]
 cap-crdt = ["dep:terrane-cap-crdt"]
 cap-crypto = ["dep:terrane-cap-crypto"]
 cap-document = ["dep:terrane-cap-document"]
@@ -84,6 +85,7 @@ terrane-cap-browser = { workspace = true, optional = true }
 terrane-cap-build = { workspace = true, optional = true }
 terrane-cap-builder = { workspace = true, optional = true }
 terrane-cap-common = { workspace = true, optional = true }
+terrane-cap-control-room = { workspace = true, optional = true }
 terrane-cap-crdt = { workspace = true, optional = true }
 terrane-cap-crypto = { workspace = true, optional = true }
 terrane-cap-document = { workspace = true, optional = true }

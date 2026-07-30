@@ -153,7 +153,7 @@ stages llama's non-TLS HTTP helper archive. The target force-loads the Rust
 archive by explicit path, so the finished app has neither a repository dylib
 dependency nor a Homebrew OpenSSL dependency.
 When `TERRANE_CAP_BUNDLE_DIR` points to a verified release bundle directory, a
-post-build phase embeds its index, verifying key, and 41 signed native workers
+post-build phase embeds its index, verifying key, and 42 signed native workers
 under `TerraneHost.app/Contents/Resources/capabilities`. Alternatively,
 `TERRANE_CAP_SIGNING_KEY_HEX` packages the workers from source. Development
 builds without either setting retain the one-release static fallback. Every
@@ -215,12 +215,22 @@ xcodebuild -project Terrane.xcodeproj -scheme TerraneHost \
   -archivePath "$PWD/build/TerraneHost-developer-id.xcarchive"
 ```
 
-Verify the signed product before notarization:
+End-user releases must be produced by `scripts/build-macos-release.sh`, not by
+copying a development archive:
 
 ```sh
-APP="build/TerraneHost.xcarchive/Products/Applications/TerraneHost.app"
+TERRANE_CAP_SIGNING_KEY_HEX=<production-seed> \
+MACOS_SIGNING_IDENTITY="Developer ID Application: Example (TEAMID)" \
+APPLE_NOTARY_KEYCHAIN_PROFILE=terrane-notary \
+scripts/build-macos-release.sh --version 0.3.0 --notarize
+```
+
+Verify the signed product and release artifacts before publication:
+
+```sh
+APP="build/TerraneHost-developer-id.xcarchive/Products/Applications/Terrane.app"
 codesign --verify --deep --strict --verbose=2 "$APP"
-codesign -d --entitlements :- "$APP"
+codesign -d --xml --entitlements - "$APP" | plutil -p -
 plutil -p "$APP/Contents/Info.plist"
 ```
 
@@ -230,6 +240,9 @@ entitlement to be absent. Both require `keychain-access-groups`, `GIDClientID`,
 `GIDServerClientID`, the reversed Google URL scheme, Hardened Runtime, and the
 expected signing identity. Also confirm that no token-like value appears in the
 Info.plist, entitlements, generated project, app resources, or logs.
+
+See [`docs/RELEASING_MACOS.md`](../../docs/RELEASING_MACOS.md) for certificate,
+GitHub environment, verification, and publication requirements.
 
 ## Run
 

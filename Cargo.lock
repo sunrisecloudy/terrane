@@ -3847,14 +3847,14 @@ dependencies = [
 
 [[package]]
 name = "terrane-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nanoserde",
 ]
 
 [[package]]
 name = "terrane-app-build"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nanoserde",
  "swc_core",
@@ -3863,7 +3863,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-asr"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hound",
  "tempfile",
@@ -3872,7 +3872,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -3880,7 +3880,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -3889,7 +3889,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-applescript"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -3897,7 +3897,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-connection",
@@ -3907,7 +3907,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-automation"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -3920,7 +3920,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-blob"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "borsh",
@@ -3930,7 +3930,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-browser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -3940,7 +3940,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-build"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nanoserde",
  "terrane-app-build",
@@ -3949,7 +3949,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-builder"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "nanoserde",
@@ -3958,7 +3958,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-common"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde",
@@ -3972,7 +3972,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-connection"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -3981,7 +3981,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-control-room"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "terrane-api",
@@ -4002,7 +4002,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-crdt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "loro",
@@ -4011,7 +4011,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-crypto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "base64",
@@ -4028,7 +4028,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-document"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4037,7 +4037,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-geo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -4045,7 +4045,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-harness"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "nanoserde",
@@ -4055,7 +4055,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-history"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4065,7 +4065,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-interface"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde",
@@ -4073,7 +4073,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-interop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4086,7 +4086,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-job-queue"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4095,7 +4095,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-js-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nanoserde",
  "rquickjs",
@@ -4107,7 +4107,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-kv"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "rocksdb",
@@ -4118,7 +4118,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-local-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4128,7 +4128,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-manager"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.3",
@@ -4146,7 +4146,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-mcp-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4159,7 +4159,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4169,7 +4169,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-migration"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4180,7 +4180,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-model"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4190,7 +4190,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-native"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4199,7 +4199,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-net"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "borsh",
@@ -4210,7 +4210,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-org"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "ed25519-dalek",
@@ -4223,7 +4223,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-person"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "ed25519-dalek",
@@ -4234,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-presence"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4243,7 +4243,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-protocol"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "serde",
@@ -4255,7 +4255,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-publish"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-app",
@@ -4264,7 +4264,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-push"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4276,7 +4276,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-query"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "jmespath",
@@ -4291,7 +4291,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-relational-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regex",
  "serde",
@@ -4302,7 +4302,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-replica"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -4310,7 +4310,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-scheduler"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4319,7 +4319,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-search"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4332,7 +4332,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-share"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -4340,7 +4340,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-stream"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4351,7 +4351,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-stt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4360,7 +4360,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-sync"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -4368,14 +4368,14 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-sysinfo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "terrane-cap-interface",
 ]
 
 [[package]]
 name = "terrane-cap-telemetry"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "sha2",
@@ -4384,7 +4384,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-time"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "terrane-cap-interface",
@@ -4392,7 +4392,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-tts"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4402,7 +4402,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-wasm-runtime"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nanoserde",
  "serde_json",
@@ -4414,7 +4414,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-web-publish"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "serde_json",
@@ -4423,7 +4423,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-webhook"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "borsh",
@@ -4434,7 +4434,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-cap-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.3",
@@ -4452,6 +4452,7 @@ dependencies = [
  "terrane-cap-build",
  "terrane-cap-builder",
  "terrane-cap-common",
+ "terrane-cap-control-room",
  "terrane-cap-crdt",
  "terrane-cap-crypto",
  "terrane-cap-document",
@@ -4497,7 +4498,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "ed25519-dalek",
@@ -4564,7 +4565,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "borsh",
@@ -4644,7 +4645,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-host-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tempfile",
  "terrane-host",
@@ -4652,7 +4653,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-host-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "nanoserde",
  "rusqlite",
@@ -4667,7 +4668,7 @@ dependencies = [
 
 [[package]]
 name = "terrane-host-web"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "borsh",
  "nanoserde",
@@ -4685,11 +4686,11 @@ dependencies = [
 
 [[package]]
 name = "terrane-i18n"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "terrane-local-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "encoding_rs",
  "libc",

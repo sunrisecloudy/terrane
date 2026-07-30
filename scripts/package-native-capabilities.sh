@@ -15,6 +15,14 @@ cargo build -p terrane-cap-worker --bin terrane-cap-bundle --release --locked \
 
 WORKERS="$(mktemp -d "${TMPDIR:-/tmp}/terrane-cap-workers.XXXXXX")"
 trap 'rm -rf "$WORKERS"' EXIT
+
+strip_worker() {
+  case "$(uname -s)" in
+    Darwin) /usr/bin/strip -S -x "$1" ;;
+    Linux) strip --strip-all "$1" ;;
+  esac
+}
+
 CAPABILITIES=(
   agent:cap-agent
   applescript:cap-applescript
@@ -23,6 +31,7 @@ CAPABILITIES=(
   build:cap-build
   builder:cap-builder
   common:cap-common
+  control-room:cap-control-room
   crdt:cap-crdt
   crypto:cap-crypto
   document:cap-document
@@ -64,6 +73,16 @@ for entry in "${CAPABILITIES[@]}"; do
   cargo build -p terrane-cap-worker --bin terrane-cap-worker --release --locked \
     --no-default-features --features "$feature"
   cp "$CARGO_TARGET_DIR/release/terrane-cap-worker" "$WORKERS/$namespace"
+  strip_worker "$WORKERS/$namespace"
+  if [[ -n "${TERRANE_MACOS_CODESIGN_IDENTITY:-}" ]]; then
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+      printf 'TERRANE_MACOS_CODESIGN_IDENTITY is only supported on macOS\n' >&2
+      exit 1
+    fi
+    codesign --force --timestamp --options runtime \
+      --sign "$TERRANE_MACOS_CODESIGN_IDENTITY" "$WORKERS/$namespace"
+    codesign --verify --strict --verbose=2 "$WORKERS/$namespace"
+  fi
 done
 case "$(uname -s)" in
   Darwin) PLATFORM="macos" ;;

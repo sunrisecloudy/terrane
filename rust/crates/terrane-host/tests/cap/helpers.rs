@@ -17,8 +17,7 @@ pub(crate) fn terrane(home: &Path, args: &[&str]) -> (bool, String, String) {
     )
 }
 
-/// Like [`terrane`], but feeds `stdin` to the process — used to prove that
-/// `run … --ask` reads the master password from stdin, never from argv.
+/// Like [`terrane`], but feeds `stdin` to the process.
 pub(crate) fn terrane_stdin(home: &Path, args: &[&str], stdin: &str) -> (bool, String, String) {
     use std::io::Write as _;
     use std::process::Stdio;
