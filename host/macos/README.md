@@ -173,13 +173,18 @@ The unsigned command above is valid for local-only use. Provider sign-in
 requires a signed build because AuthenticationServices and Keychain access are
 code-signing capabilities.
 
-### Signed Premium build
+### Signed Premium builds
 
-Before release, enable Sign in with Apple for `com.terrane.host` in the Apple
-Developer portal and use a provisioning profile containing that entitlement.
-The checked-in entitlements declare Sign in with Apple and put the private
-default app Keychain access group first, as required by Google Sign-In on
-macOS. Keep the group app-specific; do not substitute a shared Keychain group.
+Public feature releases use minor-version increments: `v0.3.0`, `v0.4.0`,
+`v0.5.0`, and so on until the product is ready for `v1.0.0`. The Git tag,
+release title, and `MARKETING_VERSION` must agree.
+
+For development or App Store distribution, enable Sign in with Apple for
+`com.terrane.host` in the Apple Developer portal and use a provisioning profile
+containing that entitlement. The default checked-in entitlements declare Sign
+in with Apple and put the private default app Keychain access group first, as
+required by Google Sign-In on macOS. Keep the group app-specific; do not
+substitute a shared Keychain group.
 
 Generate, archive, and sign with the checked-in public production OAuth
 configuration. If present, `Configs/PremiumAuth.local.xcconfig` is applied
@@ -194,6 +199,22 @@ xcodebuild -project Terrane.xcodeproj -scheme TerraneHost \
   -archivePath "$PWD/build/TerraneHost.xcarchive"
 ```
 
+Apple does not support Sign in with Apple for Developer ID distribution. The
+`DeveloperID` configuration therefore uses
+`TerraneHostDeveloperID.entitlements` and omits the Apple provider from the
+sync sign-in sheet while retaining Google sign-in and local/offline use:
+
+```sh
+cd host/macos
+xcodegen generate
+xcodebuild -project Terrane.xcodeproj -scheme TerraneHost \
+  -configuration DeveloperID \
+  TERRANE_DEVELOPMENT_TEAM=<team-id> \
+  TERRANE_DEVELOPER_ID_PROFILE=<profile-name> \
+  -destination 'generic/platform=macOS' archive \
+  -archivePath "$PWD/build/TerraneHost-developer-id.xcarchive"
+```
+
 Verify the signed product before notarization:
 
 ```sh
@@ -203,10 +224,11 @@ codesign -d --entitlements :- "$APP"
 plutil -p "$APP/Contents/Info.plist"
 ```
 
-Acceptance requires `com.apple.developer.applesignin`,
-`keychain-access-groups`, `GIDClientID`, `GIDServerClientID`, the reversed
-Google URL scheme, Hardened Runtime, and the expected Developer ID or Apple
-Development identity. Also confirm that no token-like value appears in the
+Development/App Store acceptance requires
+`com.apple.developer.applesignin`; Developer ID acceptance requires that
+entitlement to be absent. Both require `keychain-access-groups`, `GIDClientID`,
+`GIDServerClientID`, the reversed Google URL scheme, Hardened Runtime, and the
+expected signing identity. Also confirm that no token-like value appears in the
 Info.plist, entitlements, generated project, app resources, or logs.
 
 ## Run

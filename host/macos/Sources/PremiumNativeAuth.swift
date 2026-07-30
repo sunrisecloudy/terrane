@@ -282,8 +282,13 @@ final class PremiumSignInSheetController: NSObject {
   ) {
     self.parent = parent
     self.onProvider = onProvider
+#if TERRANE_DEVELOPER_ID
+    let panelHeight: CGFloat = 198
+#else
+    let panelHeight: CGFloat = 250
+#endif
     panel = NSPanel(
-      contentRect: NSRect(x: 0, y: 0, width: 360, height: 250),
+      contentRect: NSRect(x: 0, y: 0, width: 360, height: panelHeight),
       styleMask: [.titled],
       backing: .buffered,
       defer: false
@@ -323,6 +328,7 @@ final class PremiumSignInSheetController: NSObject {
     detail.alignment = .center
     detail.translatesAutoresizingMaskIntoConstraints = false
 
+#if !TERRANE_DEVELOPER_ID
     let appleButton = ASAuthorizationAppleIDButton(
       authorizationButtonType: .signIn,
       authorizationButtonStyle: .black
@@ -330,6 +336,7 @@ final class PremiumSignInSheetController: NSObject {
     appleButton.target = self
     appleButton.action = #selector(appleClicked)
     appleButton.translatesAutoresizingMaskIntoConstraints = false
+#endif
 
     let googleButton = NSHostingView(
       rootView: PremiumGoogleSignInButton { [weak self] in self?.googleClicked() }
@@ -340,9 +347,12 @@ final class PremiumSignInSheetController: NSObject {
     cancel.bezelStyle = .inline
     cancel.translatesAutoresizingMaskIntoConstraints = false
 
-    [title, detail, appleButton, googleButton, cancel].forEach(content.addSubview)
+    [title, detail, googleButton, cancel].forEach(content.addSubview)
+#if !TERRANE_DEVELOPER_ID
+    content.addSubview(appleButton)
+#endif
     panel.contentView = content
-    NSLayoutConstraint.activate([
+    var constraints = [
       title.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
       title.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
       title.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
@@ -350,20 +360,27 @@ final class PremiumSignInSheetController: NSObject {
       detail.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 8),
       detail.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 30),
       detail.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -30),
-
-      appleButton.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 18),
-      appleButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-      appleButton.widthAnchor.constraint(equalToConstant: 260),
-      appleButton.heightAnchor.constraint(equalToConstant: 42),
-
-      googleButton.topAnchor.constraint(equalTo: appleButton.bottomAnchor, constant: 10),
       googleButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
       googleButton.widthAnchor.constraint(equalToConstant: 260),
       googleButton.heightAnchor.constraint(equalToConstant: 42),
 
       cancel.topAnchor.constraint(equalTo: googleButton.bottomAnchor, constant: 8),
       cancel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+    ]
+#if TERRANE_DEVELOPER_ID
+    constraints.append(
+      googleButton.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 18)
+    )
+#else
+    constraints.append(contentsOf: [
+      appleButton.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 18),
+      appleButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+      appleButton.widthAnchor.constraint(equalToConstant: 260),
+      appleButton.heightAnchor.constraint(equalToConstant: 42),
+      googleButton.topAnchor.constraint(equalTo: appleButton.bottomAnchor, constant: 10),
     ])
+#endif
+    NSLayoutConstraint.activate(constraints)
   }
 
   @objc private func appleClicked() {

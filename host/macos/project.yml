@@ -2,6 +2,10 @@
 # `xcodegen generate`). The macOS host: an AppKit + WKWebView app that links the
 # Rust staticlib libterrane_host.a (built by the pre-build phase below).
 name: Terrane
+configs:
+  Debug: debug
+  Release: release
+  DeveloperID: release
 options:
   bundleIdPrefix: com.terrane
   deploymentTarget:
@@ -33,6 +37,8 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.terrane.host
+        MARKETING_VERSION: 0.3.0
+        CURRENT_PROJECT_VERSION: 3
         DEAD_CODE_STRIPPING: "YES"
         LIBRARY_SEARCH_PATHS:
           - $(inherited)
@@ -49,11 +55,22 @@ targets:
         HEADER_SEARCH_PATHS:
           - $(inherited)
           - $(SRCROOT)/../../rust/crates/terrane-host/include
+      configs:
+        DeveloperID:
+          CODE_SIGN_ENTITLEMENTS: Sources/TerraneHostDeveloperID.entitlements
+          CODE_SIGN_IDENTITY: Developer ID Application
+          CODE_SIGN_STYLE: Manual
+          DEVELOPMENT_TEAM: $(TERRANE_DEVELOPMENT_TEAM)
+          ENABLE_HARDENED_RUNTIME: "YES"
+          PROVISIONING_PROFILE_SPECIFIER: $(TERRANE_DEVELOPER_ID_PROFILE)
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) TERRANE_DEVELOPER_ID
     info:
       path: Sources/Info.plist
       properties:
         NSPrincipalClass: NSApplication
         NSHighResolutionCapable: true
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSCameraUsageDescription: "Photobooth uses the camera only when you start the camera and take a picture."
         NSMicrophoneUsageDescription: "Terrane transcribes speech locally when you enable the microphone for ambient dictation."
         NSPhotoLibraryUsageDescription: "Terrane watches new photos you add so it can privately recommend apps and workflows. Images stay on this Mac unless you approve another action."
