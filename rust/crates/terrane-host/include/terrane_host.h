@@ -44,6 +44,19 @@ int terrane_host_run(TerraneHandle *h, const char *app, size_t argc,
 int terrane_dispatch(TerraneHandle *h, const char *name, size_t argc,
                      const char *const *argv, char **out_output, char **out_error);
 
+/* Export and merge the app-scoped CRDT wire used by native Premium sync.
+ * Version vectors and updates are standard base64. An empty remote_version
+ * exports the complete local CRDT document. Merge is idempotent and writes
+ * "changed" or "unchanged" to *out_output. */
+int terrane_crdt_version(TerraneHandle *h, const char *app, char **out_output,
+                         char **out_error);
+int terrane_crdt_export(TerraneHandle *h, const char *app,
+                        const char *remote_version, char **out_output,
+                        char **out_error);
+int terrane_crdt_merge(TerraneHandle *h, const char *app,
+                       const char *update_base64, char **out_output,
+                       char **out_error);
+
 /* Handle one MCP JSON-RPC message against this native host's live Core.
  * Notifications return an empty output string; requests return JSON. This lets
  * MCP clients attach to the GUI owner instead of opening a second home writer. */

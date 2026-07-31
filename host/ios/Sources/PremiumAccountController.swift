@@ -75,6 +75,19 @@ final class PremiumAccountController: ObservableObject {
     )
   }
 
+  func makeAppStateSyncClient(
+    keyStore: any PremiumAppSyncKeyStore = PremiumKeychainAppSyncKeyStore(),
+    deviceKeyStore: any PremiumHealthDeviceKeyStore =
+      PremiumKeychainHealthDeviceKeyStore()
+  ) -> PremiumAppStateSyncClient {
+    PremiumAppStateSyncClient(
+      session: client,
+      keyStore: keyStore,
+      deviceKeyStore: deviceKeyStore,
+      platform: .iOS
+    )
+  }
+
   func begin(
     _ provider: PremiumIdentityProvider
   ) async throws -> PremiumAuthenticationChallenge {

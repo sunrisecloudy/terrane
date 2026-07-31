@@ -146,6 +146,43 @@ unsafe fn take_c_string(p: *mut c_char) -> Option<String> {
     }
 }
 
+unsafe fn call_crdt_read(
+    f: unsafe extern "C" fn(
+        *mut TerraneHandle,
+        *const c_char,
+        *mut *mut c_char,
+        *mut *mut c_char,
+    ) -> i32,
+    h: *mut TerraneHandle,
+    app: &str,
+) -> (i32, Option<String>, Option<String>) {
+    let app = CString::new(app).unwrap();
+    let mut out = ptr::null_mut();
+    let mut err = ptr::null_mut();
+    let code = f(h, app.as_ptr(), &mut out, &mut err);
+    (code, take_c_string(out), take_c_string(err))
+}
+
+unsafe fn call_crdt_update(
+    f: unsafe extern "C" fn(
+        *mut TerraneHandle,
+        *const c_char,
+        *const c_char,
+        *mut *mut c_char,
+        *mut *mut c_char,
+    ) -> i32,
+    h: *mut TerraneHandle,
+    app: &str,
+    value: &str,
+) -> (i32, Option<String>, Option<String>) {
+    let app = CString::new(app).unwrap();
+    let value = CString::new(value).unwrap();
+    let mut out = ptr::null_mut();
+    let mut err = ptr::null_mut();
+    let code = f(h, app.as_ptr(), value.as_ptr(), &mut out, &mut err);
+    (code, take_c_string(out), take_c_string(err))
+}
+
 unsafe fn call_blob_import(
     h: *mut TerraneHandle,
     app: &str,
@@ -826,6 +863,81 @@ fn local_model_server_exports_report_and_stop_without_a_runtime() {
 }
 
 #[test]
+fn native_crdt_ffi_exports_merges_and_deduplicates_updates() {
+    let source_root = tempdir().unwrap();
+    let source = write_crdt_bundle(source_root.path());
+    let left_root = tempdir().unwrap();
+    let right_root = tempdir().unwrap();
+    let left_home = CString::new(left_root.path().to_str().unwrap()).unwrap();
+    let right_home = CString::new(right_root.path().to_str().unwrap()).unwrap();
+
+    unsafe {
+        let left = terrane_open(left_home.as_ptr());
+        let right = terrane_open(right_home.as_ptr());
+        assert!(!left.is_null() && !right.is_null());
+        for handle in [left, right] {
+            let (code, _, error) = call(
+                terrane_dispatch,
+                handle,
+                "app.add",
+                &["crdt_demo", "CRDT Demo", "--source", &source],
+            );
+            assert_eq!(code, TERRANE_OK, "app.add: {error:?}");
+            let log_path = if handle == left {
+                left_root.path().join("log.bin")
+            } else {
+                right_root.path().join("log.bin")
+            };
+            let owner = owner_subject_from_log(&log_path);
+            let (code, _, error) = call(
+                terrane_dispatch,
+                handle,
+                "auth.grant",
+                &[&owner, "crdt_demo", "crdt"],
+            );
+            assert_eq!(code, TERRANE_OK, "grant: {error:?}");
+        }
+
+        let (code, _, error) = call(
+            terrane_host_run,
+            left,
+            "crdt_demo",
+            &["set", "theme", "green"],
+        );
+        assert_eq!(code, TERRANE_OK, "write: {error:?}");
+        let (code, version, error) = call_crdt_read(terrane_crdt_version, left, "crdt_demo");
+        assert_eq!(code, TERRANE_OK, "version: {error:?}");
+        assert!(!version.unwrap().is_empty());
+
+        let (code, update, error) = call_crdt_update(terrane_crdt_export, left, "crdt_demo", "");
+        assert_eq!(code, TERRANE_OK, "export: {error:?}");
+        let update = update.unwrap();
+        assert!(!update.is_empty());
+
+        let (code, outcome, error) =
+            call_crdt_update(terrane_crdt_merge, right, "crdt_demo", &update);
+        assert_eq!(code, TERRANE_OK, "merge: {error:?}");
+        assert_eq!(outcome.as_deref(), Some("changed"));
+        let (code, value, error) = call(terrane_host_run, right, "crdt_demo", &["get", "theme"]);
+        assert_eq!(code, TERRANE_OK, "read: {error:?}");
+        assert_eq!(value.as_deref(), Some("green"));
+
+        let (code, outcome, error) =
+            call_crdt_update(terrane_crdt_merge, right, "crdt_demo", &update);
+        assert_eq!(code, TERRANE_OK, "repeat merge: {error:?}");
+        assert_eq!(outcome.as_deref(), Some("unchanged"));
+
+        let (code, _, error) =
+            call_crdt_update(terrane_crdt_merge, right, "crdt_demo", "not-base64");
+        assert_eq!(code, TERRANE_ERR_DISPATCH);
+        assert!(error.unwrap().contains("base64"));
+
+        terrane_close(left);
+        terrane_close(right);
+    }
+}
+
+#[test]
 fn checked_in_c_header_declares_the_exported_abi() {
     let header = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -836,6 +948,9 @@ fn checked_in_c_header_declares_the_exported_abi() {
         "TerraneHandle *terrane_open_with_error(",
         "int terrane_host_run(",
         "int terrane_dispatch(",
+        "int terrane_crdt_version(",
+        "int terrane_crdt_export(",
+        "int terrane_crdt_merge(",
         "int terrane_preview_create(",
         "int terrane_preview_read_asset(",
         "int terrane_preview_asset(",

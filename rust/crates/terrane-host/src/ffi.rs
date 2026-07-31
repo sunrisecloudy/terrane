@@ -23,6 +23,7 @@ use std::sync::Mutex;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
+use terrane_cap_crdt::{crdt_export_from_vv, crdt_vv};
 use terrane_core::{local_owner_principal, Request};
 
 pub const TERRANE_OK: c_int = 0;
@@ -198,6 +199,172 @@ pub unsafe extern "C" fn terrane_dispatch(
             out_output,
             out_error,
         )
+    }));
+    finish(code, out_error)
+}
+
+/// Return the app's current CRDT version vector as standard base64.
+///
+/// # Safety
+/// `app` must be a valid C string. Output pointers follow the ownership rules
+/// documented for [`terrane_host_run`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_crdt_version(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    crdt_read(
+        h,
+        app,
+        ptr::null(),
+        CrdtRead::Version,
+        out_output,
+        out_error,
+    )
+}
+
+/// Export the CRDT update missing from `remote_version`. An empty version
+/// exports the full document. Both input and output use standard base64.
+///
+/// # Safety
+/// String and output pointers follow the ownership rules documented for
+/// [`terrane_host_run`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_crdt_export(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    remote_version: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    crdt_read(
+        h,
+        app,
+        remote_version,
+        CrdtRead::Export,
+        out_output,
+        out_error,
+    )
+}
+
+/// Merge one base64 CRDT update through the normal replayable `crdt.merge`
+/// command. Writes `changed` or `unchanged`.
+///
+/// # Safety
+/// String and output pointers follow the ownership rules documented for
+/// [`terrane_host_run`].
+#[no_mangle]
+pub unsafe extern "C" fn terrane_crdt_merge(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    update_base64: *const c_char,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let app = match read_str(app) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let encoded = match read_str(update_base64) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let update = match B64.decode(encoded) {
+            Ok(value) if !value.is_empty() => value,
+            _ => {
+                write_out(
+                    out_error,
+                    "CRDT update must be non-empty standard base64".into(),
+                );
+                return TERRANE_ERR_DISPATCH;
+            }
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let mut core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::sync::merge(&mut core, &app, &update) {
+            Ok(changed) => {
+                write_out(
+                    out_output,
+                    if changed { "changed" } else { "unchanged" }.into(),
+                );
+                TERRANE_OK
+            }
+            Err(error) => {
+                write_out(out_error, error);
+                TERRANE_ERR_DISPATCH
+            }
+        }
+    }));
+    finish(code, out_error)
+}
+
+#[derive(Clone, Copy)]
+enum CrdtRead {
+    Version,
+    Export,
+}
+
+unsafe fn crdt_read(
+    h: *mut TerraneHandle,
+    app: *const c_char,
+    remote_version: *const c_char,
+    operation: CrdtRead,
+    out_output: *mut *mut c_char,
+    out_error: *mut *mut c_char,
+) -> c_int {
+    null_out(out_output);
+    null_out(out_error);
+    let code = catch_unwind(AssertUnwindSafe(|| -> c_int {
+        let app = match read_str(app) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
+        let handle = match h.as_ref() {
+            Some(handle) => handle,
+            None => return TERRANE_ERR_NULL_ARG,
+        };
+        let core = handle.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let bytes = match operation {
+            CrdtRead::Version => crdt_vv(core.state(), &app),
+            CrdtRead::Export => {
+                let encoded = if remote_version.is_null() {
+                    String::new()
+                } else {
+                    match read_str(remote_version) {
+                        Ok(value) => value,
+                        Err(code) => return code,
+                    }
+                };
+                let remote = if encoded.is_empty() {
+                    Vec::new()
+                } else {
+                    match B64.decode(encoded) {
+                        Ok(value) => value,
+                        Err(_) => {
+                            write_out(out_error, "CRDT version must be standard base64".into());
+                            return TERRANE_ERR_DISPATCH;
+                        }
+                    }
+                };
+                match crdt_export_from_vv(core.state(), &app, &remote) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        write_out(out_error, error.to_string());
+                        return TERRANE_ERR_DISPATCH;
+                    }
+                }
+            }
+        };
+        write_out(out_output, B64.encode(bytes));
+        TERRANE_OK
     }));
     finish(code, out_error)
 }

@@ -26,7 +26,8 @@ struct PermissionRequiredPrompt: Equatable {
     guard error.hasPrefix(prefix) else { return nil }
     let tail = String(error.dropFirst(prefix.count))
     let resourcesPart = tail.split(separator: ";", maxSplits: 1).first.map(String.init) ?? tail
-    let resources = resourcesPart
+    let resources =
+      resourcesPart
       .split(separator: ",")
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
@@ -411,7 +412,8 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
   /// `jsonStringLiteral`, so a message-bundle string cannot break out of the
   /// evaluated JS — the same protection the document name has.
   static func jsonObjectLiteral(_ map: [String: String]) -> String {
-    let body = map
+    let body =
+      map
       .sorted { $0.key < $1.key }
       .map { "\(jsonStringLiteral($0.key)):\(jsonStringLiteral($0.value))" }
       .joined(separator: ",")
@@ -606,6 +608,89 @@ final class TerraneBridge: NSObject, WKScriptMessageHandlerWithReply {
 
   func grant(app: String, namespace: String) -> (Bool, String) {
     dispatch(command: "auth.grant", argv: ["user:local-owner", app, namespace])
+  }
+
+  func crdtVersion(appID: String) async throws -> String {
+    try await withCheckedThrowingContinuation { continuation in
+      worker.async { [weak self] in
+        guard let self else {
+          continuation.resume(throwing: TerraneBridgeInvocationError.closed)
+          return
+        }
+        var output: UnsafeMutablePointer<CChar>?
+        var error: UnsafeMutablePointer<CChar>?
+        let status = appID.withCString {
+          terrane_crdt_version(self.handle, $0, &output, &error)
+        }
+        defer {
+          if let output { terrane_string_free(output) }
+          if let error { terrane_string_free(error) }
+        }
+        if status == TERRANE_OK {
+          continuation.resume(returning: output.map { String(cString: $0) } ?? "")
+        } else {
+          continuation.resume(
+            throwing: TerraneBridgeInvocationError.failed(
+              error.map { String(cString: $0) } ?? "Terrane CRDT request failed."
+            ))
+        }
+      }
+    }
+  }
+
+  func crdtExport(appID: String, sinceVersion: String) async throws -> Data {
+    let encoded = try await crdtCall(
+      appID: appID, value: sinceVersion, function: terrane_crdt_export)
+    guard let data = Data(base64Encoded: encoded) else {
+      throw TerraneBridgeInvocationError.failed("Terrane returned an invalid CRDT update.")
+    }
+    return data
+  }
+
+  @discardableResult
+  func crdtMerge(appID: String, update: Data) async throws -> Bool {
+    try await crdtCall(
+      appID: appID,
+      value: update.base64EncodedString(),
+      function: terrane_crdt_merge
+    ) == "changed"
+  }
+
+  private func crdtCall(
+    appID: String,
+    value: String,
+    function:
+      @escaping (
+        OpaquePointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?,
+        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+      ) -> Int32
+  ) async throws -> String {
+    try await withCheckedThrowingContinuation { continuation in
+      worker.async { [weak self] in
+        guard let self else {
+          continuation.resume(throwing: TerraneBridgeInvocationError.closed)
+          return
+        }
+        var output: UnsafeMutablePointer<CChar>?
+        var error: UnsafeMutablePointer<CChar>?
+        let status = appID.withCString { app in
+          value.withCString { function(self.handle, app, $0, &output, &error) }
+        }
+        defer {
+          if let output { terrane_string_free(output) }
+          if let error { terrane_string_free(error) }
+        }
+        if status == TERRANE_OK {
+          continuation.resume(returning: output.map { String(cString: $0) } ?? "")
+        } else {
+          continuation.resume(
+            throwing: TerraneBridgeInvocationError.failed(
+              error.map { String(cString: $0) } ?? "Terrane CRDT request failed."
+            ))
+        }
+      }
+    }
   }
 
   /// Keep every GUI-discovered bundle visible to CLI and MCP clients, even

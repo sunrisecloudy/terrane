@@ -7,6 +7,7 @@ const vm = require("node:vm");
 function loadBackend(initial) {
   const values = Object.assign({}, initial);
   const blobs = {};
+  const syncValues = {};
   const kv = {
     get(key) {
       return Object.prototype.hasOwnProperty.call(values, key)
@@ -27,6 +28,31 @@ function loadBackend(initial) {
     ctx: {
       resource: {
         kv,
+        crdt: {
+          mapGet(_doc, key) {
+            return Object.prototype.hasOwnProperty.call(syncValues, key)
+              ? syncValues[key]
+              : null;
+          },
+          mapSet(_doc, key, value) {
+            syncValues[key] = String(value);
+          },
+          mapDel(_doc, key) {
+            delete syncValues[key];
+          },
+          mapAll() {
+            return Object.assign({}, syncValues);
+          },
+        },
+        crypto: {
+          randomId() {
+            const next = Object.keys(syncValues).length + 1;
+            return JSON.stringify({
+              ok: true,
+              id: next.toString(16).padStart(32, "0"),
+            });
+          },
+        },
         blob: {
           put(name, mime, base64) {
             blobs[name] = { mime, base64 };
@@ -53,7 +79,7 @@ function loadBackend(initial) {
     context,
     { filename: "apps/health/main.js" },
   );
-  return { context, values, blobs };
+  return { context, values, blobs, syncValues };
 }
 
 function dish(name, calories, protein) {
@@ -140,6 +166,33 @@ test("review updates persist dish data and cannot override its combined total", 
   assert.equal(result.estimate.calories_kcal, 450);
   assert.equal(result.estimate.protein_g, 34);
   assert.equal(JSON.parse(values["estimate:00000001"]).dishes.length, 2);
+});
+
+test("legacy meals migrate into the CRDT sync document without losing local state", () => {
+  const existing = {
+    id: "00000001",
+    food_name: "Saved lunch",
+    eaten_at: "2026-07-27T02:00:00.000Z",
+  };
+  const { context, syncValues } = loadBackend({
+    "estimate:00000001": JSON.stringify(existing),
+    "settings:model": JSON.stringify({
+      provider: "opencode",
+      model: "opencode-go/kimi-k2.6",
+    }),
+  });
+
+  const prepared = JSON.parse(context.actions.sync_prepare.run());
+  assert.equal(prepared.ok, true);
+  assert.equal(prepared.entries, 1);
+  assert.deepEqual(
+    JSON.parse(syncValues["estimate:00000001"]),
+    existing,
+  );
+  assert.equal(
+    JSON.parse(syncValues.settings).model,
+    "opencode-go/kimi-k2.6",
+  );
 });
 
 test("vision prompt requires bounded per-dish output", () => {

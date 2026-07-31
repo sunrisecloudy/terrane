@@ -1,3 +1,4 @@
+import Combine
 import GoogleSignIn
 import SwiftUI
 
@@ -24,6 +25,7 @@ final class TerraneIOSModel: ObservableObject {
   @Published private(set) var pinnedAppIDs: Set<String>
   @Published var selectedApp: TerraneApp?
   @Published private(set) var healthSyncStatus = ""
+  @Published private(set) var appSyncStatus = ""
   @Published private(set) var startupError = ""
   @Published var permissionPrompt: IOSPermissionPrompt?
 
@@ -31,7 +33,9 @@ final class TerraneIOSModel: ObservableObject {
   let runtime: any TerraneRuntime
   let premiumAccount: PremiumAccountController?
   let healthAutoSync: IOSHealthAutoSync?
+  private var appStateAutoSync: IOSAppStateAutoSync?
   private let appPreferences: UserDefaults
+  private var accountStateSubscription: AnyCancellable?
   private var permissionContinuation: CheckedContinuation<Bool, Never>?
 
   init(configuration: AppConfiguration, appPreferences: UserDefaults = .standard) {
@@ -55,6 +59,17 @@ final class TerraneIOSModel: ObservableObject {
         )
       } else {
         healthAutoSync = nil
+      }
+      if let account {
+        accountStateSubscription = account.$state.sink { [weak self] state in
+          guard let self else { return }
+          if case .signedIn = state {
+            self.startAppStateAutoSync()
+          } else {
+            self.appStateAutoSync?.stop()
+            self.appStateAutoSync = nil
+          }
+        }
       }
     } else {
       premiumAccount = nil
@@ -98,6 +113,19 @@ final class TerraneIOSModel: ObservableObject {
       await premiumAccount.restore()
     }
     await uploadE2EFixtureIfRequested()
+  }
+
+  private func startAppStateAutoSync() {
+    guard let premiumAccount else { return }
+    if appStateAutoSync == nil {
+      let coordinator = IOSAppStateAutoSync(
+        client: premiumAccount.makeAppStateSyncClient(),
+        runtime: runtime
+      )
+      coordinator.onStatus = { [weak self] status in self?.appSyncStatus = status }
+      appStateAutoSync = coordinator
+    }
+    appStateAutoSync?.start()
   }
 
   func requestPermission(app: TerraneApp, resources: [String]) async -> Bool {

@@ -56,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
   private var premiumURL: URL?
   private var premiumSessionClient: PremiumSessionClient?
   private var healthAutoSync: MacHealthAutoSyncCoordinator?
+  private var appStateAutoSync: MacAppStateAutoSyncCoordinator?
   private var premiumApps: [PremiumApp] = []
   private var premiumAuthCoordinator: PremiumNativeAuthCoordinator?
   private var premiumSignInSheet: PremiumSignInSheetController?
@@ -843,9 +844,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
               self?.refreshPremiumCatalog()
               if let session = self?.premiumSessionClient {
                 self?.startHealthAutoSync(session: session)
+                self?.startAppStateAutoSync(session: session)
               }
             } else if case .revoked = state {
               self?.healthAutoSync?.stop()
+              self?.appStateAutoSync?.stop()
             }
           }
         }
@@ -886,7 +889,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     if healthAutoSync == nil {
       #if DEBUG
         if ProcessInfo.processInfo.environment["TERRANE_E2E_HEALTH_AUTO_GRANT"] == "1" {
-          for namespace in ["kv", "blob", "model"] {
+          for namespace in ["kv", "blob", "model", "crdt", "crypto"] {
             _ = bridge.grant(app: "health", namespace: namespace)
           }
         }
@@ -914,6 +917,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       healthAutoSync = coordinator
     }
     healthAutoSync?.start()
+  }
+
+  private func startAppStateAutoSync(session: PremiumSessionClient) {
+    guard let bridge else { return }
+    if appStateAutoSync == nil {
+      let coordinator = MacAppStateAutoSyncCoordinator(session: session, bridge: bridge)
+      coordinator.onStatus = { [weak self] status in
+        self?.accountButton.toolTip = status
+      }
+      appStateAutoSync = coordinator
+    }
+    appStateAutoSync?.start()
   }
 
   private func updatePremiumAccountControl(_ state: PremiumSessionState) {

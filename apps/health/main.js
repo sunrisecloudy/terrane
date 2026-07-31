@@ -1,10 +1,14 @@
 var kv = ctx.resource.kv;
 var blob = ctx.resource.blob;
 var model = ctx.resource.model;
+var crdt = ctx.resource.crdt;
+var crypto = ctx.resource.crypto;
 
 var SEQ_KEY = "estimate:seq";
 var ENTRY_PREFIX = "estimate:";
 var SETTINGS_KEY = "settings:model";
+var SYNC_DOC = "health";
+var SYNC_SETTINGS_KEY = "settings";
 var NAVIGATION_KEY = "navigation:pending";
 var ANALYSIS_JOB_PREFIX = "analysis-job:";
 var MAX_HISTORY = 1000;
@@ -23,6 +27,12 @@ function pad(number) {
 }
 
 function nextId() {
+  try {
+    var generated = JSON.parse(crypto.randomId());
+    if (generated && generated.ok && /^[0-9a-f]{32}$/.test(generated.id)) {
+      return generated.id;
+    }
+  } catch (_error) {}
   var raw = kv.get(SEQ_KEY);
   var current = raw == null ? 0 : parseInt(raw, 10);
   if (isNaN(current) || current < 0) current = 0;
@@ -79,7 +89,8 @@ function normalizeSettings(value) {
 }
 
 function readSettings() {
-  var raw = kv.get(SETTINGS_KEY);
+  var raw = crdt.mapGet(SYNC_DOC, SYNC_SETTINGS_KEY);
+  if (raw == null) raw = kv.get(SETTINGS_KEY);
   if (raw == null) return normalizeSettings(null);
   try {
     return normalizeSettings(JSON.parse(raw));
@@ -90,7 +101,9 @@ function readSettings() {
 
 function saveSettings(settings) {
   var normalized = normalizeSettings(settings);
-  kv.set(SETTINGS_KEY, JSON.stringify(normalized));
+  var encoded = JSON.stringify(normalized);
+  kv.set(SETTINGS_KEY, encoded);
+  crdt.mapSet(SYNC_DOC, SYNC_SETTINGS_KEY, encoded);
   return normalized;
 }
 
@@ -249,25 +262,44 @@ function promptFor(note) {
 
 function historyEntries() {
   var all = kv.all();
-  var keys = [];
+  var entriesById = {};
   for (var key in all) {
     if (
       Object.prototype.hasOwnProperty.call(all, key) &&
       key.indexOf(ENTRY_PREFIX) === 0 &&
       key !== SEQ_KEY
     ) {
-      keys.push(key);
+      try {
+        var legacy = JSON.parse(all[key]);
+        if (legacy && legacy.id) entriesById[legacy.id] = legacy;
+      } catch (_error) {}
     }
   }
-  keys.sort();
-  keys.reverse();
-  var entries = [];
-  for (var i = 0; i < keys.length && entries.length < MAX_HISTORY; i++) {
-    try {
-      entries.push(JSON.parse(all[keys[i]]));
-    } catch (_error) {}
+  var synced = crdt.mapAll(SYNC_DOC);
+  for (var syncKey in synced) {
+    if (
+      Object.prototype.hasOwnProperty.call(synced, syncKey) &&
+      syncKey.indexOf(ENTRY_PREFIX) === 0
+    ) {
+      try {
+        var entry = JSON.parse(synced[syncKey]);
+        if (entry && entry.id) entriesById[entry.id] = entry;
+      } catch (_error) {}
+    }
   }
-  return entries;
+  var entries = [];
+  for (var id in entriesById) {
+    if (Object.prototype.hasOwnProperty.call(entriesById, id)) {
+      entries.push(entriesById[id]);
+    }
+  }
+  entries.sort(function (left, right) {
+    var timeOrder = String(right.eaten_at || "").localeCompare(
+      String(left.eaten_at || ""),
+    );
+    return timeOrder || String(right.id).localeCompare(String(left.id));
+  });
+  return entries.slice(0, MAX_HISTORY);
 }
 
 function stateJson() {
@@ -279,7 +311,34 @@ function stateJson() {
 }
 
 function saveEntry(entry) {
-  kv.set(ENTRY_PREFIX + entry.id, JSON.stringify(entry));
+  var key = ENTRY_PREFIX + entry.id;
+  var encoded = JSON.stringify(entry);
+  kv.set(key, encoded);
+  crdt.mapSet(SYNC_DOC, key, encoded);
+}
+
+function readEntry(id) {
+  var key = ENTRY_PREFIX + id;
+  return crdt.mapGet(SYNC_DOC, key) || kv.get(key);
+}
+
+function prepareSync() {
+  var settings = readSettings();
+  var settingsJson = JSON.stringify(settings);
+  if (crdt.mapGet(SYNC_DOC, SYNC_SETTINGS_KEY) !== settingsJson) {
+    crdt.mapSet(SYNC_DOC, SYNC_SETTINGS_KEY, settingsJson);
+  }
+  var entries = historyEntries();
+  var changed = 0;
+  for (var i = 0; i < entries.length; i++) {
+    var key = ENTRY_PREFIX + entries[i].id;
+    var encoded = JSON.stringify(entries[i]);
+    if (crdt.mapGet(SYNC_DOC, key) !== encoded) {
+      crdt.mapSet(SYNC_DOC, key, encoded);
+      changed += 1;
+    }
+  }
+  return JSON.stringify({ ok: true, entries: entries.length, changed: changed });
 }
 
 function normalizeEatenAt(value, fallback) {
@@ -300,17 +359,9 @@ function isPickerImport(name) {
 }
 
 function blobIsReferenced(name) {
-  var all = kv.all();
-  for (var key in all) {
-    if (
-      Object.prototype.hasOwnProperty.call(all, key) &&
-      key.indexOf(ENTRY_PREFIX) === 0 &&
-      key !== SEQ_KEY
-    ) {
-      try {
-        if (JSON.parse(all[key]).blob_name === name) return true;
-      } catch (_error) {}
-    }
+  var entries = historyEntries();
+  for (var i = 0; i < entries.length; i++) {
+    if (entries[i].blob_name === name) return true;
   }
   return false;
 }
@@ -473,7 +524,7 @@ function importAnalysis(args, usage) {
   }
   var existingId = kv.get(ANALYSIS_JOB_PREFIX + jobId);
   if (existingId != null) {
-    var existing = kv.get(ENTRY_PREFIX + existingId);
+    var existing = readEntry(existingId);
     if (existing != null) {
       return JSON.stringify({
         ok: true,
@@ -566,7 +617,7 @@ function discardImport(args, usage) {
 function update(args, usage) {
   if (args.length < 2) return usage();
   var id = String(args[0] || "");
-  var raw = kv.get(ENTRY_PREFIX + id);
+  var raw = readEntry(id);
   if (raw == null) {
     return JSON.stringify({ ok: false, error: "Estimate not found." });
   }
@@ -603,7 +654,7 @@ function update(args, usage) {
 function remove(args, usage) {
   if (args.length < 1) return usage();
   var id = String(args[0] || "");
-  var raw = kv.get(ENTRY_PREFIX + id);
+  var raw = readEntry(id);
   if (raw == null) {
     return JSON.stringify({ ok: false, error: "Estimate not found." });
   }
@@ -612,6 +663,7 @@ function remove(args, usage) {
     if (entry.blob_name) blob.rm(entry.blob_name);
   } catch (_error) {}
   kv.rm(ENTRY_PREFIX + id);
+  crdt.mapDel(SYNC_DOC, ENTRY_PREFIX + id);
   return stateJson();
 }
 
@@ -753,7 +805,7 @@ function commonList() {
 function commonGet(args, usage) {
   if (args.length < 1) return usage();
   var id = String(args[0] || "");
-  var raw = kv.get(ENTRY_PREFIX + id);
+  var raw = readEntry(id);
   if (raw == null) {
     return JSON.stringify({ ok: false, error: { code: "NotFound", id: id } });
   }
@@ -768,6 +820,12 @@ var actions = {
     run: function () {
       return stateJson();
     },
+  },
+  sync_prepare: {
+    summary: "Migrate local structured Health state into its CRDT sync document.",
+    args: [],
+    returns: "JSON migration summary.",
+    run: prepareSync,
   },
   estimate: {
     summary:

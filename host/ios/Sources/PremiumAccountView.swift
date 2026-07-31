@@ -348,19 +348,41 @@ private struct HealthConnectionSection: View {
           .foregroundStyle(.secondary)
       } else {
         ForEach(macs) { mac in
-          let paired =
+          let sendsToMac =
             sync.connections?.pairings.contains {
               $0.senderDeviceId == sync.currentDeviceID
                 && $0.recipientDeviceId == mac.deviceId
                 && $0.status == "approved"
             } == true
+          let receivesFromMac =
+            sync.connections?.pairings.contains {
+              $0.senderDeviceId == mac.deviceId
+                && $0.recipientDeviceId == sync.currentDeviceID
+                && $0.status == "approved"
+            } == true
           LabeledContent {
-            Text(connectionLabel(paired: paired, mac: mac))
-              .foregroundStyle(connectionColor(paired: paired, mac: mac))
+            Text(
+              connectionLabel(
+                sendsToMac: sendsToMac,
+                receivesFromMac: receivesFromMac,
+                mac: mac
+              )
+            )
+            .foregroundStyle(
+              connectionColor(
+                sendsToMac: sendsToMac,
+                receivesFromMac: receivesFromMac,
+                mac: mac
+              ))
           } label: {
             Label(mac.name, systemImage: "desktopcomputer")
           }
           .accessibilityIdentifier("health.connection.\(mac.deviceId)")
+          if !receivesFromMac {
+            Button("Allow sync from \(mac.name)") {
+              Task { await sync.approveMac(deviceID: mac.deviceId) }
+            }
+          }
         }
       }
       if !sync.connectionsError.isEmpty {
@@ -384,17 +406,20 @@ private struct HealthConnectionSection: View {
   }
 
   private func connectionLabel(
-    paired: Bool,
+    sendsToMac: Bool,
+    receivesFromMac: Bool,
     mac: PremiumHealthConnectionDevice
   ) -> String {
-    guard paired else { return "Approve on Mac" }
+    guard sendsToMac else { return "Approve iPhone on Mac" }
+    guard receivesFromMac else { return "Allow Mac on iPhone" }
     return mac.analyzer?.ready == true ? "Connected" : "Paired · Mac offline"
   }
 
   private func connectionColor(
-    paired: Bool,
+    sendsToMac: Bool,
+    receivesFromMac: Bool,
     mac: PremiumHealthConnectionDevice
   ) -> Color {
-    paired && mac.analyzer?.ready == true ? .green : .secondary
+    sendsToMac && receivesFromMac && mac.analyzer?.ready == true ? .green : .secondary
   }
 }

@@ -11,6 +11,6 @@
     "entry": "src/main.tsx",
     "styles": ["src/app.css"]
   },
-  "resources": ["kv", "blob", "model"],
+  "resources": ["kv", "blob", "model", "crdt", "crypto"],
   "interfaces": ["items"]
 }

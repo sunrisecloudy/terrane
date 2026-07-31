@@ -21,7 +21,7 @@ fn checked_in_health_bundle_is_valid_and_uses_real_vision_resources() {
     assert_eq!(manifest["frontend"]["entry"], "src/main.tsx");
     assert_eq!(
         manifest["resources"],
-        serde_json::json!(["kv", "blob", "model"])
+        serde_json::json!(["kv", "blob", "model", "crdt", "crypto"])
     );
 
     let backend = std::fs::read_to_string(bundle.join("main.js")).expect("read Health backend");

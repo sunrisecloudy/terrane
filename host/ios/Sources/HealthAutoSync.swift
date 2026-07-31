@@ -168,6 +168,16 @@ final class IOSHealthAutoSync: ObservableObject {
     }
   }
 
+  func approveMac(deviceID: String) async {
+    do {
+      try await client.approveSender(deviceID: deviceID)
+      await refreshConnections()
+      status = "Mac and iPhone can now sync both ways"
+    } catch {
+      connectionsError = error.localizedDescription
+    }
+  }
+
   func upload(data: Data, sourceMime: String, note: String?) async throws
     -> PremiumHealthImageAttachment
   {

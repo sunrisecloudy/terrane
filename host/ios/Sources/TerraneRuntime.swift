@@ -5,6 +5,9 @@ protocol TerraneRuntime: AnyObject {
   func invoke(appID: String, verb: String, arguments: [String]) async throws -> String
   func dispatch(command: String, arguments: [String]) async throws -> String
   func readBlob(appID: String, name: String) async throws -> TerraneBlobAsset
+  func crdtVersion(appID: String) async throws -> String
+  func crdtExport(appID: String, sinceVersion: String) async throws -> Data
+  @discardableResult func crdtMerge(appID: String, update: Data) async throws -> Bool
   func close()
 }
 
@@ -52,7 +55,8 @@ final class RustTerraneRuntime: TerraneRuntime {
     if handle != nil {
       availability = .embedded
     } else {
-      let message = error.map { String(cString: UnsafePointer($0)) }
+      let message =
+        error.map { String(cString: UnsafePointer($0)) }
         ?? "Terrane could not open the local workspace."
       if let error { terrane_string_free(error) }
       availability = .unavailable(message)
@@ -105,6 +109,34 @@ final class RustTerraneRuntime: TerraneRuntime {
     return TerraneBlobAsset(data: content, contentType: contentType)
   }
 
+  func crdtVersion(appID: String) async throws -> String {
+    try await call { handle, output, error in
+      appID.withCString { terrane_crdt_version(handle, $0, output, error) }
+    }
+  }
+
+  func crdtExport(appID: String, sinceVersion: String) async throws -> Data {
+    let encoded = try await crdtCall(
+      appID: appID,
+      value: sinceVersion,
+      function: terrane_crdt_export
+    )
+    guard let update = Data(base64Encoded: encoded) else {
+      throw TerraneRuntimeError.invocation("Terrane returned an invalid CRDT update.")
+    }
+    return update
+  }
+
+  @discardableResult
+  func crdtMerge(appID: String, update: Data) async throws -> Bool {
+    let result = try await crdtCall(
+      appID: appID,
+      value: update.base64EncodedString(),
+      function: terrane_crdt_merge
+    )
+    return result == "changed"
+  }
+
   func close() {
     guard let handle else { return }
     terrane_close(handle)
@@ -112,11 +144,12 @@ final class RustTerraneRuntime: TerraneRuntime {
   }
 
   private func call(
-    _ body: @escaping (
-      OpaquePointer,
-      UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
-      UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
-    ) -> Int32
+    _ body:
+      @escaping (
+        OpaquePointer,
+        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+      ) -> Int32
   ) async throws -> String {
     guard let handle else {
       if case .unavailable(let message) = availability {
@@ -145,6 +178,23 @@ final class RustTerraneRuntime: TerraneRuntime {
             )
           )
         }
+      }
+    }
+  }
+
+  private func crdtCall(
+    appID: String,
+    value: String,
+    function:
+      @escaping (
+        OpaquePointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?,
+        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+      ) -> Int32
+  ) async throws -> String {
+    try await call { handle, output, error in
+      appID.withCString { app in
+        value.withCString { function(handle, app, $0, output, error) }
       }
     }
   }

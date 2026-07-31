@@ -16,25 +16,30 @@ function calculate(heightCm, weightKg) {
 }
 
 var kv = ctx.resource.kv;
+var crdt = ctx.resource.crdt;
 var STATE_KEY = "state";
+var SYNC_DOC = "measurements";
 var DEFAULT_STATE = {
   height: 170,
   weight: 65
 };
 
 function readState() {
-  var raw = kv.get(STATE_KEY);
-  if (raw == null || raw === "") return cloneState(DEFAULT_STATE);
+  var legacy = kv.get(STATE_KEY);
+  var state = cloneState(DEFAULT_STATE);
   try {
-    var parsed = JSON.parse(raw);
-    return normalizeState(parsed) || cloneState(DEFAULT_STATE);
-  } catch (_e) {
-    return cloneState(DEFAULT_STATE);
-  }
+    state = normalizeState(JSON.parse(legacy)) || state;
+  } catch (_e) {}
+  var height = parseFloat(crdt.mapGet(SYNC_DOC, "height"));
+  var weight = parseFloat(crdt.mapGet(SYNC_DOC, "weight"));
+  if (height > 0) state.height = Math.round(height * 10) / 10;
+  if (weight > 0) state.weight = Math.round(weight * 10) / 10;
+  return state;
 }
 
-function writeState(state) {
+function writeState(state, changedKey) {
   kv.set(STATE_KEY, JSON.stringify(state));
+  crdt.mapSet(SYNC_DOC, changedKey, String(state[changedKey]));
 }
 
 function cloneState(state) {
@@ -68,11 +73,12 @@ function setMeasurement(key, value) {
   if (!(numeric > 0)) return null;
   var state = readState();
   state[key] = Math.round(numeric * 10) / 10;
-  writeState(state);
+  writeState(state, key);
   return withResult(state);
 }
 
-var description = "A Rust-built React BMI calculator with kv-backed measurements.";
+var description =
+  "A Rust-built React BMI calculator with offline-first CRDT measurements.";
 
 var actions = {
   state: {

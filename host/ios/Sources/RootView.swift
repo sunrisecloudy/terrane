@@ -120,6 +120,13 @@ private struct AppListView: View {
           .frame(maxWidth: .infinity)
           .background(.bar)
       }
+      if !model.appSyncStatus.isEmpty {
+        Text(model.appSyncStatus)
+          .font(.footnote)
+          .foregroundStyle(
+            model.appSyncStatus.contains("paused") ? Color.orange : Color.secondary
+          )
+      }
       if !model.startupError.isEmpty {
         Text(model.startupError)
           .font(.caption)

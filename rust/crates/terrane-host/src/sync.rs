@@ -574,7 +574,7 @@ fn local_display_name() -> String {
 
 /// Merge a peer's raw update bytes via the standard `crdt.merge` command (so it's
 /// recorded + replayable). Returns whether it added anything new.
-fn merge(core: &mut Core<EdgeRunner>, app: &str, bytes: &[u8]) -> Result<bool, String> {
+pub fn merge(core: &mut Core<EdgeRunner>, app: &str, bytes: &[u8]) -> Result<bool, String> {
     let records = core
         .dispatch(Request::new(
             "crdt.merge",
