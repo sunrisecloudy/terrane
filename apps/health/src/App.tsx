@@ -28,6 +28,8 @@ export function App() {
   const [settings, setSettings] = useState<Settings>(defaultSettings);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const routeRefreshKey =
+    route.name === "meal" ? `${route.name}:${route.mealId}` : route.name;
 
   useEffect(() => {
     const update = () => setRoute(parseRouteHash());
@@ -53,6 +55,7 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    setLoading(true);
     invokeJson<HealthState>("state")
       .then((state) => {
         if (cancelled) return;
@@ -70,7 +73,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [routeRefreshKey]);
 
   useEffect(() => {
     let cancelled = false;
