@@ -35,7 +35,7 @@ struct TerraneAppWebView: UIViewRepresentable {
     configuration.websiteDataStore = .nonPersistent()
     configuration.userContentController = content
     configuration.setURLSchemeHandler(
-      AppResourceSchemeHandler(app: app),
+      AppResourceSchemeHandler(app: app, runtime: runtime),
       forURLScheme: "terrane-app"
     )
     let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -59,6 +59,9 @@ struct TerraneAppWebView: UIViewRepresentable {
             typeof value === "string" ? value : JSON.stringify(value)
           )
         });
+      const blobUrl = (name) =>
+        "terrane-app://" + window.location.host + "/blob/" +
+          encodeURIComponent(String(name == null ? "" : name));
       const uploadHealthImage = (base64, mime) =>
         window.webkit.messageHandlers.terrane.postMessage({
           kind: "health:autoUpload",
@@ -89,6 +92,7 @@ struct TerraneAppWebView: UIViewRepresentable {
       Object.defineProperty(window, "terrane", {
         value: Object.freeze({
           invoke,
+          blobUrl,
           uploadHealthImage,
           analyzeHealthImage,
           healthAnalysisStatus,
@@ -352,34 +356,70 @@ enum IOSPermissionRequestParser {
   }
 }
 
+enum AppResourceRequest: Equatable {
+  case frame(String)
+  case blob(String)
+
+  static func parse(url: URL, appID: String) -> AppResourceRequest? {
+    guard url.scheme == "terrane-app", url.host == appID,
+      let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+    else {
+      return nil
+    }
+    let routes: [(prefix: String, make: (String) -> AppResourceRequest)] = [
+      ("/frame/", AppResourceRequest.frame),
+      ("/blob/", AppResourceRequest.blob),
+    ]
+    for route in routes where components.percentEncodedPath.hasPrefix(route.prefix) {
+      let encoded = String(components.percentEncodedPath.dropFirst(route.prefix.count))
+      guard let value = encoded.removingPercentEncoding,
+        !value.isEmpty,
+        !value.hasPrefix("/"),
+        !value.contains("\0"),
+        !value.split(separator: "/", omittingEmptySubsequences: false).contains("..")
+      else {
+        return nil
+      }
+      return route.make(value)
+    }
+    return nil
+  }
+}
+
 final class AppResourceSchemeHandler: NSObject, WKURLSchemeHandler {
   private let app: TerraneApp
+  private let runtime: any TerraneRuntime
 
-  init(app: TerraneApp) {
+  init(app: TerraneApp, runtime: any TerraneRuntime) {
     self.app = app
+    self.runtime = runtime
   }
 
   func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
     guard let url = urlSchemeTask.request.url,
-      url.scheme == "terrane-app",
-      url.host == app.id
+      let request = AppResourceRequest.parse(url: url, appID: app.id)
     else {
       fail(urlSchemeTask, code: 403)
       return
     }
-    let prefix = "/frame/"
-    guard url.path.hasPrefix(prefix) else {
-      fail(urlSchemeTask, code: 404)
-      return
+    switch request {
+    case .frame(let relative):
+      serveFrame(relative, url: url, task: urlSchemeTask)
+    case .blob(let name):
+      serveBlob(name, url: url, task: urlSchemeTask)
     }
-    let relative = String(url.path.dropFirst(prefix.count)).removingPercentEncoding ?? ""
+  }
+
+  func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+
+  private func serveFrame(_ relative: String, url: URL, task: WKURLSchemeTask) {
     let candidate = app.directory.appendingPathComponent(relative).standardizedFileURL
     let root = app.directory.standardizedFileURL.path + "/"
     guard candidate.path.hasPrefix(root),
       !candidate.hasDirectoryPath,
       let data = try? Data(contentsOf: candidate, options: [.mappedIfSafe])
     else {
-      fail(urlSchemeTask, code: 404)
+      fail(task, code: 404)
       return
     }
     let response = HTTPURLResponse(
@@ -394,12 +434,38 @@ final class AppResourceSchemeHandler: NSObject, WKURLSchemeHandler {
         "X-Content-Type-Options": "nosniff",
       ]
     )!
-    urlSchemeTask.didReceive(response)
-    urlSchemeTask.didReceive(data)
-    urlSchemeTask.didFinish()
+    task.didReceive(response)
+    task.didReceive(data)
+    task.didFinish()
   }
 
-  func webView(_ webView: WKWebView, stop urlSchemeTask: WKURLSchemeTask) {}
+  private func serveBlob(_ name: String, url: URL, task: WKURLSchemeTask) {
+    Task {
+      do {
+        let asset = try await runtime.readBlob(appID: app.id, name: name)
+        let response = HTTPURLResponse(
+          url: url,
+          statusCode: 200,
+          httpVersion: "HTTP/1.1",
+          headerFields: [
+            "Content-Type": asset.contentType,
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+          ]
+        )!
+        await MainActor.run {
+          task.didReceive(response)
+          task.didReceive(asset.data)
+          task.didFinish()
+        }
+      } catch {
+        await MainActor.run {
+          fail(task, code: 404)
+        }
+      }
+    }
+  }
 
   private func fail(_ task: WKURLSchemeTask, code: Int) {
     task.didFailWithError(

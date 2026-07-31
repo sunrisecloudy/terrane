@@ -15,9 +15,40 @@ final class AppConfigurationTests: XCTestCase {
   func testBridgeSurfaceDoesNotContainPremiumCredentials() {
     let script = TerraneAppWebView.bridgeScript
     XCTAssertTrue(script.contains("terrane"))
+    XCTAssertTrue(script.contains("blobUrl"))
+    XCTAssertTrue(script.contains("/blob/"))
     XCTAssertFalse(script.localizedCaseInsensitiveContains("token"))
     XCTAssertFalse(script.localizedCaseInsensitiveContains("premium"))
     XCTAssertFalse(script.localizedCaseInsensitiveContains("account"))
+  }
+
+  func testAppResourceRequestsStayScopedToTheirApp() throws {
+    XCTAssertEqual(
+      AppResourceRequest.parse(
+        url: try XCTUnwrap(URL(string: "terrane-app://health/frame/dist/index.html")),
+        appID: "health"
+      ),
+      .frame("dist/index.html")
+    )
+    XCTAssertEqual(
+      AppResourceRequest.parse(
+        url: try XCTUnwrap(URL(string: "terrane-app://health/blob/meal%2F00000001.jpg")),
+        appID: "health"
+      ),
+      .blob("meal/00000001.jpg")
+    )
+    XCTAssertNil(
+      AppResourceRequest.parse(
+        url: try XCTUnwrap(URL(string: "terrane-app://spending/blob/meal%2F00000001.jpg")),
+        appID: "health"
+      )
+    )
+    XCTAssertNil(
+      AppResourceRequest.parse(
+        url: try XCTUnwrap(URL(string: "terrane-app://health/blob/%2E%2E%2Fsecret")),
+        appID: "health"
+      )
+    )
   }
 
   func testSimulatorUsesEmbeddedHostRuntime() {

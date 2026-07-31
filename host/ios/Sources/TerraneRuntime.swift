@@ -4,7 +4,13 @@ protocol TerraneRuntime: AnyObject {
   var availability: RuntimeAvailability { get }
   func invoke(appID: String, verb: String, arguments: [String]) async throws -> String
   func dispatch(command: String, arguments: [String]) async throws -> String
+  func readBlob(appID: String, name: String) async throws -> TerraneBlobAsset
   func close()
+}
+
+struct TerraneBlobAsset: Equatable {
+  let data: Data
+  let contentType: String
 }
 
 enum RuntimeAvailability: Equatable {
@@ -76,6 +82,27 @@ final class RustTerraneRuntime: TerraneRuntime {
         }
       }
     }
+  }
+
+  func readBlob(appID: String, name: String) async throws -> TerraneBlobAsset {
+    let payload = try await call { handle, output, error in
+      appID.withCString { app in
+        name.withCString { blobName in
+          terrane_blob_read(handle, app, blobName, output, error)
+        }
+      }
+    }
+    guard
+      let data = payload.data(using: .utf8),
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let encoded = object["content"] as? String,
+      let content = Data(base64Encoded: encoded),
+      let contentType = object["contentType"] as? String,
+      !contentType.isEmpty
+    else {
+      throw TerraneRuntimeError.invocation("Terrane returned an invalid blob response.")
+    }
+    return TerraneBlobAsset(data: content, contentType: contentType)
   }
 
   func close() {
