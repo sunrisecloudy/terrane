@@ -160,6 +160,9 @@ public enum PremiumSessionError: Error, Equatable, Sendable {
   case missingRefreshToken
   case notAuthenticated
   case authenticationInProgress
+  case accountAlreadySignedIn
+  case accountSwitchInProgress
+  case accountSwitchNotInProgress
 }
 
 extension PremiumSessionError: LocalizedError {
@@ -181,6 +184,12 @@ extension PremiumSessionError: LocalizedError {
       return "A Premium account is not signed in."
     case .authenticationInProgress:
       return "A different Premium authentication flow is already in progress."
+    case .accountAlreadySignedIn:
+      return "A Premium account is already signed in. Use Switch account instead."
+    case .accountSwitchInProgress:
+      return "Complete the active account switch instead of ordinary sign-in."
+    case .accountSwitchNotInProgress:
+      return "No Premium account switch is in progress."
     }
   }
 }

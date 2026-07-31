@@ -11,15 +11,41 @@ struct RootView: View {
       .tabItem {
         Label("Apps", systemImage: "square.grid.2x2")
       }
+
+      ForEach(model.orderedApps.filter { model.isPinned($0.id) }) { app in
+        NavigationStack {
+          AppHostView(app: app, model: model)
+            .navigationTitle(app.name)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+        .tabItem {
+          Label(app.name, systemImage: NativeAppIconCatalog.systemName(for: app))
+        }
+        .accessibilityIdentifier("pinned-tab.\(app.id)")
+      }
+
       NavigationStack {
         PremiumAccountView(
           controller: model.premiumAccount,
-          configuration: model.configuration
+          configuration: model.configuration,
+          healthAutoSync: model.healthAutoSync
         )
       }
       .tabItem {
         Label("Account", systemImage: "person.crop.circle")
       }
+    }
+    .alert(item: $model.permissionPrompt) { prompt in
+      Alert(
+        title: Text("Allow \(prompt.appName) to access resources?"),
+        message: Text("The app is requesting: \(prompt.resources.joined(separator: ", "))."),
+        primaryButton: .default(Text("Allow")) {
+          model.resolvePermission(approved: true)
+        },
+        secondaryButton: .cancel {
+          model.resolvePermission(approved: false)
+        }
+      )
     }
   }
 }
@@ -36,32 +62,45 @@ private struct AppListView: View {
           description: Text("Terrane could not find its bundled local apps.")
         )
       } else {
-        List(model.apps) { app in
+        List(model.orderedApps) { app in
           NavigationLink(value: app.id) {
             Label {
-              VStack(alignment: .leading) {
-                Text(app.name)
-                Text(app.id)
-                  .font(.caption)
-                  .foregroundStyle(.secondary)
+              HStack {
+                VStack(alignment: .leading) {
+                  Text(app.name)
+                  Text(app.id)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if model.isPinned(app.id) {
+                  Image(systemName: "pin.fill")
+                    .foregroundStyle(.tint)
+                    .accessibilityLabel("Pinned")
+                    .accessibilityIdentifier("app.\(app.id).pinned")
+                }
               }
             } icon: {
-              Image(systemName: systemIcon(app.icon))
+              Image(systemName: NativeAppIconCatalog.systemName(for: app))
                 .frame(width: 28)
+                .accessibilityLabel("\(app.name) icon")
+                .accessibilityIdentifier("app.\(app.id).icon")
             }
           }
           .accessibilityIdentifier("app.\(app.id)")
+          .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            pinButton(for: app)
+          }
+          .contextMenu {
+            pinButton(for: app)
+          }
         }
       }
     }
     .navigationTitle("Terrane")
     .navigationDestination(for: String.self) { id in
       if let app = model.apps.first(where: { $0.id == id }) {
-        TerraneAppWebView(
-          app: app,
-          runtime: model.runtime,
-          healthAutoSync: model.healthAutoSync
-        )
+        AppHostView(app: app, model: model)
           .navigationTitle(app.name)
           .navigationBarTitleDisplayMode(.inline)
       }
@@ -85,25 +124,52 @@ private struct AppListView: View {
           .frame(maxWidth: .infinity)
           .background(.bar)
       }
+      if !model.startupError.isEmpty {
+        Text(model.startupError)
+          .font(.caption)
+          .foregroundStyle(.red)
+          .padding(.vertical, 6)
+          .frame(maxWidth: .infinity)
+          .background(.bar)
+      }
       if case .unavailable(let message) = model.runtime.availability {
         Text(message)
-        .font(.caption)
-        .foregroundStyle(.red)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity)
-        .background(.bar)
+          .font(.caption)
+          .foregroundStyle(.red)
+          .padding(.vertical, 6)
+          .frame(maxWidth: .infinity)
+          .background(.bar)
       }
     }
   }
 
-  private func systemIcon(_ manifestIcon: String) -> String {
-    switch manifestIcon {
-    case "checklist", "checkmark-square": return "checklist"
-    case "heart", "health": return "heart.text.square"
-    case "camera": return "camera"
-    case "paintbrush": return "paintbrush"
-    case "calendar": return "calendar"
-    default: return "app"
+  private func pinButton(for app: TerraneApp) -> some View {
+    let isPinned = model.isPinned(app.id)
+    return Button {
+      model.togglePinned(app.id)
+    } label: {
+      Label(
+        isPinned ? "Unpin" : "Pin",
+        systemImage: isPinned ? "pin.slash" : "pin"
+      )
     }
+    .tint(isPinned ? .gray : .accentColor)
+    .accessibilityIdentifier("app.\(app.id).pin-action")
+  }
+}
+
+private struct AppHostView: View {
+  let app: TerraneApp
+  @ObservedObject var model: TerraneIOSModel
+
+  var body: some View {
+    TerraneAppWebView(
+      app: app,
+      runtime: model.runtime,
+      healthAutoSync: model.healthAutoSync,
+      permissionHandler: { app, resources in
+        await model.requestPermission(app: app, resources: resources)
+      }
+    )
   }
 }

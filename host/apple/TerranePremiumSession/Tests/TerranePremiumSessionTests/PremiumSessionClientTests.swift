@@ -333,6 +333,13 @@ final class PremiumSessionClientTests: XCTestCase {
       case "/api/account/session/refresh":
         return Self.response(request, status: 200, json: Self.sessionJSON)
       case "/api/auth/native/challenge":
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access-1")
+        let body = try XCTUnwrap(request.httpBody)
+        let payload = try XCTUnwrap(
+          JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(payload["purpose"] as? String, "link")
+        XCTAssertEqual(payload["deviceId"] as? String, "device-1")
         return Self.response(request, status: 200, json: #"{"challengeId":"link-google"}"#)
       case "/api/auth/google/native/exchange":
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer access-1")
@@ -349,7 +356,7 @@ final class PremiumSessionClientTests: XCTestCase {
       lifecycleHooks: hooks
     )
     _ = try await client.refresh(force: true)
-    let challenge = try await client.beginAuthentication(provider: .google)
+    let challenge = try await client.beginLinkAuthentication(provider: .google)
 
     _ = try await client.linkGoogleCredential(
       challengeId: challenge.challengeId,
@@ -372,11 +379,233 @@ final class PremiumSessionClientTests: XCTestCase {
       baseURL: baseURL, device: device, tokenStore: tokenStore, transport: transport)
     let account = try await client.refresh(force: true)
 
-    _ = try await client.beginAuthentication(provider: .google)
+    _ = try await client.beginLinkAuthentication(provider: .google)
     await client.cancelAuthentication()
 
     let state = await client.state
     XCTAssertEqual(state, .signedIn(account))
+  }
+
+  func testAccountSwitchInstallsReplacementThenRetiresOnlyOldSameDeviceSessions()
+    async throws
+  {
+    let tokenStore = MemoryTokenStore("old-refresh")
+    let oldSessionJSON =
+      #"{"user":{"id":"account-old","email":"old@example.test","linkedProviders":["apple","google"]},"session":{"id":"session-old-current","token":"access-old","refreshToken":"old-refresh","userId":"account-old","deviceId":"device-old","authMethod":"google","accessExpiresAt":"2099-07-28T13:00:00Z"}}"#
+    let newSessionJSON =
+      #"{"user":{"id":"account-new","email":"new@example.test","linkedProviders":["google"]},"session":{"id":"session-new","token":"access-new","refreshToken":"new-refresh","userId":"account-new","deviceId":"device-new","authMethod":"google","accessExpiresAt":"2099-07-28T13:00:00Z"}}"#
+    let transport = RecordingTransport { request in
+      switch (request.httpMethod, request.url?.path) {
+      case ("POST", "/api/account/session/refresh"):
+        return Self.response(request, status: 200, json: oldSessionJSON)
+      case ("POST", "/api/auth/native/challenge"):
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        return Self.response(
+          request, status: 200,
+          json: #"{"challengeId":"switch-google","provider":"google","nonce":"switch-nonce"}"#
+        )
+      case ("POST", "/api/auth/google/native/exchange"):
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+        return Self.response(request, status: 200, json: newSessionJSON)
+      case ("GET", "/api/users/me/sessions"):
+        XCTAssertEqual(
+          request.value(forHTTPHeaderField: "Authorization"), "Bearer access-old")
+        return Self.response(
+          request,
+          status: 200,
+          json:
+            #"[{"id":"session-old-current","status":"active","deviceId":"device-old"},{"id":"session-old-sibling","status":"active","deviceId":"device-old"},{"id":"session-other-device","status":"active","deviceId":"device-desktop"},{"id":"session-already-revoked","status":"revoked","deviceId":"device-old"}]"#
+        )
+      case ("POST", "/api/users/me/sessions/session-old-sibling/revoke"):
+        XCTAssertEqual(
+          request.value(forHTTPHeaderField: "Authorization"), "Bearer access-old")
+        return Self.response(
+          request, status: 200,
+          json: #"{"id":"session-old-sibling","status":"revoked","deviceId":"device-old"}"#
+        )
+      case ("POST", "/api/account/session/logout"):
+        XCTAssertEqual(
+          request.value(forHTTPHeaderField: "Authorization"), "Bearer access-old")
+        return Self.response(
+          request, status: 200,
+          json: #"{"loggedOut":true,"sessionId":"session-old-current"}"#
+        )
+      default:
+        return Self.response(request, status: 404, json: #"{"message":"not found"}"#)
+      }
+    }
+    let client = try PremiumSessionClient(
+      baseURL: baseURL, device: device, tokenStore: tokenStore, transport: transport)
+    _ = try await client.refresh(force: true)
+
+    let challenge = try await client.beginAccountSwitch(provider: .google)
+    let account = try await client.switchGoogleAccount(
+      challengeId: challenge.challengeId,
+      credential: PremiumGoogleCredential(idToken: "replacement-google-token")
+    )
+
+    let savedToken = await tokenStore.value()
+    let currentSessionID = await client.currentSessionID
+    let currentDeviceID = await client.currentDeviceID
+    let state = await client.state
+    XCTAssertEqual(account.id, "account-new")
+    XCTAssertEqual(savedToken, "new-refresh")
+    XCTAssertEqual(currentSessionID, "session-new")
+    XCTAssertEqual(currentDeviceID, "device-new")
+    XCTAssertEqual(state, .signedIn(account))
+
+    let requests = await transport.recordedRequests()
+    XCTAssertEqual(
+      requests.compactMap(\.url?.path),
+      [
+        "/api/account/session/refresh",
+        "/api/auth/native/challenge",
+        "/api/auth/google/native/exchange",
+        "/api/users/me/sessions",
+        "/api/users/me/sessions/session-old-sibling/revoke",
+        "/api/account/session/logout",
+      ]
+    )
+    XCTAssertFalse(
+      requests.contains { $0.url?.path.contains("session-other-device") == true })
+  }
+
+  func testCanceledAccountSwitchPreservesCurrentAccountAndCredentials() async throws {
+    let tokenStore = MemoryTokenStore("old-refresh")
+    let transport = RecordingTransport { request in
+      switch request.url?.path {
+      case "/api/account/session/refresh":
+        return Self.response(request, status: 200, json: Self.sessionJSON)
+      case "/api/auth/native/challenge":
+        return Self.response(
+          request, status: 200,
+          json: #"{"challengeId":"switch-cancel","provider":"apple"}"#
+        )
+      default:
+        return Self.response(request, status: 404, json: #"{"message":"not found"}"#)
+      }
+    }
+    let client = try PremiumSessionClient(
+      baseURL: baseURL, device: device, tokenStore: tokenStore, transport: transport)
+    let original = try await client.refresh(force: true)
+
+    _ = try await client.beginAccountSwitch(provider: .apple)
+    await client.cancelAuthentication()
+
+    let state = await client.state
+    let currentSessionID = await client.currentSessionID
+    let currentDeviceID = await client.currentDeviceID
+    let savedToken = await tokenStore.value()
+    let requestCount = await transport.recordedRequests().count
+    XCTAssertEqual(state, .signedIn(original))
+    XCTAssertEqual(currentSessionID, "session-1")
+    XCTAssertEqual(currentDeviceID, "device-1")
+    XCTAssertEqual(savedToken, "refresh-1")
+    XCTAssertEqual(requestCount, 2)
+  }
+
+  func testOrdinarySignInRejectsAlreadySignedInAccount() async throws {
+    let tokenStore = MemoryTokenStore("old-refresh")
+    let transport = RecordingTransport { request in
+      Self.response(request, status: 200, json: Self.sessionJSON)
+    }
+    let client = try PremiumSessionClient(
+      baseURL: baseURL, device: device, tokenStore: tokenStore, transport: transport)
+    _ = try await client.refresh(force: true)
+
+    do {
+      _ = try await client.beginAuthentication(provider: .google)
+      XCTFail("ordinary sign-in must not replace a signed-in account")
+    } catch {
+      XCTAssertEqual(error as? PremiumSessionError, .accountAlreadySignedIn)
+    }
+  }
+
+  func testHealthAnalysisHeartbeatMergesFencedLeaseWithoutEchoedSecrets() async throws {
+    let tokenStore = MemoryTokenStore("refresh")
+    let transport = RecordingTransport { request in
+      switch request.url?.path {
+      case "/api/account/session/refresh":
+        return Self.response(request, status: 200, json: Self.sessionJSON)
+      case "/api/users/me/orgs":
+        return Self.response(request, status: 200, json: #"[{"id":"org-1"}]"#)
+      case "/api/users/me/devices":
+        return Self.response(
+          request,
+          status: 200,
+          json: #"[{"id":"device-1","platform":"macos","status":"active"}]"#
+        )
+      case "/api/sync/health-analysis/jobs/job-1/heartbeat":
+        XCTAssertEqual(request.httpMethod, "POST")
+        let body = try XCTUnwrap(request.httpBody)
+        let payload = try XCTUnwrap(
+          JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(payload["orgId"] as? String, "org-1")
+        XCTAssertEqual(payload["deviceId"] as? String, "device-1")
+        XCTAssertEqual(payload["claimId"] as? String, "claim-1")
+        XCTAssertEqual(payload["claimToken"] as? String, "secret-token")
+        XCTAssertEqual(payload["leaseEpoch"] as? Int, 3)
+        return Self.response(
+          request,
+          status: 200,
+          json:
+            #"{"job":{"contract":"terrane.health-analysis-job.v1","id":"job-1","kind":"food_nutrition","sourceImageId":"image-1","status":"leased","revision":4,"attempt":1,"nextAttemptAt":null,"leaseExpiresAt":"2026-07-31T03:02:00Z","resultAvailable":false,"failureCode":null,"createdAt":"2026-07-31T03:00:00Z","updatedAt":"2026-07-31T03:01:00Z","completedAt":null,"acknowledgedAt":null},"lease":{"leaseEpoch":3,"leaseExpiresAt":"2026-07-31T03:02:00Z"}}"#
+        )
+      default:
+        return Self.response(request, status: 404, json: #"{"message":"not found"}"#)
+      }
+    }
+    let session = try PremiumSessionClient(
+      baseURL: baseURL,
+      device: device,
+      tokenStore: tokenStore,
+      transport: transport
+    )
+    _ = try await session.refresh(force: true)
+    let health = PremiumHealthImageSyncClient(
+      session: session,
+      keyStore: try PremiumStaticHealthImageKeyStore(
+        key: Data(repeating: 7, count: 32)
+      ),
+      deviceKeyStore: try PremiumStaticHealthDeviceKeyStore(
+        privateKey: Data(repeating: 9, count: 32)
+      ),
+      platform: .macOS
+    )
+    let job = PremiumHealthAnalysisJob(
+      contract: "terrane.health-analysis-job.v1",
+      id: "job-1",
+      kind: "food_nutrition",
+      sourceImageId: "image-1",
+      status: "leased",
+      revision: 3,
+      attempt: 1,
+      nextAttemptAt: nil,
+      leaseExpiresAt: Date(),
+      resultAvailable: false,
+      failureCode: nil,
+      createdAt: Date(),
+      updatedAt: Date(),
+      completedAt: nil,
+      acknowledgedAt: nil
+    )
+    let lease = PremiumHealthAnalysisLease(
+      claimId: "claim-1",
+      claimToken: "secret-token",
+      leaseEpoch: 3,
+      leaseExpiresAt: Date()
+    )
+
+    let refreshed = try await health.heartbeatAnalysisJob(job, lease: lease)
+
+    XCTAssertEqual(refreshed.claimId, lease.claimId)
+    XCTAssertEqual(refreshed.claimToken, lease.claimToken)
+    XCTAssertEqual(refreshed.leaseEpoch, 3)
+    XCTAssertEqual(
+      refreshed.leaseExpiresAt,
+      ISO8601DateFormatter().date(from: "2026-07-31T03:02:00Z")
+    )
   }
 
   private struct ValueResponse: Decodable, Sendable {

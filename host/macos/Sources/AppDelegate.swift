@@ -901,6 +901,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
           "window.location.hash = '#/meal/\(mealID)';"
         )
       }
+      coordinator.onConnectionsChanged = { [weak self, weak coordinator] in
+        guard let self, let coordinator else { return }
+        let connectedPhones = (coordinator.connections?.devices ?? []).filter {
+          $0.platform == "ios" && coordinator.isApproved(senderDeviceID: $0.deviceId)
+        }
+        if !connectedPhones.isEmpty {
+          self.accountButton.toolTip =
+            "Health connected to \(connectedPhones.map(\.name).joined(separator: ", "))"
+        }
+      }
       healthAutoSync = coordinator
     }
     healthAutoSync?.start()
@@ -980,6 +990,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     refresh.target = self
     menu.addItem(refresh)
 
+    if let healthAutoSync {
+      let connectionsItem = NSMenuItem(
+        title: "Health Connections",
+        action: nil,
+        keyEquivalent: ""
+      )
+      connectionsItem.image = NSImage(
+        systemSymbolName: "heart.text.clipboard",
+        accessibilityDescription: "Health connections"
+      )
+      let connectionsMenu = NSMenu()
+      let phones = (healthAutoSync.connections?.devices ?? []).filter {
+        $0.platform == "ios"
+      }
+      if phones.isEmpty {
+        let empty = NSMenuItem(
+          title: "No iPhone on this account",
+          action: nil,
+          keyEquivalent: ""
+        )
+        empty.isEnabled = false
+        connectionsMenu.addItem(empty)
+      } else {
+        for phone in phones {
+          let approved = healthAutoSync.isApproved(senderDeviceID: phone.deviceId)
+          let status = NSMenuItem(
+            title: "\(phone.name) · \(approved ? "Connected" : "Approval required")",
+            action: nil,
+            keyEquivalent: ""
+          )
+          status.image = NSImage(
+            systemSymbolName: approved ? "iphone.gen3.circle.fill" : "iphone.gen3.circle",
+            accessibilityDescription: approved ? "Connected iPhone" : "iPhone awaiting approval"
+          )
+          status.isEnabled = false
+          connectionsMenu.addItem(status)
+          let action = NSMenuItem(
+            title: approved ? "Disconnect \(phone.name)" : "Approve \(phone.name)",
+            action: approved
+              ? #selector(revokeHealthConnection(_:))
+              : #selector(approveHealthConnection(_:)),
+            keyEquivalent: ""
+          )
+          action.target = self
+          action.representedObject = phone.deviceId
+          connectionsMenu.addItem(action)
+        }
+      }
+      connectionsMenu.addItem(.separator())
+      let refreshConnections = NSMenuItem(
+        title: "Refresh Devices",
+        action: #selector(refreshHealthConnections),
+        keyEquivalent: ""
+      )
+      refreshConnections.target = self
+      connectionsMenu.addItem(refreshConnections)
+      connectionsItem.submenu = connectionsMenu
+      menu.addItem(connectionsItem)
+    }
+
     for provider in PremiumIdentityProvider.allCases
     where !account.linkedProviders.contains(provider) {
       let item = NSMenuItem(
@@ -990,6 +1060,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
       item.target = self
       menu.addItem(item)
     }
+    let switchAccount = NSMenuItem(title: "Switch Account", action: nil, keyEquivalent: "")
+    let switchMenu = NSMenu()
+    let switchApple = NSMenuItem(
+      title: "Continue with Apple",
+      action: #selector(switchPremiumApple),
+      keyEquivalent: ""
+    )
+    switchApple.target = self
+    switchMenu.addItem(switchApple)
+    let switchGoogle = NSMenuItem(
+      title: "Continue with Google",
+      action: #selector(switchPremiumGoogle),
+      keyEquivalent: ""
+    )
+    switchGoogle.target = self
+    switchMenu.addItem(switchGoogle)
+    switchAccount.submenu = switchMenu
+    menu.addItem(switchAccount)
     menu.addItem(.separator())
     let logout = NSMenuItem(
       title: "Sign Out", action: #selector(logoutPremium), keyEquivalent: "")
@@ -1021,12 +1109,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     }
   }
 
+  @objc private func refreshHealthConnections() {
+    Task { [weak self] in
+      await self?.healthAutoSync?.refreshConnections()
+    }
+  }
+
+  @objc private func approveHealthConnection(_ sender: NSMenuItem) {
+    guard let deviceID = sender.representedObject as? String else { return }
+    Task { [weak self] in
+      do {
+        try await self?.healthAutoSync?.approve(senderDeviceID: deviceID)
+      } catch {
+        self?.presentPremiumError(error)
+      }
+    }
+  }
+
+  @objc private func revokeHealthConnection(_ sender: NSMenuItem) {
+    guard let deviceID = sender.representedObject as? String else { return }
+    Task { [weak self] in
+      do {
+        try await self?.healthAutoSync?.revoke(senderDeviceID: deviceID)
+      } catch {
+        self?.presentPremiumError(error)
+      }
+    }
+  }
+
   @objc private func linkPremiumApple() {
     premiumAuthCoordinator?.link(.apple)
   }
 
   @objc private func linkPremiumGoogle() {
     premiumAuthCoordinator?.link(.google)
+  }
+
+  @objc private func switchPremiumApple() {
+    premiumAuthCoordinator?.switchAccount(with: .apple)
+  }
+
+  @objc private func switchPremiumGoogle() {
+    premiumAuthCoordinator?.switchAccount(with: .google)
   }
 
   @objc private func logoutPremium() {

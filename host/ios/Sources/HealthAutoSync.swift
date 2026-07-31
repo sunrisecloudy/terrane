@@ -3,14 +3,51 @@ import Foundation
 import TerranePremiumSession
 import UIKit
 
+struct IOSSubmittedHealthAnalysis: Sendable {
+  let attachment: PremiumHealthImageAttachment
+  let job: PremiumHealthAnalysisJob
+}
+
+struct IOSHealthAnalysisUpdate: Sendable {
+  let jobID: String
+  let status: String
+  let failureCode: String?
+  let imageBase64: String?
+  let mime: String?
+  let resultJSON: String?
+
+  var bridgeValue: [String: Any] {
+    var value: [String: Any] = [
+      "ok": true,
+      "jobId": jobID,
+      "status": status,
+    ]
+    if let failureCode { value["failureCode"] = failureCode }
+    if let imageBase64 { value["imageBase64"] = imageBase64 }
+    if let mime { value["mime"] = mime }
+    if let resultJSON { value["resultJson"] = resultJSON }
+    return value
+  }
+}
+
 @MainActor
 final class IOSHealthAutoSync: ObservableObject {
   @Published private(set) var status = ""
+  @Published private(set) var connections: PremiumHealthConnections?
+  @Published private(set) var currentDeviceID: String?
+  @Published private(set) var connectionsError = ""
 
   private let client: PremiumHealthImageSyncClient
+  private let defaults: UserDefaults
+  private let pendingDefaultsKey = "health.analysis.pending.v1"
+  private var requestIDs: [String: String]
 
-  init(client: PremiumHealthImageSyncClient) {
+  init(client: PremiumHealthImageSyncClient, defaults: UserDefaults = .standard) {
     self.client = client
+    self.defaults = defaults
+    requestIDs =
+      defaults.dictionary(forKey: pendingDefaultsKey) as? [String: String]
+      ?? [:]
   }
 
   func upload(base64: String, mime: String) async throws -> PremiumHealthImageAttachment {
@@ -23,6 +60,117 @@ final class IOSHealthAutoSync: ObservableObject {
   func upload(data: Data, sourceMime: String = "image/jpeg") async throws
     -> PremiumHealthImageAttachment
   {
+    try await upload(data: data, sourceMime: sourceMime, note: nil)
+  }
+
+  func submit(
+    base64: String,
+    mime: String,
+    note: String
+  ) async throws -> IOSSubmittedHealthAnalysis {
+    guard let data = Data(base64Encoded: base64) else {
+      throw PremiumHealthImageSyncError.invalidImage
+    }
+    let requestID = UUID().uuidString.lowercased()
+    let attachment = try await upload(
+      data: data,
+      sourceMime: mime,
+      note: String(note.prefix(500))
+    )
+    status = "Waiting for your Mac…"
+    let job = try await client.createAnalysisJob(
+      imageID: attachment.id,
+      clientRequestID: requestID
+    )
+    requestIDs[job.id] = requestID
+    savePendingJobs()
+    status = "Sent securely to your Mac"
+    return IOSSubmittedHealthAnalysis(attachment: attachment, job: job)
+  }
+
+  func analysisUpdate(jobID: String) async throws -> IOSHealthAnalysisUpdate {
+    let page = try await client.analysisJobs()
+    guard let job = page.jobs.first(where: { $0.id == jobID }) else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    if job.resultAvailable {
+      status = "Receiving encrypted nutrition…"
+      let delivery = try await client.downloadAnalysisResult(job)
+      guard let resultJSON = String(data: delivery.result, encoding: .utf8) else {
+        throw PremiumHealthImageSyncError.invalidResponse
+      }
+      status = "Nutrition ready to review"
+      return IOSHealthAnalysisUpdate(
+        jobID: job.id,
+        status: "completed",
+        failureCode: nil,
+        imageBase64: delivery.image.image.base64EncodedString(),
+        mime: delivery.image.metadata.mime,
+        resultJSON: resultJSON
+      )
+    }
+    let displayStatus: String
+    switch job.status {
+    case "leased", "processing":
+      displayStatus = "Your Mac is analyzing this meal…"
+    case "queued", "retry_wait":
+      displayStatus = "Waiting for your connected Mac…"
+    case "failed":
+      displayStatus = "Nutrition analysis needs attention"
+    case "cancelled":
+      displayStatus = "Nutrition analysis cancelled"
+    default:
+      displayStatus = "Syncing nutrition status…"
+    }
+    status = displayStatus
+    return IOSHealthAnalysisUpdate(
+      jobID: job.id,
+      status: job.status,
+      failureCode: job.failureCode,
+      imageBase64: nil,
+      mime: nil,
+      resultJSON: nil
+    )
+  }
+
+  func acknowledge(jobID: String) async throws {
+    let page = try await client.analysisJobs()
+    guard let job = page.jobs.first(where: { $0.id == jobID }),
+      let requestID = requestIDs[jobID]
+    else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    _ = try await client.acknowledgeAnalysisJob(job, clientRequestID: requestID)
+    requestIDs.removeValue(forKey: jobID)
+    savePendingJobs()
+    status = "Nutrition saved on this iPhone"
+  }
+
+  func pendingJobIDs() async -> [String] {
+    guard let page = try? await client.analysisJobs() else {
+      return Array(requestIDs.keys)
+    }
+    return page.jobs
+      .filter { requestIDs[$0.id] != nil && $0.acknowledgedAt == nil }
+      .sorted { $0.createdAt < $1.createdAt }
+      .map(\.id)
+  }
+
+  func refreshConnections() async {
+    do {
+      async let deviceID = client.currentDeviceID()
+      async let latest = client.connections()
+      currentDeviceID = try await deviceID
+      connections = try await latest
+      connectionsError = ""
+    } catch {
+      connectionsError = error.localizedDescription
+    }
+  }
+
+  func upload(data: Data, sourceMime: String, note: String?) async throws
+    -> PremiumHealthImageAttachment
+  {
     status = "Preparing Health photo…"
     do {
       let prepared = try HealthImagePreprocessor.prepare(data)
@@ -32,7 +180,8 @@ final class IOSHealthAutoSync: ObservableObject {
         metadata: PremiumHealthImageMetadata(
           width: prepared.width,
           height: prepared.height,
-          source: sourceMime == "image/jpeg" ? "ios-health" : "ios-health-\(sourceMime)"
+          source: sourceMime == "image/jpeg" ? "ios-health" : "ios-health-\(sourceMime)",
+          note: note
         )
       )
       status = "Health photo synced"
@@ -41,6 +190,10 @@ final class IOSHealthAutoSync: ObservableObject {
       status = "Health sync failed"
       throw error
     }
+  }
+
+  private func savePendingJobs() {
+    defaults.set(requestIDs, forKey: pendingDefaultsKey)
   }
 }
 

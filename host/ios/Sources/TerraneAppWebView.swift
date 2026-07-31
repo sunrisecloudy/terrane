@@ -6,9 +6,15 @@ struct TerraneAppWebView: UIViewRepresentable {
   let app: TerraneApp
   let runtime: any TerraneRuntime
   let healthAutoSync: IOSHealthAutoSync?
+  let permissionHandler: (TerraneApp, [String]) async -> Bool
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(app: app, runtime: runtime, healthAutoSync: healthAutoSync)
+    Coordinator(
+      app: app,
+      runtime: runtime,
+      healthAutoSync: healthAutoSync,
+      permissionHandler: permissionHandler
+    )
   }
 
   func makeUIView(context: Context) -> WKWebView {
@@ -59,8 +65,36 @@ struct TerraneAppWebView: UIViewRepresentable {
           base64: String(base64),
           mime: String(mime)
         });
+      const analyzeHealthImage = (base64, mime, note) =>
+        window.webkit.messageHandlers.terrane.postMessage({
+          kind: "health:autoAnalyze",
+          base64: String(base64),
+          mime: String(mime),
+          note: String(note || "")
+        });
+      const healthAnalysisStatus = (jobId) =>
+        window.webkit.messageHandlers.terrane.postMessage({
+          kind: "health:analysisStatus",
+          jobId: String(jobId)
+        });
+      const acknowledgeHealthAnalysis = (jobId) =>
+        window.webkit.messageHandlers.terrane.postMessage({
+          kind: "health:analysisAck",
+          jobId: String(jobId)
+        });
+      const pendingHealthAnalyses = () =>
+        window.webkit.messageHandlers.terrane.postMessage({
+          kind: "health:pendingAnalyses"
+        });
       Object.defineProperty(window, "terrane", {
-        value: Object.freeze({ invoke, uploadHealthImage }),
+        value: Object.freeze({
+          invoke,
+          uploadHealthImage,
+          analyzeHealthImage,
+          healthAnalysisStatus,
+          acknowledgeHealthAnalysis,
+          pendingHealthAnalyses
+        }),
         enumerable: true,
         configurable: false,
         writable: false
@@ -73,15 +107,18 @@ struct TerraneAppWebView: UIViewRepresentable {
     let runtime: any TerraneRuntime
     let frameURL: URL
     weak var healthAutoSync: IOSHealthAutoSync?
+    let permissionHandler: (TerraneApp, [String]) async -> Bool
 
     init(
       app: TerraneApp,
       runtime: any TerraneRuntime,
-      healthAutoSync: IOSHealthAutoSync?
+      healthAutoSync: IOSHealthAutoSync?,
+      permissionHandler: @escaping (TerraneApp, [String]) async -> Bool
     ) {
       self.app = app
       self.runtime = runtime
       self.healthAutoSync = healthAutoSync
+      self.permissionHandler = permissionHandler
       var components = URLComponents()
       components.scheme = "terrane-app"
       components.host = app.id
@@ -95,9 +132,9 @@ struct TerraneAppWebView: UIViewRepresentable {
       replyHandler: @escaping (Any?, String?) -> Void
     ) {
       guard message.frameInfo.securityOrigin.protocol == "terrane-app",
-            message.frameInfo.securityOrigin.host == app.id,
-            let body = message.body as? [String: Any],
-            let kind = body["kind"] as? String
+        message.frameInfo.securityOrigin.host == app.id,
+        let body = message.body as? [String: Any],
+        let kind = body["kind"] as? String
       else {
         replyHandler(nil, "terrane: rejected untrusted bridge message")
         return
@@ -130,6 +167,95 @@ struct TerraneAppWebView: UIViewRepresentable {
         }
         return
       }
+      if kind == "health:autoAnalyze" {
+        guard app.id == "health",
+          let healthAutoSync,
+          let base64 = body["base64"] as? String,
+          !base64.isEmpty,
+          base64.count <= 16 * 1024 * 1024,
+          let mime = body["mime"] as? String
+        else {
+          replyHandler(nil, "terrane: Health analysis sync is unavailable")
+          return
+        }
+        let note = (body["note"] as? String).map { String($0.prefix(500)) } ?? ""
+        Task { @MainActor in
+          do {
+            let submitted = try await healthAutoSync.submit(
+              base64: base64,
+              mime: mime,
+              note: note
+            )
+            replyHandler(
+              [
+                "ok": true,
+                "attachmentId": submitted.attachment.id,
+                "jobId": submitted.job.id,
+                "status": submitted.job.status,
+              ],
+              nil
+            )
+          } catch {
+            replyHandler(nil, error.localizedDescription)
+          }
+        }
+        return
+      }
+      if kind == "health:analysisStatus" {
+        guard app.id == "health",
+          let healthAutoSync,
+          let jobID = body["jobId"] as? String,
+          !jobID.isEmpty
+        else {
+          replyHandler(nil, "terrane: Health analysis status is unavailable")
+          return
+        }
+        Task { @MainActor in
+          do {
+            let update = try await healthAutoSync.analysisUpdate(jobID: jobID)
+            replyHandler(update.bridgeValue, nil)
+          } catch {
+            replyHandler(nil, error.localizedDescription)
+          }
+        }
+        return
+      }
+      if kind == "health:analysisAck" {
+        guard app.id == "health",
+          let healthAutoSync,
+          let jobID = body["jobId"] as? String,
+          !jobID.isEmpty
+        else {
+          replyHandler(nil, "terrane: Health analysis acknowledgement is unavailable")
+          return
+        }
+        Task { @MainActor in
+          do {
+            try await healthAutoSync.acknowledge(jobID: jobID)
+            replyHandler(["ok": true], nil)
+          } catch {
+            replyHandler(nil, error.localizedDescription)
+          }
+        }
+        return
+      }
+      if kind == "health:pendingAnalyses" {
+        guard app.id == "health", let healthAutoSync else {
+          replyHandler(nil, "terrane: pending Health analyses are unavailable")
+          return
+        }
+        Task { @MainActor in
+          let jobIDs = await healthAutoSync.pendingJobIDs()
+          replyHandler(
+            [
+              "ok": true,
+              "jobIds": jobIDs,
+            ],
+            nil
+          )
+        }
+        return
+      }
       guard kind == "invoke",
         let verb = body["verb"] as? String,
         !verb.isEmpty
@@ -142,8 +268,7 @@ struct TerraneAppWebView: UIViewRepresentable {
       }
       Task {
         do {
-          let result = try await runtime.invoke(
-            appID: app.id,
+          let result = try await invokeWithPermissionRetry(
             verb: verb,
             arguments: arguments
           )
@@ -151,6 +276,41 @@ struct TerraneAppWebView: UIViewRepresentable {
         } catch {
           replyHandler(nil, error.localizedDescription)
         }
+      }
+    }
+
+    private func invokeWithPermissionRetry(
+      verb: String,
+      arguments: [String]
+    ) async throws -> String {
+      do {
+        return try await runtime.invoke(
+          appID: app.id,
+          verb: verb,
+          arguments: arguments
+        )
+      } catch {
+        let message = error.localizedDescription
+        guard
+          let resources = IOSPermissionRequestParser.parse(
+            error: message,
+            appID: app.id
+          ),
+          await permissionHandler(app, resources)
+        else {
+          throw error
+        }
+        for namespace in resources {
+          _ = try await runtime.dispatch(
+            command: "auth.grant",
+            arguments: ["user:local-owner", app.id, namespace]
+          )
+        }
+        return try await runtime.invoke(
+          appID: app.id,
+          verb: verb,
+          arguments: arguments
+        )
       }
     }
 
@@ -166,7 +326,7 @@ struct TerraneAppWebView: UIViewRepresentable {
       if url.scheme == "terrane-app", url.host == app.id {
         decisionHandler(.allow)
       } else if navigationAction.targetFrame?.isMainFrame == true,
-                ["https", "http"].contains(url.scheme?.lowercased() ?? "")
+        ["https", "http"].contains(url.scheme?.lowercased() ?? "")
       {
         decisionHandler(.cancel)
         UIApplication.shared.open(url)
@@ -174,6 +334,21 @@ struct TerraneAppWebView: UIViewRepresentable {
         decisionHandler(.cancel)
       }
     }
+  }
+}
+
+enum IOSPermissionRequestParser {
+  static func parse(error: String, appID: String) -> [String]? {
+    let prefix = "permission required for app \(appID): grant "
+    guard error.hasPrefix(prefix) else { return nil }
+    let tail = String(error.dropFirst(prefix.count))
+    let resourcesPart = tail.split(separator: ";", maxSplits: 1).first.map(String.init) ?? tail
+    let resources =
+      resourcesPart
+      .split(separator: ",")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    return resources.isEmpty ? nil : resources
   }
 }
 
@@ -186,8 +361,8 @@ final class AppResourceSchemeHandler: NSObject, WKURLSchemeHandler {
 
   func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {
     guard let url = urlSchemeTask.request.url,
-          url.scheme == "terrane-app",
-          url.host == app.id
+      url.scheme == "terrane-app",
+      url.host == app.id
     else {
       fail(urlSchemeTask, code: 403)
       return
@@ -201,8 +376,8 @@ final class AppResourceSchemeHandler: NSObject, WKURLSchemeHandler {
     let candidate = app.directory.appendingPathComponent(relative).standardizedFileURL
     let root = app.directory.standardizedFileURL.path + "/"
     guard candidate.path.hasPrefix(root),
-          !candidate.hasDirectoryPath,
-          let data = try? Data(contentsOf: candidate, options: [.mappedIfSafe])
+      !candidate.hasDirectoryPath,
+      let data = try? Data(contentsOf: candidate, options: [.mappedIfSafe])
     else {
       fail(urlSchemeTask, code: 404)
       return

@@ -24,6 +24,7 @@ enum PremiumNativeAuthError: LocalizedError, Equatable {
 private enum PremiumNativeAuthorizationIntent {
   case signIn
   case link
+  case switchAccount
 }
 
 struct PremiumNativeAuthConfiguration {
@@ -80,6 +81,10 @@ final class PremiumNativeAuthCoordinator: NSObject,
     authorize(provider: provider, intent: .link)
   }
 
+  func switchAccount(with provider: PremiumIdentityProvider) {
+    authorize(provider: provider, intent: .switchAccount)
+  }
+
   private func authorize(
     provider: PremiumIdentityProvider,
     intent: PremiumNativeAuthorizationIntent
@@ -87,7 +92,15 @@ final class PremiumNativeAuthCoordinator: NSObject,
     Task { [weak self] in
       guard let self else { return }
       do {
-        let challenge = try await session.beginAuthentication(provider: provider)
+        let challenge: PremiumAuthenticationChallenge
+        switch intent {
+        case .signIn:
+          challenge = try await session.beginAuthentication(provider: provider)
+        case .link:
+          challenge = try await session.beginLinkAuthentication(provider: provider)
+        case .switchAccount:
+          challenge = try await session.beginAccountSwitch(provider: provider)
+        }
         await MainActor.run {
           switch provider {
           case .apple:
@@ -169,6 +182,9 @@ final class PremiumNativeAuthCoordinator: NSObject,
           case .link:
             account = try await session.linkGoogleCredential(
               challengeId: challenge.challengeId, credential: credential)
+          case .switchAccount:
+            account = try await session.switchGoogleAccount(
+              challengeId: challenge.challengeId, credential: credential)
           }
           await MainActor.run { self.onCompletion?(.success(account)) }
         } catch {
@@ -216,6 +232,11 @@ final class PremiumNativeAuthCoordinator: NSObject,
           )
         case .link:
           account = try await session.linkAppleCredential(
+            challengeId: pendingApple.challenge.challengeId,
+            credential: appleCredential
+          )
+        case .switchAccount:
+          account = try await session.switchAppleAccount(
             challengeId: pendingApple.challenge.challengeId,
             credential: appleCredential
           )
@@ -282,11 +303,11 @@ final class PremiumSignInSheetController: NSObject {
   ) {
     self.parent = parent
     self.onProvider = onProvider
-#if TERRANE_DEVELOPER_ID
-    let panelHeight: CGFloat = 198
-#else
-    let panelHeight: CGFloat = 250
-#endif
+    #if TERRANE_DEVELOPER_ID
+      let panelHeight: CGFloat = 198
+    #else
+      let panelHeight: CGFloat = 250
+    #endif
     panel = NSPanel(
       contentRect: NSRect(x: 0, y: 0, width: 360, height: panelHeight),
       styleMask: [.titled],
@@ -328,15 +349,15 @@ final class PremiumSignInSheetController: NSObject {
     detail.alignment = .center
     detail.translatesAutoresizingMaskIntoConstraints = false
 
-#if !TERRANE_DEVELOPER_ID
-    let appleButton = ASAuthorizationAppleIDButton(
-      authorizationButtonType: .signIn,
-      authorizationButtonStyle: .black
-    )
-    appleButton.target = self
-    appleButton.action = #selector(appleClicked)
-    appleButton.translatesAutoresizingMaskIntoConstraints = false
-#endif
+    #if !TERRANE_DEVELOPER_ID
+      let appleButton = ASAuthorizationAppleIDButton(
+        authorizationButtonType: .signIn,
+        authorizationButtonStyle: .black
+      )
+      appleButton.target = self
+      appleButton.action = #selector(appleClicked)
+      appleButton.translatesAutoresizingMaskIntoConstraints = false
+    #endif
 
     let googleButton = NSHostingView(
       rootView: PremiumGoogleSignInButton { [weak self] in self?.googleClicked() }
@@ -348,9 +369,9 @@ final class PremiumSignInSheetController: NSObject {
     cancel.translatesAutoresizingMaskIntoConstraints = false
 
     [title, detail, googleButton, cancel].forEach(content.addSubview)
-#if !TERRANE_DEVELOPER_ID
-    content.addSubview(appleButton)
-#endif
+    #if !TERRANE_DEVELOPER_ID
+      content.addSubview(appleButton)
+    #endif
     panel.contentView = content
     var constraints = [
       title.topAnchor.constraint(equalTo: content.topAnchor, constant: 22),
@@ -367,19 +388,19 @@ final class PremiumSignInSheetController: NSObject {
       cancel.topAnchor.constraint(equalTo: googleButton.bottomAnchor, constant: 8),
       cancel.centerXAnchor.constraint(equalTo: content.centerXAnchor),
     ]
-#if TERRANE_DEVELOPER_ID
-    constraints.append(
-      googleButton.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 18)
-    )
-#else
-    constraints.append(contentsOf: [
-      appleButton.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 18),
-      appleButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
-      appleButton.widthAnchor.constraint(equalToConstant: 260),
-      appleButton.heightAnchor.constraint(equalToConstant: 42),
-      googleButton.topAnchor.constraint(equalTo: appleButton.bottomAnchor, constant: 10),
-    ])
-#endif
+    #if TERRANE_DEVELOPER_ID
+      constraints.append(
+        googleButton.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 18)
+      )
+    #else
+      constraints.append(contentsOf: [
+        appleButton.topAnchor.constraint(equalTo: detail.bottomAnchor, constant: 18),
+        appleButton.centerXAnchor.constraint(equalTo: content.centerXAnchor),
+        appleButton.widthAnchor.constraint(equalToConstant: 260),
+        appleButton.heightAnchor.constraint(equalToConstant: 42),
+        googleButton.topAnchor.constraint(equalTo: appleButton.bottomAnchor, constant: 10),
+      ])
+    #endif
     NSLayoutConstraint.activate(constraints)
   }
 

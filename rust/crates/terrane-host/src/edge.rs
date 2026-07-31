@@ -948,7 +948,7 @@ fn run_agent(
 
     let mut command = match agent {
         "claude" => {
-            let mut c = Command::new("claude");
+            let mut c = Command::new(agent_executable("claude"));
             c.arg("-p");
             if let Some(dir) = image_dir.as_ref() {
                 c.args(["--tools", "Read", "--allowedTools", "Read"]);
@@ -960,7 +960,7 @@ fn run_agent(
             c
         }
         "codex" => {
-            let mut c = Command::new("codex");
+            let mut c = Command::new(agent_executable("codex"));
             c.arg("exec");
             for path in &image_paths {
                 c.arg("--image").arg(path);
@@ -976,7 +976,7 @@ fn run_agent(
             let work_dir = opencode_work_dir
                 .as_ref()
                 .expect("OpenCode work directory exists for an OpenCode selector");
-            let mut c = Command::new("opencode");
+            let mut c = Command::new(agent_executable("opencode"));
             c.args(["run", "--pure", "--model", model]);
             c.arg("--dir").arg(work_dir.path());
             for path in &image_paths {
@@ -2584,6 +2584,24 @@ fn command_exists(command: &str) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+fn agent_executable(name: &str) -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("PATH").and_then(|value| {
+        std::env::split_paths(&value)
+            .map(|directory| directory.join(name))
+            .find(|candidate| candidate.is_file())
+    }) {
+        return path;
+    }
+    #[cfg(target_os = "macos")]
+    for directory in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        let candidate = Path::new(directory).join(name);
+        if candidate.is_file() {
+            return candidate;
+        }
+    }
+    name.into()
 }
 
 fn run_command_with_timeout(

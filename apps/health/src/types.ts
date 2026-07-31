@@ -26,6 +26,7 @@ export type MealEntry = Dish & {
   model: string;
   eaten_at: string;
   reviewed: boolean;
+  source_job_id?: string;
   dishes: Dish[];
   assumptions: string[];
   warnings: string[];

@@ -24,6 +24,27 @@ type TerraneApi = {
     base64: string,
     mime: string,
   ) => Promise<{ ok: boolean; attachmentId: string; clientId: string }>;
+  analyzeHealthImage?: (
+    base64: string,
+    mime: string,
+    note: string,
+  ) => Promise<{
+    ok: boolean;
+    attachmentId: string;
+    jobId: string;
+    status: string;
+  }>;
+  healthAnalysisStatus?: (jobId: string) => Promise<{
+    ok: boolean;
+    jobId: string;
+    status: string;
+    failureCode?: string;
+    imageBase64?: string;
+    mime?: string;
+    resultJson?: string;
+  }>;
+  acknowledgeHealthAnalysis?: (jobId: string) => Promise<{ ok: boolean }>;
+  pendingHealthAnalyses?: () => Promise<{ ok: boolean; jobIds: string[] }>;
   setSidebarSection?: (section: SidebarSection) => void;
   onSidebarItemSelect?: (callback: (id: string) => void) => void;
   onSidebarCreate?: (callback: () => void) => void;
@@ -35,7 +56,10 @@ declare global {
   }
 }
 
-export async function invokeJson<T>(verb: string, ...args: string[]): Promise<T> {
+export async function invokeJson<T>(
+  verb: string,
+  ...args: string[]
+): Promise<T> {
   if (!window.terrane || typeof window.terrane.invoke !== "function") {
     throw new Error("Terrane bridge unavailable");
   }
@@ -58,13 +82,49 @@ export function hasHealthAutoUpload(): boolean {
   );
 }
 
+export function hasHealthRemoteAnalysis(): boolean {
+  return Boolean(
+    window.terrane &&
+      typeof window.terrane.analyzeHealthImage === "function" &&
+      typeof window.terrane.healthAnalysisStatus === "function" &&
+      typeof window.terrane.acknowledgeHealthAnalysis === "function",
+  );
+}
+
 export async function autoUploadHealthImage(
   file: File,
 ): Promise<{ ok: boolean; attachmentId: string; clientId: string } | null> {
-  if (!window.terrane || typeof window.terrane.uploadHealthImage !== "function") {
+  if (
+    !window.terrane || typeof window.terrane.uploadHealthImage !== "function"
+  ) {
     return null;
   }
   return window.terrane.uploadHealthImage(await fileToBase64(file), file.type);
+}
+
+export async function submitHealthAnalysis(file: File, note: string) {
+  if (!window.terrane?.analyzeHealthImage) {
+    throw new Error("Connected Mac analysis is unavailable.");
+  }
+  return window.terrane.analyzeHealthImage(
+    await fileToBase64(file),
+    file.type,
+    note,
+  );
+}
+
+export async function healthAnalysisStatus(jobId: string) {
+  if (!window.terrane?.healthAnalysisStatus) {
+    throw new Error("Connected Mac analysis status is unavailable.");
+  }
+  return window.terrane.healthAnalysisStatus(jobId);
+}
+
+export async function acknowledgeHealthAnalysis(jobId: string) {
+  if (!window.terrane?.acknowledgeHealthAnalysis) {
+    throw new Error("Connected Mac analysis acknowledgement is unavailable.");
+  }
+  return window.terrane.acknowledgeHealthAnalysis(jobId);
 }
 
 export async function pickPhoto(): Promise<PickResult> {
@@ -90,7 +150,11 @@ export function publishSidebar(
     items: [
       { id: "add", title: "Add meal", systemImage: "plus.circle" },
       { id: "calendar", title: "Calendar", systemImage: "calendar" },
-      { id: "history", title: "History", systemImage: "clock.arrow.circlepath" },
+      {
+        id: "history",
+        title: "History",
+        systemImage: "clock.arrow.circlepath",
+      },
       { id: "insights", title: "Insights", systemImage: "chart.bar" },
       { id: "settings", title: "Settings", systemImage: "gearshape" },
     ],
@@ -102,7 +166,8 @@ export function publishSidebar(
 export function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read the selected image."));
+    reader.onerror = () =>
+      reject(new Error("Could not read the selected image."));
     reader.onload = () => {
       const result = typeof reader.result === "string" ? reader.result : "";
       const comma = result.indexOf(",");

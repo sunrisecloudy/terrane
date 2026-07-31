@@ -25,11 +25,13 @@ public struct NoopPremiumAccountLifecycleHooks: PremiumAccountLifecycleHooks {
 public actor PremiumSessionClient {
   public typealias StateObserver = @Sendable (PremiumSessionState) -> Void
 
-  private struct ChallengeRequest: Encodable {
+  private struct ChallengeRequest: Encodable, Sendable {
     let provider: PremiumIdentityProvider
     let platform: PremiumPlatform
     let deviceName: String
     let clientVersion: String
+    let purpose: String?
+    let deviceId: String?
   }
 
   private struct AppleExchangeRequest: Encodable, Sendable {
@@ -53,6 +55,7 @@ public actor PremiumSessionClient {
     let refreshToken: String
     let expiresAt: Date?
     let account: PremiumAccount?
+    let sessionId: String?
 
     private enum CodingKeys: String, CodingKey {
       case session
@@ -65,6 +68,7 @@ public actor PremiumSessionClient {
     }
 
     private struct ServerSession: Decodable {
+      let id: String
       let token: String
       let refreshToken: String
       let userId: String
@@ -76,6 +80,7 @@ public actor PremiumSessionClient {
     init(from decoder: Decoder) throws {
       let container = try decoder.container(keyedBy: CodingKeys.self)
       if let session = try container.decodeIfPresent(ServerSession.self, forKey: .session) {
+        sessionId = session.id
         accessToken = session.token
         refreshToken = session.refreshToken
         expiresAt = session.accessExpiresAt
@@ -94,6 +99,7 @@ public actor PremiumSessionClient {
         return
       }
       accessToken = try container.decode(String.self, forKey: .accessToken)
+      sessionId = nil
       refreshToken = try container.decode(String.self, forKey: .refreshToken)
       let expiresIn = try container.decodeIfPresent(TimeInterval.self, forKey: .expiresIn)
       expiresAt =
@@ -123,10 +129,24 @@ public actor PremiumSessionClient {
     }
   }
 
+  private struct AccountSession: Decodable, Sendable {
+    let id: String
+    let status: String
+    let deviceId: String?
+  }
+
+  private struct AccountSwitchSnapshot: Sendable {
+    let account: PremiumAccount
+    let accessCredential: AccessCredential
+    let sessionId: String?
+    let deviceId: String?
+  }
+
   public private(set) var state: PremiumSessionState = .signedOut {
     didSet { stateObserver?(state) }
   }
   public private(set) var currentDeviceID: String?
+  public private(set) var currentSessionID: String?
 
   private let baseURL: URL
   private let device: PremiumDeviceMetadata
@@ -139,6 +159,7 @@ public actor PremiumSessionClient {
   private let decoder: JSONDecoder
   private var accessCredential: AccessCredential?
   private var account: PremiumAccount?
+  private var pendingAccountSwitch: AccountSwitchSnapshot?
   private var refreshTask: Task<SessionEnvelope, Error>?
 
   public init(
@@ -185,6 +206,9 @@ public actor PremiumSessionClient {
   public func beginAuthentication(
     provider: PremiumIdentityProvider
   ) async throws -> PremiumAuthenticationChallenge {
+    guard account == nil else {
+      throw PremiumSessionError.accountAlreadySignedIn
+    }
     if case .authenticating = state {
       throw PremiumSessionError.authenticationInProgress
     }
@@ -196,7 +220,9 @@ public actor PremiumSessionClient {
           provider: provider,
           platform: device.platform,
           deviceName: device.deviceName,
-          clientVersion: device.clientVersion
+          clientVersion: device.clientVersion,
+          purpose: nil,
+          deviceId: nil
         )
       )
       state = .authenticating(
@@ -208,11 +234,85 @@ public actor PremiumSessionClient {
     }
   }
 
+  /// Starts a normal provider sign-in while retaining the current session until
+  /// a different account has been verified. Canceling or failing the provider
+  /// flow restores the current account unchanged.
+  public func beginAccountSwitch(
+    provider: PremiumIdentityProvider
+  ) async throws -> PremiumAuthenticationChallenge {
+    if case .authenticating = state {
+      throw PremiumSessionError.authenticationInProgress
+    }
+    guard account != nil else {
+      throw PremiumSessionError.notAuthenticated
+    }
+    let accessCredential = try await validAccessCredential()
+    guard let account, let sessionId = currentSessionID, let deviceId = currentDeviceID else {
+      throw PremiumSessionError.invalidResponse
+    }
+    pendingAccountSwitch = AccountSwitchSnapshot(
+      account: account,
+      accessCredential: accessCredential,
+      sessionId: sessionId,
+      deviceId: deviceId
+    )
+    state = .authenticating(PremiumAuthenticationContext(provider: provider))
+    do {
+      let challenge: PremiumAuthenticationChallenge = try await sendUnauthenticated(
+        path: "auth/native/challenge",
+        body: ChallengeRequest(
+          provider: provider,
+          platform: device.platform,
+          deviceName: device.deviceName,
+          clientVersion: device.clientVersion,
+          purpose: nil,
+          deviceId: nil
+        )
+      )
+      state = .authenticating(
+        PremiumAuthenticationContext(provider: provider, challengeId: challenge.challengeId))
+      return challenge
+    } catch {
+      restorePendingAccountSwitch()
+      throw error
+    }
+  }
+
+  public func beginLinkAuthentication(
+    provider: PremiumIdentityProvider
+  ) async throws -> PremiumAuthenticationChallenge {
+    guard account != nil else {
+      throw PremiumSessionError.notAuthenticated
+    }
+    state = .authenticating(PremiumAuthenticationContext(provider: provider))
+    do {
+      let challenge: PremiumAuthenticationChallenge = try await send(
+        path: "auth/native/challenge",
+        method: .post,
+        body: ChallengeRequest(
+          provider: provider,
+          platform: device.platform,
+          deviceName: device.deviceName,
+          clientVersion: device.clientVersion,
+          purpose: "link",
+          deviceId: currentDeviceID
+        )
+      )
+      state = .authenticating(
+        PremiumAuthenticationContext(provider: provider, challengeId: challenge.challengeId))
+      return challenge
+    } catch {
+      state = account.map(PremiumSessionState.signedIn) ?? .signedOut
+      throw error
+    }
+  }
+
   /// Cancels a host-owned provider sheet without disturbing an existing
   /// signed-in account. This is used by native Apple/Google UI when the user
   /// dismisses authorization before an exchange occurs.
   public func cancelAuthentication() {
     guard case .authenticating = state else { return }
+    pendingAccountSwitch = nil
     state = account.map(PremiumSessionState.signedIn) ?? .signedOut
   }
 
@@ -221,6 +321,9 @@ public actor PremiumSessionClient {
     challengeId: String,
     credential: PremiumAppleCredential
   ) async throws -> PremiumAccount {
+    guard pendingAccountSwitch == nil else {
+      throw PremiumSessionError.accountSwitchInProgress
+    }
     try requireChallenge(challengeId, provider: .apple)
     do {
       let session: SessionEnvelope = try await sendUnauthenticated(
@@ -244,6 +347,9 @@ public actor PremiumSessionClient {
     challengeId: String,
     credential: PremiumGoogleCredential
   ) async throws -> PremiumAccount {
+    guard pendingAccountSwitch == nil else {
+      throw PremiumSessionError.accountSwitchInProgress
+    }
     try requireChallenge(challengeId, provider: .google)
     do {
       let session: SessionEnvelope = try await sendUnauthenticated(
@@ -253,6 +359,53 @@ public actor PremiumSessionClient {
       return try await install(session)
     } catch {
       transitionAfterInteractiveAuthenticationFailure(error)
+      throw error
+    }
+  }
+
+  @discardableResult
+  public func switchAppleAccount(
+    challengeId: String,
+    credential: PremiumAppleCredential
+  ) async throws -> PremiumAccount {
+    try requireChallenge(challengeId, provider: .apple)
+    guard let snapshot = pendingAccountSwitch else {
+      throw PremiumSessionError.accountSwitchNotInProgress
+    }
+    do {
+      let session: SessionEnvelope = try await sendUnauthenticated(
+        path: "auth/apple/native/exchange",
+        body: AppleExchangeRequest(
+          challengeId: challengeId,
+          identityToken: credential.identityToken,
+          authorizationCode: credential.authorizationCode,
+          displayName: credential.displayName
+        )
+      )
+      return try await finishAccountSwitch(session, replacing: snapshot)
+    } catch {
+      restorePendingAccountSwitch()
+      throw error
+    }
+  }
+
+  @discardableResult
+  public func switchGoogleAccount(
+    challengeId: String,
+    credential: PremiumGoogleCredential
+  ) async throws -> PremiumAccount {
+    try requireChallenge(challengeId, provider: .google)
+    guard let snapshot = pendingAccountSwitch else {
+      throw PremiumSessionError.accountSwitchNotInProgress
+    }
+    do {
+      let session: SessionEnvelope = try await sendUnauthenticated(
+        path: "auth/google/native/exchange",
+        body: GoogleExchangeRequest(challengeId: challengeId, idToken: credential.idToken)
+      )
+      return try await finishAccountSwitch(session, replacing: snapshot)
+    } catch {
+      restorePendingAccountSwitch()
       throw error
     }
   }
@@ -494,6 +647,7 @@ public actor PremiumSessionClient {
     try await tokenStore.save(session.refreshToken)
     accessCredential = AccessCredential(token: session.accessToken, expiresAt: session.expiresAt)
     currentDeviceID = session.deviceId ?? currentDeviceID
+    currentSessionID = session.sessionId ?? currentSessionID
     account = resolvedAccount
     state = .signedIn(resolvedAccount)
     return resolvedAccount
@@ -504,8 +658,92 @@ public actor PremiumSessionClient {
     refreshTask = nil
     accessCredential = nil
     currentDeviceID = nil
+    currentSessionID = nil
     account = nil
+    pendingAccountSwitch = nil
     state = .signedOut
+  }
+
+  private func finishAccountSwitch(
+    _ session: SessionEnvelope,
+    replacing snapshot: AccountSwitchSnapshot
+  ) async throws -> PremiumAccount {
+    guard let replacementAccount = session.account,
+      let replacementDeviceId = session.deviceId,
+      let replacementSessionId = session.sessionId
+    else {
+      throw PremiumSessionError.invalidResponse
+    }
+
+    // Persist the verified replacement before retiring the old account. If
+    // provider authorization or Keychain storage fails, the old account stays.
+    try await tokenStore.save(session.refreshToken)
+    accessCredential = AccessCredential(token: session.accessToken, expiresAt: session.expiresAt)
+    currentDeviceID = replacementDeviceId
+    currentSessionID = replacementSessionId
+    account = replacementAccount
+    pendingAccountSwitch = nil
+    state = .signedIn(replacementAccount)
+
+    await retirePreviousDeviceSessions(snapshot)
+    return replacementAccount
+  }
+
+  private func retirePreviousDeviceSessions(_ snapshot: AccountSwitchSnapshot) async {
+    guard let deviceId = snapshot.deviceId else {
+      await logoutRetainedSession(snapshot.accessCredential.token)
+      return
+    }
+    if let sessions: [AccountSession] = try? await sendUsingRetainedCredential(
+      path: "users/me/sessions",
+      method: .get,
+      bearerToken: snapshot.accessCredential.token
+    ) {
+      for session in sessions
+      where session.status == "active"
+        && session.deviceId == deviceId
+        && session.id != snapshot.sessionId
+      {
+        let _: PremiumEmptyResponse? = try? await sendUsingRetainedCredential(
+          path: "users/me/sessions/\(session.id)/revoke",
+          method: .post,
+          bearerToken: snapshot.accessCredential.token
+        )
+      }
+    }
+    // The replacement session is already safely installed. Best-effort cleanup
+    // must not discard it when the old account is temporarily offline.
+    await logoutRetainedSession(snapshot.accessCredential.token)
+  }
+
+  private func logoutRetainedSession(_ bearerToken: String) async {
+    let _: PremiumEmptyResponse? = try? await sendUsingRetainedCredential(
+      path: "account/session/logout",
+      method: .post,
+      bearerToken: bearerToken
+    )
+  }
+
+  private func restorePendingAccountSwitch() {
+    guard let snapshot = pendingAccountSwitch else { return }
+    account = snapshot.account
+    accessCredential = snapshot.accessCredential
+    currentSessionID = snapshot.sessionId
+    currentDeviceID = snapshot.deviceId
+    pendingAccountSwitch = nil
+    state = .signedIn(snapshot.account)
+  }
+
+  private func sendUsingRetainedCredential<Response: Decodable & Sendable>(
+    path: String,
+    method: PremiumHTTPMethod,
+    bearerToken: String
+  ) async throws -> Response {
+    let request = try makeRequest(
+      path: path, method: method, body: nil, bearerToken: bearerToken)
+    let (data, response) = try await perform(request)
+    try Self.validate(response, data: data)
+    return try decode(Response.self, from: data)
   }
 
   private func transitionAfterInteractiveAuthenticationFailure(_ error: Error) {

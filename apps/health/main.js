@@ -6,6 +6,7 @@ var SEQ_KEY = "estimate:seq";
 var ENTRY_PREFIX = "estimate:";
 var SETTINGS_KEY = "settings:model";
 var NAVIGATION_KEY = "navigation:pending";
+var ANALYSIS_JOB_PREFIX = "analysis-job:";
 var MAX_HISTORY = 1000;
 var MAX_DISHES = 12;
 var MAX_PENDING_NAVIGATIONS = 8;
@@ -71,10 +72,9 @@ function normalizeSettings(value) {
   var provider = normalizeProvider(value && value.provider);
   return {
     provider: provider,
-    model:
-      provider === "opencode"
-        ? normalizeOpenCodeModel(value && value.model)
-        : ""
+    model: provider === "opencode"
+      ? normalizeOpenCodeModel(value && value.model)
+      : "",
   };
 }
 
@@ -110,7 +110,7 @@ function normalizeDish(value, index) {
     serving_description: safeText(
       value.serving_description,
       "Estimated visible portion",
-      140
+      140,
     ),
     calories_kcal: calories,
     protein_g: numberInRange(value.protein_g, 0, 1000, 0),
@@ -118,7 +118,7 @@ function normalizeDish(value, index) {
     fat_g: numberInRange(value.fat_g, 0, 1000, 0),
     fiber_g: numberInRange(value.fiber_g, 0, 500, 0),
     sugar_g: numberInRange(value.sugar_g, 0, 1000, 0),
-    sodium_mg: numberInRange(value.sodium_mg, 0, 50000, 0)
+    sodium_mg: numberInRange(value.sodium_mg, 0, 50000, 0),
   };
 }
 
@@ -136,7 +136,7 @@ function dishTotals(dishes) {
     fat_g: roundedSum(dishes, "fat_g"),
     fiber_g: roundedSum(dishes, "fiber_g"),
     sugar_g: roundedSum(dishes, "sugar_g"),
-    sodium_mg: roundedSum(dishes, "sodium_mg")
+    sodium_mg: roundedSum(dishes, "sodium_mg"),
   };
 }
 
@@ -155,7 +155,11 @@ function normalizeEstimate(value) {
   if (!value || typeof value !== "object") return null;
   var dishes = [];
   if (Array.isArray(value.dishes)) {
-    for (var i = 0; i < value.dishes.length && dishes.length < MAX_DISHES; i++) {
+    for (
+      var i = 0;
+      i < value.dishes.length && dishes.length < MAX_DISHES;
+      i++
+    ) {
       var dish = normalizeDish(value.dishes[i], dishes.length);
       if (!dish) return null;
       dishes.push(dish);
@@ -178,14 +182,14 @@ function normalizeEstimate(value) {
       value.confidence,
       0,
       1,
-      averageDishConfidence(dishes)
+      averageDishConfidence(dishes),
     ),
     serving_description: safeText(
       value.serving_description,
       dishes.length > 1
         ? dishes.length + " separately estimated visible dishes"
         : "Estimated visible serving",
-      140
+      140,
     ),
     calories_kcal: totals.calories_kcal,
     protein_g: totals.protein_g,
@@ -196,7 +200,7 @@ function normalizeEstimate(value) {
     sodium_mg: totals.sodium_mg,
     dishes: dishes,
     assumptions: stringList(value.assumptions, 6),
-    warnings: stringList(value.warnings, 6)
+    warnings: stringList(value.warnings, 6),
   };
 }
 
@@ -239,7 +243,7 @@ function promptFor(note) {
     "total from the separate dishes.",
     "Do not diagnose, prescribe, or claim laboratory accuracy. If the image is not food,",
     'return one dish with calories_kcal 0, confidence 0, and include "No food clearly visible"',
-    "in warnings."
+    "in warnings.",
   ].join(" ");
 }
 
@@ -270,7 +274,7 @@ function stateJson() {
   return JSON.stringify({
     ok: true,
     settings: readSettings(),
-    history: historyEntries()
+    history: historyEntries(),
   });
 }
 
@@ -289,9 +293,10 @@ function normalizeEatenAt(value, fallback) {
 }
 
 function isPickerImport(name) {
-  return /^imports\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/.test(
-    String(name || "")
-  );
+  return /^imports\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jpg$/
+    .test(
+      String(name || ""),
+    );
 }
 
 function blobIsReferenced(name) {
@@ -322,7 +327,7 @@ function removeOwnedUnreferencedImport(name) {
 
 function analyzeStoredBlob(blobName, note, settings, id) {
   var request = JSON.stringify({
-    parts: [{ text: promptFor(note) }, { blob: blobName }]
+    parts: [{ text: promptFor(note) }, { blob: blobName }],
   });
   var raw = model.ask(agentSelector(settings), request);
   var normalized = normalizeEstimate(parseModelJson(raw));
@@ -348,17 +353,27 @@ function estimate(args, usage) {
   var note = args.length > 2 ? args[2] : "";
   var settings = saveSettings({
     provider: args.length > 3 ? args[3] : readSettings().provider,
-    model: args.length > 4 ? args[4] : readSettings().model
+    model: args.length > 4 ? args[4] : readSettings().model,
   });
   if (!base64 || base64.length > 12 * 1024 * 1024) {
-    return JSON.stringify({ ok: false, error: "The prepared image is missing or too large." });
+    return JSON.stringify({
+      ok: false,
+      error: "The prepared image is missing or too large.",
+    });
   }
   if (mime !== "image/jpeg" && mime !== "image/png" && mime !== "image/webp") {
-    return JSON.stringify({ ok: false, error: "Use a JPEG, PNG, or WebP food photo." });
+    return JSON.stringify({
+      ok: false,
+      error: "Use a JPEG, PNG, or WebP food photo.",
+    });
   }
 
   var id = nextId();
-  var extension = mime === "image/png" ? "png" : mime === "image/webp" ? "webp" : "jpg";
+  var extension = mime === "image/png"
+    ? "png"
+    : mime === "image/webp"
+    ? "webp"
+    : "jpg";
   var blobName = "meal/" + id + "." + extension;
   try {
     // The resource host scopes the app id before dispatching to the command
@@ -369,10 +384,15 @@ function estimate(args, usage) {
       blob.rm(blobName);
       return JSON.stringify({
         ok: false,
-        error: "Vision analysis returned an unreadable result. Please try another photo."
+        error:
+          "Vision analysis returned an unreadable result. Please try another photo.",
       });
     }
-    return JSON.stringify({ ok: true, estimate: entry, history: historyEntries() });
+    return JSON.stringify({
+      ok: true,
+      estimate: entry,
+      history: historyEntries(),
+    });
   } catch (error) {
     try {
       blob.rm(blobName);
@@ -381,7 +401,7 @@ function estimate(args, usage) {
       ok: false,
       error:
         "Vision analysis is unavailable. Check that the selected provider is signed in, then try again. " +
-        safeText(error && error.message, "", 180)
+        safeText(error && error.message, "", 180),
     });
   }
 }
@@ -392,10 +412,13 @@ function estimateBlob(args, usage) {
   var note = args.length > 1 ? args[1] : "";
   var settings = saveSettings({
     provider: args.length > 2 ? args[2] : readSettings().provider,
-    model: args.length > 3 ? args[3] : readSettings().model
+    model: args.length > 3 ? args[3] : readSettings().model,
   });
   if (!isPickerImport(blobName)) {
-    return JSON.stringify({ ok: false, error: "The selected Photos import is invalid." });
+    return JSON.stringify({
+      ok: false,
+      error: "The selected Photos import is invalid.",
+    });
   }
   try {
     // Stat through the app resource boundary before handing the canonical blob
@@ -416,17 +439,118 @@ function estimateBlob(args, usage) {
       removeOwnedUnreferencedImport(blobName);
       return JSON.stringify({
         ok: false,
-        error: "Vision analysis returned an unreadable result. Please choose the photo again."
+        error:
+          "Vision analysis returned an unreadable result. Please choose the photo again.",
       });
     }
-    return JSON.stringify({ ok: true, estimate: entry, history: historyEntries() });
+    return JSON.stringify({
+      ok: true,
+      estimate: entry,
+      history: historyEntries(),
+    });
   } catch (error) {
     removeOwnedUnreferencedImport(blobName);
     return JSON.stringify({
       ok: false,
       error:
         "Vision analysis is unavailable. Check that the selected provider is signed in, then try again. " +
-        safeText(error && error.message, "", 180)
+        safeText(error && error.message, "", 180),
+    });
+  }
+}
+
+function importAnalysis(args, usage) {
+  if (args.length < 4) return usage();
+  var jobId = safeText(args[0], "", 160);
+  var base64 = String(args[1] || "");
+  var mime = String(args[2] || "").toLowerCase();
+  var payload;
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(jobId)) {
+    return JSON.stringify({
+      ok: false,
+      error: "The analysis job identifier is invalid.",
+    });
+  }
+  var existingId = kv.get(ANALYSIS_JOB_PREFIX + jobId);
+  if (existingId != null) {
+    var existing = kv.get(ENTRY_PREFIX + existingId);
+    if (existing != null) {
+      return JSON.stringify({
+        ok: true,
+        idempotent: true,
+        estimate: JSON.parse(existing),
+        history: historyEntries(),
+      });
+    }
+  }
+  if (!base64 || base64.length > 12 * 1024 * 1024) {
+    return JSON.stringify({
+      ok: false,
+      error: "The synced image is missing or too large.",
+    });
+  }
+  if (mime !== "image/jpeg" && mime !== "image/png" && mime !== "image/webp") {
+    return JSON.stringify({
+      ok: false,
+      error: "The synced image type is unsupported.",
+    });
+  }
+  try {
+    payload = JSON.parse(args[3]);
+  } catch (_error) {
+    return JSON.stringify({
+      ok: false,
+      error: "The encrypted analysis result is invalid.",
+    });
+  }
+  var candidate = payload && payload.estimate ? payload.estimate : payload;
+  var normalized = normalizeEstimate(candidate);
+  if (!normalized) {
+    return JSON.stringify({
+      ok: false,
+      error: "The encrypted nutrition result is invalid.",
+    });
+  }
+  var provider = normalizeProvider(payload && payload.provider);
+  var model = provider === "opencode"
+    ? normalizeOpenCodeModel(payload && payload.model)
+    : "";
+  var id = nextId();
+  var extension = mime === "image/png"
+    ? "png"
+    : mime === "image/webp"
+    ? "webp"
+    : "jpg";
+  var blobName = "meal/" + id + "." + extension;
+  try {
+    blob.put(blobName, mime, base64);
+    normalized.id = id;
+    normalized.blob_name = blobName;
+    normalized.note = safeText(payload && payload.note, "", 500);
+    normalized.provider = provider;
+    normalized.model = model;
+    normalized.eaten_at = normalizeEatenAt(
+      payload && payload.completed_at,
+      new Date().toISOString(),
+    );
+    normalized.reviewed = false;
+    normalized.source_job_id = jobId;
+    saveEntry(normalized);
+    kv.set(ANALYSIS_JOB_PREFIX + jobId, id);
+    return JSON.stringify({
+      ok: true,
+      idempotent: false,
+      estimate: normalized,
+      history: historyEntries(),
+    });
+  } catch (error) {
+    try {
+      blob.rm(blobName);
+    } catch (_cleanupError) {}
+    return JSON.stringify({
+      ok: false,
+      error: "Could not import the encrypted nutrition result. " +
+        safeText(error && error.message, "", 180),
     });
   }
 }
@@ -435,7 +559,7 @@ function discardImport(args, usage) {
   if (args.length < 1) return usage();
   return JSON.stringify({
     ok: true,
-    removed: removeOwnedUnreferencedImport(String(args[0] || ""))
+    removed: removeOwnedUnreferencedImport(String(args[0] || "")),
   });
 }
 
@@ -443,7 +567,9 @@ function update(args, usage) {
   if (args.length < 2) return usage();
   var id = String(args[0] || "");
   var raw = kv.get(ENTRY_PREFIX + id);
-  if (raw == null) return JSON.stringify({ ok: false, error: "Estimate not found." });
+  if (raw == null) {
+    return JSON.stringify({ ok: false, error: "Estimate not found." });
+  }
   var existing;
   var changes;
   try {
@@ -454,7 +580,10 @@ function update(args, usage) {
   }
   var normalized = normalizeEstimate(changes);
   if (!normalized) {
-    return JSON.stringify({ ok: false, error: "Calories and nutrients must be valid numbers." });
+    return JSON.stringify({
+      ok: false,
+      error: "Calories and nutrients must be valid numbers.",
+    });
   }
   normalized.id = existing.id;
   normalized.blob_name = existing.blob_name;
@@ -464,14 +593,20 @@ function update(args, usage) {
   normalized.eaten_at = normalizeEatenAt(changes.eaten_at, existing.eaten_at);
   normalized.reviewed = true;
   saveEntry(normalized);
-  return JSON.stringify({ ok: true, estimate: normalized, history: historyEntries() });
+  return JSON.stringify({
+    ok: true,
+    estimate: normalized,
+    history: historyEntries(),
+  });
 }
 
 function remove(args, usage) {
   if (args.length < 1) return usage();
   var id = String(args[0] || "");
   var raw = kv.get(ENTRY_PREFIX + id);
-  if (raw == null) return JSON.stringify({ ok: false, error: "Estimate not found." });
+  if (raw == null) {
+    return JSON.stringify({ ok: false, error: "Estimate not found." });
+  }
   try {
     var entry = JSON.parse(raw);
     if (entry.blob_name) blob.rm(entry.blob_name);
@@ -483,7 +618,7 @@ function remove(args, usage) {
 function configure(args) {
   var settings = saveSettings({
     provider: args.length > 0 ? args[0] : DEFAULT_PROVIDER,
-    model: args.length > 1 ? args[1] : DEFAULT_OPENCODE_MODEL
+    model: args.length > 1 ? args[1] : DEFAULT_OPENCODE_MODEL,
   });
   return JSON.stringify({ ok: true, settings: settings });
 }
@@ -493,7 +628,9 @@ function routeParams(value) {
   var output = {};
   var count = 0;
   for (var key in value) {
-    if (!Object.prototype.hasOwnProperty.call(value, key) || count >= 12) continue;
+    if (!Object.prototype.hasOwnProperty.call(value, key) || count >= 12) {
+      continue;
+    }
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(key)) continue;
     var item = value[key];
     if (typeof item !== "string" || item.length > 128) continue;
@@ -517,7 +654,7 @@ function validateNavigation(value) {
     history: true,
     insights: true,
     settings: true,
-    meal: true
+    meal: true,
   };
   var route = typeof value.route === "string" ? value.route : "";
   if (!allowed[route]) return null;
@@ -528,7 +665,9 @@ function validateNavigation(value) {
     if (!/^[A-Za-z0-9._-]+$/.test(segment)) return null;
     segments.push(segment);
   }
-  if (route === "meal" ? segments.length !== 1 : segments.length !== 0) return null;
+  if (route === "meal" ? segments.length !== 1 : segments.length !== 0) {
+    return null;
+  }
   var params = routeParams(value.params);
   if (params.date && !/^\d{4}-\d{2}-\d{2}$/.test(params.date)) return null;
   if (
@@ -564,17 +703,26 @@ function savePendingNavigations(items) {
 function receiveLink(args, usage) {
   if (args.length < 2) return usage();
   if (args[0] !== "link") {
-    return JSON.stringify({ ok: false, error: "Health only accepts link messages." });
+    return JSON.stringify({
+      ok: false,
+      error: "Health only accepts link messages.",
+    });
   }
   var value;
   try {
     value = JSON.parse(args[1]);
   } catch (_error) {
-    return JSON.stringify({ ok: false, error: "Health link payload is not valid JSON." });
+    return JSON.stringify({
+      ok: false,
+      error: "Health link payload is not valid JSON.",
+    });
   }
   var navigation = validateNavigation(value);
   if (!navigation) {
-    return JSON.stringify({ ok: false, error: "Health link route is unsupported or malformed." });
+    return JSON.stringify({
+      ok: false,
+      error: "Health link route is unsupported or malformed.",
+    });
   }
   var pending = pendingNavigations();
   pending.push(navigation);
@@ -596,7 +744,7 @@ function commonList() {
     items.push({
       id: entries[i].id,
       title: entries[i].food_name,
-      kind: "meal"
+      kind: "meal",
     });
   }
   return JSON.stringify(items);
@@ -619,19 +767,20 @@ var actions = {
     returns: "JSON state.",
     run: function () {
       return stateJson();
-    }
+    },
   },
   estimate: {
-    summary: "Store a food image and estimate nutrition with the selected vision provider.",
+    summary:
+      "Store a food image and estimate nutrition with the selected vision provider.",
     args: [
       { name: "image_base64", required: true },
       { name: "mime", required: true },
       { name: "meal_note", required: false },
       { name: "provider", required: false },
-      { name: "model", required: false }
+      { name: "model", required: false },
     ],
     returns: "JSON estimate and history.",
-    run: estimate
+    run: estimate,
   },
   estimate_blob: {
     summary: "Estimate nutrition from an already-stored Photos picker blob.",
@@ -639,66 +788,78 @@ var actions = {
       { name: "blob_name", required: true },
       { name: "meal_note", required: false },
       { name: "provider", required: false },
-      { name: "model", required: false }
+      { name: "model", required: false },
     ],
     returns: "JSON estimate and history.",
-    run: estimateBlob
+    run: estimateBlob,
+  },
+  import_analysis: {
+    summary:
+      "Import one decrypted cross-device nutrition result without running a model.",
+    args: [
+      { name: "job_id", required: true },
+      { name: "image_base64", required: true },
+      { name: "mime", required: true },
+      { name: "analysis_json", required: true },
+    ],
+    returns: "JSON idempotent estimate and history.",
+    run: importAnalysis,
   },
   discard_import: {
     summary: "Remove an unreferenced Health-owned picker import.",
     args: [{ name: "blob_name", required: true }],
     returns: "JSON cleanup result.",
-    run: discardImport
+    run: discardImport,
   },
   configure: {
     summary: "Save the default vision provider and model for Health.",
     args: [
       { name: "provider", required: true },
-      { name: "model", required: false }
+      { name: "model", required: false },
     ],
     returns: "JSON settings.",
-    run: configure
+    run: configure,
   },
   update: {
     summary: "Save a user-reviewed nutrition estimate.",
     args: [
       { name: "id", required: true },
-      { name: "nutrition_json", required: true }
+      { name: "nutrition_json", required: true },
     ],
     returns: "JSON estimate and history.",
-    run: update
+    run: update,
   },
   remove: {
     summary: "Delete one saved estimate and its photo.",
     args: [{ name: "id", required: true }],
     returns: "JSON state.",
-    run: remove
+    run: remove,
   },
   "navigation.consume": {
     summary: "Consume one validated pending app route.",
     args: [],
     returns: "JSON navigation result.",
-    run: consumeNavigation
+    run: consumeNavigation,
   },
   "common.receive": {
     summary: "Receive a validated Terrane link message.",
     args: [
       { name: "kind", required: true },
-      { name: "payload", required: true }
+      { name: "payload", required: true },
     ],
     returns: "JSON receipt.",
-    run: receiveLink
+    run: receiveLink,
   },
   "common.list": {
     summary: "List saved meals for Terrane item integrations.",
     args: [],
     returns: "JSON item list.",
-    run: commonList
+    run: commonList,
   },
   "common.get": {
     summary: "Get one saved meal by id.",
     args: [{ name: "id", required: true }],
     returns: "JSON item.",
-    run: commonGet
-  }
+    run: commonGet,
+  },
 };

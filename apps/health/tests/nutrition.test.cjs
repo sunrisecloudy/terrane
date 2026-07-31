@@ -6,9 +6,12 @@ const vm = require("node:vm");
 
 function loadBackend(initial) {
   const values = Object.assign({}, initial);
+  const blobs = {};
   const kv = {
     get(key) {
-      return Object.prototype.hasOwnProperty.call(values, key) ? values[key] : null;
+      return Object.prototype.hasOwnProperty.call(values, key)
+        ? values[key]
+        : null;
     },
     set(key, value) {
       values[key] = String(value);
@@ -18,35 +21,39 @@ function loadBackend(initial) {
     },
     all() {
       return Object.assign({}, values);
-    }
+    },
   };
   const context = {
     ctx: {
       resource: {
         kv,
         blob: {
-          put() {},
-          rm() {},
+          put(name, mime, base64) {
+            blobs[name] = { mime, base64 };
+          },
+          rm(name) {
+            delete blobs[name];
+          },
           stat() {
             return "{}";
-          }
+          },
         },
         model: {
           ask() {
             throw new Error("model.ask is not used by these tests");
-          }
-        }
-      }
+          },
+        },
+      },
     },
-    console
+    console,
   };
   vm.createContext(context);
   vm.runInContext(
     fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8"),
     context,
-    { filename: "apps/health/main.js" }
+    { filename: "apps/health/main.js" },
   );
-  return { context, values };
+  return { context, values, blobs };
 }
 
 function dish(name, calories, protein) {
@@ -60,7 +67,7 @@ function dish(name, calories, protein) {
     fat_g: calories / 40,
     fiber_g: 2,
     sugar_g: 1,
-    sodium_mg: 100
+    sodium_mg: 100,
   };
 }
 
@@ -71,7 +78,7 @@ test("multiple visible dishes remain separate and produce canonical meal totals"
     confidence: 0.7,
     serving_description: "one plate",
     calories_kcal: 9999,
-    dishes: [dish("Grilled chicken", 300, 40), dish("Steamed rice", 220, 4)]
+    dishes: [dish("Grilled chicken", 300, 40), dish("Steamed rice", 220, 4)],
   });
 
   assert.equal(normalized.food_name, "Lunch plate");
@@ -86,7 +93,7 @@ test("multiple visible dishes remain separate and produce canonical meal totals"
 test("single-dish and legacy estimates remain compatible", () => {
   const { context } = loadBackend();
   const separated = context.normalizeEstimate({
-    dishes: [dish("Soup", 180, 8)]
+    dishes: [dish("Soup", 180, 8)],
   });
   assert.equal(separated.dishes.length, 1);
   assert.equal(separated.food_name, "Soup");
@@ -105,10 +112,10 @@ test("review updates persist dish data and cannot override its combined total", 
     note: "",
     provider: "opencode",
     model: "opencode-go/kimi-k2.6",
-    eaten_at: "2026-07-27T02:00:00.000Z"
+    eaten_at: "2026-07-27T02:00:00.000Z",
   };
   const { context, values } = loadBackend({
-    "estimate:00000001": JSON.stringify(existing)
+    "estimate:00000001": JSON.stringify(existing),
   });
   const changes = {
     food_name: "Reviewed plate",
@@ -116,7 +123,7 @@ test("review updates persist dish data and cannot override its combined total", 
     serving_description: "one plate",
     calories_kcal: 9999,
     dishes: [dish("Fish", 250, 30), dish("Rice", 200, 4)],
-    eaten_at: "2026-07-27T03:00:00.000Z"
+    eaten_at: "2026-07-27T03:00:00.000Z",
   };
 
   const result = JSON.parse(
@@ -124,8 +131,8 @@ test("review updates persist dish data and cannot override its combined total", 
       ["00000001", JSON.stringify(changes)],
       () => {
         throw new Error("usage should not be called");
-      }
-    )
+      },
+    ),
   );
 
   assert.equal(result.ok, true);
@@ -143,6 +150,61 @@ test("vision prompt requires bounded per-dish output", () => {
   assert.match(prompt, /Do not return combined nutrient totals/i);
 });
 
+test("encrypted cross-device analysis imports once and keeps the meal reviewable", () => {
+  const { context, values, blobs } = loadBackend();
+  const payload = {
+    contract: "terrane.health-nutrition-result.v1",
+    provider: "opencode",
+    model: "opencode-go/kimi-k2.6",
+    note: "no dipping sauce",
+    completed_at: "2026-07-31T02:00:00.000Z",
+    estimate: {
+      dishes: [dish("Grilled meatballs", 420, 24)],
+      assumptions: ["one photographed plate"],
+      warnings: [],
+    },
+  };
+  const usage = () => {
+    throw new Error("usage should not be called");
+  };
+
+  const first = JSON.parse(
+    context.actions.import_analysis.run(
+      [
+        "job-123",
+        Buffer.from("jpeg fixture").toString("base64"),
+        "image/jpeg",
+        JSON.stringify(payload),
+      ],
+      usage,
+    ),
+  );
+  assert.equal(first.ok, true);
+  assert.equal(first.idempotent, false);
+  assert.equal(first.estimate.source_job_id, "job-123");
+  assert.equal(first.estimate.reviewed, false);
+  assert.equal(first.estimate.provider, "opencode");
+  assert.equal(first.estimate.model, "opencode-go/kimi-k2.6");
+  assert.equal(first.estimate.note, "no dipping sauce");
+  assert.equal(blobs[first.estimate.blob_name].mime, "image/jpeg");
+
+  const second = JSON.parse(
+    context.actions.import_analysis.run(
+      [
+        "job-123",
+        Buffer.from("different bytes").toString("base64"),
+        "image/jpeg",
+        JSON.stringify(payload),
+      ],
+      usage,
+    ),
+  );
+  assert.equal(second.ok, true);
+  assert.equal(second.idempotent, true);
+  assert.equal(second.estimate.id, first.estimate.id);
+  assert.equal(values["analysis-job:job-123"], first.estimate.id);
+});
+
 test("route links are allowlisted, bounded, queued, and legacy items map to meals", () => {
   const { context, values } = loadBackend();
   const usage = () => {
@@ -157,11 +219,11 @@ test("route links are allowlisted, bounded, queued, and legacy items map to meal
           version: 1,
           route: "calendar",
           segments: [],
-          params: { date: "2026-07-27", period: "week" }
-        })
+          params: { date: "2026-07-27", period: "week" },
+        }),
       ],
-      usage
-    )
+      usage,
+    ),
   );
   assert.equal(result.ok, true);
   result = JSON.parse(context.actions["navigation.consume"].run([], usage));
@@ -170,16 +232,16 @@ test("route links are allowlisted, bounded, queued, and legacy items map to meal
     {
       route: "calendar",
       segments: [],
-      params: { date: "2026-07-27", period: "week" }
-    }
+      params: { date: "2026-07-27", period: "week" },
+    },
   );
   assert.equal(values["navigation:pending"], undefined);
 
   result = JSON.parse(
     context.actions["common.receive"].run(
       ["link", JSON.stringify({ item: "00000003" })],
-      usage
-    )
+      usage,
+    ),
   );
   assert.equal(result.ok, true);
   result = JSON.parse(context.actions["navigation.consume"].run([], usage));
@@ -190,8 +252,8 @@ test("route links are allowlisted, bounded, queued, and legacy items map to meal
     result = JSON.parse(
       context.actions["common.receive"].run(
         ["link", JSON.stringify({ route, segments: [], params: {} })],
-        usage
-      )
+        usage,
+      ),
     );
     assert.equal(result.ok, true, `${route} should be deep-linkable`);
     result = JSON.parse(context.actions["navigation.consume"].run([], usage));
@@ -201,26 +263,28 @@ test("route links are allowlisted, bounded, queued, and legacy items map to meal
     context.actions["common.receive"].run(
       [
         "link",
-        JSON.stringify({ route: "meal", segments: ["00000003"], params: {} })
+        JSON.stringify({ route: "meal", segments: ["00000003"], params: {} }),
       ],
-      usage
-    )
+      usage,
+    ),
   );
   assert.equal(result.ok, true);
   result = JSON.parse(context.actions["navigation.consume"].run([], usage));
   assert.equal(result.navigation.route, "meal");
 
-  for (const payload of [
-    { route: "admin", segments: [], params: {} },
-    { route: "meal", segments: [], params: {} },
-    { route: "calendar", segments: ["unexpected"], params: {} },
-    { route: "insights", segments: [], params: { period: "year" } }
-  ]) {
+  for (
+    const payload of [
+      { route: "admin", segments: [], params: {} },
+      { route: "meal", segments: [], params: {} },
+      { route: "calendar", segments: ["unexpected"], params: {} },
+      { route: "insights", segments: [], params: { period: "year" } },
+    ]
+  ) {
     result = JSON.parse(
       context.actions["common.receive"].run(
         ["link", JSON.stringify(payload)],
-        usage
-      )
+        usage,
+      ),
     );
     assert.equal(result.ok, false);
   }

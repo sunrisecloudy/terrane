@@ -21,6 +21,8 @@ targets:
     platform: iOS
     sources:
       - path: Sources
+      - path: Resources
+        buildPhase: resources
       - path: ../../apps
         type: folder
         buildPhase: resources
@@ -38,6 +40,7 @@ targets:
           - $(inherited)
           - $(SRCROOT)/../../rust/crates/terrane-host/include
         CODE_SIGN_ENTITLEMENTS: Sources/TerraneIOS.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: "YES"
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
     info:

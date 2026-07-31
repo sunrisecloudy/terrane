@@ -3,6 +3,7 @@ import Foundation
 import Security
 
 public let premiumHealthImageContract = "terrane.encrypted-image.v1"
+public let premiumHealthAnalysisResultContract = "terrane.health-nutrition-result.v1"
 
 public protocol PremiumHealthImageKeyStore: Sendable {
   func loadOrCreateKey() async throws -> Data
@@ -277,19 +278,22 @@ public struct PremiumHealthImageMetadata: Codable, Equatable, Sendable {
   public let height: Int?
   public let capturedAt: Date
   public let source: String
+  public let note: String?
 
   public init(
     mime: String = "image/jpeg",
     width: Int? = nil,
     height: Int? = nil,
     capturedAt: Date = Date(),
-    source: String = "ios-health"
+    source: String = "ios-health",
+    note: String? = nil
   ) {
     self.mime = mime
     self.width = width
     self.height = height
     self.capturedAt = capturedAt
     self.source = source
+    self.note = note
   }
 }
 
@@ -310,6 +314,80 @@ public struct PremiumDecryptedHealthImage: Equatable, Sendable {
   public let attachment: PremiumHealthImageAttachment
   public let image: Data
   public let metadata: PremiumHealthImageMetadata
+  public let keyID: String
+}
+
+public struct PremiumHealthAnalyzerStatus: Codable, Equatable, Sendable {
+  public let ready: Bool
+  public let lastSeenAt: Date?
+  public let expiresAt: Date?
+}
+
+public struct PremiumHealthConnectionDevice: Codable, Equatable, Sendable, Identifiable {
+  public var id: String { deviceId }
+  public let deviceId: String
+  public let name: String
+  public let platform: String
+  public let clientVersion: String?
+  public let keyRegistered: Bool
+  public let keyFingerprint: String?
+  public let analyzer: PremiumHealthAnalyzerStatus?
+}
+
+public struct PremiumHealthConnectionPairing: Codable, Equatable, Sendable {
+  public let senderDeviceId: String
+  public let recipientDeviceId: String
+  public let status: String
+  public let senderKeyFingerprint: String
+  public let recipientKeyFingerprint: String
+  public let approvedAt: Date
+}
+
+public struct PremiumHealthConnections: Codable, Equatable, Sendable {
+  public let devices: [PremiumHealthConnectionDevice]
+  public let pairings: [PremiumHealthConnectionPairing]
+}
+
+public struct PremiumHealthAnalysisJob: Codable, Equatable, Sendable, Identifiable {
+  public let contract: String
+  public let id: String
+  public let kind: String
+  public let sourceImageId: String
+  public let status: String
+  public let revision: Int
+  public let attempt: Int
+  public let nextAttemptAt: Date?
+  public let leaseExpiresAt: Date?
+  public let resultAvailable: Bool
+  public let failureCode: String?
+  public let createdAt: Date
+  public let updatedAt: Date
+  public let completedAt: Date?
+  public let acknowledgedAt: Date?
+}
+
+public struct PremiumHealthAnalysisLease: Codable, Equatable, Sendable {
+  public let claimId: String
+  public let claimToken: String
+  public let leaseEpoch: Int
+  public let leaseExpiresAt: Date
+}
+
+public struct PremiumHealthAnalysisClaim: Equatable, Sendable {
+  public let job: PremiumHealthAnalysisJob?
+  public let lease: PremiumHealthAnalysisLease?
+  public let cursor: Int
+}
+
+public struct PremiumHealthAnalysisPage: Equatable, Sendable {
+  public let jobs: [PremiumHealthAnalysisJob]
+  public let cursor: Int
+}
+
+public struct PremiumDecryptedHealthAnalysis: Equatable, Sendable {
+  public let job: PremiumHealthAnalysisJob
+  public let image: PremiumDecryptedHealthImage
+  public let result: Data
 }
 
 public actor PremiumHealthImageSyncClient {
@@ -425,6 +503,117 @@ public actor PremiumHealthImageSyncClient {
     let recipientKeyFingerprint: String
     let keyId: String
     let wrappedKeyEnvelope: WrappedKeyEnvelope?
+  }
+
+  private struct AnalyzerHeartbeatRequest: Encodable, Sendable {
+    let orgId: String
+    let deviceId: String
+    let ready: Bool
+  }
+
+  private struct PairingRevokeResponse: Decodable, Sendable {
+    let revoked: Bool
+    let senderDeviceId: String
+    let recipientDeviceId: String
+    let removedGrantCount: Int
+    let requeuedJobCount: Int
+  }
+
+  private struct CreateAnalysisJobRequest: Encodable, Sendable {
+    let orgId: String
+    let deviceId: String
+    let imageId: String
+    let clientRequestId: String
+    let kind: String
+  }
+
+  private struct CreateAnalysisJobResponse: Decodable, Sendable {
+    let job: PremiumHealthAnalysisJob
+    let idempotent: Bool
+  }
+
+  private struct ClaimAnalysisJobRequest: Encodable, Sendable {
+    let orgId: String
+    let deviceId: String
+    let claimId: String
+    let claimToken: String
+    let waitSeconds: Int
+  }
+
+  private struct ClaimAnalysisJobResponse: Decodable, Sendable {
+    let job: PremiumHealthAnalysisJob?
+    let lease: PremiumHealthAnalysisLease?
+    let cursor: Int
+  }
+
+  private struct AnalysisJobsResponse: Decodable, Sendable {
+    let jobs: [PremiumHealthAnalysisJob]
+    let cursor: Int
+  }
+
+  private struct AnalysisLeaseRequest: Encodable, Sendable {
+    let orgId: String
+    let deviceId: String
+    let claimId: String
+    let claimToken: String
+    let leaseEpoch: Int
+  }
+
+  private struct AnalysisLeaseResponse: Decodable, Sendable {
+    let job: PremiumHealthAnalysisJob
+    let lease: RefreshedAnalysisLease
+  }
+
+  private struct RefreshedAnalysisLease: Decodable, Sendable {
+    let leaseEpoch: Int
+    let leaseExpiresAt: Date
+  }
+
+  private struct CompleteAnalysisJobRequest: Encodable, Sendable {
+    let orgId: String
+    let deviceId: String
+    let claimId: String
+    let claimToken: String
+    let leaseEpoch: Int
+    let completionId: String
+    let resultEnvelope: Envelope
+  }
+
+  private struct CompleteAnalysisJobResponse: Decodable, Sendable {
+    let job: PremiumHealthAnalysisJob
+    let idempotent: Bool
+  }
+
+  private struct FailAnalysisJobRequest: Encodable, Sendable {
+    let orgId: String
+    let deviceId: String
+    let claimId: String
+    let claimToken: String
+    let leaseEpoch: Int
+    let failureId: String
+    let code: String
+    let retryable: Bool
+  }
+
+  private struct FailAnalysisJobResponse: Decodable, Sendable {
+    let job: PremiumHealthAnalysisJob
+    let idempotent: Bool
+  }
+
+  private struct AnalysisRequesterRequest: Encodable, Sendable {
+    let orgId: String
+    let deviceId: String
+    let clientRequestId: String
+  }
+
+  private struct AnalysisRequesterResponse: Decodable, Sendable {
+    let job: PremiumHealthAnalysisJob
+    let idempotent: Bool
+  }
+
+  private struct AnalysisResultResponse: Decodable, Sendable {
+    let job: PremiumHealthAnalysisJob
+    let resultEnvelope: Envelope
   }
 
   private let session: PremiumSessionClient
@@ -549,6 +738,349 @@ public actor PremiumHealthImageSyncClient {
     }
   }
 
+  public func currentDeviceID() async throws -> String {
+    try await resolveContext().deviceID
+  }
+
+  public func connections() async throws -> PremiumHealthConnections {
+    let context = try await resolveContext()
+    _ = try await registerDeviceKey(context: context)
+    var components = URLComponents()
+    components.path = "sync/health-connections"
+    components.queryItems = [
+      URLQueryItem(name: "orgId", value: context.orgID),
+      URLQueryItem(name: "deviceId", value: context.deviceID),
+    ]
+    guard let path = components.string else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return try await session.send(path: path)
+  }
+
+  public func heartbeatAnalyzer(ready: Bool) async throws -> PremiumHealthAnalyzerStatus {
+    let context = try await resolveContext()
+    return try await session.send(
+      path: "sync/health-analyzers/heartbeat",
+      method: .post,
+      body: AnalyzerHeartbeatRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        ready: ready
+      )
+    )
+  }
+
+  public func approveSender(deviceID senderDeviceID: String) async throws {
+    let context = try await resolveContext()
+    let registered = try await registerDeviceKey(context: context)
+    let peers = try await listDeviceKeys(context: context)
+    guard let sender = peers.devices.first(where: { $0.deviceId == senderDeviceID }),
+      sender.deviceId != context.deviceID
+    else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let pairing: Pairing = try await session.send(
+      path: "sync/device-key-pairings",
+      method: .post,
+      body: PairingRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        senderDeviceId: sender.deviceId,
+        senderKeyFingerprint: sender.fingerprint,
+        approved: true
+      )
+    )
+    guard pairing.orgId == context.orgID,
+      pairing.senderDeviceId == sender.deviceId,
+      pairing.recipientDeviceId == context.deviceID,
+      pairing.senderKeyFingerprint == sender.fingerprint,
+      pairing.recipientKeyFingerprint == registered.fingerprint,
+      pairing.status == "approved"
+    else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+  }
+
+  @discardableResult
+  public func revokeSender(deviceID senderDeviceID: String) async throws -> Bool {
+    let context = try await resolveContext()
+    var components = URLComponents()
+    components.path = "sync/device-key-pairings/\(senderDeviceID)"
+    components.queryItems = [
+      URLQueryItem(name: "orgId", value: context.orgID),
+      URLQueryItem(name: "deviceId", value: context.deviceID),
+    ]
+    guard let path = components.string else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let response: PairingRevokeResponse = try await session.send(
+      path: path,
+      method: .delete
+    )
+    guard response.senderDeviceId == senderDeviceID,
+      response.recipientDeviceId == context.deviceID
+    else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return response.revoked
+  }
+
+  public func createAnalysisJob(
+    imageID: String,
+    clientRequestID: String = UUID().uuidString.lowercased()
+  ) async throws -> PremiumHealthAnalysisJob {
+    let context = try await resolveContext()
+    let response: CreateAnalysisJobResponse = try await session.send(
+      path: "sync/health-analysis/jobs",
+      method: .post,
+      body: CreateAnalysisJobRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        imageId: imageID,
+        clientRequestId: clientRequestID,
+        kind: "food_nutrition"
+      )
+    )
+    guard response.job.contract == "terrane.health-analysis-job.v1",
+      response.job.sourceImageId == imageID,
+      response.job.kind == "food_nutrition"
+    else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return response.job
+  }
+
+  public nonisolated static func makeClaimToken() -> String {
+    randomData(count: 32).base64URLEncodedString()
+  }
+
+  public func claimAnalysisJob(
+    claimID: String = UUID().uuidString.lowercased(),
+    claimToken: String = PremiumHealthImageSyncClient.makeClaimToken(),
+    waitSeconds: Int = 0
+  ) async throws -> PremiumHealthAnalysisClaim {
+    let context = try await resolveContext()
+    let response: ClaimAnalysisJobResponse = try await session.send(
+      path: "sync/health-analysis/jobs/claim",
+      method: .post,
+      body: ClaimAnalysisJobRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        claimId: claimID,
+        claimToken: claimToken,
+        waitSeconds: min(max(waitSeconds, 0), 25)
+      )
+    )
+    guard (response.job == nil) == (response.lease == nil) else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return PremiumHealthAnalysisClaim(
+      job: response.job,
+      lease: response.lease,
+      cursor: response.cursor
+    )
+  }
+
+  public func heartbeatAnalysisJob(
+    _ job: PremiumHealthAnalysisJob,
+    lease: PremiumHealthAnalysisLease
+  ) async throws -> PremiumHealthAnalysisLease {
+    let context = try await resolveContext()
+    let response: AnalysisLeaseResponse = try await session.send(
+      path: "sync/health-analysis/jobs/\(job.id)/heartbeat",
+      method: .post,
+      body: AnalysisLeaseRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        claimId: lease.claimId,
+        claimToken: lease.claimToken,
+        leaseEpoch: lease.leaseEpoch
+      )
+    )
+    guard response.job.id == job.id,
+      response.lease.leaseEpoch == lease.leaseEpoch
+    else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return PremiumHealthAnalysisLease(
+      claimId: lease.claimId,
+      claimToken: lease.claimToken,
+      leaseEpoch: response.lease.leaseEpoch,
+      leaseExpiresAt: response.lease.leaseExpiresAt
+    )
+  }
+
+  public func completeAnalysisJob(
+    _ job: PremiumHealthAnalysisJob,
+    lease: PremiumHealthAnalysisLease,
+    image: PremiumDecryptedHealthImage,
+    result: Data,
+    completionID: String = UUID().uuidString.lowercased()
+  ) async throws -> PremiumHealthAnalysisJob {
+    guard job.sourceImageId == image.attachment.id,
+      let imageKey = try await keyStore.loadKey(id: image.keyID)
+    else {
+      throw PremiumHealthImageSyncError.invalidKey
+    }
+    let context = try await resolveContext()
+    let resultKey = Self.analysisResultKey(
+      imageKey: imageKey,
+      orgID: context.orgID,
+      imageID: job.sourceImageId,
+      jobID: job.id
+    )
+    let envelope = try Self.seal(
+      result,
+      keyData: resultKey,
+      keyID: premiumHealthImageKeyID(resultKey),
+      authenticatedData: Self.analysisResultAuthenticatedData(
+        orgID: context.orgID,
+        imageID: job.sourceImageId,
+        jobID: job.id
+      )
+    )
+    let response: CompleteAnalysisJobResponse = try await session.send(
+      path: "sync/health-analysis/jobs/\(job.id)/complete",
+      method: .post,
+      body: CompleteAnalysisJobRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        claimId: lease.claimId,
+        claimToken: lease.claimToken,
+        leaseEpoch: lease.leaseEpoch,
+        completionId: completionID,
+        resultEnvelope: envelope
+      )
+    )
+    guard response.job.id == job.id, response.job.resultAvailable else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return response.job
+  }
+
+  public func failAnalysisJob(
+    _ job: PremiumHealthAnalysisJob,
+    lease: PremiumHealthAnalysisLease,
+    code: String,
+    retryable: Bool,
+    failureID: String = UUID().uuidString.lowercased()
+  ) async throws -> PremiumHealthAnalysisJob {
+    let allowedCodes = [
+      "analysis_failed", "decrypt_failed", "invalid_image", "model_unavailable", "timeout",
+    ]
+    guard allowedCodes.contains(code) else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let context = try await resolveContext()
+    let response: FailAnalysisJobResponse = try await session.send(
+      path: "sync/health-analysis/jobs/\(job.id)/fail",
+      method: .post,
+      body: FailAnalysisJobRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        claimId: lease.claimId,
+        claimToken: lease.claimToken,
+        leaseEpoch: lease.leaseEpoch,
+        failureId: failureID,
+        code: code,
+        retryable: retryable
+      )
+    )
+    guard response.job.id == job.id else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return response.job
+  }
+
+  public func analysisJobs(
+    afterRevision: Int = 0,
+    waitSeconds: Int = 0
+  ) async throws -> PremiumHealthAnalysisPage {
+    let context = try await resolveContext()
+    var components = URLComponents()
+    components.path = "sync/health-analysis/jobs"
+    components.queryItems = [
+      URLQueryItem(name: "orgId", value: context.orgID),
+      URLQueryItem(name: "deviceId", value: context.deviceID),
+      URLQueryItem(name: "afterRevision", value: String(max(afterRevision, 0))),
+      URLQueryItem(name: "waitSeconds", value: String(min(max(waitSeconds, 0), 25))),
+    ]
+    guard let path = components.string else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let response: AnalysisJobsResponse = try await session.send(path: path)
+    return PremiumHealthAnalysisPage(jobs: response.jobs, cursor: response.cursor)
+  }
+
+  public func downloadAnalysisResult(
+    _ job: PremiumHealthAnalysisJob
+  ) async throws -> PremiumDecryptedHealthAnalysis {
+    guard job.resultAvailable else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let context = try await resolveContext()
+    guard let attachment = try await list().first(where: { $0.id == job.sourceImageId }) else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let image = try await download(attachment)
+    guard let imageKey = try await keyStore.loadKey(id: image.keyID) else {
+      throw PremiumHealthImageSyncError.invalidKey
+    }
+    var components = URLComponents()
+    components.path = "sync/health-analysis/jobs/\(job.id)/result"
+    components.queryItems = [
+      URLQueryItem(name: "orgId", value: context.orgID),
+      URLQueryItem(name: "deviceId", value: context.deviceID),
+    ]
+    guard let path = components.string else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let response: AnalysisResultResponse = try await session.send(path: path)
+    guard response.job.id == job.id,
+      response.job.sourceImageId == image.attachment.id
+    else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    let resultKey = Self.analysisResultKey(
+      imageKey: imageKey,
+      orgID: context.orgID,
+      imageID: job.sourceImageId,
+      jobID: job.id
+    )
+    let result = try Self.open(
+      response.resultEnvelope,
+      keyData: resultKey,
+      authenticatedData: Self.analysisResultAuthenticatedData(
+        orgID: context.orgID,
+        imageID: job.sourceImageId,
+        jobID: job.id
+      )
+    )
+    return PremiumDecryptedHealthAnalysis(job: response.job, image: image, result: result)
+  }
+
+  public func cancelAnalysisJob(
+    _ job: PremiumHealthAnalysisJob,
+    clientRequestID: String
+  ) async throws -> PremiumHealthAnalysisJob {
+    try await updateRequesterJob(
+      job,
+      action: "cancel",
+      clientRequestID: clientRequestID
+    )
+  }
+
+  public func acknowledgeAnalysisJob(
+    _ job: PremiumHealthAnalysisJob,
+    clientRequestID: String
+  ) async throws -> PremiumHealthAnalysisJob {
+    try await updateRequesterJob(
+      job,
+      action: "ack",
+      clientRequestID: clientRequestID
+    )
+  }
+
   public func download(_ attachment: PremiumHealthImageAttachment) async throws
     -> PremiumDecryptedHealthImage
   {
@@ -593,7 +1125,8 @@ public actor PremiumHealthImageSyncClient {
     return PremiumDecryptedHealthImage(
       attachment: attachment,
       image: image,
-      metadata: metadata
+      metadata: metadata,
+      keyID: response.imageEnvelope.keyId
     )
   }
 
@@ -728,6 +1261,27 @@ public actor PremiumHealthImageSyncClient {
       throw PremiumHealthImageSyncError.invalidKey
     }
     return key
+  }
+
+  private func updateRequesterJob(
+    _ job: PremiumHealthAnalysisJob,
+    action: String,
+    clientRequestID: String
+  ) async throws -> PremiumHealthAnalysisJob {
+    let context = try await resolveContext()
+    let response: AnalysisRequesterResponse = try await session.send(
+      path: "sync/health-analysis/jobs/\(job.id)/\(action)",
+      method: .post,
+      body: AnalysisRequesterRequest(
+        orgId: context.orgID,
+        deviceId: context.deviceID,
+        clientRequestId: clientRequestID
+      )
+    )
+    guard response.job.id == job.id else {
+      throw PremiumHealthImageSyncError.invalidResponse
+    }
+    return response.job
   }
 
   private static func wrapKey(
@@ -877,9 +1431,10 @@ public actor PremiumHealthImageSyncClient {
     let devices: [Device] = try await session.send(path: "users/me/devices")
     let sessionDeviceID = await session.currentDeviceID
     let platformName = platform.rawValue
-    guard let deviceID =
-      sessionDeviceID
-      ?? devices.first(where: { $0.platform == platformName && $0.status == "active" })?.id
+    guard
+      let deviceID =
+        sessionDeviceID
+        ?? devices.first(where: { $0.platform == platformName && $0.status == "active" })?.id
     else {
       throw PremiumHealthImageSyncError.missingDevice
     }
@@ -939,21 +1494,48 @@ public actor PremiumHealthImageSyncClient {
   private static func authenticatedData(orgID: String, clientID: String, part: String) -> Data {
     Data("\(premiumHealthImageContract):\(orgID):health:\(clientID):\(part)".utf8)
   }
+
+  private static func analysisResultKey(
+    imageKey: Data,
+    orgID: String,
+    imageID: String,
+    jobID: String
+  ) -> Data {
+    let key = HKDF<SHA256>.deriveKey(
+      inputKeyMaterial: SymmetricKey(data: imageKey),
+      salt: Data(
+        "\(premiumHealthAnalysisResultContract):\(orgID):\(imageID):\(jobID):salt".utf8
+      ),
+      info: Data(premiumHealthAnalysisResultContract.utf8),
+      outputByteCount: 32
+    )
+    return key.withUnsafeBytes { Data($0) }
+  }
+
+  private static func analysisResultAuthenticatedData(
+    orgID: String,
+    imageID: String,
+    jobID: String
+  ) -> Data {
+    Data(
+      "\(premiumHealthAnalysisResultContract):\(orgID):\(imageID):\(jobID):result".utf8
+    )
+  }
 }
 
 private func premiumHealthImageKeyID(_ key: Data) -> String {
   "health-\(SHA256.hash(data: key).prefix(12).map { String(format: "%02x", $0) }.joined())"
 }
 
-private extension Data {
-  init?(base64URLString: String) {
+extension Data {
+  fileprivate init?(base64URLString: String) {
     var value = base64URLString.replacingOccurrences(of: "-", with: "+")
       .replacingOccurrences(of: "_", with: "/")
     value.append(String(repeating: "=", count: (4 - value.count % 4) % 4))
     self.init(base64Encoded: value)
   }
 
-  func base64URLEncodedString() -> String {
+  fileprivate func base64URLEncodedString() -> String {
     base64EncodedString()
       .replacingOccurrences(of: "+", with: "-")
       .replacingOccurrences(of: "/", with: "_")

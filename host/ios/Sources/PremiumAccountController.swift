@@ -5,6 +5,7 @@ import UIKit
 enum PremiumAccountViewState: Equatable {
   case signedOut
   case authenticating(PremiumIdentityProvider)
+  case switching(PremiumIdentityProvider)
   case signedIn(PremiumAccount)
   case error(message: String)
 }
@@ -86,6 +87,30 @@ final class PremiumAccountController: ObservableObject {
     }
   }
 
+  func beginLink(
+    _ provider: PremiumIdentityProvider
+  ) async throws -> PremiumAuthenticationChallenge {
+    state = .authenticating(provider)
+    do {
+      return try await client.beginLinkAuthentication(provider: provider)
+    } catch {
+      state = .error(message: error.localizedDescription)
+      throw error
+    }
+  }
+
+  func beginSwitch(
+    _ provider: PremiumIdentityProvider
+  ) async throws -> PremiumAuthenticationChallenge {
+    state = .switching(provider)
+    do {
+      return try await client.beginAccountSwitch(provider: provider)
+    } catch {
+      await synchronizeState()
+      throw error
+    }
+  }
+
   func completeApple(_ credential: PremiumAppleCredential, challengeID: String) async {
     do {
       let account = try await client.exchangeAppleCredential(
@@ -106,6 +131,56 @@ final class PremiumAccountController: ObservableObject {
       )
       state = .signedIn(account)
     } catch {
+      state = .error(message: error.localizedDescription)
+    }
+  }
+
+  func completeAppleLink(_ credential: PremiumAppleCredential, challengeID: String) async {
+    do {
+      let account = try await client.linkAppleCredential(
+        challengeId: challengeID,
+        credential: credential
+      )
+      state = .signedIn(account)
+    } catch {
+      state = .error(message: error.localizedDescription)
+    }
+  }
+
+  func completeGoogleLink(_ credential: PremiumGoogleCredential, challengeID: String) async {
+    do {
+      let account = try await client.linkGoogleCredential(
+        challengeId: challengeID,
+        credential: credential
+      )
+      state = .signedIn(account)
+    } catch {
+      state = .error(message: error.localizedDescription)
+    }
+  }
+
+  func completeAppleSwitch(_ credential: PremiumAppleCredential, challengeID: String) async {
+    do {
+      let account = try await client.switchAppleAccount(
+        challengeId: challengeID,
+        credential: credential
+      )
+      state = .signedIn(account)
+    } catch {
+      await synchronizeState()
+      state = .error(message: error.localizedDescription)
+    }
+  }
+
+  func completeGoogleSwitch(_ credential: PremiumGoogleCredential, challengeID: String) async {
+    do {
+      let account = try await client.switchGoogleAccount(
+        challengeId: challengeID,
+        credential: credential
+      )
+      state = .signedIn(account)
+    } catch {
+      await synchronizeState()
       state = .error(message: error.localizedDescription)
     }
   }
