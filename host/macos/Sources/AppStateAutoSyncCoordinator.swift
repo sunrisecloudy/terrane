@@ -50,15 +50,24 @@ final class MacAppStateAutoSyncCoordinator {
           appID: appID,
           sinceVersion: checkpoint
         )
+        let digestKey = "terrane.app-sync.update-digest.\(syncDeviceID).\(appID)"
+        let localDigest =
+          localUpdate.isEmpty ? nil : premiumAppSyncUpdateID(localUpdate)
+        let updateToUpload: Data? =
+          localUpdate.isEmpty || localDigest == defaults.string(forKey: digestKey)
+          ? nil : localUpdate
         let result = try await client.sync(
           appID: appID,
-          localUpdate: localUpdate.isEmpty ? nil : localUpdate
+          localUpdate: updateToUpload
         )
         var changed = result.uploaded
         for update in result.updates {
           changed = try await bridge.crdtMerge(appID: appID, update: update.update) || changed
         }
         defaults.set(try await bridge.crdtVersion(appID: appID), forKey: checkpointKey)
+        if let localDigest {
+          defaults.set(localDigest, forKey: digestKey)
+        }
         if changed { changedApps.append(appID == "health" ? "Health" : "BMI") }
       }
       onStatus?(

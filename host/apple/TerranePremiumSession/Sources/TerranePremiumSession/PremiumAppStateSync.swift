@@ -4,6 +4,10 @@ import Security
 
 public let premiumAppStateSyncContract = "terrane.encrypted-crdt-update.v1"
 
+public func premiumAppSyncUpdateID(_ update: Data) -> String {
+  SHA256.hash(data: update).map { String(format: "%02x", $0) }.joined()
+}
+
 public protocol PremiumAppSyncKeyStore: Sendable {
   func loadOrCreateKey() async throws -> Data
   func loadKey(id: String) async throws -> Data?
@@ -359,12 +363,16 @@ public actor PremiumAppStateSyncClient {
       context: context
     )
     var uploaded = false
+    var collidedUpload: (recordKey: String, update: Data)?
     if let localUpdate, !localUpdate.isEmpty {
       guard localUpdate.count <= 8 * 1024 * 1024 else {
         throw PremiumAppStateSyncError.invalidUpdate
       }
-      let digest = Self.hex(SHA256.hash(data: localUpdate))
-      let recordKey = "\(appID):\(context.deviceID):\(digest)"
+      let recordKey = Self.recordKey(
+        appID: appID,
+        senderDeviceID: context.deviceID,
+        update: localUpdate
+      )
       let envelope = try Self.seal(
         localUpdate,
         key: key,
@@ -375,32 +383,47 @@ public actor PremiumAppStateSyncClient {
           recordKey: recordKey
         )
       )
-      let response: PushResponse = try await session.send(
-        path: "sync/push",
-        method: .post,
-        body: PushRequest(
-          orgId: context.orgID,
-          deviceId: context.deviceID,
-          records: [
-            SyncRecordRequest(
-              recordType: "crdt.update",
-              recordKey: recordKey,
-              appId: appID,
-              actor: SyncActor(subject: "device:\(context.deviceID)"),
-              baseRemoteRevision: nil,
-              encryptedPayload: envelope,
-              metadata: ["contract": premiumAppStateSyncContract]
-            )
-          ]
+      do {
+        let response: PushResponse = try await session.send(
+          path: "sync/push",
+          method: .post,
+          body: PushRequest(
+            orgId: context.orgID,
+            deviceId: context.deviceID,
+            records: [
+              SyncRecordRequest(
+                recordType: "crdt.update",
+                recordKey: recordKey,
+                appId: appID,
+                actor: SyncActor(subject: "device:\(context.deviceID)"),
+                baseRemoteRevision: nil,
+                encryptedPayload: envelope,
+                metadata: ["contract": premiumAppStateSyncContract]
+              )
+            ]
+          )
         )
-      )
-      guard response.conflicts.isEmpty,
-        response.accepted.count == 1,
-        response.accepted[0].recordKey == recordKey
-      else {
-        throw PremiumAppStateSyncError.invalidResponse
+        if response.conflicts.isEmpty {
+          guard response.accepted.count == 1,
+            response.accepted[0].recordKey == recordKey
+          else {
+            throw PremiumAppStateSyncError.invalidResponse
+          }
+          uploaded = true
+        } else {
+          guard response.accepted.isEmpty, response.conflicts.count == 1 else {
+            throw PremiumAppStateSyncError.invalidResponse
+          }
+          collidedUpload = (recordKey, localUpdate)
+        }
+      } catch let error as PremiumSessionError {
+        guard case .server(let statusCode, _) = error, statusCode == 409 else {
+          throw error
+        }
+        collidedUpload = (recordKey, localUpdate)
+      } catch {
+        throw error
       }
-      uploaded = true
     }
 
     let pulled: PullResponse = try await session.send(
@@ -432,12 +455,30 @@ public actor PremiumAppStateSyncClient {
       guard !update.isEmpty else {
         throw PremiumAppStateSyncError.invalidResponse
       }
+      guard
+        Self.recordKeyMatches(
+          record.recordKey,
+          appID: appID,
+          update: update
+        )
+      else {
+        throw PremiumAppStateSyncError.invalidResponse
+      }
       return PremiumDecryptedAppUpdate(
         appID: appID,
         recordKey: record.recordKey,
         remoteRevision: record.remoteRevision,
         update: update
       )
+    }
+    if let collidedUpload,
+      !Self.collisionMatches(
+        recordKey: collidedUpload.recordKey,
+        localUpdate: collidedUpload.update,
+        updates: updates
+      )
+    {
+      throw PremiumAppStateSyncError.invalidResponse
     }
     return PremiumAppSyncResult(uploaded: uploaded, updates: updates)
   }
@@ -621,6 +662,41 @@ public actor PremiumAppStateSyncClient {
       throw PremiumAppStateSyncError.invalidResponse
     }
     return try await session.send(path: path)
+  }
+
+  static func recordKey(
+    appID: String,
+    senderDeviceID: String,
+    update: Data
+  ) -> String {
+    "\(appID):\(senderDeviceID):\(premiumAppSyncUpdateID(update))"
+  }
+
+  static func recordKeyMatches(
+    _ recordKey: String,
+    appID: String,
+    update: Data
+  ) -> Bool {
+    let parts = recordKey.split(separator: ":", omittingEmptySubsequences: false)
+    guard parts.count == 3,
+      parts[0] == Substring(appID),
+      !parts[1].isEmpty
+    else {
+      return false
+    }
+    return parts[2] == Substring(premiumAppSyncUpdateID(update))
+  }
+
+  static func collisionMatches(
+    recordKey: String,
+    localUpdate: Data,
+    updates: [PremiumDecryptedAppUpdate]
+  ) -> Bool {
+    updates.contains {
+      $0.recordKey == recordKey
+        && $0.update == localUpdate
+        && recordKeyMatches(recordKey, appID: $0.appID, update: $0.update)
+    }
   }
 
   private static func seal(

@@ -102,6 +102,74 @@ final class PremiumSessionClientTests: XCTestCase {
     )
   }
 
+  func testAppStateRecordKeyBindsAppDeviceAndPlaintext() {
+    let update = Data("health-crdt-update".utf8)
+    let recordKey = PremiumAppStateSyncClient.recordKey(
+      appID: "health",
+      senderDeviceID: "device-1",
+      update: update
+    )
+
+    XCTAssertTrue(
+      PremiumAppStateSyncClient.recordKeyMatches(
+        recordKey,
+        appID: "health",
+        update: update
+      )
+    )
+    XCTAssertFalse(
+      PremiumAppStateSyncClient.recordKeyMatches(
+        recordKey,
+        appID: "bmi-calculator",
+        update: update
+      )
+    )
+    XCTAssertFalse(
+      PremiumAppStateSyncClient.recordKeyMatches(
+        recordKey,
+        appID: "health",
+        update: Data("different-update".utf8)
+      )
+    )
+  }
+
+  func testAppStateConflictRequiresTheExactPulledPlaintext() {
+    let update = Data("health-crdt-update".utf8)
+    let recordKey = PremiumAppStateSyncClient.recordKey(
+      appID: "health",
+      senderDeviceID: "device-1",
+      update: update
+    )
+    let pulled = PremiumDecryptedAppUpdate(
+      appID: "health",
+      recordKey: recordKey,
+      remoteRevision: "revision-1",
+      update: update
+    )
+
+    XCTAssertTrue(
+      PremiumAppStateSyncClient.collisionMatches(
+        recordKey: recordKey,
+        localUpdate: update,
+        updates: [pulled]
+      )
+    )
+    XCTAssertFalse(
+      PremiumAppStateSyncClient.collisionMatches(
+        recordKey: recordKey,
+        localUpdate: Data("different-update".utf8),
+        updates: [pulled]
+      )
+    )
+    XCTAssertFalse(
+      PremiumAppStateSyncClient.collisionMatches(
+        recordKey: "\(recordKey)-forged",
+        localUpdate: update,
+        updates: [pulled]
+      )
+    )
+  }
+
   func testCancelAuthenticationReturnsToSignedOut() async throws {
     let client = try PremiumSessionClient(
       baseURL: baseURL,
