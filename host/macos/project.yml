@@ -115,6 +115,7 @@ targets:
               - $(TERRANE_GOOGLE_REVERSED_CLIENT_ID)
         GIDClientID: $(TERRANE_GOOGLE_CLIENT_ID)
         GIDServerClientID: $(TERRANE_GOOGLE_SERVER_CLIENT_ID)
+        TerranePremiumBaseURL: $(TERRANE_PREMIUM_BASE_URL)
         CFBundleDocumentTypes:
           - CFBundleTypeName: Terrane Text Import
             CFBundleTypeRole: Viewer

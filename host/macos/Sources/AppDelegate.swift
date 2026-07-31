@@ -1512,7 +1512,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKNaviga
     let args = CommandLine.arguments
     let cliValue = args.indices.dropLast().first { args[$0] == "--premium-url" }
       .map { args[$0 + 1] }
-    let raw = cliValue ?? ProcessInfo.processInfo.environment["TERRANE_PREMIUM_URL"]
+    let raw =
+      cliValue
+      ?? ProcessInfo.processInfo.environment["TERRANE_PREMIUM_URL"]
+      ?? Bundle.main.object(forInfoDictionaryKey: "TerranePremiumBaseURL") as? String
     guard
       let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
         .trimmingCharacters(in: CharacterSet(charactersIn: "/")),
