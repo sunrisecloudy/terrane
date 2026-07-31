@@ -47,6 +47,53 @@ final class TerraneIOSUITests: XCTestCase {
     XCTAssertTrue(app.images["app.chat.icon"].waitForExistence(timeout: 3))
   }
 
+  func testHealthPublishesNativeSidebarNavigation() {
+    let app = XCUIApplication()
+    app.launch()
+
+    let health = app.descendants(matching: .any).matching(identifier: "app.health").firstMatch
+    XCTAssertTrue(health.waitForExistence(timeout: 10))
+    health.tap()
+    XCTAssertTrue(app.navigationBars["Health"].waitForExistence(timeout: 5))
+
+    let permissionAlert = app.alerts.firstMatch
+    if permissionAlert.waitForExistence(timeout: 5) {
+      permissionAlert.buttons["Allow"].tap()
+    }
+
+    let toggle = app.buttons["app-sidebar.toggle"]
+    XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+    toggle.tap()
+    XCTAssertTrue(
+      app.buttons["app-sidebar.app.health"].waitForExistence(timeout: 5)
+    )
+    let history = app.buttons["app-sidebar.section.history"]
+    XCTAssertTrue(history.waitForExistence(timeout: 5))
+    history.tap()
+    XCTAssertTrue(app.staticTexts["Meal history"].waitForExistence(timeout: 5))
+  }
+
+  func testIPadKeepsAppSidebarVisible() throws {
+    let app = XCUIApplication()
+    app.launch()
+    guard app.windows.firstMatch.frame.width >= 700 else {
+      throw XCTSkip("Persistent sidebar is an iPad layout.")
+    }
+
+    let health = app.descendants(matching: .any).matching(identifier: "app.health").firstMatch
+    XCTAssertTrue(health.waitForExistence(timeout: 10))
+    health.tap()
+
+    let permissionAlert = app.alerts.firstMatch
+    if permissionAlert.waitForExistence(timeout: 5) {
+      permissionAlert.buttons["Allow"].tap()
+    }
+
+    XCTAssertTrue(app.buttons["app-sidebar.app.health"].waitForExistence(timeout: 10))
+    XCTAssertTrue(app.buttons["app-sidebar.section.history"].waitForExistence(timeout: 10))
+    XCTAssertFalse(app.buttons["app-sidebar.toggle"].exists)
+  }
+
   func testAppCanBePinnedAndUnpinned() {
     let app = XCUIApplication()
     app.launch()

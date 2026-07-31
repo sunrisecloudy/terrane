@@ -17,9 +17,41 @@ final class AppConfigurationTests: XCTestCase {
     XCTAssertTrue(script.contains("terrane"))
     XCTAssertTrue(script.contains("blobUrl"))
     XCTAssertTrue(script.contains("/blob/"))
+    XCTAssertTrue(script.contains("setSidebarSection"))
+    XCTAssertTrue(script.contains("__terrane_sidebar_action"))
     XCTAssertFalse(script.localizedCaseInsensitiveContains("token"))
     XCTAssertFalse(script.localizedCaseInsensitiveContains("premium"))
     XCTAssertFalse(script.localizedCaseInsensitiveContains("account"))
+  }
+
+  func testAppSidebarSectionRejectsMalformedOrDuplicateItems() {
+    XCTAssertEqual(
+      IOSAppSidebarSection.parse([
+        "title": "Health",
+        "selectedItemId": "history",
+        "items": [
+          ["id": "add", "title": "Add meal", "systemImage": "plus.circle"],
+          ["id": "history", "title": "History", "systemImage": "clock"],
+        ],
+      ]),
+      IOSAppSidebarSection(
+        title: "Health",
+        items: [
+          .init(id: "add", title: "Add meal", systemImage: "plus.circle"),
+          .init(id: "history", title: "History", systemImage: "clock"),
+        ],
+        selectedItemID: "history"
+      )
+    )
+    XCTAssertNil(
+      IOSAppSidebarSection.parse([
+        "title": "Health",
+        "items": [
+          ["id": "history", "title": "History"],
+          ["id": "history", "title": "Duplicate"],
+        ],
+      ])
+    )
   }
 
   func testAppResourceRequestsStayScopedToTheirApp() throws {

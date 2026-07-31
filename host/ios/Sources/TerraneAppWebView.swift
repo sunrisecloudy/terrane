@@ -6,6 +6,7 @@ struct TerraneAppWebView: UIViewRepresentable {
   let app: TerraneApp
   let runtime: any TerraneRuntime
   let healthAutoSync: IOSHealthAutoSync?
+  let sidebar: IOSAppSidebarModel
   let permissionHandler: (TerraneApp, [String]) async -> Bool
 
   func makeCoordinator() -> Coordinator {
@@ -13,6 +14,7 @@ struct TerraneAppWebView: UIViewRepresentable {
       app: app,
       runtime: runtime,
       healthAutoSync: healthAutoSync,
+      sidebar: sidebar,
       permissionHandler: permissionHandler
     )
   }
@@ -89,6 +91,19 @@ struct TerraneAppWebView: UIViewRepresentable {
         window.webkit.messageHandlers.terrane.postMessage({
           kind: "health:pendingAnalyses"
         });
+      const sidebarSelectCallbacks = [];
+      const sidebarCreateCallbacks = [];
+      window.__terrane_sidebar_action = (action) => {
+        if (!action || typeof action.kind !== "string") return;
+        const callbacks = action.kind === "select"
+          ? sidebarSelectCallbacks
+          : action.kind === "create"
+          ? sidebarCreateCallbacks
+          : [];
+        callbacks.slice().forEach((callback) =>
+          callback(action.kind === "select" ? String(action.id || "") : undefined)
+        );
+      };
       Object.defineProperty(window, "terrane", {
         value: Object.freeze({
           invoke,
@@ -97,7 +112,28 @@ struct TerraneAppWebView: UIViewRepresentable {
           analyzeHealthImage,
           healthAnalysisStatus,
           acknowledgeHealthAnalysis,
-          pendingHealthAnalyses
+          pendingHealthAnalyses,
+          setSidebarSection: (section) =>
+            window.webkit.messageHandlers.terrane.postMessage({
+              kind: "sidebar:set",
+              section: section == null ? null : section
+            }),
+          onSidebarItemSelect: (callback) => {
+            if (typeof callback !== "function") return () => {};
+            sidebarSelectCallbacks.push(callback);
+            return () => {
+              const index = sidebarSelectCallbacks.indexOf(callback);
+              if (index >= 0) sidebarSelectCallbacks.splice(index, 1);
+            };
+          },
+          onSidebarCreate: (callback) => {
+            if (typeof callback !== "function") return () => {};
+            sidebarCreateCallbacks.push(callback);
+            return () => {
+              const index = sidebarCreateCallbacks.indexOf(callback);
+              if (index >= 0) sidebarCreateCallbacks.splice(index, 1);
+            };
+          }
         }),
         enumerable: true,
         configurable: false,
@@ -111,17 +147,20 @@ struct TerraneAppWebView: UIViewRepresentable {
     let runtime: any TerraneRuntime
     let frameURL: URL
     weak var healthAutoSync: IOSHealthAutoSync?
+    weak var sidebar: IOSAppSidebarModel?
     let permissionHandler: (TerraneApp, [String]) async -> Bool
 
     init(
       app: TerraneApp,
       runtime: any TerraneRuntime,
       healthAutoSync: IOSHealthAutoSync?,
+      sidebar: IOSAppSidebarModel,
       permissionHandler: @escaping (TerraneApp, [String]) async -> Bool
     ) {
       self.app = app
       self.runtime = runtime
       self.healthAutoSync = healthAutoSync
+      self.sidebar = sidebar
       self.permissionHandler = permissionHandler
       var components = URLComponents()
       components.scheme = "terrane-app"
@@ -260,6 +299,20 @@ struct TerraneAppWebView: UIViewRepresentable {
         }
         return
       }
+      if kind == "sidebar:set" {
+        guard message.frameInfo.isMainFrame, app.id == message.frameInfo.securityOrigin.host,
+          let sidebar
+        else {
+          replyHandler(nil, "terrane: sidebar updates require the selected app main frame")
+          return
+        }
+        let section = IOSAppSidebarSection.parse(body["section"])
+        Task { @MainActor in
+          sidebar.update(section)
+          replyHandler(["ok": true], nil)
+        }
+        return
+      }
       guard kind == "invoke",
         let verb = body["verb"] as? String,
         !verb.isEmpty
@@ -336,6 +389,18 @@ struct TerraneAppWebView: UIViewRepresentable {
         UIApplication.shared.open(url)
       } else {
         decisionHandler(.cancel)
+      }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+      sidebar?.setActionHandler { [weak webView] action in
+        guard let webView,
+          let data = try? JSONSerialization.data(withJSONObject: action),
+          let json = String(data: data, encoding: .utf8)
+        else { return }
+        webView.evaluateJavaScript(
+          "window.__terrane_sidebar_action && window.__terrane_sidebar_action(\(json));"
+        )
       }
     }
   }
